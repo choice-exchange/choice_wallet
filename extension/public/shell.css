@@ -1,0 +1,2 @@
+/* The toolbar popup sizes itself to its content, so it needs a fixed width. */
+body { width: 360px; min-height: 520px; }

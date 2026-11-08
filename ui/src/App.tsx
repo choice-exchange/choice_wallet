@@ -1,11 +1,9 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 
-import type { NewSecret, Status, UiRequest } from "../messages";
-import type { Result } from "../vault";
+import { useBackend } from "./backend";
+import type { NewSecret, Reply, Result, Status, UiRequest } from "./protocol";
 
-async function send<T>(req: UiRequest): Promise<Result<T>> {
-  return (await chrome.runtime.sendMessage(req)) as Result<T>;
-}
+const UNREACHABLE = "The wallet didn't answer. Try again.";
 
 type Screen =
   | { name: "loading" }
@@ -20,6 +18,7 @@ type Screen =
 const MIN_PASSWORD = 8;
 
 export function App() {
+  const backend = useBackend();
   const [screen, setScreen] = useState<Screen>({ name: "loading" });
   const [error, setError] = useState<string | null>(null);
 
@@ -28,16 +27,22 @@ export function App() {
     setScreen(s.unlocked ? { name: "home", status: s } : s.hasWallet ? { name: "unlock" } : { name: "welcome" });
   }
 
-  useEffect(() => {
-    void send<Status>({ type: "status" }).then((r) => (r.ok ? show(r.result) : setError(r.error.message)));
-  }, []);
-
-  async function run<T>(req: UiRequest, then: (t: T) => void) {
+  async function run<R extends UiRequest>(req: R, then: (reply: Reply<R>) => void) {
     setError(null);
-    const r = await send<T>(req);
+    let r: Result<Reply<R>>;
+    try {
+      r = await backend.send(req);
+    } catch {
+      setError(UNREACHABLE);
+      return;
+    }
     if (r.ok) then(r.result);
     else setError(r.error.code === "wrong_password" ? "Wrong password." : r.error.message);
   }
+
+  useEffect(() => {
+    void run({ type: "status" }, show);
+  }, []);
 
   const body = (() => {
     switch (screen.name) {
@@ -48,9 +53,7 @@ export function App() {
           <Page title="Choice Wallet" lead="A self-custody wallet for Injective.">
             <button
               className="primary"
-              onClick={() => void run<{ phrase: string }>({ type: "generate", words: 12 }, (r) =>
-                setScreen({ name: "backup", phrase: r.phrase }),
-              )}
+              onClick={() => void run({ type: "generate", words: 12 }, (r) => setScreen({ name: "backup", phrase: r.phrase }))}
             >
               Create a new wallet
             </button>
@@ -88,11 +91,11 @@ export function App() {
           />
         );
       case "password":
-        return <SetPassword onSubmit={(password) => void run<Status>({ type: "create", secret: screen.secret, password }, show)} />;
+        return <SetPassword onSubmit={(password) => void run({ type: "create", secret: screen.secret, password }, show)} />;
       case "unlock":
-        return <Unlock onSubmit={(password) => void run<Status>({ type: "unlock", password }, show)} />;
+        return <Unlock onSubmit={(password) => void run({ type: "unlock", password }, show)} />;
       case "home":
-        return <Home status={screen.status} onLock={() => void run<Status>({ type: "lock" }, show)} />;
+        return <Home status={screen.status} onLock={() => void run({ type: "lock" }, show)} />;
     }
   })();
 
@@ -244,6 +247,7 @@ function Home({ status, onLock }: { status: Status; onLock: () => void }) {
 }
 
 function Address({ label, address }: { label: string; address: string }) {
+  const backend = useBackend();
   const [copied, setCopied] = useState(false);
   return (
     <div className="card">
@@ -252,7 +256,7 @@ function Address({ label, address }: { label: string; address: string }) {
       <button
         className="small"
         onClick={() =>
-          void navigator.clipboard.writeText(address).then(() => {
+          void backend.copy(address).then(() => {
             setCopied(true);
             setTimeout(() => setCopied(false), 1500);
           })

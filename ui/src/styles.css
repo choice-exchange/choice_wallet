@@ -20,16 +20,16 @@
     color-scheme: light;
   }
 }
+/* No fixed window size here: each platform sets its own (the extension's popup is 360px
+   wide). The content column stays phone-width on a wide desktop window. */
 * { box-sizing: border-box; }
 body {
   margin: 0;
-  width: 360px;
-  min-height: 520px;
   background: var(--bg);
   color: var(--text);
   font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
 }
-main { padding: 20px; }
+main { max-width: 440px; margin: 0 auto; padding: 20px; }
 h1 { font-size: 18px; margin: 0 0 6px; }
 .muted { color: var(--muted); margin: 0 0 16px; }
 .stack { display: flex; flex-direction: column; gap: 10px; }

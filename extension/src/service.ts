@@ -1,4 +1,5 @@
-// The service worker's logic, without `chrome.*`, so it runs under test.
+// The service worker's logic, without `chrome.*`, so it runs under test. It is the
+// extension's host: it answers the UI's requests (`@choice-wallet/ui/protocol`).
 //
 // - The encrypted keystore and the public account list live in local storage.
 // - While unlocked, the unlock key (Argon2id output, opens only this keystore) lives in
@@ -7,8 +8,9 @@
 // - The vault is stateless: every call that needs a key gets the keystore and unlock key
 //   from here. UI pages never see either.
 
-import type { NewSecret, Status, UiRequest, UiResponse } from "./messages";
-import type { AccountInfo, Result } from "./vault";
+import type { AccountInfo, NewSecret, Result, Status, UiRequest } from "@choice-wallet/ui/protocol";
+
+type UiResponse<T = unknown> = Result<T>;
 
 /** A key-value store: `chrome.storage.local` / `.session`, or a map in tests. */
 export interface Store {

@@ -1,5 +1,6 @@
 // Builds the extension into dist/: the vault (Rust → WASM → wasm-bindgen glue), the
-// service worker and popup bundles (esbuild), and the static files.
+// service worker and popup bundles (esbuild; the popup is the shared UI in ../ui), and the
+// static files.
 //
 //   node build.mjs           build dist/ (load it unpacked in Chrome)
 //   node build.mjs --test    also build dist-test/, which `node --test` runs
@@ -54,7 +55,7 @@ await build({
   ...common,
   platform: "browser",
   target: "chrome120",
-  entryPoints: { background: "src/background.ts", popup: "src/popup/main.tsx" },
+  entryPoints: { background: "src/background.ts", popup: "src/popup.ts" },
   outdir: dist,
 });
 cpSync(join(here, "public"), dist, { recursive: true });

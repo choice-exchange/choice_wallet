@@ -1,0 +1,8 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    // No platform types: `chrome.*` (or any other platform API) can't be used in the UI.
+    "types": []
+  },
+  "include": ["src"]
+}

@@ -65,7 +65,7 @@ Protobuf types:
 ### JavaScript in extension pages
 
 - Each shipped bundle (service worker, popup, approval window, content scripts) has its own list of allowed packages, reviewed like the Rust budget.
-- npm with a committed lockfile, install scripts disabled, exact versions, and `before` set two weeks back (`extension/.npmrc`), bumped deliberately. Twelve packages in all; only `react`, `react-dom` and `scheduler` ship. The build is esbuild (two packages) rather than a framework, because build tools can change what they produce.
+- npm with a committed lockfile, install scripts disabled, exact versions, and `before` set two weeks back (`.npmrc` at the repo root, which also covers the `ui` and `extension` workspaces), bumped deliberately. Twelve packages in all; only `react`, `react-dom` and `scheduler` ship. The build is esbuild (two packages) rather than a framework, because build tools can change what they produce.
 - No minification, so the shipped code can be read and compared with the source.
 - injective-ts, ethers and viem are dev-only (test vector generation). They never ship.
 - CSP on extension pages: `script-src 'self' 'wasm-unsafe-eval'; object-src 'none'; require-trusted-types-for 'script'`.
