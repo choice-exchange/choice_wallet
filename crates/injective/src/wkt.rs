@@ -1,4 +1,4 @@
-//! The one protobuf well-known type the vault uses, so it doesn't need `prost-types`.
+//! The protobuf well-known types the vault uses, so it doesn't need `prost-types`.
 
 use prost::{Message, Name};
 
@@ -21,4 +21,26 @@ impl Any {
             value: msg.encode_to_vec(),
         }
     }
+}
+
+/// `google.protobuf.Timestamp`: seconds and nanoseconds since the Unix epoch.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Message)]
+pub struct Timestamp {
+    /// Seconds since 1970-01-01T00:00:00Z.
+    #[prost(int64, tag = "1")]
+    pub seconds: i64,
+    /// Nanoseconds within the second.
+    #[prost(int32, tag = "2")]
+    pub nanos: i32,
+}
+
+/// `google.protobuf.Duration`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Message)]
+pub struct Duration {
+    /// Whole seconds.
+    #[prost(int64, tag = "1")]
+    pub seconds: i64,
+    /// Nanoseconds within the second.
+    #[prost(int32, tag = "2")]
+    pub nanos: i32,
 }

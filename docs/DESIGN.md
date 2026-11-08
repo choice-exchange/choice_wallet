@@ -59,7 +59,7 @@ mobile app (phase 2) ── uniffi ──▶ same Rust core
 | Crate | Job | Status |
 | --- | --- | --- |
 | `choice-wallet-core` | Mnemonic, HD derivation, secp256k1 keys, addresses, encrypted keystore | Built, 29 tests |
-| `choice-wallet-injective` | Injective protobuf (vendored .proto, prost 0.14), sign paths, tx building, precompile decoding | Direct, amino JSON and EIP-712 v2 paths; bank / CW20 / adapter builders. Byte-identical to injective-ts 1.20.62 (and viem for EIP-712). Precompile decoding and more message types next |
+| `choice-wallet-injective` | Injective protobuf (vendored .proto, prost 0.14), sign paths, tx building, precompile decoding | Direct, amino JSON and EIP-712 v2 paths; bank / CW20 / adapter builders. On the Direct path, also authz grants, execs (decoded recursively) and revokes, fee grants, the rewards withdraw address, tokenfactory and contract admin changes. Byte-identical to injective-ts 1.20.62 (and viem for EIP-712). The JSON paths still show those as raw; precompile decoding next |
 | `choice-wallet-evm` | EVM tx types 0-2, EIP-712, ABI decoding. Signing on our k256 0.14 | EIP-1559 encode and sign, native and ERC20 transfers, strict EIP-712 typed data. Byte-identical to viem 2.57.7. Dapp transaction requests next |
 | `choice-wallet-policy` | Risk rules over decoded requests | Planned |
 | `choice-wallet-wasm` | wasm-bindgen surface for the extension | Planned |

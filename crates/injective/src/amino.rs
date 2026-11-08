@@ -292,9 +292,7 @@ fn render_msg(m: &Msg) -> Result<Value, Error> {
             insert_nonempty(&mut v, "sender", sender);
             Ok(json!({ "type": "wasm/MsgExecuteContract", "value": v }))
         }
-        Msg::Unknown { type_url, .. } | Msg::UnknownJson { type_url, .. } => {
-            Err(Error::Amino(format!("no amino JSON encoding for {type_url}")))
-        }
+        other => Err(Error::Amino(format!("no amino JSON encoding for {}", other.type_url()))),
     }
 }
 

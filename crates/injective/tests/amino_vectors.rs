@@ -219,8 +219,8 @@ fn unknown_or_unusual_messages_are_kept_raw() {
 #[test]
 fn own_tx_with_unrenderable_message_is_refused() {
     let unknown = Any {
-        type_url: "/cosmos.authz.v1beta1.MsgGrant".into(),
-        value: vec![0x0a, 0x01, b'x'],
+        type_url: "/cosmos.gov.v1beta1.MsgVote".into(),
+        value: vec![0x08, 0x01],
     };
     let c = vectors()["cases"][0].clone();
     let req = builder::amino_request(&MAINNET, &key(0).public_key(), vec![unknown], &options(&c)).unwrap();

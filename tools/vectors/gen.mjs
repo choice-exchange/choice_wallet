@@ -8,7 +8,15 @@
 import { writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { PrivateKey, MsgSend, MsgExecuteContract, createTransaction, getAminoStdSignDoc, getEip712TypedDataV2, sortObjectByKeys, SIGN_AMINO } from "@injectivelabs/sdk-ts";
+import {
+  PrivateKey, MsgSend, MsgExecuteContract, MsgGrant, MsgAuthzExec, MsgRevoke, MsgGrantAllowance, MsgRevokeAllowance,
+  MsgWithdrawDelegatorReward, MsgChangeAdmin, MsgUpdateAdmin, createTransaction, getAminoStdSignDoc,
+  getEip712TypedDataV2, sortObjectByKeys, SIGN_AMINO,
+} from "@injectivelabs/sdk-ts";
+import * as AuthzTx from "@injectivelabs/core-proto-ts-v2/generated/cosmos/authz/v1beta1/tx_pb";
+import * as BankAuthz from "@injectivelabs/core-proto-ts-v2/generated/cosmos/bank/v1beta1/authz_pb";
+import * as DistrTx from "@injectivelabs/core-proto-ts-v2/generated/cosmos/distribution/v1beta1/tx_pb";
+import * as WasmTx from "@injectivelabs/core-proto-ts-v2/generated/cosmwasm/wasm/v1/tx_pb";
 import { hashTypedData } from "viem";
 import { mnemonicToAccount } from "viem/accounts";
 import * as TxPb from "@injectivelabs/core-proto-ts-v2/generated/cosmos/tx/v1beta1/tx_pb";
@@ -236,3 +244,69 @@ const aminoOut = {
 const aminoFile = join(dirname(fileURLToPath(import.meta.url)), "../../crates/injective/tests/vectors/amino.json");
 writeFileSync(aminoFile, JSON.stringify(aminoOut, null, 2) + "\n");
 console.log(`wrote ${aminoOut.cases.length} cases to ${aminoFile}`);
+
+// ---- Grants, allowances, admins and rewards: the messages risk rules look at ----
+// Each case is one message as an Any, encoded by injective-ts (sdk-ts classes, or its
+// generated protobuf classes where sdk-ts has no class). Our decoder must accept the bytes
+// exactly and read the same fields.
+
+const SEND_URL = "/cosmos.bank.v1beta1.MsgSend";
+const EXPIRY = 1893456000;
+const valoper = k0.toAddress().toBech32("injvaloper");
+const sdkAny = (m) => ({ type_url: m.toDirectSign().type, value: hex(m.toBinary()) });
+const pbAny = (type_url, T, fields) => ({ type_url, value: hex(T.toBinary(T.create(fields))) });
+const sendAuth = {
+  typeUrl: "/cosmos.bank.v1beta1.SendAuthorization",
+  value: BankAuthz.SendAuthorization.toBinary(BankAuthz.SendAuthorization.create({
+    spendLimit: [{ denom: "inj", amount: "5000" }], allowList: [a2],
+  })),
+};
+const execSend = MsgAuthzExec.fromJSON({
+  grantee: a0,
+  msgs: MsgSend.fromJSON({ srcInjectiveAddress: a1, dstInjectiveAddress: a0, amount: { denom: "inj", amount: "42" } }),
+});
+
+const riskCases = [
+  ["authz_generic_grant", sdkAny(MsgGrant.fromJSON({ granter: a0, grantee: a1, messageType: SEND_URL, expiration: EXPIRY }))],
+  ["authz_send_grant", sdkAny(MsgGrant.fromJSON({ granter: a0, grantee: a1, authorization: sendAuth, expiration: EXPIRY }))],
+  ["authz_exec_send", sdkAny(execSend)],
+  ["authz_revoke", sdkAny(MsgRevoke.fromJSON({ granter: a0, grantee: a1, messageType: SEND_URL }))],
+  ["feegrant_basic", sdkAny(MsgGrantAllowance.fromJSON({
+    granter: a0, grantee: a1, allowance: { spendLimit: [{ denom: "inj", amount: "1000" }], expiration: EXPIRY },
+  }))],
+  ["feegrant_revoke", sdkAny(MsgRevokeAllowance.fromJSON({ granter: a0, grantee: a1 }))],
+  ["withdraw_rewards", sdkAny(MsgWithdrawDelegatorReward.fromJSON({ delegatorAddress: a0, validatorAddress: valoper }))],
+  ["set_withdraw_address", pbAny("/cosmos.distribution.v1beta1.MsgSetWithdrawAddress", DistrTx.MsgSetWithdrawAddress, {
+    delegatorAddress: a0, withdrawAddress: a1,
+  })],
+  ["tokenfactory_change_admin", sdkAny(MsgChangeAdmin.fromJSON({ sender: a0, denom: `factory/${a0}/test`, newAdmin: a1 }))],
+  ["wasm_update_admin", sdkAny(MsgUpdateAdmin.fromJSON({ sender: a0, newAdmin: a1, contract: a2 }))],
+  ["wasm_clear_admin", pbAny("/cosmwasm.wasm.v1.MsgClearAdmin", WasmTx.MsgClearAdmin, { sender: a0, contract: a2 })],
+];
+
+// Expiration as the protobuf decodes it, so the test doesn't assume sdk-ts's units.
+const grantExpiry = (anyHex) => {
+  const g = AuthzTx.MsgGrant.fromBinary(Buffer.from(anyHex, "hex")).grant;
+  return g?.expiration ? Number(g.expiration.seconds) : null;
+};
+
+// One full transaction too, so MsgExec's nested Any goes through the Direct decoder.
+const riskTx = createTransaction({
+  message: [execSend, MsgGrant.fromJSON({ granter: a0, grantee: a1, messageType: SEND_URL, expiration: EXPIRY })],
+  memo: "", fee, chainId: "injective-1", pubKey: k0.toPublicKey().toBase64(), sequence: 1, accountNumber: 12345,
+});
+
+const riskOut = {
+  generator: "tools/vectors/gen.mjs with @injectivelabs/sdk-ts 1.20.62 and its core-proto-ts-v2",
+  phrase: PHRASE,
+  addresses: { a0, a1, a2, valoper },
+  expiry: EXPIRY,
+  messages: riskCases.map(([name, any]) => ({
+    name, ...any, grant_expiration: any.type_url.endsWith("MsgGrant") ? grantExpiry(any.value) : undefined,
+  })),
+  tx: { body_bytes: hex(riskTx.bodyBytes), auth_info_bytes: hex(riskTx.authInfoBytes), account_number: 12345 },
+};
+
+const riskFile = join(dirname(fileURLToPath(import.meta.url)), "../../crates/injective/tests/vectors/messages.json");
+writeFileSync(riskFile, JSON.stringify(riskOut, null, 2) + "\n");
+console.log(`wrote ${riskOut.messages.length} messages to ${riskFile}`);

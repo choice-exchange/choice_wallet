@@ -17,8 +17,14 @@ use sha2::{Digest, Sha256};
 const ROOTS: &[&str] = &[
     "cosmos/tx/v1beta1/tx.proto",
     "cosmos/bank/v1beta1/tx.proto",
+    "cosmos/bank/v1beta1/authz.proto",
+    "cosmos/authz/v1beta1/tx.proto",
+    "cosmos/feegrant/v1beta1/feegrant.proto",
+    "cosmos/feegrant/v1beta1/tx.proto",
+    "cosmos/distribution/v1beta1/tx.proto",
     "cosmwasm/wasm/v1/tx.proto",
     "injective/crypto/v1beta1/ethsecp256k1/keys.proto",
+    "injective/tokenfactory/v1beta1/tx.proto",
     "injective/types/v1beta1/tx_ext.proto",
 ];
 

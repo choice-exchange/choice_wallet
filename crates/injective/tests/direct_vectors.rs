@@ -305,8 +305,8 @@ fn refuses_other_pubkey_types() {
 #[test]
 fn unknown_messages_are_kept_raw() {
     let unknown = Any {
-        type_url: "/cosmos.authz.v1beta1.MsgGrant".into(),
-        value: vec![0x0a, 0x01, b'x'],
+        type_url: "/cosmos.gov.v1beta1.MsgVote".into(),
+        value: vec![0x08, 0x01],
     };
     let req = with_body(|b| b.messages.push(unknown.clone()));
     let d = direct::decode(req, "injective-1", &key(0).public_key()).unwrap();
