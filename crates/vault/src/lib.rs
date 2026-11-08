@@ -19,7 +19,7 @@
 //! | `create_keystore` | `secret` (`{"mnemonic": …}` or `{"private_key": …}`), `password` | `keystore`, `kind` |
 //! | `unlock` | `keystore`, `password` | `unlock_key` |
 //! | `accounts` | `keystore`, `unlock_key`, `accounts` | each account's public key and addresses |
-//! | `build_cosmos` | chain, signer, messages, fee, … | a sign request |
+//! | `build_cosmos` | chain, signer, messages, fee, … | a sign request, and `simulate_tx` for a gas estimate |
 //! | `build_evm` | chain, from, to, amount, token, fees | a sign request |
 //! | `decode` | `request`, `context` (optional) | `display`, `risk`, `digest` |
 //! | `sign` | `keystore`, `unlock_key`, `account`, `request`, `digest` | signature and signed tx |
@@ -164,7 +164,7 @@ fn call(request: &str) -> Result<Value, VaultError> {
                 .collect::<Result<Vec<_>, VaultError>>()?;
             Ok(json!({ "accounts": list }))
         }
-        "build_cosmos" => Ok(json!({ "request": build::cosmos(params(p)?)? })),
+        "build_cosmos" => build::cosmos(params(p)?),
         "build_evm" => Ok(json!({ "request": build::evm(params(p)?)? })),
         "decode" => {
             let Decode { request, context } = borrowed(p)?;

@@ -125,6 +125,17 @@ pub struct Context {
     /// Contracts this account has used before.
     #[serde(default)]
     pub known_contracts: Vec<String>,
+    /// How to name tokens in messages ("INJ" rather than "inj"), by the same keys as
+    /// `balances`. A token without one is named by its key.
+    #[serde(default)]
+    pub symbols: BTreeMap<String, String>,
+}
+
+impl Context {
+    /// A token's name for messages.
+    pub(crate) fn token_name<'a>(&'a self, token: &'a str) -> &'a str {
+        self.symbols.get(token).map_or(token, String::as_str)
+    }
 }
 
 fn finding(rule: &'static str, level: Level, message: String, params: Value) -> Finding {

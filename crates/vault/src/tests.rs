@@ -164,6 +164,14 @@ fn own_cosmos(c: &Value) -> Value {
             "timeout_height": c["timeout_height"],
         }),
     );
+    // The simulation tx is the broadcast tx with an empty signature: field 3 is
+    // `1a 40 <64 bytes>` there and `1a 00` here.
+    if let Some(tx_raw) = c["tx_raw"].as_str()
+        && built["request"]["cosmos_direct"]["body_bytes"] == c["body_bytes"]
+    {
+        let unsigned = &tx_raw[..tx_raw.len() - 2 * (2 + 64)];
+        assert_eq!(built["simulate_tx"], format!("{unsigned}1a00"), "{}", c["name"]);
+    }
     built["request"].clone()
 }
 

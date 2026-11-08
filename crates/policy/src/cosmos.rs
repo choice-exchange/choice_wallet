@@ -251,14 +251,14 @@ fn message(m: &Msg, signer: &str, ctx: &Context, mut outflows: Option<&mut Outfl
                 out.push(finding(
                     "denom_admin",
                     Level::Red,
-                    format!("Gives up control of {denom} for good."),
+                    format!("Gives up control of {} for good.", ctx.token_name(denom)),
                     json!({ "denom": denom, "new_admin": new_admin }),
                 ));
             } else if !same(sender, new_admin) {
                 out.push(finding(
                     "denom_admin",
                     Level::Red,
-                    format!("Hands control of {denom} to {}.", short(new_admin)),
+                    format!("Hands control of {} to {}.", ctx.token_name(denom), short(new_admin)),
                     json!({ "denom": denom, "new_admin": new_admin }),
                 ));
             }
@@ -481,6 +481,7 @@ mod tests {
         let ctx = Context {
             origin: Some("https://example.org".into()),
             balances: [("inj".to_owned(), "100".to_owned())].into(),
+            symbols: [("inj".to_owned(), "INJ".to_owned())].into(),
             ..Default::default()
         };
         let fee = [Coin::new("inj", "10").unwrap()];
@@ -500,6 +501,8 @@ mod tests {
             &ctx,
         );
         assert_eq!(rules(&a), ["site_new", "most_of_balance"]);
+        // Messages name tokens by the host's symbols.
+        assert_eq!(a.findings[1].message, "Sends more than half of this account's INJ.");
         // A fee grant pays the fee, so only the send counts.
         let a = cosmos(
             &[send],

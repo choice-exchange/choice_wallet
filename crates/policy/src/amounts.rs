@@ -74,18 +74,19 @@ impl Outflows {
                 continue;
             };
             let params = json!({ "token": token, "amount": total.to_string(), "balance": bal.to_string() });
+            let name = ctx.token_name(token);
             if *total > bal {
                 out.push(finding(
                     "more_than_balance",
                     Level::Amber,
-                    format!("Spends more {token} than this account holds, so it will likely fail."),
+                    format!("Spends more {name} than this account holds, so it will likely fail."),
                     params,
                 ));
             } else if total.checked_add(total).is_none_or(|double| double > bal) {
                 out.push(finding(
                     "most_of_balance",
                     Level::Amber,
-                    format!("Sends more than half of this account's {token}."),
+                    format!("Sends more than half of this account's {name}."),
                     params,
                 ));
             }

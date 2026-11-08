@@ -76,6 +76,8 @@ pub(crate) struct CosmosParams {
     sign_mode: SignMode,
 }
 
+/// `build_cosmos`: the sign request, and the same transaction with an empty signature for
+/// the chain's simulate endpoint (`simulate_tx`, hex).
 pub(crate) fn cosmos(p: CosmosParams) -> Result<Value, VaultError> {
     let entry = chains::find(&p.chain)?;
     let chain = entry.cosmos()?;
@@ -137,7 +139,10 @@ pub(crate) fn cosmos(p: CosmosParams) -> Result<Value, VaultError> {
         "auth_info_bytes": hexutil::encode(&req.auth_info_bytes),
         "account_number": req.account_number.to_string(),
     });
-    Ok(Value::Object([(kind.to_owned(), tx)].into_iter().collect()))
+    Ok(json!({
+        "request": Value::Object([(kind.to_owned(), tx)].into_iter().collect()),
+        "simulate_tx": hexutil::encode(&req.simulation_tx()),
+    }))
 }
 
 /// Parameters of `build_evm`. Amounts and fees are decimal strings in base units / wei.

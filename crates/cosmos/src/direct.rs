@@ -40,6 +40,20 @@ pub struct Request {
     pub account_number: u64,
 }
 
+impl Request {
+    /// `TxRaw` with one empty signature, for the chain's simulate endpoint (a gas estimate).
+    /// Simulation skips signature checks but still wants one signature per signer. A node
+    /// rejects it if broadcast.
+    pub fn simulation_tx(&self) -> Vec<u8> {
+        TxRaw {
+            body_bytes: self.body_bytes.clone(),
+            auth_info_bytes: self.auth_info_bytes.clone(),
+            signatures: vec![Vec::new()],
+        }
+        .encode_to_vec()
+    }
+}
+
 /// The fee, as decoded.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Fee {
