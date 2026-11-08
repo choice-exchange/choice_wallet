@@ -7,7 +7,7 @@ import { GlobeIcon, LockIcon } from "./icons";
 import { Screen, Segmented } from "./kit";
 import type { Connection, NetworkId, Settings, Status } from "./protocol";
 import { useRequest } from "./request";
-import { ChangePasswordView, RemoveWalletView, RevealView, type SecurityView } from "./Security";
+import { ChangePasswordView, ResetView, RevealView, type SecurityView } from "./Security";
 
 const LOCK_AFTER: readonly (readonly ["5" | "15" | "60" | "240", string])[] = [
   ["5", "5 min"],
@@ -90,7 +90,9 @@ export function SettingsView({
   }
 
   const account = status.accounts[status.active];
-  if (security === "phrase" || security === "key") return <RevealView what={security} status={status} onBack={() => setSecurity(null)} />;
+  // The wallet of the account in use (the first, for a watched address).
+  const wallet = status.wallets.find((w) => w.id === account?.wallet) ?? status.wallets[0];
+  if (security === "phrase" || security === "key") return <RevealView what={security} wallet={wallet} status={status} onBack={() => setSecurity(null)} />;
   if (security === "password") {
     return (
       <ChangePasswordView
@@ -102,7 +104,7 @@ export function SettingsView({
       />
     );
   }
-  if (security === "remove") return <RemoveWalletView status={status} onRemoved={onStatus} onBack={() => setSecurity(null)} />;
+  if (security === "reset") return <ResetView onRemoved={onStatus} onBack={() => setSecurity(null)} />;
 
   return (
     <form onSubmit={(e) => void save(e)} style={{ height: "100%" }}>
@@ -231,10 +233,12 @@ export function SettingsView({
           <LockIcon /> Lock now
         </button>
         <div className="well rows">
-          <button type="button" className="row link-row" onClick={() => setSecurity("phrase")}>
-            {status.kind === "mnemonic" ? "Show recovery phrase" : "Show private key"}
-          </button>
-          {status.kind === "mnemonic" && account?.account.derivation === "default" && (
+          {wallet && (
+            <button type="button" className="row link-row" onClick={() => setSecurity("phrase")}>
+              {wallet.type === "mnemonic" ? `Show ${wallet.name}` : `Show ${wallet.name}'s key`}
+            </button>
+          )}
+          {wallet?.type === "mnemonic" && account?.wallet === wallet.id && account.account.derivation === "default" && (
             <button type="button" className="row link-row" onClick={() => setSecurity("key")}>
               Export {account.name}&apos;s key
             </button>
@@ -242,8 +246,8 @@ export function SettingsView({
           <button type="button" className="row link-row" onClick={() => setSecurity("password")}>
             Change password
           </button>
-          <button type="button" className="row link-row danger" onClick={() => setSecurity("remove")}>
-            Remove wallet
+          <button type="button" className="row link-row danger" onClick={() => setSecurity("reset")}>
+            Reset Choice Wallet
           </button>
         </div>
         <p className="footnote">Choice Wallet 0.1.0. Pre-alpha. Not for real funds.</p>

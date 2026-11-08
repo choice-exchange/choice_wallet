@@ -73,6 +73,8 @@ interface Pending {
   digest: string;
   request: unknown;
   account: AccountInfo["account"];
+  /** The wallet that signs for it. */
+  wallet: string;
   confirm: string | null;
   blocked: boolean;
   /** An EVM transaction (broadcast with eth_sendRawTransaction), not a Cosmos one. */
@@ -620,6 +622,7 @@ export function createSender(d: SendDeps) {
         digest,
         request: built.result.request,
         account: account.account,
+        wallet: account.wallet,
         confirm: risk.confirm ?? null,
         blocked: risk.level === "blocked",
       };
@@ -702,6 +705,7 @@ export function createSender(d: SendDeps) {
         digest,
         request: built.result.request,
         account: account.account,
+        wallet: account.wallet,
         confirm: risk.confirm ?? null,
         blocked: risk.level === "blocked",
         evm: true,
@@ -721,15 +725,22 @@ export function createSender(d: SendDeps) {
     }
   }
 
-  async function confirm(keystore: string, unlockKey: string, req: { digest: string; confirm?: string }): Promise<Result<Sent>> {
+  /** Sign the send the review showed, with the wallet that prepared it, then broadcast. */
+  async function confirm(
+    unlockKey: string,
+    signerOf: (wallet: string) => Promise<{ secret: string; wallet: string } | null>,
+    req: { digest: string; confirm?: string },
+  ): Promise<Result<Sent>> {
     const { pending_send } = await d.session.get(["pending_send"]);
     const p = pending_send as Pending | undefined;
     if (!p || p.digest !== req.digest) return fail("not_approved", "This send expired. Review it again.");
     if (p.blocked) return fail("blocked", "The wallet won't sign this.");
     if (p.confirm && (req.confirm ?? "").trim() !== p.confirm) return fail("confirm", `Type ${p.confirm} to continue.`);
     await d.session.remove(["pending_send"]);
+    const signer = await signerOf(p.wallet);
+    if (!signer) return fail("not_approved", "That wallet is gone. Review the send again.");
     const signed = await d.vault<{ tx_raw: string } & { raw: string; hash: string }>("sign", {
-      keystore,
+      ...signer,
       unlock_key: unlockKey,
       account: p.account,
       request: p.request,

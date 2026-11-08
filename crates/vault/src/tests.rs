@@ -42,19 +42,18 @@ fn code(method: &str, params: Value) -> String {
         .to_owned()
 }
 
-/// One keystore for the test phrase, with its unlock key. Argon2 at full cost runs once.
-fn wallet() -> &'static (String, String) {
-    static W: OnceLock<(String, String)> = OnceLock::new();
+/// One vault holding the test phrase as wallet "w1": the vault, the sealed phrase and the
+/// unlock key. Argon2 at full cost runs once.
+fn wallet() -> &'static (String, String, String) {
+    static W: OnceLock<(String, String, String)> = OnceLock::new();
     W.get_or_init(|| {
         let phrase = vectors("direct")["phrase"].as_str().unwrap().to_owned();
-        let ks = ok(
-            "create_keystore",
-            json!({ "secret": { "mnemonic": phrase }, "password": PASSWORD }),
-        );
-        assert_eq!(ks["kind"], "mnemonic");
-        let keystore = ks["keystore"].as_str().unwrap().to_owned();
-        let unlock = ok("unlock", json!({ "keystore": keystore, "password": PASSWORD }));
-        (keystore, unlock["unlock_key"].as_str().unwrap().to_owned())
+        let v = ok("create_vault", json!({ "password": PASSWORD }));
+        let vault = v["vault"].as_str().unwrap().to_owned();
+        let unlock_key = v["unlock_key"].as_str().unwrap().to_owned();
+        let sealed = ok("seal_secret", json!({ "unlock_key": unlock_key, "wallet": "w1", "secret": { "mnemonic": phrase } }));
+        assert_eq!(sealed["kind"], "mnemonic");
+        (vault, sealed["secret"].as_str().unwrap().to_owned(), unlock_key)
     })
 }
 
@@ -63,22 +62,22 @@ fn account(i: u32) -> Value {
 }
 
 fn signer_key(i: u32) -> String {
-    let (keystore, unlock_key) = wallet();
+    let (_, secret, unlock_key) = wallet();
     let r = ok(
         "accounts",
-        json!({ "keystore": keystore, "unlock_key": unlock_key, "accounts": [account(i)] }),
+        json!({ "secret": secret, "wallet": "w1", "unlock_key": unlock_key, "accounts": [account(i)] }),
     );
     r["accounts"][0]["public_key"].as_str().unwrap().to_owned()
 }
 
 /// Decode, then sign with the digest decode returned.
 fn approve_and_sign(request: &Value, acct: Value) -> Value {
-    let (keystore, unlock_key) = wallet();
+    let (_, secret, unlock_key) = wallet();
     let d = ok("decode", json!({ "request": request }));
     ok(
         "sign",
         json!({
-            "keystore": keystore, "unlock_key": unlock_key, "account": acct,
+            "secret": secret, "wallet": "w1", "unlock_key": unlock_key, "account": acct,
             "request": request, "digest": d["digest"],
         }),
     )
@@ -92,42 +91,65 @@ fn coins(v: &Value) -> Value {
         .collect()
 }
 
-#[test]
-fn reveal_needs_the_password_and_shows_the_phrase_or_a_key() {
-    let phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-    let pw = "correct horse battery staple";
-    let ks = ok("create_keystore", json!({ "secret": { "mnemonic": phrase }, "password": pw }))["keystore"].clone();
-    assert_eq!(ok("reveal", json!({ "keystore": ks, "password": pw }))["phrase"], phrase);
-    // The second account's key, the one other wallets derive at m/44'/60'/0'/0/1 (the
-    // published test phrase's second MetaMask account, 0x6Fac…b9C0).
-    let second = ok("reveal", json!({ "keystore": ks, "password": pw, "account": { "derivation": "default", "index": 1 } }));
-    let key = second["private_key"].as_str().unwrap();
-    assert_eq!(key.len(), 64);
-    let back = ok("create_keystore", json!({ "secret": { "private_key": key }, "password": pw }))["keystore"].clone();
-    let uk = ok("unlock", json!({ "keystore": back, "password": pw }))["unlock_key"].clone();
-    let a = ok("accounts", json!({ "keystore": back, "unlock_key": uk, "accounts": [{ "derivation": "imported" }] }));
-    assert_eq!(a["accounts"][0]["addresses"]["eip155:1776"], "0x6Fac4D18c912343BF86fa7049364Dd4E424Ab9C0");
-    // An imported-key keystore shows its key; a wrong password shows nothing.
-    assert_eq!(ok("reveal", json!({ "keystore": back, "password": pw }))["private_key"], key);
-    assert_eq!(code("reveal", json!({ "keystore": ks, "password": "not the password" })), "wrong_password");
-    // The unlock key alone isn't enough: the method takes no such field.
-    let uk0 = ok("unlock", json!({ "keystore": ks, "password": pw }))["unlock_key"].clone();
-    assert_eq!(code("reveal", json!({ "keystore": ks, "unlock_key": uk0 })), "bad_request");
+/// A fresh vault with one wallet, "w1", holding `secret`: (vault, sealed secret, unlock key).
+fn vault_with(secret: Value) -> (Value, Value, Value) {
+    let v = ok("create_vault", json!({ "password": PASSWORD }));
+    let sealed = ok("seal_secret", json!({ "unlock_key": v["unlock_key"], "wallet": "w1", "secret": secret }));
+    (v["vault"].clone(), sealed["secret"].clone(), v["unlock_key"].clone())
 }
 
 #[test]
-fn change_password_reseals_and_returns_the_new_unlock_key() {
-    let pw = "correct horse battery staple";
-    let ks = ok("create_keystore", json!({ "secret": { "private_key": "46".repeat(32) }, "password": pw }))["keystore"].clone();
-    let changed = ok("change_password", json!({ "keystore": ks, "password": pw, "new_password": "a whole new password" }));
-    let new_ks = changed["keystore"].clone();
-    assert_ne!(new_ks, ks);
-    assert_eq!(code("unlock", json!({ "keystore": new_ks, "password": pw })), "wrong_password");
-    let uk = ok("unlock", json!({ "keystore": new_ks, "password": "a whole new password" }))["unlock_key"].clone();
-    assert_eq!(uk, changed["unlock_key"]);
-    assert_eq!(ok("reveal", json!({ "keystore": new_ks, "password": "a whole new password" }))["private_key"], "46".repeat(32));
-    assert_eq!(code("change_password", json!({ "keystore": ks, "password": "wrong one", "new_password": "a whole new password" })), "wrong_password");
-    assert_eq!(code("change_password", json!({ "keystore": ks, "password": pw, "new_password": "short" })), "keystore");
+fn several_wallets_behind_one_password() {
+    let phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    let (vault, a, uk) = vault_with(json!({ "mnemonic": phrase }));
+    let b = ok("seal_secret", json!({ "unlock_key": uk, "wallet": "w2", "secret": { "private_key": "46".repeat(32) } }));
+    assert_eq!(b["kind"], "private_key");
+    // One unlock opens both.
+    let key = ok("unlock", json!({ "vault": vault, "password": PASSWORD }))["unlock_key"].clone();
+    assert_eq!(key, uk);
+    let first = ok("accounts", json!({ "secret": a, "wallet": "w1", "unlock_key": key, "accounts": [account(0)] }));
+    assert_eq!(first["accounts"][0]["addresses"]["eip155:1776"], "0x9858EfFD232B4033E47d90003D41EC34EcaEda94");
+    let imported = ok("accounts", json!({ "secret": b["secret"], "wallet": "w2", "unlock_key": key, "accounts": [{ "derivation": "imported" }] }));
+    assert_eq!(imported["accounts"][0]["addresses"]["eip155:1776"], "0x9d8A62f656a8d1615C1294fd71e9CFb3E4855A4F");
+    // A secret opens only as the wallet it was sealed for.
+    assert_eq!(code("accounts", json!({ "secret": a, "wallet": "w2", "unlock_key": key, "accounts": [account(0)] })), "wrong_password");
+    assert_eq!(code("seal_secret", json!({ "unlock_key": key, "wallet": "W 1", "secret": { "mnemonic": phrase } })), "keystore");
+}
+
+#[test]
+fn reveal_needs_the_password_and_shows_the_phrase_or_a_key() {
+    let phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    let (vault, sealed, uk) = vault_with(json!({ "mnemonic": phrase }));
+    let reveal = |extra: Value| {
+        let mut p = json!({ "vault": vault, "password": PASSWORD, "secret": sealed, "wallet": "w1" });
+        p.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        p
+    };
+    assert_eq!(ok("reveal", reveal(json!({})))["phrase"], phrase);
+    // The second account's key (m/44'/60'/0'/0/1, the published test phrase's 0x6Fac…b9C0),
+    // sealed on its own, is that account.
+    let key = ok("reveal", reveal(json!({ "account": { "derivation": "default", "index": 1 } })))["private_key"].as_str().unwrap().to_owned();
+    assert_eq!(key.len(), 64);
+    let b = ok("seal_secret", json!({ "unlock_key": uk, "wallet": "w2", "secret": { "private_key": key } }));
+    let a = ok("accounts", json!({ "secret": b["secret"], "wallet": "w2", "unlock_key": uk, "accounts": [{ "derivation": "imported" }] }));
+    assert_eq!(a["accounts"][0]["addresses"]["eip155:1776"], "0x6Fac4D18c912343BF86fa7049364Dd4E424Ab9C0");
+    assert_eq!(ok("reveal", json!({ "vault": vault, "password": PASSWORD, "secret": b["secret"], "wallet": "w2" }))["private_key"], key);
+    assert_eq!(code("reveal", reveal(json!({ "password": "not the password" }))), "wrong_password");
+    // The unlock key alone isn't enough: the method takes no such field.
+    assert_eq!(code("reveal", json!({ "vault": vault, "unlock_key": uk, "secret": sealed, "wallet": "w1" })), "bad_request");
+}
+
+#[test]
+fn change_password_rewraps_the_vault_and_keeps_its_key() {
+    let (vault, sealed, uk) = vault_with(json!({ "private_key": "46".repeat(32) }));
+    let next = ok("change_password", json!({ "vault": vault, "password": PASSWORD, "new_password": "a whole new password" }))["vault"].clone();
+    assert_ne!(next, vault);
+    assert_eq!(code("unlock", json!({ "vault": next, "password": PASSWORD })), "wrong_password");
+    assert_eq!(ok("unlock", json!({ "vault": next, "password": "a whole new password" }))["unlock_key"], uk);
+    let shown = ok("reveal", json!({ "vault": next, "password": "a whole new password", "secret": sealed, "wallet": "w1" }));
+    assert_eq!(shown["private_key"], "46".repeat(32));
+    assert_eq!(code("change_password", json!({ "vault": vault, "password": "wrong one", "new_password": "a whole new password" })), "wrong_password");
+    assert_eq!(code("change_password", json!({ "vault": vault, "password": PASSWORD, "new_password": "short" })), "keystore");
 }
 
 #[test]
@@ -161,7 +183,7 @@ fn addresses_of_an_account_on_every_chain() {
 
 #[test]
 fn basics() {
-    assert_eq!(ok("version", json!({}))["protocol"], 1);
+    assert_eq!(ok("version", json!({}))["protocol"], 2);
     let chains = ok("chains", Value::Null);
     assert_eq!(chains[0]["id"], "cosmos:injective-1");
     assert_eq!(chains[0]["pair"], "eip155:1776");
@@ -181,10 +203,10 @@ fn basics() {
 
 #[test]
 fn accounts_match_injective_ts() {
-    let (keystore, unlock_key) = wallet();
+    let (vault, secret, unlock_key) = wallet();
     let r = ok(
         "accounts",
-        json!({ "keystore": keystore, "unlock_key": unlock_key, "accounts": [account(0), account(1), account(2)] }),
+        json!({ "secret": secret, "wallet": "w1", "unlock_key": unlock_key, "accounts": [account(0), account(1), account(2)] }),
     );
     for (i, want) in vectors("direct")["accounts"].as_array().unwrap().iter().enumerate() {
         let got = &r["accounts"][i];
@@ -195,12 +217,12 @@ fn accounts_match_injective_ts() {
     }
     let wrong = code(
         "unlock",
-        json!({ "keystore": keystore, "password": "not the password" }),
+        json!({ "vault": vault, "password": "not the password" }),
     );
     assert_eq!(wrong, "wrong_password");
     let imported = code(
         "accounts",
-        json!({ "keystore": keystore, "unlock_key": unlock_key, "accounts": [{ "derivation": "imported" }] }),
+        json!({ "secret": secret, "wallet": "w1", "unlock_key": unlock_key, "accounts": [{ "derivation": "imported" }] }),
     );
     assert_eq!(imported, "keystore");
 }
@@ -262,14 +284,14 @@ fn own_cosmos_sends_match_injective_ts() {
 
 #[test]
 fn approvals_bind_to_the_request_and_account() {
-    let (keystore, unlock_key) = wallet();
+    let (_, secret, unlock_key) = wallet();
     let c = &vectors("direct")["cases"][0];
     let request = own_cosmos(c);
     let digest = ok("decode", json!({ "request": request }))["digest"].clone();
     let sign = |request: &Value, acct: Value, digest: &Value| {
         code(
             "sign",
-            json!({ "keystore": keystore, "unlock_key": unlock_key, "account": acct, "request": request, "digest": digest }),
+            json!({ "secret": secret, "wallet": "w1", "unlock_key": unlock_key, "account": acct, "request": request, "digest": digest }),
         )
     };
     // Another account can't use this approval.
@@ -282,7 +304,7 @@ fn approvals_bind_to_the_request_and_account() {
     // A bad unlock key doesn't open the keystore.
     let bad = code(
         "sign",
-        json!({ "keystore": keystore, "unlock_key": "00".repeat(32), "account": account(0), "request": request, "digest": digest }),
+        json!({ "secret": secret, "wallet": "w1", "unlock_key": "00".repeat(32), "account": account(0), "request": request, "digest": digest }),
     );
     assert_eq!(bad, "wrong_password");
 }
@@ -388,11 +410,11 @@ fn own_evm_sends_match_viem() {
     )["request"]
         .clone();
     request["evm_transaction"]["tx"]["from"] = "0x0000000000000000000000000000000000000001".into();
-    let (keystore, unlock_key) = wallet();
+    let (_, secret, unlock_key) = wallet();
     let digest = ok("decode", json!({ "request": request }))["digest"].clone();
     let err = code(
         "sign",
-        json!({ "keystore": keystore, "unlock_key": unlock_key, "account": account(0), "request": request, "digest": digest }),
+        json!({ "secret": secret, "wallet": "w1", "unlock_key": unlock_key, "account": account(0), "request": request, "digest": digest }),
     );
     assert_eq!(err, "wrong_account");
 }
@@ -401,32 +423,40 @@ fn own_evm_sends_match_viem() {
 fn imported_keys() {
     // EIP-155's example key, published in the EIP.
     let key = "4646464646464646464646464646464646464646464646464646464646464646";
-    let ks = ok(
-        "create_keystore",
-        json!({ "secret": { "private_key": key }, "password": PASSWORD }),
-    );
-    assert_eq!(ks["kind"], "private_key");
-    let unlock = ok("unlock", json!({ "keystore": ks["keystore"], "password": PASSWORD }));
+    let (_, sealed, uk) = vault_with(json!({ "private_key": key }));
     let r = ok(
         "accounts",
-        json!({ "keystore": ks["keystore"], "unlock_key": unlock["unlock_key"], "accounts": [{ "derivation": "imported" }] }),
+        json!({ "secret": sealed, "wallet": "w1", "unlock_key": uk, "accounts": [{ "derivation": "imported" }] }),
     );
-    assert_eq!(
-        r["accounts"][0]["addresses"]["eip155:1776"],
-        "0x9d8A62f656a8d1615C1294fd71e9CFb3E4855A4F"
-    );
+    assert_eq!(r["accounts"][0]["addresses"]["eip155:1776"], "0x9d8A62f656a8d1615C1294fd71e9CFb3E4855A4F");
     let hd = code(
         "accounts",
-        json!({ "keystore": ks["keystore"], "unlock_key": unlock["unlock_key"], "accounts": [account(0)] }),
+        json!({ "secret": sealed, "wallet": "w1", "unlock_key": uk, "accounts": [account(0)] }),
     );
     assert_eq!(hd, "keystore");
-    assert_eq!(
-        code(
-            "create_keystore",
-            json!({ "secret": { "private_key": key }, "password": "short" })
-        ),
-        "keystore"
-    );
+    assert_eq!(code("create_vault", json!({ "password": "short" })), "keystore");
+    assert_eq!(code("seal_secret", json!({ "unlock_key": uk, "wallet": "w2", "secret": { "private_key": "00".repeat(32) } })), "keystore");
+}
+
+#[test]
+fn a_keystore_from_before_vaults_moves_into_one() {
+    // A v1 keystore as the extension stored it before vaults: the secret sealed under the
+    // password itself (made here with the core, at its fastest cost).
+    use choice_wallet_core::keystore::{self, KdfParams, Secret};
+    let phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    let old = keystore::seal(
+        &Secret::Mnemonic(choice_wallet_core::Mnemonic::parse(phrase).unwrap()),
+        PASSWORD.as_bytes(),
+        KdfParams::MINIMUM,
+    )
+    .unwrap();
+    let old = choice_wallet_core::hexutil::encode(&old);
+    assert_eq!(code("migrate", json!({ "keystore": old, "password": "not the password", "wallet": "w1" })), "wrong_password");
+    let m = ok("migrate", json!({ "keystore": old, "password": PASSWORD, "wallet": "w1" }));
+    assert_eq!(m["kind"], "mnemonic");
+    assert_eq!(ok("unlock", json!({ "vault": m["vault"], "password": PASSWORD }))["unlock_key"], m["unlock_key"]);
+    let a = ok("accounts", json!({ "secret": m["secret"], "wallet": "w1", "unlock_key": m["unlock_key"], "accounts": [account(0)] }));
+    assert_eq!(a["accounts"][0]["addresses"]["eip155:1776"], "0x9858EfFD232B4033E47d90003D41EC34EcaEda94");
 }
 
 #[test]

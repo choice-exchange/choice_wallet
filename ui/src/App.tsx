@@ -97,28 +97,7 @@ export function App() {
         </Screen>
       );
     case "backup":
-      return (
-        <Screen
-          top={<BackBar title="New wallet" onBack={() => go({ name: "welcome" })} />}
-          foot={
-            <button className="btn btn-gold" onClick={() => go({ name: "confirm", phrase: view.phrase })}>
-              I wrote them down
-            </button>
-          }
-        >
-          <div className="eyebrow">Step 1 of 3</div>
-          <h1 className="page-title">Your recovery phrase</h1>
-          <p className="lead">Write these words down in order.</p>
-          <div className="surface">
-            <ol className="words">
-              {view.phrase.split(" ").map((w, i) => (
-                <li key={i}>{w}</li>
-              ))}
-            </ol>
-          </div>
-          <Callout level="amber">Anyone with these words can take your funds.</Callout>
-        </Screen>
-      );
+      return <Backup phrase={view.phrase} onNext={() => go({ name: "confirm", phrase: view.phrase })} onBack={() => go({ name: "welcome" })} />;
     case "confirm":
       return (
         <Confirm
@@ -136,7 +115,7 @@ export function App() {
           busy={busy}
           error={error}
           onBack={() => go({ name: "welcome" })}
-          onSubmit={(password) => void run({ type: "create", secret: view.secret, password }, show)}
+          onSubmit={(password) => void run({ type: "create", secret: view.secret, password, imported: !view.created }, show)}
         />
       );
     case "unlock":
@@ -152,8 +131,50 @@ export function App() {
   }
 }
 
+/** A new recovery phrase, to write down. */
+export function Backup({ phrase, title = "New wallet", step = "Step 1 of 3", onNext, onBack }: { phrase: string; title?: string; step?: string; onNext: () => void; onBack: () => void }) {
+  return (
+    <Screen
+      top={<BackBar title={title} onBack={onBack} />}
+      foot={
+        <button className="btn btn-gold" onClick={onNext}>
+          I wrote them down
+        </button>
+      }
+    >
+      <div className="eyebrow">{step}</div>
+      <h1 className="page-title">Your recovery phrase</h1>
+      <p className="lead">Write these words down in order.</p>
+      <div className="surface">
+        <ol className="words">
+          {phrase.split(" ").map((w, i) => (
+            <li key={i}>{w}</li>
+          ))}
+        </ol>
+      </div>
+      <Callout level="amber">Anyone with these words can take your funds.</Callout>
+    </Screen>
+  );
+}
+
 /** Ask for three of the words back, so a phrase that wasn't written down can't get here. */
-function Confirm({ phrase, onDone, onBack }: { phrase: string; onDone: () => void; onBack: () => void }) {
+export function Confirm({
+  phrase,
+  title = "New wallet",
+  step = "Step 2 of 3",
+  busy = false,
+  error = null,
+  onDone,
+  onBack,
+}: {
+  phrase: string;
+  title?: string;
+  step?: string;
+  busy?: boolean;
+  error?: string | null;
+  onDone: () => void;
+  onBack: () => void;
+}) {
   const words = phrase.split(" ");
   const [picks] = useState(() => {
     const idx = new Set<number>();
@@ -168,11 +189,12 @@ function Confirm({ phrase, onDone, onBack }: { phrase: string; onDone: () => voi
   const ok = picks.every((i) => (answers[i] ?? "").trim().toLowerCase() === words[i]);
   return (
     <Screen
-      top={<BackBar title="New wallet" onBack={onBack} />}
+      top={<BackBar title={title} onBack={onBack} />}
       foot={
         <>
-          <button className="btn btn-gold" disabled={!ok} onClick={onDone}>
-            Continue
+          {error && <p className="error">{error}</p>}
+          <button className="btn btn-gold" disabled={!ok || busy} onClick={onDone}>
+            {busy ? "Adding…" : "Continue"}
           </button>
           <button className="btn btn-quiet" onClick={onBack}>
             Show the words again
@@ -180,7 +202,7 @@ function Confirm({ phrase, onDone, onBack }: { phrase: string; onDone: () => voi
         </>
       }
     >
-      <div className="eyebrow">Step 2 of 3</div>
+      <div className="eyebrow">{step}</div>
       <h1 className="page-title">Check your backup</h1>
       <p className="lead">Enter these words from your phrase.</p>
       {picks.map((i) => (
@@ -199,7 +221,21 @@ function Confirm({ phrase, onDone, onBack }: { phrase: string; onDone: () => voi
   );
 }
 
-function Import({ what, onNext, onBack }: { what: "mnemonic" | "private_key"; onNext: (s: NewSecret) => void; onBack: () => void }) {
+export function Import({
+  what,
+  title = "Import",
+  busy = false,
+  error = null,
+  onNext,
+  onBack,
+}: {
+  what: "mnemonic" | "private_key";
+  title?: string;
+  busy?: boolean;
+  error?: string | null;
+  onNext: (s: NewSecret) => void;
+  onBack: () => void;
+}) {
   const [value, setValue] = useState("");
   const phrase = what === "mnemonic";
   function submit(e: FormEvent) {
@@ -210,11 +246,14 @@ function Import({ what, onNext, onBack }: { what: "mnemonic" | "private_key"; on
   return (
     <form onSubmit={submit} style={{ height: "100%" }}>
       <Screen
-        top={<BackBar title="Import" onBack={onBack} />}
+        top={<BackBar title={title} onBack={onBack} />}
         foot={
-          <button className="btn btn-gold" type="submit" disabled={!value.trim()}>
-            Continue
-          </button>
+          <>
+            {error && <p className="error">{error}</p>}
+            <button className="btn btn-gold" type="submit" disabled={!value.trim() || busy}>
+              {busy ? (phrase ? "Looking for its accounts…" : "Adding…") : "Continue"}
+            </button>
+          </>
         }
       >
         <h1 className="page-title">{phrase ? "Import a recovery phrase" : "Import a private key"}</h1>

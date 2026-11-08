@@ -579,10 +579,10 @@ try {
     if (!r.ok) throw new Error(`vault ${method}: ${r.error.message}`);
     return r.result;
   };
-  const { keystore } = v("create_keystore", { secret: { mnemonic: words.join(" ") }, password: "correct horse battery staple" });
-  const { unlock_key } = v("unlock", { keystore, password: "correct horse battery staple" });
+  const { unlock_key } = v("create_vault", { password: "correct horse battery staple" });
+  const { secret } = v("seal_secret", { unlock_key, wallet: "w", secret: { mnemonic: words.join(" ") } });
   const request = { evm_personal_sign: { chain: "eip155:1776", signer: addrs[1], message } };
-  const expected = v("sign", { keystore, unlock_key, account: { derivation: "default", index: 0 }, request, digest: v("decode", { request }).digest }).signature;
+  const expected = v("sign", { secret, wallet: "w", unlock_key, account: { derivation: "default", index: 0 }, request, digest: v("decode", { request }).digest }).signature;
   if (signature !== expected) throw new Error(`personal_sign: got ${signature}, the vault signs ${expected}`);
   await p.click("Settings");
   await p.waitText(lcdUrl);
@@ -600,10 +600,10 @@ try {
   await p.click("Wallet");
   await p.waitText("Manage", 15000);
   await p.click("Account: Account 1. Switch accounts");
-  await p.waitText("New accounts come from your recovery phrase.");
-  await p.click("Add an account");
+  await p.waitText("Every wallet here opens with the same password.");
+  await p.click("Add an account to Recovery phrase 1");
   await p.waitText("Account 2");
-  const second = v("accounts", { keystore, unlock_key, accounts: [{ derivation: "default", index: 1 }] }).accounts[0].addresses["cosmos:injective-1"];
+  const second = v("accounts", { secret, wallet: "w", unlock_key, accounts: [{ derivation: "default", index: 1 }] }).accounts[0].addresses["cosmos:injective-1"];
   for (let t = 0; t < 5000 && (await pill()) !== second; t += 100) await sleep(100);
   if ((await pill()) !== second) throw new Error(`account 2 shows ${await pill()}, the vault derives ${second}`);
   await p.click("Account: Account 2. Switch accounts");
@@ -617,6 +617,7 @@ try {
   await sleep(300);
   await p.click("Done");
   await p.waitText("Trading");
+  await p.click("Add a wallet");
   await p.click("Watch an address");
   await p.fill('input[aria-label="Address to watch"]', 0, SENT_TO);
   await p.click("Watch");
@@ -637,7 +638,7 @@ try {
   // working); then the wallet removed, back to the welcome screen.
   await p.click("Settings");
   await p.waitText("Tried in order, one per line.");
-  await p.click("Show recovery phrase");
+  await p.click("Show Recovery phrase 1");
   await p.fill('input[aria-label="Password"]', 0, "wrong password!");
   await p.click("Show");
   await p.waitText("Wrong password.");
@@ -663,18 +664,28 @@ try {
   await p.click("Unlock");
   await p.waitText("Manage", 15000);
   await p.click("Settings");
-  await p.click("Remove wallet");
+  await p.click("Reset Choice Wallet");
   await p.fill('input[aria-label="Password"]', 0, "a brand new passphrase");
-  await p.shot("23-remove-wallet");
-  await p.click("Remove wallet");
+  await p.shot("23-reset");
+  await p.click("Reset");
   await p.waitText("Create a new wallet");
-  console.log("security: phrase shown after the password, password changed (old refused), wallet removed");
+  console.log("security: phrase shown after the password, password changed (old refused), everything reset");
 
   // 7. A web page can't talk to the service worker: there is no externally_connectable, so
   // chrome.runtime isn't even exposed to it.
   const { targetId: webId } = await send("Target.createTarget", { url: "data:text/html,<p>web page</p>" });
   const { sessionId: web } = await send("Target.attachToTarget", { targetId: webId, flatten: true });
-  const exposed = await send("Runtime.evaluate", { expression: `typeof chrome !== "undefined" && typeof chrome.runtime?.sendMessage`, returnByValue: true }, web);
+  // A fresh tab may not have its page context yet: ask again briefly.
+  let exposed;
+  for (let tries = 0; ; tries++) {
+    try {
+      exposed = await send("Runtime.evaluate", { expression: `typeof chrome !== "undefined" && typeof chrome.runtime?.sendMessage`, returnByValue: true }, web);
+      break;
+    } catch (e) {
+      if (tries >= 20 || !String(e).includes("execution context")) throw e;
+      await sleep(100);
+    }
+  }
   console.log("web page sees chrome.runtime.sendMessage:", exposed.result.value);
 } finally {
   lcd.close();

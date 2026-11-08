@@ -7,7 +7,13 @@ export type HostError = { code: string; message: string };
 export type Result<T> = { ok: true; result: T } | { ok: false; error: HostError };
 
 /** An account as the vault's `accounts` lists it. */
+/** A source of keys: a recovery phrase or an imported key, sealed behind the one password.
+ *  Accounts belong to one. Watched addresses belong to none (their `wallet` is "watch"). */
+export type WalletInfo = { id: string; type: "mnemonic" | "private_key"; name: string };
+
 export type AccountInfo = {
+  /** The wallet it comes from (`WalletInfo.id`), or "watch". */
+  wallet: string;
   /** How the vault finds its key; "watch" has none (an address to follow, never to sign). */
   account: { derivation: "default" | "ledger_live"; index: number } | { derivation: "imported" } | { derivation: "watch" };
   /** Empty for a watch-only account. */
@@ -25,23 +31,31 @@ export type NetworkId = "mainnet" | "testnet";
 export type UiRequest =
   | { type: "status" }
   | { type: "generate"; words: 12 | 24 }
-  | { type: "create"; secret: NewSecret; password: string }
+  /** The first wallet, and the password for all of them. `imported`: a phrase from before,
+   *  so its other accounts with history are found and added. */
+  | { type: "create"; secret: NewSecret; password: string; imported?: boolean }
   | { type: "unlock"; password: string }
   | { type: "lock" }
   /** Accounts: the next one from the recovery phrase; an address to watch (no key, can't
    *  sign); which one the wallet and connected sites use; a name; drop one from the list
    *  (the first can't go: it is the keystore's own). Each answers with the new status. */
-  | { type: "add_account" }
+  | { type: "add_account"; wallet?: string }
   | { type: "add_watch"; address: string }
+  /** Another wallet behind the same password: a new phrase (`created`), or an imported phrase
+   *  (its accounts with history found and added) or private key. */
+  | { type: "add_wallet"; secret: NewSecret; created?: boolean }
+  | { type: "rename_wallet"; wallet: string; name: string }
+  /** One wallet and its accounts off this device, after the password. */
+  | { type: "remove_wallet"; wallet: string; password: string }
   | { type: "switch_account"; index: number }
   | { type: "rename_account"; index: number; name: string }
   | { type: "remove_account"; index: number }
-  /** Security, each behind the password: show the recovery phrase (or the wallet's one
-   *  imported key), or account `index`'s private key; a new password; take the wallet off
-   *  this device. */
-  | { type: "reveal_secret"; password: string; index?: number }
+  /** Security, each behind the password: show a wallet's recovery phrase (or its imported
+   *  key), or account `index`'s private key; a new password; take everything off this
+   *  device. */
+  | { type: "reveal_secret"; password: string; wallet?: string; index?: number }
   | { type: "change_password"; password: string; new_password: string }
-  | { type: "remove_wallet"; password: string }
+  | { type: "reset"; password: string }
   | { type: "settings" }
   /** Switch to `network`, with these LCD, EVM and Blockscout endpoints for it (`null`: the
    *  defaults; left out: unchanged; an empty Blockscout list turns it off). */
@@ -77,9 +91,9 @@ export type UiRequest =
 export type Status = {
   hasWallet: boolean;
   unlocked: boolean;
-  kind: "mnemonic" | "private_key" | null;
   network: NetworkId;
   /** Only while unlocked. */
+  wallets: WalletInfo[];
   accounts: AccountInfo[];
   /** Which of `accounts` is in use. */
   active: number;
@@ -286,9 +300,12 @@ export type Replies = {
   switch_account: Status;
   rename_account: Status;
   remove_account: Status;
+  add_wallet: Status;
+  rename_wallet: Status;
   reveal_secret: { phrase?: string; private_key?: string };
   change_password: Status;
   remove_wallet: Status;
+  reset: Status;
   settings: Settings;
   save_settings: Settings;
   /** Every balance; the UI applies `filter`. `prices` is the USD values setting. EVM-only

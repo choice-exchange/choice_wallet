@@ -504,3 +504,8 @@ details.raw summary {
 .link-row { border: 0; background: transparent; color: var(--text); font: inherit; font-size: 14px; line-height: 20px; padding: 2px 0; justify-content: flex-start; text-align: left; cursor: pointer; }
 .link-row:hover { color: var(--gold); }
 .link-row.danger { color: var(--negative); }
+.wallet-group { display: flex; flex-direction: column; gap: 2px; }
+.wallet-group + .wallet-group { margin-top: 10px; }
+.wallet-head { margin: 4px 0 2px; }
+.wallet-edit { display: flex; flex-direction: column; gap: 8px; margin-bottom: 4px; }
+.pill.danger { color: var(--negative); }

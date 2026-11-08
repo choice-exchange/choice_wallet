@@ -49,7 +49,9 @@ test("accounts: the next one from the phrase, in use at once, kept across a lock
   assert.deepEqual([one.accounts.length, one.active], [1, 0]);
   const again = ok<Status>(await service.handle({ type: "add_account" }));
   assert.equal(again.accounts[1]!.addresses[EVM], SECOND_EVM);
-  assert.equal(code(await service.handle({ type: "remove_account", index: 0 })), "bad_request");
+  // A wallet's last account goes only with the wallet.
+  ok(await service.handle({ type: "remove_account", index: 1 }));
+  assert.equal(code(await service.handle({ type: "remove_account", index: 0 })), "last_account");
   assert.equal(code(await service.handle({ type: "switch_account", index: 5 })), "bad_request");
   assert.equal(code(await service.handle({ type: "switch_account", index: "1" })), "bad_request");
 });

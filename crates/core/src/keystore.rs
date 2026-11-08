@@ -37,6 +37,8 @@ const TAG_LEN: usize = 16;
 
 const KIND_MNEMONIC: u8 = 1;
 const KIND_PRIVATE_KEY: u8 = 2;
+/// A wallet's random vault key (see [`crate::envelope`]), never a secret of its own.
+pub(crate) const KIND_VAULT_KEY: u8 = 3;
 
 /// Shortest password the core accepts. The UI should ask for more.
 pub const MIN_PASSWORD_LEN: usize = 8;
@@ -121,11 +123,11 @@ pub fn seal(secret: &Secret, password: &[u8], params: KdfParams) -> Result<Vec<u
 /// [`seal`], also returning the [`UnlockKey`] it derived, so a host that seals (a new
 /// password, say) needn't run the key derivation again to unlock.
 pub fn seal_keyed(secret: &Secret, password: &[u8], params: KdfParams) -> Result<(Vec<u8>, UnlockKey), Error> {
-    if password.len() < MIN_PASSWORD_LEN {
-        return Err(Error::Keystore("password too short"));
-    }
-    params.check()?;
+    seal_bytes(&encode_secret(secret), password, params)
+}
 
+/// `kind || secret`, the plaintext a keystore (or an envelope's secret) holds.
+pub(crate) fn encode_secret(secret: &Secret) -> Zeroizing<Vec<u8>> {
     let mut plaintext = Zeroizing::new(Vec::with_capacity(33));
     match secret {
         Secret::Mnemonic(m) => {
@@ -137,6 +139,25 @@ pub fn seal_keyed(secret: &Secret, password: &[u8], params: KdfParams) -> Result
             plaintext.extend_from_slice(&k.to_bytes()[..]);
         }
     }
+    plaintext
+}
+
+/// The secret in a decrypted plaintext; anything else (a vault key, say) is refused.
+pub(crate) fn decode_secret(plaintext: &[u8]) -> Result<Secret, Error> {
+    match (plaintext.first(), plaintext.get(1..)) {
+        (Some(&KIND_MNEMONIC), Some(entropy)) => Mnemonic::from_entropy(entropy).map(Secret::Mnemonic),
+        (Some(&KIND_PRIVATE_KEY), Some(key)) if key.len() == 32 => PrivateKey::from_bytes(key).map(Secret::PrivateKey),
+        _ => Err(Error::Keystore("unknown secret kind")),
+    }
+    .map_err(|_| Error::Keystore("damaged secret"))
+}
+
+/// Seal any plaintext under `password`, returning the key it derived.
+pub(crate) fn seal_bytes(plaintext: &[u8], password: &[u8], params: KdfParams) -> Result<(Vec<u8>, UnlockKey), Error> {
+    if password.len() < MIN_PASSWORD_LEN {
+        return Err(Error::Keystore("password too short"));
+    }
+    params.check()?;
 
     let mut header = [0u8; HEADER_LEN];
     header[0..4].copy_from_slice(MAGIC);
@@ -154,7 +175,7 @@ pub fn seal_keyed(secret: &Secret, password: &[u8], params: KdfParams) -> Result
         .encrypt(
             &nonce,
             Payload {
-                msg: &plaintext,
+                msg: plaintext,
                 aad: &header,
             },
         )
@@ -212,14 +233,13 @@ pub fn unlock(blob: &[u8], password: &[u8]) -> Result<UnlockKey, Error> {
 
 /// Decrypt a keystore with the key [`unlock`] returned.
 pub fn open_with_key(blob: &[u8], key: &UnlockKey) -> Result<Secret, Error> {
+    decode_secret(&open_bytes(blob, key)?)
+}
+
+/// A keystore's plaintext, whatever its kind.
+pub(crate) fn open_bytes(blob: &[u8], key: &UnlockKey) -> Result<Zeroizing<Vec<u8>>, Error> {
     let (_, header, ciphertext) = parse(blob)?;
-    let plaintext = decrypt(header, ciphertext, key)?;
-    match (plaintext.first(), plaintext.get(1..)) {
-        (Some(&KIND_MNEMONIC), Some(entropy)) => Mnemonic::from_entropy(entropy).map(Secret::Mnemonic),
-        (Some(&KIND_PRIVATE_KEY), Some(key)) if key.len() == 32 => PrivateKey::from_bytes(key).map(Secret::PrivateKey),
-        _ => Err(Error::Keystore("unknown secret kind")),
-    }
-    .map_err(|_| Error::Keystore("damaged secret"))
+    decrypt(header, ciphertext, key)
 }
 
 fn parse(blob: &[u8]) -> Result<(KdfParams, &[u8], &[u8]), Error> {

@@ -151,6 +151,8 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
     balanceAsked: [] as string[],
     /** Requests no route answered (501). */
     unhandled: [] as string[],
+    /** Other accounts (inj1…) that exist and hold 5 INJ. */
+    funded: new Set<string>(),
   };
   const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status });
   type Rpc = { id: number; method: string; params: { to: string; data: string }[] };
@@ -196,6 +198,10 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
       return json(200, Array.isArray(body) ? body.map(rpc) : rpc(body));
     }
     if (p.endsWith("/node_info")) return json(200, { default_node_info: { network: "injective-1" } });
+    const other = /^\/cosmos\/auth\/v1beta1\/accounts\/(inj1[a-z0-9]+)$/.exec(p)?.[1];
+    if (other && other !== ME && state.funded.has(other)) {
+      return json(200, { account: { "@type": "/injective.types.v1beta1.EthAccount", base_account: { address: other, pub_key: null, account_number: "7", sequence: "0" } } });
+    }
     if (p === `/cosmos/auth/v1beta1/accounts/${ME}`) {
       return state.account
         ? json(200, { account: { "@type": "/injective.types.v1beta1.EthAccount", base_account: { address: ME, pub_key: null, account_number: "1680321", sequence: "2" } } })
@@ -205,7 +211,7 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
       // ME holds `balances`; any other account, nothing.
       const who = p.split("/").pop()!;
       state.balanceAsked.push(who);
-      const list = who === ME ? Object.entries(state.balances).map(([denom, a]) => ({ denom, amount: a.toString() })) : [];
+      const list = who === ME ? Object.entries(state.balances).map(([denom, a]) => ({ denom, amount: a.toString() })) : state.funded.has(who) ? [{ denom: "inj", amount: (5n * INJ).toString() }] : [];
       return json(200, { balances: list, pagination: { next_key: null } });
     }
     if (p === "/injective/txfees/v1beta1/cur_eip_base_fee") return json(200, { base_fee: { base_fee: "160000000.000000000000000000" } });
@@ -339,13 +345,14 @@ export async function wallet(net = chain()) {
 
 /** The inj1 address of a private key, from the vault. */
 export async function bech32Of(key: string): Promise<string> {
-  const ks = callVault<{ keystore: string }>(handle, "create_keystore", { secret: { private_key: key }, password: PASSWORD });
-  assert.ok(ks.ok);
-  const u = callVault<{ unlock_key: string }>(handle, "unlock", { keystore: ks.result.keystore, password: PASSWORD });
-  assert.ok(u.ok);
+  const v = callVault<{ vault: string; unlock_key: string }>(handle, "create_vault", { password: PASSWORD });
+  assert.ok(v.ok);
+  const sealed = callVault<{ secret: string }>(handle, "seal_secret", { unlock_key: v.result.unlock_key, wallet: "w", secret: { private_key: key } });
+  assert.ok(sealed.ok);
   const a = callVault<{ accounts: { addresses: Record<string, string> }[] }>(handle, "accounts", {
-    keystore: ks.result.keystore,
-    unlock_key: u.result.unlock_key,
+    secret: sealed.result.secret,
+    wallet: "w",
+    unlock_key: v.result.unlock_key,
     accounts: [{ derivation: "imported" }],
   });
   assert.ok(a.ok);

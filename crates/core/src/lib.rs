@@ -8,6 +8,7 @@
 #![warn(missing_docs)]
 
 pub mod address;
+pub mod envelope;
 mod error;
 pub mod hd;
 pub mod hexutil;

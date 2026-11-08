@@ -55,25 +55,26 @@ test("create, lock and unlock a wallet", async () => {
   const { service, local, session, locks } = setup();
   assert.deepEqual(await service.handle({ type: "status" }), {
     ok: true,
-    result: { hasWallet: false, unlocked: false, kind: null, network: "mainnet", accounts: [], active: 0 },
+    result: { hasWallet: false, unlocked: false, network: "mainnet", wallets: [], accounts: [], active: 0 },
   });
 
   const created = await service.handle({ type: "create", secret: { mnemonic: PHRASE }, password: PASSWORD });
   assert.ok(created.ok);
-  const s = created.result as { unlocked: boolean; kind: string; accounts: { addresses: Record<string, string> }[] };
+  const s = created.result as { unlocked: boolean; wallets: { type: string; name: string }[]; accounts: { addresses: Record<string, string> }[] };
   assert.equal(s.unlocked, true);
-  assert.equal(s.kind, "mnemonic");
+  assert.deepEqual(s.wallets.map((w) => [w.type, w.name]), [["mnemonic", "Recovery phrase 1"]]);
   assert.equal(s.accounts[0]?.addresses["cosmos:injective-1"], "inj1npvwllfr9dqr8erajqqr6s0vxnk2ak55re90dz");
   assert.equal(s.accounts[0]?.addresses["eip155:1776"], "0x9858EfFD232B4033E47d90003D41EC34EcaEda94");
   assert.deepEqual(locks.scheduled, [15]);
 
-  // The page gets neither the keystore nor the unlock key.
+  // The page gets neither the vault, nor a wallet's sealed secret, nor the unlock key.
   const sent = JSON.stringify(created);
-  assert.ok(!sent.includes(local.data.get("keystore") as string));
+  assert.ok(!sent.includes(local.data.get("vault") as string));
+  assert.ok(!sent.includes((local.data.get("wallets") as { secret: string }[])[0]!.secret));
   assert.ok(!sent.includes(session.data.get("unlock_key") as string));
 
   const locked = await service.handle({ type: "lock" });
-  assert.deepEqual((locked as { result: unknown }).result, { hasWallet: true, unlocked: false, kind: "mnemonic", network: "mainnet", accounts: [], active: 0 });
+  assert.deepEqual((locked as { result: unknown }).result, { hasWallet: true, unlocked: false, network: "mainnet", wallets: [], accounts: [], active: 0 });
   assert.equal(session.data.has("unlock_key"), false);
   assert.equal(locks.cancelled, 1);
 
@@ -92,8 +93,8 @@ test("imported private keys", async () => {
   const { service } = setup();
   const r = await service.handle({ type: "create", secret: { private_key: EIP155_KEY }, password: PASSWORD });
   assert.ok(r.ok);
-  const s = r.result as { kind: string; accounts: { addresses: Record<string, string> }[] };
-  assert.equal(s.kind, "private_key");
+  const s = r.result as { wallets: { type: string; name: string }[]; accounts: { addresses: Record<string, string> }[] };
+  assert.deepEqual(s.wallets.map((w) => [w.type, w.name]), [["private_key", "Imported key 1"]]);
   assert.equal(s.accounts[0]?.addresses["eip155:1776"], "0x9d8A62f656a8d1615C1294fd71e9CFb3E4855A4F");
 });
 

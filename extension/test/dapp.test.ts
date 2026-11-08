@@ -99,13 +99,20 @@ async function connected(net = chain()) {
 
 /** The vault's own signature for a request, to compare with what the page got. */
 function vaultSigns(request: unknown): Record<string, string> {
-  const ks = callVault<{ keystore: string }>(handle, "create_keystore", { secret: { mnemonic: PHRASE }, password: PASSWORD });
-  assert.ok(ks.ok);
-  const u = callVault<{ unlock_key: string }>(handle, "unlock", { keystore: ks.result.keystore, password: PASSWORD });
-  assert.ok(u.ok);
+  const v = callVault<{ vault: string; unlock_key: string }>(handle, "create_vault", { password: PASSWORD });
+  assert.ok(v.ok);
+  const sealed = callVault<{ secret: string }>(handle, "seal_secret", { unlock_key: v.result.unlock_key, wallet: "w", secret: { mnemonic: PHRASE } });
+  assert.ok(sealed.ok);
   const d = callVault<{ digest: string }>(handle, "decode", { request });
   assert.ok(d.ok);
-  const s = callVault<Record<string, string>>(handle, "sign", { keystore: ks.result.keystore, unlock_key: u.result.unlock_key, account: { derivation: "default", index: 0 }, request, digest: d.result.digest });
+  const s = callVault<Record<string, string>>(handle, "sign", {
+    secret: sealed.result.secret,
+    wallet: "w",
+    unlock_key: v.result.unlock_key,
+    account: { derivation: "default", index: 0 },
+    request,
+    digest: d.result.digest,
+  });
   assert.ok(s.ok);
   return s.result;
 }

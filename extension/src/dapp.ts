@@ -87,8 +87,9 @@ export interface DappHost {
   sender: Sender;
   network(): Promise<NetworkId>;
   setNetwork(n: NetworkId): Promise<void>;
-  /** The account, keystore and unlock key while unlocked; else null. */
-  unlocked(): Promise<{ account: AccountInfo; keystore: string; key: string } | null>;
+  /** The account in use, its wallet's sealed secret and ID, and the unlock key, while
+   *  unlocked and it can sign; else null. */
+  unlocked(): Promise<{ account: AccountInfo; secret: string; wallet: string; key: string } | null>;
   /** Open the approval window for request `id`; its window ID, to notice it closing. */
   openWindow(id: string): Promise<number | undefined>;
   /** Tell every page that its view (accounts, chain) may have changed. */
@@ -561,7 +562,7 @@ export function createDapps(h: DappHost) {
     if (p.confirm && (typeof confirm === "string" ? confirm.trim() : "") !== p.confirm) return fail("confirm", `Type ${p.confirm} to continue.`);
     // Answered once: from here the request is the page's, whatever happens.
     waiting.delete(w.req.id);
-    const signed = await h.vault<Record<string, unknown>>("sign", { keystore: u.keystore, unlock_key: u.key, account: u.account.account, request: p.request, digest: p.digest });
+    const signed = await h.vault<Record<string, unknown>>("sign", { secret: u.secret, wallet: u.wallet, unlock_key: u.key, account: u.account.account, request: p.request, digest: p.digest });
     if (!signed.ok) {
       w.resolve(no(INTERNAL, signed.error.message));
       return signed;

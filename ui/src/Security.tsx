@@ -1,18 +1,18 @@
-// Security, from Settings, each step behind the wallet's password: show the recovery phrase
-// (or the wallet's one imported key) or an account's private key, set a new password, and
-// take the wallet off this device. What's shown lives only in this screen's state.
+// Security, each step behind the password: show a wallet's recovery phrase (or its imported
+// key) or an account's private key, set a new password, take one wallet off this device,
+// or everything. What's shown lives only in this screen's state.
 
 import { useState, type FormEvent, type ReactNode } from "react";
 
 import { useBackend } from "./backend";
 import { CheckIcon, CopyIcon } from "./icons";
 import { BackBar, Callout, Screen } from "./kit";
-import type { Status } from "./protocol";
+import type { Status, WalletInfo } from "./protocol";
 import { useRequest } from "./request";
 
 const MIN_PASSWORD = 8;
 
-export type SecurityView = "phrase" | "key" | "password" | "remove";
+export type SecurityView = "phrase" | "key" | "password" | "reset";
 
 /** A screen with a password field that runs `onPassword` on submit. */
 function PasswordStep({
@@ -70,14 +70,14 @@ function PasswordStep({
   );
 }
 
-/** The recovery phrase (or the wallet's key), or the account in use's private key. */
-export function RevealView({ what, status, onBack }: { what: "phrase" | "key"; status: Status; onBack: () => void }) {
+/** A wallet's recovery phrase (or its key), or the account in use's private key. */
+export function RevealView({ what, wallet, status, onBack }: { what: "phrase" | "key"; wallet?: WalletInfo | undefined; status: Status; onBack: () => void }) {
   const { run, error, busy } = useRequest();
   const backend = useBackend();
   const [shown, setShown] = useState<{ phrase?: string; private_key?: string } | null>(null);
   const [copied, setCopied] = useState(false);
   const account = status.accounts[status.active];
-  const phrase = status.kind === "mnemonic";
+  const phrase = wallet?.type === "mnemonic";
   const title = what === "phrase" ? (phrase ? "Recovery phrase" : "Private key") : "Account key";
 
   if (!shown) {
@@ -87,8 +87,8 @@ export function RevealView({ what, status, onBack }: { what: "phrase" | "key"; s
         lead={
           what === "phrase"
             ? phrase
-              ? "The words that restore every account in this wallet."
-              : "The key that restores this wallet."
+              ? `The words that restore every account in ${wallet?.name ?? "this wallet"}.`
+              : `The key that restores ${wallet?.name ?? "this wallet"}.`
             : `${account?.name ?? "This account"}'s private key, to use it in another wallet.`
         }
         warning={<Callout level="red">Anyone who sees it can take your funds. Never type it into a site.</Callout>}
@@ -96,7 +96,7 @@ export function RevealView({ what, status, onBack }: { what: "phrase" | "key"; s
         busy={busy}
         error={error}
         onPassword={(password) =>
-          void run({ type: "reveal_secret", password, ...(what === "key" ? { index: status.active } : {}) }).then((r) => r && setShown(r))
+          void run({ type: "reveal_secret", password, ...(what === "key" ? { index: status.active } : wallet ? { wallet: wallet.id } : {}) }).then((r) => r && setShown(r))
         }
         onBack={onBack}
       />
@@ -171,20 +171,39 @@ export function ChangePasswordView({ onDone, onBack }: { onDone: (s: Status) => 
   );
 }
 
-export function RemoveWalletView({ status, onRemoved, onBack }: { status: Status; onRemoved: (s: Status) => void; onBack: () => void }) {
+/** Everything off this device: every wallet and account. */
+export function ResetView({ onRemoved, onBack }: { onRemoved: (s: Status) => void; onBack: () => void }) {
   const { run, error, busy } = useRequest();
   return (
     <PasswordStep
-      title="Remove wallet"
-      lead="This takes the wallet off this device. Your funds stay on chain."
-      warning={
-        <Callout level="red">{status.kind === "mnemonic" ? "Only your recovery phrase brings it back. Check you have it first." : "Only its private key brings it back. Check you have it first."}</Callout>
-      }
-      action="Remove wallet"
+      title="Reset Choice Wallet"
+      lead="This takes every wallet off this device. Your funds stay on chain."
+      warning={<Callout level="red">Only your recovery phrases and keys bring them back. Check you have them first.</Callout>}
+      action="Reset"
       danger
       busy={busy}
       error={error}
-      onPassword={(password) => void run({ type: "remove_wallet", password }).then((s) => s && onRemoved(s))}
+      onPassword={(password) => void run({ type: "reset", password }).then((s) => s && onRemoved(s))}
+      onBack={onBack}
+    />
+  );
+}
+
+/** One wallet and its accounts off this device. */
+export function RemoveWalletView({ wallet, onRemoved, onBack }: { wallet: WalletInfo; onRemoved: (s: Status) => void; onBack: () => void }) {
+  const { run, error, busy } = useRequest();
+  return (
+    <PasswordStep
+      title={`Remove ${wallet.name}`}
+      lead="This takes the wallet and its accounts off this device. Their funds stay on chain."
+      warning={
+        <Callout level="red">{wallet.type === "mnemonic" ? "Only its recovery phrase brings it back. Check you have it first." : "Only its private key brings it back. Check you have it first."}</Callout>
+      }
+      action="Remove"
+      danger
+      busy={busy}
+      error={error}
+      onPassword={(password) => void run({ type: "remove_wallet", wallet: wallet.id, password }).then((s) => s && onRemoved(s))}
       onBack={onBack}
     />
   );
