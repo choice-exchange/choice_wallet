@@ -34,6 +34,17 @@ pub enum ContractCall {
         /// Base64 message passed to the receiving contract.
         msg: String,
     },
+    /// CW20 `increase_allowance`: let `spender` move up to `amount` more of the sender's
+    /// tokens.
+    Cw20IncreaseAllowance {
+        /// Who may spend.
+        spender: String,
+        /// Additional allowance, in base units.
+        amount: String,
+        /// When the allowance ends, as the contract's JSON (`{"at_height": …}`,
+        /// `{"at_time": …}`, `{"never": {}}`); `None` when not given, which means never.
+        expires: Option<String>,
+    },
     /// CW20 adapter `redeem_and_transfer`: burn the attached adapter denom and send the CW20
     /// to `recipient`, or to the sender when `None`.
     AdapterRedeem {
@@ -61,6 +72,12 @@ enum Known {
     RedeemAndTransfer {
         recipient: Option<String>,
     },
+    IncreaseAllowance {
+        spender: String,
+        amount: String,
+        #[serde(default)]
+        expires: Option<serde_json::Value>,
+    },
 }
 
 /// Parse a `MsgExecuteContract.msg`. The bytes must be UTF-8 JSON, as wasmd requires.
@@ -74,6 +91,15 @@ pub fn parse(msg: &[u8]) -> Result<ContractCall, Error> {
             ContractCall::Cw20Send { contract, amount, msg }
         }
         Ok(Known::RedeemAndTransfer { recipient }) => ContractCall::AdapterRedeem { recipient },
+        Ok(Known::IncreaseAllowance {
+            spender,
+            amount,
+            expires,
+        }) if is_canonical_amount(&amount) => ContractCall::Cw20IncreaseAllowance {
+            spender,
+            amount,
+            expires: expires.map(|e| e.to_string()),
+        },
         _ => ContractCall::Other,
     };
     Ok(call)
@@ -143,6 +169,23 @@ mod tests {
     }
 
     #[test]
+    fn recognises_allowances() {
+        assert_eq!(
+            parse(br#"{"increase_allowance":{"spender":"inj1a","amount":"5"}}"#).unwrap(),
+            ContractCall::Cw20IncreaseAllowance {
+                spender: "inj1a".into(),
+                amount: "5".into(),
+                expires: None
+            }
+        );
+        let with_expiry =
+            parse(br#"{"increase_allowance":{"spender":"inj1a","amount":"5","expires":{"at_height":9}}}"#);
+        assert!(
+            matches!(with_expiry.unwrap(), ContractCall::Cw20IncreaseAllowance { expires: Some(e), .. } if e == r#"{"at_height":9}"#)
+        );
+    }
+
+    #[test]
     fn anything_unusual_is_other() {
         for json in [
             r#"{"transfer":{"recipient":"inj1a","amount":"5","extra":1}}"#,
@@ -150,7 +193,8 @@ mod tests {
             r#"{"transfer":{"recipient":"inj1a","amount":"5"},"send":{}}"#,
             r#"{"transfer":{"recipient":"inj1a","amount":"05"}}"#,
             r#"{"transfer":{"recipient":"inj1a","amount":5}}"#,
-            r#"{"increase_allowance":{"spender":"inj1a","amount":"5"}}"#,
+            r#"{"increase_allowance":{"spender":"inj1a","amount":"5","memo":"x"}}"#,
+            r#"{"decrease_allowance":{"spender":"inj1a","amount":"5"}}"#,
         ] {
             assert_eq!(parse(json.as_bytes()).unwrap(), ContractCall::Other, "{json}");
         }

@@ -13,6 +13,8 @@ fn vectors(name: &str) -> Value {
         "amino" => include_str!("../../injective/tests/vectors/amino.json"),
         "eip712_v2" => include_str!("../../injective/tests/vectors/eip712_v2.json"),
         "eip1559" => include_str!("../../evm/tests/vectors/eip1559.json"),
+        "personal" => include_str!("../../evm/tests/vectors/personal.json"),
+        "messages" => include_str!("../../injective/tests/vectors/messages.json"),
         _ => unreachable!(),
     };
     serde_json::from_str(text).unwrap()
@@ -372,4 +374,92 @@ fn decoded_messages_are_shown() {
     let parsed: super::request::SignRequest = serde_json::from_str(&text).unwrap();
     let checked = super::request::decode(parsed).unwrap();
     assert_eq!(super::request::messages(&checked).unwrap().len(), 1);
+}
+
+#[test]
+fn grants_come_back_red_with_a_word_to_type() {
+    let tx = &vectors("messages")["tx"];
+    let request = json!({ "cosmos_direct": {
+        "chain": "cosmos:injective-1",
+        "signer": signer_key(0),
+        "body_bytes": tx["body_bytes"],
+        "auth_info_bytes": tx["auth_info_bytes"],
+        "account_number": tx["account_number"],
+    }});
+    let d = ok("decode", json!({ "request": request }));
+    let risk = &d["risk"];
+    assert_eq!(risk["level"], "red", "{risk}");
+    assert_eq!(risk["confirm"], "GRANT", "{risk}");
+    let rules: Vec<&str> = risk["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["rule"].as_str().unwrap())
+        .collect();
+    assert!(
+        rules.contains(&"authz_grant") && rules.contains(&"authz_exec"),
+        "{rules:?}"
+    );
+}
+
+#[test]
+fn context_changes_the_grade() {
+    let request = own_cosmos(&vectors("direct")["cases"][0]); // sends 1.5 INJ
+    let quiet = ok("decode", json!({ "request": request }));
+    assert_eq!(quiet["risk"]["level"], "info");
+    let context = json!({
+        "origin": "https://example.org",
+        "origin_known": true,
+        "balances": { "inj": "2000000000000000000" },
+    });
+    let d = ok("decode", json!({ "request": request, "context": context }));
+    assert_eq!(d["risk"]["level"], "amber");
+    assert_eq!(d["risk"]["findings"][0]["rule"], "most_of_balance");
+    // The digest doesn't depend on the context: the same approval signs either way.
+    assert_eq!(d["digest"], quiet["digest"]);
+    assert_eq!(
+        code("decode", json!({ "request": request, "context": { "nope": 1 } })),
+        "bad_request"
+    );
+}
+
+#[test]
+fn personal_sign_matches_viem_and_checks_sign_in() {
+    let v = vectors("personal");
+    for c in v["cases"].as_array().unwrap() {
+        let request = json!({ "evm_personal_sign": {
+            "chain": "eip155:1776", "signer": v["signer"], "message": c["message_hex"],
+        }});
+        let signed = approve_and_sign(&request, account(0));
+        assert_eq!(signed["signature"], c["signature"], "{}", c["name"]);
+    }
+    let raw = v["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "raw_32_bytes")
+        .unwrap();
+    let request =
+        json!({ "evm_personal_sign": { "chain": "eip155:1776", "signer": v["signer"], "message": raw["message_hex"] }});
+    assert_eq!(ok("decode", json!({ "request": request }))["risk"]["level"], "red");
+
+    let siwe = v["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "siwe")
+        .unwrap();
+    let request = json!({ "evm_personal_sign": { "chain": "eip155:1776", "signer": v["signer"], "message": siwe["message_hex"] }});
+    let at = |origin: &str| {
+        let d = ok(
+            "decode",
+            json!({ "request": request, "context": { "origin": origin, "origin_known": true } }),
+        );
+        d["risk"]["findings"][0]["rule"].as_str().unwrap().to_owned()
+    };
+    assert_eq!(at("https://example.org"), "sign_in");
+    assert_eq!(at("https://example-login.org"), "sign_in_wrong_site");
+    // Plain text is shown as text.
+    let text = json!({ "evm_personal_sign": { "chain": "eip155:1776", "signer": v["signer"], "message": "hello" }});
+    assert_eq!(ok("decode", json!({ "request": text }))["display"]["text"], "hello");
 }

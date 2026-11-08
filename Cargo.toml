@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/cosmos", "crates/evm", "crates/injective", "crates/vault", "crates/wasm"]
+members = ["crates/core", "crates/cosmos", "crates/evm", "crates/injective", "crates/policy", "crates/vault", "crates/wasm"]
 # Dev tools have their own lockfiles, so their dependencies never enter the wallet's.
 exclude = ["tools/protogen"]
 
@@ -16,6 +16,7 @@ choice-wallet-core = { path = "crates/core" }
 choice-wallet-cosmos = { path = "crates/cosmos" }
 choice-wallet-evm = { path = "crates/evm" }
 choice-wallet-injective = { path = "crates/injective" }
+choice-wallet-policy = { path = "crates/policy" }
 choice-wallet-vault = { path = "crates/vault" }
 
 # Vault dependency budget: see docs/SECURITY.md before adding anything here.

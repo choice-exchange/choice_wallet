@@ -78,6 +78,18 @@ impl U256 {
         format!("0x{}", if trimmed.is_empty() { "0" } else { trimmed })
     }
 
+    /// `self + other`, or `None` on overflow.
+    pub fn checked_add(&self, other: &Self) -> Option<Self> {
+        let mut out = [0u8; 32];
+        let mut carry = 0u16;
+        for i in (0..32).rev() {
+            let v = u16::from(self.0[i]) + u16::from(other.0[i]) + carry;
+            out[i] = v as u8;
+            carry = v >> 8;
+        }
+        (carry == 0).then_some(Self(out))
+    }
+
     /// `a * b`. Two 128-bit numbers always multiply within 256 bits.
     pub fn product(a: u128, b: u128) -> Self {
         let limbs = |v: u128| [v as u64, (v >> 64) as u64]; // little-endian
@@ -160,6 +172,17 @@ mod tests {
             U256::from_dec_str("340282366920938463463374607431768211455").unwrap(),
             U256::from_u128(u128::MAX)
         );
+    }
+
+    #[test]
+    fn sums() {
+        let a = U256::from_u128(u128::MAX);
+        assert_eq!(
+            a.checked_add(&U256::from_u128(1)).unwrap().to_string(),
+            "340282366920938463463374607431768211456"
+        );
+        assert_eq!(U256::MAX.checked_add(&U256::from_u128(1)), None);
+        assert_eq!(U256::MAX.checked_add(&U256::ZERO), Some(U256::MAX));
     }
 
     #[test]

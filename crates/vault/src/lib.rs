@@ -21,11 +21,12 @@
 //! | `accounts` | `keystore`, `unlock_key`, `accounts` | each account's public key and addresses |
 //! | `build_cosmos` | chain, signer, messages, fee, … | a sign request |
 //! | `build_evm` | chain, from, to, amount, token, fees | a sign request |
-//! | `decode` | `request` | `display`, `digest` |
+//! | `decode` | `request`, `context` (optional) | `display`, `risk`, `digest` |
 //! | `sign` | `keystore`, `unlock_key`, `account`, `request`, `digest` | signature and signed tx |
 //!
 //! A sign request is one of `cosmos_direct`, `cosmos_amino_tx`, `cosmos_amino`,
-//! `evm_transaction`, `evm_typed_data`. `sign` decodes the request again
+//! `evm_transaction`, `evm_typed_data`, `evm_personal_sign`. `decode` grades it with the
+//! risk rules (`choice-wallet-policy`) against the host's `context`. `sign` decodes it again
 //! and signs only if its digest is the one `decode` returned and the user approved.
 //!
 //! Integers that can exceed 2^53 are decimal strings in results; params accept numbers or
@@ -109,6 +110,9 @@ struct Accounts {
 struct Decode<'a> {
     #[serde(borrow)]
     request: SignRequest<'a>,
+    /// What the host knows about the site, balances and address book, for the risk rules.
+    #[serde(default)]
+    context: choice_wallet_policy::Context,
 }
 
 #[derive(Deserialize)]
@@ -163,10 +167,11 @@ fn call(request: &str) -> Result<Value, VaultError> {
         "build_cosmos" => Ok(json!({ "request": build::cosmos(params(p)?)? })),
         "build_evm" => Ok(json!({ "request": build::evm(params(p)?)? })),
         "decode" => {
-            let Decode { request } = borrowed(p)?;
+            let Decode { request, context } = borrowed(p)?;
             let checked = request::decode(request)?;
             Ok(json!({
                 "display": checked.display,
+                "risk": checked.assess(&context),
                 "digest": hexutil::encode(&checked.digest),
             }))
         }

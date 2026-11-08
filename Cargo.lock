@@ -239,6 +239,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "choice-wallet-policy"
+version = "0.1.0"
+dependencies = [
+ "choice-wallet-core",
+ "choice-wallet-cosmos",
+ "choice-wallet-evm",
+ "choice-wallet-injective",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "choice-wallet-vault"
 version = "0.1.0"
 dependencies = [
@@ -246,6 +258,7 @@ dependencies = [
  "choice-wallet-cosmos",
  "choice-wallet-evm",
  "choice-wallet-injective",
+ "choice-wallet-policy",
  "hex",
  "serde",
  "serde_json",

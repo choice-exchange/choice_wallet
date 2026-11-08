@@ -1,0 +1,16 @@
+[package]
+name = "choice-wallet-policy"
+description = "Risk rules for Choice Wallet: grades every decoded request before the user signs it"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+choice-wallet-core.workspace = true
+choice-wallet-cosmos.workspace = true
+choice-wallet-evm.workspace = true
+choice-wallet-injective.workspace = true
+serde.workspace = true
+serde_json.workspace = true

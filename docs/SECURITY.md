@@ -22,7 +22,7 @@ We build and audit Choice Wallet in house, in the open. This file covers what we
 
 ## Rules for vault code
 
-The vault is `choice-wallet-core`, `choice-wallet-cosmos`, `choice-wallet-injective`, `choice-wallet-evm`, `choice-wallet-vault`, `choice-wallet-wasm` and, next, the policy crate.
+The vault is `choice-wallet-core`, `choice-wallet-cosmos`, `choice-wallet-injective`, `choice-wallet-evm`, `choice-wallet-policy`, `choice-wallet-vault` and `choice-wallet-wasm`.
 
 - `#![forbid(unsafe_code)]` in every vault crate, except `choice-wallet-wasm`: the glue `#[wasm_bindgen]` generates uses `unsafe`. That crate is one function and contains no `unsafe` of its own.
 - Secrets are zeroized on drop (`Zeroizing`, `ZeroizeOnDrop`). `Debug` on secret types prints `<redacted>`.
@@ -89,7 +89,8 @@ Protobuf types:
   - authz grants (generic and send), execs, revokes, fee grants and revokes, reward withdrawals, the withdraw address, tokenfactory and contract admin changes, each decoded byte-exactly;
   - Injective EIP-712 v2 typed data (built by injective-ts, hashed and signed by viem);
   - generic EIP-712 hashing and `eth_signTypedData_v4` signatures (nested structs, arrays, signed integers, bytesN);
-  - EIP-1559 native and ERC20 transfers.
+  - EIP-1559 native and ERC20 transfers;
+  - `personal_sign` (EIP-191) hashes and signatures, for text, raw bytes and a 32-byte hash.
 - The same vectors also run end to end through the vault protocol (`crates/vault/src/tests.rs`): what a host gets back from `handle` must match too, and approvals must refuse a changed request, another account and a stale digest.
 - Where injective-ts and the chain disagree (amino JSON zero `timeout_height`, HTML escaping), the tests follow the chain's source. The escaping cases were checked against Go's `encoding/json`.
   - The generator installs with scripts off and npm's `before` date set two weeks back, so every package in its lockfile had been public for at least two weeks.

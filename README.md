@@ -13,6 +13,7 @@ An open-source, self-custody wallet. Injective first (Cosmos side and Injective 
 | `crates/cosmos` | Cosmos SDK sign paths (Direct, amino JSON), message decoding (sends, contract calls, grants, admin changes) and builders, for any chain given its profile |
 | `crates/injective` | Injective networks, CW20 ⇄ bank conversions through the CW20 adapter, EIP-712 v2 decoding |
 | `crates/evm` | EIP-1559 transactions (native INJ and ERC20 transfers), `eth_sendTransaction` requests, EIP-712 typed data |
+| `crates/policy` | Risk rules: grades every decoded request (grants, allowances, permits, precompile calls, sign-in messages, balances, lookalike addresses) |
 | `crates/vault` | The vault protocol: one JSON entry point (`handle`) for every host: keystores, accounts, building sends, decode → approve → sign |
 | `crates/wasm` | The vault compiled to WASM for the extension |
 | `tools/protogen` | Dev only: vendors `.proto` files and regenerates the committed prost code |

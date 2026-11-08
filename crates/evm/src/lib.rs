@@ -5,6 +5,7 @@
 //! - [`erc20`]: `transfer(address,uint256)` calldata, built and recognised.
 //! - [`request`]: `eth_sendTransaction` requests, parsed strictly into an [`Eip1559Tx`].
 //! - [`eip712`]: typed data for `eth_signTypedData_v4`, parsed strictly, hashed and signed.
+//! - [`personal`]: `personal_sign` (EIP-191) messages.
 //! - [`U256`]: 256-bit amounts, from canonical decimal strings or JSON-RPC quantities.
 //!
 //! On Injective EVM (chain ID 1776, testnet 1439) the native coin is INJ, the same balance
@@ -17,6 +18,7 @@
 pub mod eip712;
 pub mod erc20;
 mod error;
+pub mod personal;
 pub mod request;
 pub mod rlp;
 mod tx;

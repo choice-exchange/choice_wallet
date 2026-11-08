@@ -62,11 +62,11 @@ mobile app (phase 2) ───────────────────�
 | --- | --- | --- |
 | `choice-wallet-core` | Mnemonic, HD derivation, secp256k1 keys, addresses, encrypted keystore | Built, 30 tests |
 | `choice-wallet-cosmos` | Cosmos SDK protobuf (vendored .proto, prost 0.14), the Direct and amino JSON sign paths, message decoding, builders. Works for any chain described by a profile (chain ID, bech32 prefix, key type, tokenfactory package) | Direct and amino JSON paths; bank and CW20 builders. On the Direct path, also authz grants, execs (decoded recursively) and revokes, fee grants, the rewards withdraw address, tokenfactory and contract admin changes. The JSON paths still show those as raw. Only ethsecp256k1 keys so far; standard secp256k1 (SHA-256, RIPEMD-160 addresses) comes with the first such chain |
-| `choice-wallet-injective` | Injective's profiles, CW20 adapter conversions, EIP-712 v2 decoding, precompile decoding | Mainnet and testnet profiles, adapter builders, EIP-712 v2. Together with the cosmos crate, byte-identical to injective-ts 1.20.62 (and viem for EIP-712). Precompile decoding next |
+| `choice-wallet-injective` | Injective's profiles, CW20 adapter conversions, EIP-712 v2 decoding | Mainnet and testnet profiles, adapter builders, EIP-712 v2. Together with the cosmos crate, byte-identical to injective-ts 1.20.62 (and viem for EIP-712) |
 | `choice-wallet-evm` | EVM tx types 0-2, EIP-712, ABI decoding. Signing on our k256 0.14 | EIP-1559 encode and sign, native and ERC20 transfers, strict EIP-712 typed data. Byte-identical to viem 2.57.7. Dapp transaction requests next |
 | `choice-wallet-vault` | The vault protocol: one JSON entry point for every host. Keystores, unlock keys, accounts by CAIP-2 chain, building the wallet's own sends, decode → approve → sign | Built. Signatures through the protocol match the injective-ts and viem vectors |
 | `choice-wallet-wasm` | wasm-bindgen surface for the extension: `handle(json) → json` | Built (1.2 MB before wasm-opt). Smoke-tested in Node: Argon2id unlock about 130 ms, signing about 4 ms |
-| `choice-wallet-policy` | Risk rules over decoded requests | Next |
+| `choice-wallet-policy` | Risk rules over decoded requests, including Injective precompile calls | Built: every rule in [Risk rules](#risk-rules-v1), with tests per rule. Precompile arguments beyond the first (the exchange `approve`'s authorization list) are not decoded yet |
 
 Not used:
 - `injective-std` and `cosmos-sdk-proto`: both still on prost 0.13, and `injective-std` also pulls in cosmwasm-std.
@@ -181,22 +181,29 @@ This is designed before the UI is built, because retrofitting it is expensive.
    - Orderbook orders settle at the end of the block, so simulation shows no fills. The screen says so.
    - EVM: a `debug_traceCall` call trace where the RPC supports it, plus logs, plus a Cosmos bank balance check.
    - The screen names the RPC that ran it. RPCs a dapp suggests (`experimentalSuggestChain`, `wallet_addEthereumChain`) are never used to simulate or confirm balances.
-3. **Check** against the risk rules. Calls to Injective precompiles are decoded too, including inside call traces: the exchange precompile's `approve` creates authz grants, and the bank and staking precompiles change Cosmos state that an EVM state diff doesn't show.
+3. **Check** against the risk rules, with what the host knows (site, balances, address book). Calls to Injective precompiles are graded too, and later inside call traces: the exchange precompile's `approve` creates authz grants, and the bank and staking precompiles change Cosmos state that an EVM state diff doesn't show.
 4. **Show** and confirm, with more friction the riskier the request.
 
 ### Risk rules (v1)
 
-| Rule | Level |
-| --- | --- |
-| authz `MsgGrant` (especially generic grants for MsgSend or MsgExec), feegrant `MsgGrantAllowance`, exchange precompile `approve` | Red, type to confirm |
-| `MsgSetWithdrawAddress`, tokenfactory `MsgChangeAdmin`, wasm `MsgUpdateAdmin` to a new address | Red |
-| Unlimited ERC20 `approve`, `setApprovalForAll`, Permit or Permit2 typed data | Red, names the spender |
-| EIP-7702 authorization | Refused on Injective. Elsewhere (phase 3) red, and never with chain_id 0, which is valid on every chain |
-| `eth_sign` | Disabled |
-| `personal_sign` of 32-byte hex; `signArbitrary` of data that parses as a tx | Red |
-| Sending more than 50% of a balance, or to an address that looks like an address-book entry (address poisoning) | Amber |
-| Chain ID mismatch, site not used before, blocklisted domain | Amber, or blocked |
-| First interaction with a contract | Info |
+Implemented in `choice-wallet-policy`. `decode` returns them as `risk`: a level, an optional word to type, and findings, each with a rule ID, one sentence and its facts. The host passes what only it knows (the site, balances, address book, contracts used before); rules that need a missing fact don't fire. Anything a decoder couldn't read is red on its own.
+
+| Rule | Level | Rule IDs |
+| --- | --- | --- |
+| authz `MsgGrant` (generic grants for `MsgSend` say "could send ALL your tokens"), feegrant `MsgGrantAllowance`, the exchange precompile's `approve` | Red, type GRANT | `authz_grant`, `fee_grant`, `exchange_grant` |
+| `MsgSetWithdrawAddress` to another address; tokenfactory `MsgChangeAdmin` to another address or to none; wasm `MsgUpdateAdmin` to another address; `MsgClearAdmin` | Red | `withdraw_address`, `denom_admin`, `contract_admin` |
+| ERC20 or CW20 allowance of 2^100 or more ("unlimited") or more than the balance; `setApprovalForAll(true)`; Permit2 `approve`; Permit and Permit2 signatures; Seaport listings | Red, names the spender | `unlimited_allowance`, `allowance_over_balance`, `nft_approval_all`, `permit2_allowance`, `permit`, `unlimited_permit`, `permit2_signature`, `marketplace_listing` |
+| A message or precompile call the wallet can't read | Red | `unknown_message`, `precompile_unknown` |
+| `personal_sign` of a 32-byte hash; a sign-in (EIP-4361) message for another site or another account | Red | `hash_signature`, `sign_in_wrong_site`, `sign_in_wrong_account` |
+| Blocklisted site | Blocked | `site_blocked` |
+| Limited allowance; orderbook orders or external transfers through the exchange precompile; acting for another account through its grant; binary `personal_sign` data; a system address off Injective | Amber | `allowance`, `precompile_call`, `exchange_for_other`, `binary_message`, `system_address`, `bank_precompile` |
+| More than half of a balance leaving (fees included), more than the balance, the amount plus the maximum gas over the balance, a recipient that looks like an address-book entry (address poisoning), a site not used before | Amber | `most_of_balance`, `more_than_balance`, `gas_over_balance`, `lookalike_address`, `site_new` |
+| First interaction with a contract; fee paid through a grant or by a payer; `MsgExec`; revokes; staking; address-book recipient; sign-in for this site | Info | `new_contract`, `fee_grant_used`, `fee_payer`, `authz_exec`, `authz_revoke`, `fee_revoke`, `allowance_revoke`, `precompile_call`, `address_book`, `sign_in` |
+| EIP-7702 authorizations, chain ID mismatches | Refused by the decoders, never graded | |
+| `eth_sign` | Disabled: never reaches the vault | |
+| `signArbitrary` (ADR-036) of data that parses as a tx | Red, when ADR-036 lands | |
+
+Injective precompiles are read from their function selectors: bank `0x…64`, exchange `0x…65`, staking `0x…66`, oracle `0x…67`. The signatures come from injective-core v1.20.3's generated bindings (read, not copied); viem computed the selectors, and a test checks each against keccak256 of its signature. Exchange methods name the account they act for first, so a call for anyone but the sender is flagged as using that account's grant.
 
 ### Approval screen
 

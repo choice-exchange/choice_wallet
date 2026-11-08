@@ -8,7 +8,7 @@
 import { writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { encodeFunctionData, erc20Abi, hashTypedData, keccak256, serializeTransaction } from "viem";
+import { encodeFunctionData, erc20Abi, hashMessage, hashTypedData, keccak256, serializeTransaction } from "viem";
 import { mnemonicToAccount } from "viem/accounts";
 
 const PHRASE = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
@@ -184,3 +184,39 @@ const typedOut = {
 const typedFile = join(dirname(fileURLToPath(import.meta.url)), "../../crates/evm/tests/vectors/eip712.json");
 writeFileSync(typedFile, JSON.stringify(typedOut, null, 2) + "\n");
 console.log(`wrote ${typedOut.cases.length} cases to ${typedFile}`);
+
+// ---- personal_sign (EIP-191) ----
+
+const siwe = [
+  "example.org wants you to sign in with your Ethereum account:",
+  account.address,
+  "",
+  "Sign in to Example.",
+  "",
+  "URI: https://example.org",
+  "Version: 1",
+  "Chain ID: 1776",
+  "Nonce: 32891756",
+  "Issued At: 2026-01-01T00:00:00Z",
+].join("\n");
+const messages = [
+  { name: "text", message: "hello" },
+  { name: "empty", message: "" },
+  { name: "unicode_multiline", message: "Grüße ✓\nline two" },
+  { name: "siwe", message: siwe },
+  { name: "raw_32_bytes", message: { raw: keccak256("0x1234") } },
+  { name: "raw_not_utf8", message: { raw: "0xfffe00" } },
+];
+const personalOut = { generator: "viem 2.57.7 signMessage", phrase: PHRASE, signer: account.address, cases: [] };
+for (const m of messages) {
+  const bytes = typeof m.message === "string" ? Buffer.from(m.message, "utf8") : Buffer.from(m.message.raw.slice(2), "hex");
+  personalOut.cases.push({
+    name: m.name,
+    message_hex: "0x" + bytes.toString("hex"),
+    hash: hashMessage(m.message),
+    signature: await account.signMessage({ message: m.message }),
+  });
+}
+const personalFile = join(dirname(fileURLToPath(import.meta.url)), "../../crates/evm/tests/vectors/personal.json");
+writeFileSync(personalFile, JSON.stringify(personalOut, null, 2) + "\n");
+console.log(`wrote ${personalOut.cases.length} cases to ${personalFile}`);

@@ -15,8 +15,10 @@ use choice_wallet_cosmos::amino::{self, AminoTx};
 use choice_wallet_cosmos::direct::{self, Decoded, Request};
 use choice_wallet_evm::U256;
 use choice_wallet_evm::eip712::TypedData;
+use choice_wallet_evm::personal;
 use choice_wallet_evm::request::{self as evm_request, Call, TxRequest};
-use choice_wallet_injective::eip712::decode_v2;
+use choice_wallet_injective::eip712::{Web3Tx, decode_v2};
+use choice_wallet_policy::{Assessment, Context, CosmosFee};
 use serde::Deserialize;
 use serde_json::value::RawValue;
 use serde_json::{Value, json};
@@ -61,6 +63,16 @@ pub(crate) enum SignRequest<'a> {
         #[serde(borrow)]
         typed_data: &'a RawValue,
     },
+    /// `personal_sign`.
+    EvmPersonalSign {
+        /// CAIP-2 chain ID.
+        chain: String,
+        /// The signer's address.
+        signer: String,
+        /// The message: `0x` + hex for bytes, anything else as UTF-8 text (as wallets read
+        /// `personal_sign`'s first parameter).
+        message: String,
+    },
 }
 
 /// The parts of a Cosmos SignDoc.
@@ -84,11 +96,63 @@ pub(crate) struct Checked {
 }
 
 enum Kind {
-    Direct(Decoded),
-    AminoTx(AminoTx),
-    Amino(AminoTx),
-    EvmTx(Box<TxRequest>),
-    TypedData { td: Box<TypedData>, signer: EthAddress },
+    Direct {
+        d: Decoded,
+        signer: String,
+    },
+    AminoTx {
+        tx: AminoTx,
+        signer: String,
+    },
+    Amino {
+        tx: AminoTx,
+        signer: String,
+    },
+    EvmTx {
+        r: Box<TxRequest>,
+        injective: bool,
+    },
+    TypedData {
+        td: Box<TypedData>,
+        signer: EthAddress,
+        injective_tx: Option<Box<Web3Tx>>,
+    },
+    Personal {
+        message: Vec<u8>,
+        signer: EthAddress,
+    },
+}
+
+impl Checked {
+    /// Run the risk rules over the decoded request.
+    pub(crate) fn assess(&self, ctx: &Context) -> Assessment {
+        match &self.kind {
+            Kind::Direct { d, signer } => {
+                let fee = d.fee();
+                let fee = CosmosFee {
+                    amount: &fee.amount,
+                    granter: fee.granter.as_deref(),
+                    payer: fee.payer.as_deref(),
+                };
+                choice_wallet_policy::cosmos(d.messages(), signer, fee, ctx)
+            }
+            Kind::AminoTx { tx, signer } | Kind::Amino { tx, signer } => {
+                let fee = CosmosFee {
+                    amount: &tx.fee.amount,
+                    granter: tx.fee.granter.as_deref(),
+                    payer: None,
+                };
+                choice_wallet_policy::cosmos(&tx.messages, signer, fee, ctx)
+            }
+            Kind::EvmTx { r, injective } => choice_wallet_policy::evm_transaction(r, *injective, ctx),
+            Kind::TypedData {
+                td,
+                signer,
+                injective_tx,
+            } => choice_wallet_policy::typed_data(td, injective_tx.as_deref(), signer, ctx),
+            Kind::Personal { message, signer } => choice_wallet_policy::personal_message(message, signer, ctx),
+        }
+    }
 }
 
 fn digest(kind: &str, chain: &str, signer: &[u8], payload: &[u8]) -> [u8; 32] {
@@ -124,7 +188,10 @@ pub(crate) fn decode(req: SignRequest) -> Result<Checked, VaultError> {
             Ok(Checked {
                 display: amino_display("cosmos_amino", entry, &pk, &tx),
                 digest: digest("cosmos_amino", entry.id, &pk.compressed(), tx.sign_bytes()),
-                kind: Kind::Amino(tx),
+                kind: Kind::Amino {
+                    tx,
+                    signer: entry.address(&pk),
+                },
             })
         }
         SignRequest::EvmTransaction { chain, tx } => {
@@ -134,7 +201,10 @@ pub(crate) fn decode(req: SignRequest) -> Result<Checked, VaultError> {
             Ok(Checked {
                 digest: digest("evm_transaction", entry.id, r.from.as_bytes(), &r.tx.unsigned_bytes()),
                 display,
-                kind: Kind::EvmTx(Box::new(r)),
+                kind: Kind::EvmTx {
+                    r: Box::new(r),
+                    injective: entry.injective.is_some(),
+                },
             })
         }
         SignRequest::EvmTypedData {
@@ -176,7 +246,34 @@ pub(crate) fn decode(req: SignRequest) -> Result<Checked, VaultError> {
                 kind: Kind::TypedData {
                     td: Box::new(td),
                     signer,
+                    injective_tx: injective.map(Box::new),
                 },
+            })
+        }
+        SignRequest::EvmPersonalSign { chain, signer, message } => {
+            let entry = chains::find(&chain)?;
+            entry.evm()?;
+            let signer = evm_address(&signer)?;
+            let bytes = match message.strip_prefix("0x") {
+                Some(h) => hex(h, "message")?,
+                None => message.into_bytes(),
+            };
+            let display = json!({
+                "kind": "evm_personal_sign",
+                "chain": entry.id,
+                "signer": signer.to_checksum_hex(),
+                "text": std::str::from_utf8(&bytes).ok(),
+                "hex": format!("0x{}", hexutil::encode(&bytes)),
+            });
+            Ok(Checked {
+                display,
+                digest: digest(
+                    "evm_personal_sign",
+                    entry.id,
+                    signer.as_bytes(),
+                    &personal::hash(&bytes),
+                ),
+                kind: Kind::Personal { message: bytes, signer },
             })
         }
     }
@@ -197,7 +294,10 @@ fn cosmos_tx(t: CosmosTx, amino_mode: bool) -> Result<Checked, VaultError> {
         return Ok(Checked {
             display: amino_display("cosmos_amino_tx", entry, &pk, &tx),
             digest: digest("cosmos_amino_tx", entry.id, &pk.compressed(), tx.sign_bytes()),
-            kind: Kind::AminoTx(tx),
+            kind: Kind::AminoTx {
+                tx,
+                signer: chain.address(&pk),
+            },
         });
     }
     let d = direct::decode(request, chain, &pk)?;
@@ -221,7 +321,10 @@ fn cosmos_tx(t: CosmosTx, amino_mode: bool) -> Result<Checked, VaultError> {
     Ok(Checked {
         display,
         digest: digest("cosmos_direct", entry.id, &pk.compressed(), &d.sign_doc_bytes()),
-        kind: Kind::Direct(d),
+        kind: Kind::Direct {
+            d,
+            signer: chain.address(&pk),
+        },
     })
 }
 
@@ -292,39 +395,45 @@ pub(crate) fn sign(checked: Checked, approved: &str, key: &PrivateKey) -> Result
     };
     let prefixed = |b: &[u8]| format!("0x{}", hexutil::encode(b));
     match checked.kind {
-        Kind::Direct(d) => {
+        Kind::Direct { d, .. } => {
             let s = direct::sign(&d, key)?;
             Ok(json!({
                 "signature": hexutil::encode(&s.signature),
                 "tx_raw": hexutil::encode(&s.tx_raw),
             }))
         }
-        Kind::AminoTx(tx) => {
+        Kind::AminoTx { tx, .. } => {
             let sig = tx.sign(key)?;
             Ok(json!({
                 "signature": hexutil::encode(&sig),
                 "tx_raw": tx.tx_raw(&sig).map(|b| hexutil::encode(&b)),
             }))
         }
-        Kind::Amino(tx) => {
+        Kind::Amino { tx, .. } => {
             let sig = tx.sign(key)?;
             Ok(json!({
                 "signature": hexutil::encode(&sig),
                 "signed_doc": String::from_utf8_lossy(tx.sign_bytes()),
             }))
         }
-        Kind::EvmTx(r) => {
+        Kind::EvmTx { r, .. } => {
             if pk.eth_address() != r.from {
                 return wrong_account();
             }
             let s = r.tx.sign(key)?;
             Ok(json!({ "raw": prefixed(&s.raw), "hash": prefixed(&s.hash) }))
         }
-        Kind::TypedData { td, signer } => {
+        Kind::TypedData { td, signer, .. } => {
             if pk.eth_address() != signer {
                 return wrong_account();
             }
             Ok(json!({ "signature": prefixed(&td.sign(key)?) }))
+        }
+        Kind::Personal { message, signer } => {
+            if pk.eth_address() != signer {
+                return wrong_account();
+            }
+            Ok(json!({ "signature": prefixed(&personal::sign(&message, key)) }))
         }
     }
 }
@@ -333,8 +442,8 @@ pub(crate) fn sign(checked: Checked, approved: &str, key: &PrivateKey) -> Result
 #[cfg(test)]
 pub(crate) fn messages(checked: &Checked) -> Option<&[choice_wallet_cosmos::msg::Msg]> {
     match &checked.kind {
-        Kind::Direct(d) => Some(d.messages()),
-        Kind::AminoTx(t) | Kind::Amino(t) => Some(&t.messages),
+        Kind::Direct { d, .. } => Some(d.messages()),
+        Kind::AminoTx { tx, .. } | Kind::Amino { tx, .. } => Some(&tx.messages),
         _ => None,
     }
 }
