@@ -12,6 +12,7 @@ import { cw20Address, evmAddress, isNetworkId, NETWORKS, Pool, type Fetch, type 
 import type { AccountInfo, NewSecret, Result, Settings, Status, TokenFilter, UiRequest } from "@choice-wallet/ui/protocol";
 import { DEFAULT_FILTER } from "@choice-wallet/ui/token-filter";
 
+import { createDapps, type DappReply } from "./dapp";
 import { createSender } from "./send";
 
 type UiResponse<T = unknown> = Result<T>;
@@ -31,6 +32,10 @@ export interface Deps {
   /** (Re)start the auto-lock timer. */
   scheduleLock(minutes: number): void;
   cancelLock(): void;
+  /** Open the approval window for a site's request; its window ID. */
+  openWindow(requestId: string): Promise<number | undefined>;
+  /** Tell open pages that what they see (accounts, chain) may have changed. */
+  notify(): void;
 }
 
 /** Minutes without activity before the wallet locks itself. */
@@ -92,6 +97,24 @@ export function createService(d: Deps) {
   }
 
   const sender = createSender({ vault: d.vault, fetch: d.fetch, local: d.local, session: d.session, endpoints, evmEndpoints, prices: showPrices });
+
+  const dapps = createDapps({
+    vault: d.vault,
+    local: d.local,
+    sender,
+    network,
+    setNetwork: (n) => d.local.set({ network: n }),
+    async unlocked() {
+      const ks = await keystore();
+      const key = await unlockKey();
+      const account = ks.accounts?.[0];
+      if (!ks.keystore || key === undefined || !account) return null;
+      d.scheduleLock(AUTO_LOCK_MINUTES);
+      return { account, keystore: ks.keystore, key };
+    },
+    openWindow: d.openWindow,
+    notify: d.notify,
+  });
 
   /** Add a token by contract address: an EVM-only token or a CW20 joins the list (kept per
    *  network, at most `MAX_CUSTOM`), and either way the token is shown even if the filter
@@ -155,6 +178,7 @@ export function createService(d: Deps) {
     await d.session.set({ unlock_key: key });
     await d.local.set({ accounts: r.result.accounts });
     d.scheduleLock(AUTO_LOCK_MINUTES);
+    d.notify();
     return { ok: true, result: await status() };
   }
 
@@ -179,6 +203,7 @@ export function createService(d: Deps) {
   async function lock(): Promise<UiResponse<Status>> {
     await d.session.remove(["unlock_key", "pending_send"]);
     d.cancelLock();
+    d.notify();
     return { ok: true, result: await status() };
   }
 
@@ -221,7 +246,9 @@ export function createService(d: Deps) {
     if ("ok" in lcdAll) return lcdAll as UiResponse<never>;
     const evmAll = nextEndpoints(stored.evm_endpoints ?? {}, net, evm);
     if ("ok" in evmAll) return evmAll as UiResponse<never>;
+    const before = await network();
     await d.local.set({ network: net, endpoints: lcdAll, evm_endpoints: evmAll, ...(prices === undefined ? {} : { prices }) });
+    if (net !== before) d.notify();
     return settings();
   }
 
@@ -286,12 +313,44 @@ export function createService(d: Deps) {
         if (r.type === "confirm_send") return sender.confirm(a.keystore, a.key, r);
         return sender.status(a.net, r.hash);
       }
+      case "dapp_request":
+        return dapps.request(r.id);
+      case "dapp_review":
+        return dapps.review(r.id);
+      case "dapp_answer":
+        return dapps.answer(r.id, r.approve, r.digest, r.confirm);
+      case "connections":
+        return dapps.connections();
+      case "disconnect":
+        return dapps.disconnect(r.origin);
       default:
         return err("bad_request", "Unknown request.");
     }
   }
 
-  return { handle, lock, status };
+  /** A message from a web page, through the content script, at `origin` (from the browser). */
+  function dapp(origin: string, message: unknown): Promise<DappReply> {
+    return dapps.handle(origin, message);
+  }
+
+  return { handle, lock, status, dapp, windowClosed: dapps.windowClosed };
+}
+
+/** The origin of a web page talking through this extension's content script, if it may:
+ *  the top frame of a tab, https (or plain http on this machine, for development). The
+ *  origin is the browser's, never the page's say. */
+export function dappOrigin(sender: { id?: string; origin?: string; url?: string; tab?: unknown; frameId?: number }, extensionId: string): string | null {
+  if (sender.id !== extensionId || !sender.tab || sender.frameId !== 0 || typeof sender.origin !== "string") return null;
+  let u: URL;
+  try {
+    u = new URL(sender.origin);
+  } catch {
+    return null;
+  }
+  const local = u.protocol === "http:" && (u.hostname === "localhost" || u.hostname === "127.0.0.1");
+  if ((u.protocol !== "https:" && !local) || u.origin !== sender.origin) return null;
+  if (!(sender.url ?? "").startsWith(`${sender.origin}/`)) return null;
+  return sender.origin;
 }
 
 /** Whether a message comes from one of this extension's own pages: never a web page or a

@@ -45,6 +45,8 @@ function setup() {
     },
     scheduleLock: (m) => void locks.scheduled.push(m),
     cancelLock: () => void locks.cancelled++,
+    openWindow: async () => undefined,
+    notify: () => {},
   });
   return { service, local, session, locks };
 }

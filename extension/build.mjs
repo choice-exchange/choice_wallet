@@ -87,11 +87,23 @@ const app = {
     : { background: "src/background.ts", popup: "src/popup.ts" },
   outdir: dist,
 };
+// The content scripts: classic scripts, not modules. The provider's EIP-6963 icon is the
+// mark as a data URL, as the standard asks.
+const content = {
+  ...common,
+  format: "iife",
+  platform: "browser",
+  target: "chrome120",
+  loader: { ...common.loader, ".svg": "dataurl" },
+  entryPoints: { inpage: "src/inpage.ts", relay: "src/relay.ts" },
+  outdir: dist,
+};
 
 if (!dev) {
   buildVault();
   rmSync(dist, { recursive: true, force: true });
   await build(app);
+  await build(content);
   copyStatic();
   console.log(`built ${dist}`);
 
@@ -117,7 +129,7 @@ if (!dev) {
     const assets = existsSync(join(dist, "assets")) ? readdirSync(join(dist, "assets")).map((f) => `assets/${f}`).sort() : [];
     const s = {
       page: digest(["popup.js", "popup.css", "popup.html", "shell.css", ...assets]),
-      worker: digest(["background.js", "manifest.json", "vault/choice_wallet_wasm_bg.wasm"]),
+      worker: digest(["background.js", "inpage.js", "relay.js", "manifest.json", "vault/choice_wallet_wasm_bg.wasm"]),
     };
     writeFileSync(join(dist, "dev-build.json"), JSON.stringify(s) + "\n");
     console.log(`[dev] ${new Date().toLocaleTimeString()} page ${s.page} worker ${s.worker}`);
@@ -134,20 +146,15 @@ if (!dev) {
   rmSync(dist, { recursive: true, force: true });
   mkdirSync(dist, { recursive: true });
   copyStatic();
-  const ctx = await context({
-    ...app,
-    plugins: [
-      {
-        name: "dev-stamp",
-        setup(b) {
-          b.onEnd((r) => {
-            if (r.errors.length === 0) stamp();
-          });
-        },
-      },
-    ],
-  });
-  await ctx.watch();
+  const devStamp = {
+    name: "dev-stamp",
+    setup(b) {
+      b.onEnd((r) => {
+        if (r.errors.length === 0) stamp();
+      });
+    },
+  };
+  for (const options of [app, content]) await (await context({ ...options, plugins: [devStamp] })).watch();
 
   watch(join(here, "public"), { recursive: true }, debounce(() => (copyStatic(), stamp())));
   const vault = debounce(() => {

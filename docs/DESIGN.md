@@ -194,12 +194,22 @@ This is designed before the UI is built, because retrofitting it is expensive.
 
 ## Connecting to dapps
 
-- **EVM:** an EIP-1193 provider announced through EIP-6963 with `rdns` `exchange.choice.wallet`, so no fight over `window.ethereum`.
+Built (2026-11-09) and checked on testnet through the extension: a test site connected, sent INJ with `eth_sendTransaction`, and signed and broadcast a bank send through `window.choice`; each landed with the exact amount and the fee the approval showed.
+
+- **How a page reaches the wallet.** `inpage.js` runs in the page's world (a `"world": "MAIN"` content script, top frame only, https pages and plain http on localhost / 127.0.0.1). It holds nothing and decides nothing: requests go through `relay.js` (isolated world) to the service worker, which takes the origin from the browser (`sender.origin`, top frame of a tab) and never from the page. Pages hear only "something changed" and ask again for their own view, so nothing about other sites leaks.
+- **Grants.** Connecting is a grant per origin, kept until the user disconnects (Settings, Connected sites). A site that isn't connected, and every site while the wallet is locked, sees no account. Requests wait in the service worker's memory: at most 10 at once, 3 per site, one connect or switch per site at a time. Closing the approval window rejects the request (4001); if the worker stops, waiting requests fail and the site can ask again.
+- **Approval windows.** A popup window per request, showing the vault's decode of exactly what will be signed (prepared when the window asks, so the nonce and fee are fresh) and the risk rules' findings, including "First request from this site" and the non-https note. Approving names that decode's digest. It never asks for a password: a locked wallet says so and waits until the user unlocks from the toolbar. Its buttons wake 800 ms after the window is in front, visible and focused.
+- **EVM:** an EIP-1193 provider announced through EIP-6963 with `rdns` `exchange.choice.wallet`, so no fight over `window.ethereum`, which the wallet leaves alone.
+  - `eth_requestAccounts`, `eth_accounts`, `eth_chainId`, `net_version`, `wallet_requestPermissions` / `getPermissions` / `revokePermissions`, `wallet_switchEthereumChain` and `wallet_addEthereumChain` (between Injective and Injective testnet only, with approval), `eth_sendTransaction`, `personal_sign`, `eth_signTypedData_v4`.
+  - `eth_sendTransaction`: the wallet sets the nonce, gas and fees itself and ignores the page's (Injective charges gas limit × max fee), at the estimate × 1.2. An estimate that fails stops the request before anything is signed, since a failing tx on Injective still pays its whole gas limit. Contract creation is refused.
+  - Refused: `eth_sign` (a raw hash can't be shown), `eth_signTransaction`, typed data before v4.
+  - Read-only methods (`eth_call`, `eth_getBalance`, logs, receipts, …) go to the user's own EVM endpoints.
 - **Injective dapps need a PR first.** injective-ts finds EIP-6963 wallets by a fixed list of `rdns` values tied to its `Wallet` enum, so until we're added, Helix and Hub won't see us. The PR to `wallet-base`, `wallet-evm` and `wallet-cosmos` is phase 0 work. It also puts Choice Wallet on the EIP-712 v2-only list (`isEip712V2OnlyWallet`), so Injective dapps send us v2 typed data, which we decode, rather than v1.
-- **Cosmos provider:** `window.choice`, Keplr-compatible:
-  - Methods: `enable`, `getKey` (with `algo: "ethsecp256k1"`, `isNanoLedger`, `ethereumHexAddress`), `signDirect`, `signAmino`, `getOfflineSigner`, `getOfflineSignerOnlyAmino`, `getOfflineSignerAuto`, `signArbitrary` / `verifyArbitrary` (ADR-036, with its own risk rule), `signEthereum`, `sendTx`.
-  - A keystore-change event.
-  - A policy for when a dapp lets the wallet change the fee.
+- **Cosmos provider:** `window.choice`, Keplr's shape:
+  - Built: `enable`, `getKey` (with `algo: "ethsecp256k1"`, `isNanoLedger`, `ethereumHexAddress`), `signDirect`, `signAmino`, `getOfflineSigner`, `getOfflineSignerOnlyAmino`, `getOfflineSignerAuto`, `sendTx` (through the user's own endpoints), and a `choice_keystorechange` event. `window.choice.ethereum` is the EVM provider.
+  - `signDirect` is simulated first, unsigned, on the user's endpoints: the approval shows what this account would see (from the bank and CW20 events, the fee apart), or why it would fail.
+  - The wallet signs exactly what the dapp sent and never changes its fee.
+  - Later: `signArbitrary` / `verifyArbitrary` (ADR-036, with its own risk rule), `signEthereum`, `experimentalSuggestChain` (other chains come with phase 3).
 - **Later adapters:** Interchain Kit (Cosmos Kit's successor) and graz. EIP-5792 `wallet_sendCalls` with `atomicRequired: false`.
 - **Choice apps first:** choice.exchange and the Choice bridge integrate first.
 - **Mobile (phase 2):** Reown WalletKit and an in-app browser.

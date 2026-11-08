@@ -39,7 +39,7 @@ import {
   type PriceList,
   type Token,
 } from "@choice-wallet/chain";
-import type { AccountInfo, ActivityPage, Balance, CosmosDisplay, Result, Risk, SendReview, Sent, TxState } from "@choice-wallet/ui/protocol";
+import type { AccountInfo, ActivityPage, Balance, CosmosDisplay, Result, Risk, SendReview, Sent, TokenInfo, TxState } from "@choice-wallet/ui/protocol";
 
 import type { Store } from "./service";
 
@@ -329,6 +329,23 @@ export function createSender(d: SendDeps) {
     return t;
   }
 
+  /** How to show each denom, with Choice's price where it has one. An `evm:` key is read
+   *  from its contract (and left out if it isn't an ERC20). */
+  async function tokensFor(network: NetworkId, denoms: Iterable<string>): Promise<Record<string, TokenInfo>> {
+    const client = await lcd(network);
+    const list = [...new Set(denoms)];
+    const px = (await choiceFor(network, client, list)).prices;
+    const described = await Promise.all(
+      list.map(async (dn) => {
+        const a = evmAddress(dn);
+        const t = a ? await erc20Token(network, await evm(network), a) : await token(network, client, dn);
+        const p = px.get(dn);
+        return t ? ([dn, p ? { ...t, priceUsd: p } : t] as const) : null;
+      }),
+    );
+    return Object.fromEntries(described.filter((x) => x !== null));
+  }
+
   /** Turn chain and network failures into one short line for the UI. */
   function chainFailure(e: unknown): Result<never> {
     if (e instanceof Unreachable) return fail("unreachable", "Couldn't reach the network. Check your connection or endpoints.");
@@ -531,17 +548,7 @@ export function createSender(d: SendDeps) {
         blocked: risk.level === "blocked",
       };
       await d.session.set({ pending_send: pending });
-      const denoms = displayDenoms(network, display);
-      const px = (await choiceFor(network, client, denoms)).prices;
-      const tokens = Object.fromEntries(
-        await Promise.all(
-          [...denoms].map(async (dn) => {
-            const t = await token(network, client, dn);
-            const p = px.get(dn);
-            return [dn, p ? { ...t, priceUsd: p } : t] as const;
-          }),
-        ),
-      );
+      const tokens = await tokensFor(network, displayDenoms(network, display));
       return { ok: true, result: { digest, display, risk: risk as Risk, tokens, checkedBy } };
     } catch (e) {
       return chainFailure(e);
@@ -692,7 +699,7 @@ export function createSender(d: SendDeps) {
     }
   }
 
-  return { balances, activity, inspectToken, prepare, prepareConvert, confirm, status };
+  return { balances, activity, inspectToken, prepare, prepareConvert, confirm, status, lcd, evm, tokensFor, chainFailure };
 }
 
 /** Every token a decoded Cosmos transaction moves, by the wallet's keys: the fee, coins

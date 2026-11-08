@@ -75,14 +75,16 @@ function cw20Move(e: TxEvent): { token: string; from?: string; to?: string; amou
   return null;
 }
 
-export function summarize(tx: IndexedTx, address: string): Activity {
+/** What a transaction's events did to `address`: the net change per denom (a CW20 under
+ *  its `cw20:` key), the fee left out when `address` paid it, and who sent what arrived. */
+export function balanceChanges(events: readonly TxEvent[], address: string, fee: readonly Coin[]): { changes: Coin[]; signed: boolean; from?: string } {
   const net = new Map<string, bigint>();
   const add = (coins: Coin[], sign: bigint) => {
     for (const c of coins) net.set(c.denom, (net.get(c.denom) ?? 0n) + sign * toBigInt(c.amount));
   };
   let feePayer: string | undefined;
   let from: string | undefined;
-  for (const e of tx.events) {
+  for (const e of events) {
     if (e.type === "coin_received" && attr(e, "receiver") === address) add(parseCoins(attr(e, "amount") ?? ""), 1n);
     if (e.type === "coin_spent" && attr(e, "spender") === address) add(parseCoins(attr(e, "amount") ?? ""), -1n);
     if (e.type === "tx" && attr(e, "fee_payer") !== undefined) feePayer = attr(e, "fee_payer");
@@ -93,8 +95,13 @@ export function summarize(tx: IndexedTx, address: string): Activity {
     if (m?.to === address && m.from && from === undefined) from = m.from;
   }
   const signed = feePayer === address;
-  if (signed) add(tx.fee, 1n); // the fee is reported apart
+  if (signed) add([...fee], 1n); // the fee is reported apart
   const changes = [...net].filter(([, a]) => a !== 0n).map(([denom, a]) => ({ denom, amount: a.toString() }));
+  return { changes, signed, ...(from ? { from } : {}) };
+}
+
+export function summarize(tx: IndexedTx, address: string): Activity {
+  const { changes, signed, from } = balanceChanges(tx.events, address, tx.fee);
   const ups = changes.filter((c) => !c.amount.startsWith("-")).length;
   const downs = changes.length - ups;
   const up = ups > 0;

@@ -145,7 +145,7 @@ export function SendForm({
  *  that will be signed, not from what the form asked for. */
 /** What a token is, in a word or two, for a review: an unlisted token's symbol is
  *  whatever its creator chose, so its contract or denom goes with it. */
-function realName(denom: string, t: TokenInfo | undefined): string | null {
+export function realName(denom: string, t: TokenInfo | undefined): string | null {
   if (t?.known) return null;
   const evm = evmAddress(denom);
   if (evm) return `EVM token ${evm}`;
@@ -154,7 +154,7 @@ function realName(denom: string, t: TokenInfo | undefined): string | null {
 }
 
 /** One amount, in full (never rounded), with its token. The type steps down as it gets longer. */
-function Figure({ coin, t }: { coin: Coin; t: TokenInfo | undefined }) {
+export function Figure({ coin, t }: { coin: Coin; t: TokenInfo | undefined }) {
   const figure = t ? formatUnits(coin.amount, t.decimals) : coin.amount;
   const size = figure.length > 16 ? 18 : figure.length > 10 ? 22 : 28;
   return (
@@ -168,7 +168,7 @@ function Figure({ coin, t }: { coin: Coin; t: TokenInfo | undefined }) {
 }
 
 /** Which form a token is in, for a conversion. */
-const formName = (denom: string) => (cw20Address(denom) ? "CW20" : "Bank token");
+export const formName = (denom: string) => (cw20Address(denom) ? "CW20" : "Bank token");
 
 export function Review({
   review,

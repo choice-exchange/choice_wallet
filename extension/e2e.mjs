@@ -14,7 +14,7 @@
 // against the addresses on screen.
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -62,6 +62,17 @@ const lcd = createServer((req, res) => {
   req.on("end", () => {
     const url = new URL(req.url, "http://x");
     const p = url.pathname;
+    if (p === "/favicon.ico") return reply(204, {});
+    if (p === "/dapp.html") {
+      // A test site: finds wallets through EIP-6963, as dapps do.
+      res.writeHead(200, { "content-type": "text/html" });
+      return res.end(`<!doctype html><title>Test dapp</title><p>Test dapp</p><script>
+        window.__wallets = [];
+        addEventListener("eip6963:announceProvider", (e) => window.__wallets.push(e.detail));
+        dispatchEvent(new Event("eip6963:requestProvider"));
+        window.__ask = (method, params) => { const w = window.__wallets.find((d) => d.info.rdns === "exchange.choice.wallet"); window.__r = w.provider.request({ method, params }).then((r) => ({ ok: r }), (e) => ({ code: e.code, message: e.message })); };
+      </script>`);
+    }
     const tail = p.split("/").pop();
     if (p.endsWith("/node_info")) return reply(200, { default_node_info: { network: "injective-1" } });
     if (p.startsWith("/cosmos/auth/v1beta1/accounts/")) {
@@ -154,6 +165,9 @@ try {
 
   async function openPopup() {
     const { targetId } = await send("Target.createTarget", { url: `chrome-extension://${extId}/popup.html` });
+    return pageFor(targetId);
+  }
+  async function pageFor(targetId) {
     const { sessionId } = await send("Target.attachToTarget", { targetId, flatten: true });
     await send("Runtime.enable", {}, sessionId);
     await send("Log.enable", {}, sessionId);
@@ -189,6 +203,7 @@ try {
         return join(out, `${name}.png`);
       },
       close: () => send("Target.closeTarget", { targetId }),
+      sessionId,
     };
     return page;
   }
@@ -437,6 +452,83 @@ try {
   await p.click("Wallet");
   await p.waitText("1 hidden token");
   console.log("tabs: Activity (send, receive, junk hidden), Settings, back to Wallet");
+
+  // 8. A site: finds the wallet through EIP-6963 (window.ethereum untouched), connects
+  // through an approval window (rejected once, then approved), gets a message signed, and
+  // shows up in Settings until disconnected.
+  const site = await pageFor((await send("Target.createTarget", { url: `${lcdUrl}/dapp.html` })).targetId);
+  await site.waitText("Test dapp");
+  const found = await site.eval(`window.__wallets.map((d) => d.info.rdns + "|" + d.info.name + "|" + d.info.icon.slice(0, 18)).join(",") + " " + typeof window.ethereum + " " + typeof window.choice`);
+  if (found !== "exchange.choice.wallet|Choice Wallet|data:image/svg+xml undefined object") throw new Error(`the site sees: ${found}`);
+  const ask = async (method, params) => {
+    await site.eval(`window.__ask(${JSON.stringify(method)}, ${JSON.stringify(params ?? [])})`);
+  };
+  const answer = () => site.eval("window.__r");
+  /** The approval window that opens next. Its buttons wait for focus, which headless
+   *  windows don't get, so focus is emulated. */
+  const approval = async () => {
+    for (let i = 0; i < 100; i++) {
+      const { targetInfos } = await send("Target.getTargets");
+      const t = targetInfos.find((x) => x.url.includes("popup.html?approve=") && !seenApprovals.has(x.targetId));
+      if (t) {
+        seenApprovals.add(t.targetId);
+        const w = await pageFor(t.targetId);
+        await w.eval("1");
+        await send("Emulation.setFocusEmulationEnabled", { enabled: true }, w.sessionId);
+        return w;
+      }
+      await sleep(100);
+    }
+    throw new Error("no approval window opened");
+  };
+  const seenApprovals = new Set();
+  await ask("eth_chainId");
+  if ((await answer()).ok !== "0x6f0") throw new Error("eth_chainId");
+  await ask("eth_requestAccounts");
+  let a = await approval();
+  await a.waitText("wants to connect");
+  await a.click("Reject");
+  const rejected = await answer();
+  if (rejected.code !== 4001) throw new Error(`a rejected connect: ${JSON.stringify(rejected)}`);
+  await ask("eth_requestAccounts");
+  a = await approval();
+  await a.waitText("wants to connect");
+  await a.waitText(addrs[0]);
+  await a.shot("17-site-connect");
+  await sleep(900); // the buttons wake after 800 ms in front
+  await a.click("Connect");
+  const accounts = (await answer()).ok;
+  if (JSON.stringify(accounts) !== JSON.stringify([addrs[1].toLowerCase()])) throw new Error(`connected accounts: ${JSON.stringify(accounts)}`);
+  const message = `0x${Buffer.from("Sign in to the test dapp").toString("hex")}`;
+  await ask("personal_sign", [message, addrs[1]]);
+  a = await approval();
+  await a.waitText("Sign in to the test dapp", 15000);
+  await a.shot("18-site-sign");
+  await sleep(900);
+  await a.click("Sign");
+  const signature = (await answer()).ok;
+  // The same signature from the vault itself, in Node, for the same phrase and message.
+  const glue = await import(new URL("./build/vault/choice_wallet_wasm.js", import.meta.url).href);
+  glue.initSync({ module: readFileSync(new URL("./build/vault/choice_wallet_wasm_bg.wasm", import.meta.url)) });
+  const v = (method, params) => {
+    const r = JSON.parse(glue.handle(JSON.stringify({ method, params })));
+    if (!r.ok) throw new Error(`vault ${method}: ${r.error.message}`);
+    return r.result;
+  };
+  const { keystore } = v("create_keystore", { secret: { mnemonic: words.join(" ") }, password: "correct horse battery staple" });
+  const { unlock_key } = v("unlock", { keystore, password: "correct horse battery staple" });
+  const request = { evm_personal_sign: { chain: "eip155:1776", signer: addrs[1], message } };
+  const expected = v("sign", { keystore, unlock_key, account: { derivation: "default", index: 0 }, request, digest: v("decode", { request }).digest }).signature;
+  if (signature !== expected) throw new Error(`personal_sign: got ${signature}, the vault signs ${expected}`);
+  await p.click("Settings");
+  await p.waitText(lcdUrl);
+  await p.eval(`document.querySelector(".site-row")?.scrollIntoView()`);
+  await p.shot("19-connected-sites");
+  await p.click(`Disconnect ${lcdUrl}`);
+  await p.waitText("None. A site asks first, in its own window.");
+  await ask("eth_accounts");
+  if (JSON.stringify((await answer()).ok) !== "[]") throw new Error("a disconnected site still sees the account");
+  console.log("site: found by EIP-6963, connect rejected then approved, personal_sign = the vault's signature, disconnected");
 
   // 7. A web page can't talk to the service worker: there is no externally_connectable, so
   // chrome.runtime isn't even exposed to it.

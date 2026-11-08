@@ -205,6 +205,16 @@ export class Lcd {
     return pairs;
   }
 
+  /** A simulation's gas, and its events: what the transaction would do, as the bank module
+   *  and contracts report it. The tx is unsigned (an empty signature), as simulation takes. */
+  async simulateEvents(simulateTxHex: string): Promise<{ gasUsed: bigint; events: TxEvent[] }> {
+    const body = await this.#call("/cosmos/tx/v1beta1/simulate", { tx_bytes: hexToBase64(simulateTxHex) });
+    const used = isObject(body) && isObject(body["gas_info"]) ? body["gas_info"]["gas_used"] : undefined;
+    if (typeof used !== "string") throw new ChainError(-1, "the node returned no gas estimate");
+    const result = isObject(body) && isObject(body["result"]) ? body["result"] : {};
+    return { gasUsed: toBigInt(used), events: Array.isArray(result["events"]) ? parseEvents(result["events"]) : [] };
+  }
+
   /** Gas a transaction uses, from the vault's `simulate_tx`. */
   async simulate(simulateTxHex: string): Promise<bigint> {
     const body = await this.#call("/cosmos/tx/v1beta1/simulate", { tx_bytes: hexToBase64(simulateTxHex) });
@@ -311,14 +321,7 @@ function indexedTx(r: unknown): IndexedTx {
   ) {
     throw new Down("malformed tx");
   }
-  const events: TxEvent[] = [];
-  for (const e of r["events"]) {
-    if (!isObject(e) || typeof e["type"] !== "string" || !Array.isArray(e["attributes"])) throw new Down("malformed event");
-    events.push({
-      type: e["type"],
-      attributes: e["attributes"].filter(isObject).map((a) => ({ key: String(a["key"] ?? ""), value: String(a["value"] ?? "") })),
-    });
-  }
+  const events = parseEvents(r["events"]);
   return {
     hash: r["txhash"].toUpperCase(),
     height: toBigInt(String(r["height"])),
@@ -328,6 +331,16 @@ function indexedTx(r: unknown): IndexedTx {
     fee: Array.isArray(fee) ? fee.map(coin) : [],
     events,
   };
+}
+
+function parseEvents(list: unknown[]): TxEvent[] {
+  return list.map((e) => {
+    if (!isObject(e) || typeof e["type"] !== "string" || !Array.isArray(e["attributes"])) throw new Down("malformed event");
+    return {
+      type: e["type"],
+      attributes: e["attributes"].filter(isObject).map((a) => ({ key: String(a["key"] ?? ""), value: String(a["value"] ?? "") })),
+    };
+  });
 }
 
 /** Drop the node's source locations and gas trailer from an error message. */

@@ -7,19 +7,56 @@
 // With a token contract, the wallet adds it by contract. An ERC20 with no bank denom (0x…):
 // it sends `amount` of it on the EVM side. A CW20 (inj1…): it sends `amount` of it, converts
 // `amount` into the bank form through the CW20 adapter, and converts all of that back.
-// Otherwise it sends `amount` INJ.
+// With `site` in its place, a local test site does it instead, through the wallet's
+// provider: connect, eth_sendTransaction of `amount` INJ, then window.choice signDirect of a
+// bank send of `amount` INJ, broadcast with sendTx. Otherwise it sends `amount` INJ.
 //
 // The phrase is read from the file and typed into the import screen. It is never printed
 // and that screen is never captured. The browser profile, with the encrypted keystore in
 // it, is deleted at the end. Testnet only: the script switches the wallet to testnet and
 // refuses to go on if the review isn't for Injective testnet.
 import { spawn } from "node:child_process";
+import { createServer } from "node:http";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const [chrome, ext, out, phraseFile, recipient, amount, tokenContract] = process.argv.slice(2);
 if (!amount) throw new Error("usage: node e2e-live.mjs <chromium> <dist> <shots> <phrase file> <recipient> <amount> [token contract]");
+/** The test site. It builds its Cosmos tx by hand (protobuf), as a dapp's library would. */
+const SITE_PAGE = `<!doctype html><title>Live test site</title><p>Live test site</p><script>
+window.__wallets = [];
+addEventListener("eip6963:announceProvider", (e) => { if (e.detail.info.rdns === "exchange.choice.wallet") window.__wallets.push(e.detail); });
+dispatchEvent(new Event("eip6963:requestProvider"));
+window.__ask = (method, params) => { window.__r = window.__wallets[0].provider.request({ method, params }).then((r) => ({ ok: r }), (e) => ({ code: e.code, message: e.message })); };
+const enc = new TextEncoder();
+const varint = (n) => { n = BigInt(n); const o = []; do { let b = Number(n & 0x7fn); n >>= 7n; if (n) b |= 0x80; o.push(b); } while (n); return o; };
+const cat = (...p) => Uint8Array.from(p.flatMap((x) => [...x]));
+const bytes = (no, b) => cat(varint((no << 3) | 2), varint(b.length), b);
+const str = (no, s) => bytes(no, enc.encode(s));
+const uint = (no, n) => cat(varint(no << 3), varint(n));
+const any = (t, v) => cat(str(1, t), bytes(2, v));
+const hex = (h) => Uint8Array.from(h.match(/../g), (x) => parseInt(x, 16));
+window.__signAndSend = async ({ from, to, amount, pubKey, accountNumber, sequence }) => {
+  try {
+    const coin = cat(str(1, "inj"), str(2, amount));
+    const body = bytes(1, any("/cosmos.bank.v1beta1.MsgSend", cat(str(1, from), str(2, to), bytes(3, coin))));
+    const pub = any("/injective.crypto.v1beta1.ethsecp256k1.PubKey", bytes(1, hex(pubKey)));
+    const gas = 150000n;
+    const fee = cat(bytes(1, cat(str(1, "inj"), str(2, (gas * 160000000n).toString()))), uint(2, gas));
+    const authInfo = cat(bytes(1, cat(bytes(1, pub), bytes(2, bytes(1, uint(1, 1))), uint(3, sequence))), bytes(2, fee));
+    const signer = window.choice.getOfflineSigner("injective-888");
+    const { signature } = await signer.signDirect(from, { bodyBytes: body, authInfoBytes: authInfo, chainId: "injective-888", accountNumber: BigInt(accountNumber) });
+    const sig = Uint8Array.from(atob(signature.signature), (c) => c.charCodeAt(0));
+    const raw = cat(bytes(1, body), bytes(2, authInfo), bytes(3, sig));
+    const h = await window.choice.sendTx("injective-888", raw, "sync");
+    window.__sent = { hash: Array.from(h, (b) => b.toString(16).padStart(2, "0")).join("").toUpperCase() };
+  } catch (e) {
+    window.__sent = { error: String(e && e.message || e) };
+  }
+};
+</script>`;
+
 const LCD = "https://testnet.sentry.lcd.injective.network";
 const EVM_RPC = "https://k8s.testnet.json-rpc.injective.network";
 const PASSWORD = "throwaway testnet password";
@@ -147,7 +184,121 @@ try {
   console.log("sender", from, "holds", before.from.toString(), "inj");
   await shot("live-1-home");
 
-  if (tokenContract?.startsWith("inj1")) {
+  if (tokenContract === "site") {
+    // 3s. A site, served here on 127.0.0.1, through the provider and approval windows.
+    const server = createServer((req, res) => {
+      res.writeHead(req.url === "/" ? 200 : 204, { "content-type": "text/html" });
+      res.end(req.url === "/" ? SITE_PAGE : "");
+    });
+    await new Promise((r) => server.listen(0, "127.0.0.1", r));
+    try {
+      const { targetId: siteId } = await send("Target.createTarget", { url: `http://127.0.0.1:${server.address().port}/` });
+      const site = (await send("Target.attachToTarget", { targetId: siteId, flatten: true })).sessionId;
+      await send("Runtime.enable", {}, site);
+      const onSite = async (expr) => {
+        const r = await send("Runtime.evaluate", { expression: expr, awaitPromise: true, returnByValue: true }, site);
+        if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description ?? r.exceptionDetails.text);
+        return r.result.value;
+      };
+      for (let n = 0; !(await onSite("typeof window.__ask === 'function' && window.__wallets.length > 0")); n += 200) {
+        if (n > 10000) throw new Error("the site didn't find the wallet");
+        await sleep(200);
+      }
+      const seen = new Set();
+      /** Answer the next approval window: wait for `expect`, capture it, press `button`. */
+      const approve = async (expect, button, name) => {
+        let t;
+        for (let n = 0; !t; n += 200) {
+          if (n > 30000) throw new Error(`no approval window for "${expect}"`);
+          t = (await send("Target.getTargets")).targetInfos.find((x) => x.url.includes("popup.html?approve=") && !seen.has(x.targetId));
+          if (!t) await sleep(200);
+        }
+        seen.add(t.targetId);
+        const w = (await send("Target.attachToTarget", { targetId: t.targetId, flatten: true })).sessionId;
+        await send("Runtime.enable", {}, w);
+        await send("Emulation.setFocusEmulationEnabled", { enabled: true }, w);
+        await send("Emulation.setDeviceMetricsOverride", { width: 360, height: 600, deviceScaleFactor: 2, mobile: false }, w);
+        const inW = async (expr) => (await send("Runtime.evaluate", { expression: expr, awaitPromise: true, returnByValue: true }, w)).result.value;
+        for (let n = 0; !(await inW(`document.body.innerText.includes(${JSON.stringify(expect)})`)); n += 200) {
+          if (n > 30000) throw new Error(`approval window never said "${expect}": ${await inW("document.body.innerText")}`);
+          await sleep(200);
+        }
+        const body = await inW("document.body.innerText");
+        await sleep(900); // the buttons wake after 800 ms in front
+        const { data } = await send("Page.captureScreenshot", { format: "png" }, w);
+        writeFileSync(join(out, `${name}.png`), Buffer.from(data, "base64"));
+        for (let n = 0; !(await inW(`(() => { const b = [...document.querySelectorAll("button")].find((b) => b.textContent.trim() === ${JSON.stringify(button)} && !b.disabled); if (b) b.click(); return !!b; })()`)); n += 200) {
+          if (n > 10000) throw new Error(`no enabled "${button}" in the approval window: ${await inW("document.body.innerText")}`);
+          await sleep(200);
+        }
+        return body;
+      };
+      const ask = (method, params) => onSite(`window.__ask(${JSON.stringify(method)}, ${JSON.stringify(params ?? [])})`);
+      const reply = async () => {
+        const r = await onSite("window.__r");
+        if (r.code !== undefined) throw new Error(`the site got an error: ${r.code} ${r.message}`);
+        return r.ok;
+      };
+
+      // Connect.
+      await ask("eth_requestAccounts");
+      await approve("wants to connect", "Connect", "live-s1-connect");
+      const [me] = await reply();
+      if ((await onSite("window.__wallets[0].provider.request({ method: 'eth_chainId' })")) !== "0x59f") throw new Error("not on testnet");
+
+      // eth_sendTransaction: `amount` INJ to the recipient's 0x form.
+      const to = `0x${bech32Bytes(recipient)}`;
+      const wei = BigInt(Math.round(Number(amount) * 1e6)) * 10n ** 12n;
+      const before = { me: BigInt(await evmRpc("eth_getBalance", [me, "latest"])), to: BigInt(await evmRpc("eth_getBalance", [to, "latest"])) };
+      await ask("eth_sendTransaction", [{ from: me, to, value: `0x${wei.toString(16)}` }]);
+      const evmReview = await approve("Estimated on", "Confirm", "live-s2-evm-tx");
+      if (!evmReview.includes("Injective testnet (EVM)")) throw new Error("the review isn't for testnet's EVM side");
+      const hash = await reply();
+      let receipt = null;
+      for (let n = 0; !receipt; n += 1000) {
+        if (n > 60000) throw new Error("no receipt");
+        receipt = await evmRpc("eth_getTransactionReceipt", [hash]);
+        if (!receipt) await sleep(1000);
+      }
+      const tx = await evmRpc("eth_getTransactionByHash", [hash]);
+      const after = { me: BigInt(await evmRpc("eth_getBalance", [me, "latest"])), to: BigInt(await evmRpc("eth_getBalance", [to, "latest"])) };
+      const fee = BigInt(tx.gas) * BigInt(tx.maxFeePerGas);
+      console.log(`site eth_sendTransaction ${hash}: status ${receipt.status}, gas ${BigInt(receipt.gasUsed)}/${BigInt(tx.gas)}; recipient +${after.to - before.to}, sender -${before.me - after.me} (= ${wei} + fee ${fee}?)`);
+      if (receipt.status !== "0x1" || after.to - before.to !== wei) throw new Error("the site's EVM send didn't land as asked");
+      if (before.me - after.me !== wei + fee && before.me - after.me !== wei + BigInt(receipt.gasUsed) * BigInt(receipt.effectiveGasPrice)) throw new Error("the sender paid an unexpected amount");
+
+      // window.choice: a bank send the site builds, signs through the wallet and broadcasts.
+      await onSite(`window.choice.enable("injective-888")`);
+      const key = await onSite(`window.choice.getKey("injective-888").then((k) => ({ address: k.bech32Address, pubKey: Array.from(k.pubKey, (b) => b.toString(16).padStart(2, "0")).join("") }))`);
+      const acct = (await lcd(`/cosmos/auth/v1beta1/accounts/${key.address}`)).account;
+      const base = acct.base_account ?? acct;
+      const bankBefore = { me: await injOf(key.address), to: await injOf(recipient) };
+      // Started, not awaited: it waits for the approval below.
+      await onSite(`(window.__signAndSend(${JSON.stringify({ from: key.address, to: recipient, amount: wei.toString(), pubKey: key.pubKey, accountNumber: base.account_number, sequence: base.sequence ?? "0" })}), true)`);
+      const cosmosReview = await approve("Simulated on", "Sign", "live-s3-sign-direct");
+      if (!cosmosReview.includes("Simulated")) throw new Error("the Cosmos review has no simulation");
+      let sent;
+      for (let n = 0; !(sent = await onSite("window.__sent")); n += 300) {
+        if (n > 30000) throw new Error("signDirect and sendTx never finished");
+        await sleep(300);
+      }
+      if (sent.error) throw new Error(`the site's Cosmos send failed: ${sent.error}`);
+      let ctx = null;
+      for (let n = 0; !ctx; n += 1000) {
+        if (n > 60000) throw new Error("the Cosmos tx never landed");
+        const r = await fetch(`${LCD}/cosmos/tx/v1beta1/txs/${sent.hash}`);
+        if (r.status === 200) ctx = (await r.json()).tx_response;
+        else await sleep(1000);
+      }
+      const bankAfter = { me: await injOf(key.address), to: await injOf(recipient) };
+      const cfee = BigInt(ctx.tx.auth_info.fee.amount.find((c) => c.denom === "inj").amount);
+      console.log(`site signDirect + sendTx ${sent.hash}: code ${ctx.code}, gas ${ctx.gas_used}/${ctx.gas_wanted}; recipient +${bankAfter.to - bankBefore.to}, sender -${bankBefore.me - bankAfter.me} (= ${wei} + fee ${cfee}?)`);
+      if (ctx.code !== 0 || bankAfter.to - bankBefore.to !== wei || bankBefore.me - bankAfter.me !== wei + cfee) throw new Error("the site's Cosmos send didn't land as asked");
+      console.log("LIVE SITE OK");
+    } finally {
+      server.close();
+    }
+  } else if (tokenContract?.startsWith("inj1")) {
     // 3c. A CW20: add it by contract, send some from its screen, convert some into its bank
     // form and all of that back. The chain's own numbers after each step.
     const cw = tokenContract;
@@ -336,4 +487,21 @@ try {
 if (problems.length) {
   console.log("PROBLEMS:\n" + problems.join("\n"));
   process.exit(1);
+}
+
+/** The bytes behind a bech32 address, hex (the checksum is the chain's to check). */
+function bech32Bytes(addr) {
+  const CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+  const data = addr.slice(addr.lastIndexOf("1") + 1, -6).split("").map((c) => CHARSET.indexOf(c));
+  let acc = 0, bits = 0;
+  const out = [];
+  for (const v of data) {
+    acc = (acc << 5) | v;
+    bits += 5;
+    while (bits >= 8) {
+      bits -= 8;
+      out.push((acc >> bits) & 0xff);
+    }
+  }
+  return out.map((b) => b.toString(16).padStart(2, "0")).join("");
 }

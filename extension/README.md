@@ -1,8 +1,12 @@
 # Choice Wallet extension
 
 Chrome extension (Manifest V3). The service worker hosts the vault, Rust compiled to WASM
-(`crates/wasm`), and answers only the extension's own pages. The popup is the shared UI
-([../ui](../ui)) with a `chrome.runtime` backend (`src/popup.ts`). Pre-alpha: not for real
+(`crates/wasm`), and answers the extension's own pages, and web pages only through its
+content scripts, by the origin the browser reports. The popup is the shared UI
+([../ui](../ui)) with a `chrome.runtime` backend (`src/popup.ts`); the same page, opened as
+`popup.html?approve=<id>`, is a site's approval window. Sites reach the wallet through two
+content scripts: `src/inpage.ts` (the EIP-6963 provider and `window.choice`, in the page's
+world) and `src/relay.ts` (isolated world, carries messages). Pre-alpha: not for real
 funds.
 
 Licensed GPL-3.0 ([LICENSE](LICENSE)); the Rust crates it uses are Apache-2.0.
@@ -55,6 +59,9 @@ node extension/e2e-live.mjs /path/to/chromium "$PWD/extension/dist" /tmp/shots <
 node extension/e2e-live.mjs /path/to/chromium "$PWD/extension/dist" /tmp/shots <phrase file> <recipient> 250 <token contract>
 # or a CW20 (inj1…): send it, convert that much to its bank form, and all of that back:
 node extension/e2e-live.mjs /path/to/chromium "$PWD/extension/dist" /tmp/shots <phrase file> <recipient> 125 <cw20 contract>
+# or a test site on 127.0.0.1, through the provider: connect, eth_sendTransaction, and a
+# bank send signed with window.choice signDirect and broadcast with sendTx:
+node extension/e2e-live.mjs /path/to/chromium "$PWD/extension/dist" /tmp/shots <phrase file> <recipient> 0.001 site
 ```
 
 ## Dependencies

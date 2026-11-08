@@ -44,7 +44,17 @@ export type UiRequest =
   /** Sign and broadcast the prepared send whose review showed `digest`. `confirm` is the
    *  word the review asked for, if any. */
   | { type: "confirm_send"; digest: string; confirm?: string }
-  | { type: "tx_status"; hash: string };
+  | { type: "tx_status"; hash: string }
+  /** A site's request waiting in an approval window (see `DappRequest`). */
+  | { type: "dapp_request"; id: string }
+  /** Prepare and decode a waiting signature request, for its approval screen. */
+  | { type: "dapp_review"; id: string }
+  /** Answer a waiting request. Approving a signature names the `digest` its review showed
+   *  (and the typed word, if the review asked for one). */
+  | { type: "dapp_answer"; id: string; approve: boolean; digest?: string; confirm?: string }
+  /** Sites this wallet is connected to, and cutting one off. */
+  | { type: "connections" }
+  | { type: "disconnect"; origin: string };
 
 export type Status = {
   hasWallet: boolean;
@@ -205,6 +215,33 @@ export type Settings = {
 
 export type TxState = { state: "pending" | "success" | "failed"; log?: string };
 
+/** What a site asked for, waiting for the user in an approval window. `origin` comes from
+ *  the browser, never from the page. */
+export type DappRequest = {
+  id: string;
+  origin: string;
+  network: NetworkId;
+  /** connect: see the account and ask for approvals. switch: move the wallet to `to`.
+   *  sign: one of the vault's request kinds (`method` names it). */
+  kind: "connect" | "switch" | "sign";
+  /** For sign: evm_transaction, evm_personal_sign, evm_typed_data, cosmos_direct or
+   *  cosmos_amino. */
+  method?: string;
+  /** For switch: the network asked for. */
+  to?: NetworkId;
+};
+
+/** A signature request's approval screen: the vault's decode and the risk rules' verdict,
+ *  as for the wallet's own sends. */
+export type DappReview = Omit<SendReview, "display"> & {
+  display: CosmosDisplay | EvmDisplay | { kind: string; [k: string]: unknown };
+  /** A Cosmos tx's simulation: what it would move for this account (the fee apart), or why
+   *  it would fail. */
+  simulation?: { ok: true; changes: Coin[] } | { ok: false; error: string };
+};
+
+export type Connection = { origin: string; since: number };
+
 /** What each request returns. */
 export type Replies = {
   status: Status;
@@ -225,6 +262,11 @@ export type Replies = {
   prepare_convert: SendReview;
   confirm_send: Sent;
   tx_status: TxState;
+  dapp_request: DappRequest;
+  dapp_review: DappReview;
+  dapp_answer: { done: true; hash?: string };
+  connections: Connection[];
+  disconnect: Connection[];
 };
 
 export type Reply<R extends UiRequest> = Replies[R["type"]];

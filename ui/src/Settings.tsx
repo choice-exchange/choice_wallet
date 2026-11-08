@@ -1,10 +1,11 @@
-// Settings (a tab): the network, its endpoints, USD values, and locking.
+// Settings (a tab): the network, its endpoints, USD values, connected sites, and locking.
 
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 
-import { LockIcon } from "./icons";
+import { useBackend } from "./backend";
+import { GlobeIcon, LockIcon } from "./icons";
 import { Screen, Segmented } from "./kit";
-import type { NetworkId, Settings } from "./protocol";
+import type { Connection, NetworkId, Settings } from "./protocol";
 import { useRequest } from "./request";
 
 export function SettingsView({ onDone, onLock, tabs }: { onDone: () => void; onLock: () => void; tabs: ReactNode }) {
@@ -14,6 +15,12 @@ export function SettingsView({ onDone, onLock, tabs }: { onDone: () => void; onL
   const [text, setText] = useState("");
   const [evmText, setEvmText] = useState("");
   const [prices, setPrices] = useState(true);
+  const backend = useBackend();
+  const [sites, setSites] = useState<Connection[]>([]);
+
+  useEffect(() => {
+    void backend.send({ type: "connections" }).then((r) => r.ok && setSites(r.result));
+  }, []);
 
   useEffect(() => {
     void run({ type: "settings" }).then((s) => {
@@ -132,6 +139,31 @@ export function SettingsView({ onDone, onLock, tabs }: { onDone: () => void; onL
           onChange={(v) => setPrices(v === "on")}
         />
         <span className="meta">Mainnet prices from Choice. It sees no balances.</span>
+        <div className="eyebrow" style={{ marginTop: 8 }}>
+          Connected sites
+        </div>
+        {sites.length === 0 ? (
+          <span className="meta">None. A site asks first, in its own window.</span>
+        ) : (
+          <div className="well rows">
+            {sites.map((c) => (
+              <div className="row site-row" key={c.origin}>
+                <span className="site-name">
+                  <GlobeIcon size={16} />
+                  {c.origin.replace(/^https:\/\//, "")}
+                </span>
+                <button
+                  type="button"
+                  className="pill"
+                  aria-label={`Disconnect ${c.origin}`}
+                  onClick={() => void backend.send({ type: "disconnect", origin: c.origin }).then((r) => r.ok && setSites(r.result))}
+                >
+                  Disconnect
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
         <div className="eyebrow" style={{ marginTop: 8 }}>
           Security
         </div>
