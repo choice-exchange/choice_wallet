@@ -1,0 +1,65 @@
+// Layout and small controls every screen uses.
+
+import type { ReactNode } from "react";
+
+import { BackIcon, InfoIcon, WarningIcon } from "./icons";
+import type { Level } from "./protocol";
+
+/** A screen: a top bar, a scrolling body, and a foot holding its action. */
+export function Screen({ top, children, foot }: { top?: ReactNode; children: ReactNode; foot?: ReactNode }) {
+  return (
+    <div className="app">
+      <div className="topbar">{top}</div>
+      <div className="body slide-in">{children}</div>
+      {foot && <div className="foot">{foot}</div>}
+    </div>
+  );
+}
+
+/** A top bar with a back button and the screen's name. */
+export function BackBar({ title, onBack }: { title: string; onBack: () => void }) {
+  return (
+    <>
+      <button className="icon-btn" aria-label="Back" onClick={onBack} style={{ marginLeft: -8 }}>
+        <BackIcon size={20} />
+      </button>
+      <span className="title">{title}</span>
+    </>
+  );
+}
+
+export function Segmented<T extends string>({
+  options,
+  value,
+  onChange,
+  label,
+}: {
+  options: readonly (readonly [T, string])[];
+  value: T;
+  onChange: (v: T) => void;
+  label: string;
+}) {
+  return (
+    <div className="segmented" role="group" aria-label={label}>
+      {options.map(([v, text]) => (
+        <button key={v} type="button" aria-pressed={v === value} onClick={() => onChange(v)}>
+          {text}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+export function Callout({ level, children }: { level: Level; children: ReactNode }) {
+  return (
+    <div className={`callout ${level}`} role={level === "info" ? undefined : "alert"}>
+      {level === "info" ? <InfoIcon size={16} /> : <WarningIcon size={16} />}
+      <span>{children}</span>
+    </div>
+  );
+}
+
+/** `inj1npvwllfr…re90dz`: enough of both ends to check by eye. */
+export function shortAddress(a: string): string {
+  return a.length > 20 ? `${a.slice(0, 10)}…${a.slice(-6)}` : a;
+}

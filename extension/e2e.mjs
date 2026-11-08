@@ -122,7 +122,8 @@ try {
         throw new Error(`timed out waiting for "${text}"; page: ${await page.eval("document.body.innerText")}`);
       },
       async click(text) {
-        const ok = await page.eval(`(() => { const b = [...document.querySelectorAll("button")].find((b) => b.textContent.trim() === ${JSON.stringify(text)} && !b.disabled); if (b) b.click(); return !!b; })()`);
+        // By its text, or by its accessible name for an icon button.
+        const ok = await page.eval(`(() => { const t = ${JSON.stringify(text)}; const b = [...document.querySelectorAll("button")].find((b) => (b.textContent.trim() === t || b.getAttribute("aria-label") === t) && !b.disabled); if (b) b.click(); return !!b; })()`);
         if (!ok) throw new Error(`no enabled button "${text}"; page: ${await page.eval("document.body.innerText")}`);
       },
       async fill(selector, index, value) {
@@ -132,6 +133,7 @@ try {
           el.dispatchEvent(new Event("input", { bubbles: true })); })()`);
       },
       async shot(name) {
+        await sleep(250); // let the screen's entrance animation finish
         const { data } = await send("Page.captureScreenshot", { format: "png" }, sessionId);
         writeFileSync(join(out, `${name}.png`), Buffer.from(data, "base64"));
       },
@@ -143,33 +145,37 @@ try {
   // 1. Create a new wallet, through the backup check.
   let p = await openPopup();
   await p.waitText("Create a new wallet");
-  await p.shot("1-welcome");
+  await p.shot("01-welcome");
   await p.click("Create a new wallet");
   await p.waitText("Your recovery phrase");
   const words = await p.eval(`[...document.querySelectorAll(".words li")].map((li) => li.textContent)`);
   console.log("generated phrase has", words.length, "words");
-  await p.shot("2-backup");
+  await p.shot("02-backup");
   await p.click("I wrote them down");
   await p.waitText("Check your backup");
   const asked = await p.eval(`[...document.querySelectorAll("label")].map((l) => parseInt(l.textContent.slice(5), 10))`);
   for (const [i, n] of asked.entries()) await p.fill("label input", i, words[n - 1]);
-  await p.shot("3-confirm");
+  await p.shot("03-confirm");
   await p.click("Continue");
   await p.waitText("Set a password");
   await p.fill("input[type=password]", 0, "correct horse battery staple");
   await p.fill("input[type=password]", 1, "correct horse battery staple");
+  await p.shot("04-password");
   await p.click("Create wallet");
   await p.waitText("Account 1");
   if (live) {
     // The default mainnet endpoints, from the browser: a fresh account has no tokens.
     await p.waitText("No tokens yet.", 20000);
     console.log("live: mainnet endpoints answered (no tokens yet)");
+    await p.shot("05-home-empty");
   }
   async function addresses() {
     await p.click("Receive");
     await p.waitText("Both addresses are the same account.");
-    const a = await p.eval(`[...document.querySelectorAll(".card code")].map((c) => c.textContent)`);
-    await p.shot("4-receive");
+    const a = [await p.eval(`document.querySelector(".address").textContent`)];
+    await p.shot("06-receive");
+    await p.click("EVM (0x)");
+    a.push(await p.eval(`document.querySelector(".address").textContent`));
     await p.click("Back");
     await p.waitText("Account 1");
     return a;
@@ -183,7 +189,7 @@ try {
   await p.fill("input[type=password]", 0, "wrong password!");
   await p.click("Unlock");
   await p.waitText("Wrong password.");
-  await p.shot("5-wrong-password");
+  await p.shot("07-wrong-password");
   await p.fill("input[type=password]", 0, "correct horse battery staple");
   await p.click("Unlock");
   await p.waitText("Account 1");
@@ -198,42 +204,47 @@ try {
 
   // 4. Point the wallet at the fake LCD.
   await p.click("Settings");
-  await p.waitText("Endpoints, tried in order");
+  await p.waitText("Tried in order, one per line.");
   await p.fill("textarea", 0, lcdUrl);
-  await p.shot("6-settings");
+  await p.shot("08-settings");
   await p.click("Save");
   await p.waitText("USDT");
   await p.waitText("factory/inj1");
-  const list = await p.eval(`[...document.querySelectorAll(".list li")].map((li) => li.innerText.replace(/\\s+/g, " "))`);
+  const list = await p.eval(`[...document.querySelectorAll(".token-list .token")].map((li) => li.innerText.replace(/\\s+/g, " "))`);
   console.log("balances", list);
   if (list.length !== 3 || !list[0].startsWith("INJ") || !list[2].includes("factory/inj1")) throw new Error("unexpected balance list");
-  await p.shot("7-balances");
+  await p.shot("09-home");
 
   // 5. Send 1.5 INJ to an EVM address; the review shows the vault's decode.
   const THEM_EVM = "0x9d8A62f656a8d1615C1294fd71e9CFb3E4855A4F";
   await p.click("Send");
   await p.waitText("Balance 5 INJ");
   await p.fill('input[placeholder^="inj1"]', 0, THEM_EVM);
+  await p.click("Choose a token");
+  await p.waitText("Choose a token");
+  await p.shot("10-token-picker");
+  await p.eval(`document.querySelector(".token-list .token").click()`);
+  await p.waitText("Balance 5 INJ");
   await p.fill("input[inputmode=decimal]", 0, "1.5");
-  await p.shot("8-send");
+  await p.shot("11-send");
   await p.click("Review");
   await p.waitText("Review send");
   await p.waitText("1.5 INJ");
   await p.waitText(`You entered ${THEM_EVM}`);
-  await p.waitText(`Simulated on 127.0.0.1:${lcd.address().port}`);
+  await p.waitText(`127.0.0.1:${lcd.address().port}`);
   // 82,771 gas simulated × 1.3 = 107,603 gas, at 160000000 inj per gas.
   await p.waitText("0.00001721648 INJ");
   const review = await p.eval("document.body.innerText");
-  const to = (await p.eval(`document.querySelector(".card code").textContent`)).trim();
+  const to = (await p.eval(`document.querySelector(".recipient").textContent`)).trim();
   console.log("review to", to);
-  await p.shot("9-review");
+  await p.shot("12-review");
   await p.click("Confirm and send");
   await p.waitText("Sent", 15000);
-  await p.shot("10-sent");
+  await p.shot("13-sent");
   if (broadcasts.length !== 1) throw new Error(`expected one broadcast, got ${broadcasts.length}`);
   const tx = Buffer.from(broadcasts[0], "base64");
   if (!tx.includes(Buffer.from(to))) throw new Error("the broadcast tx doesn't carry the reviewed recipient");
-  const shown = await p.eval(`document.querySelector("code").title`);
+  const shown = await p.eval(`document.querySelector("[data-hash]").dataset.hash`);
   if (shown !== sha(broadcasts[0])) throw new Error("the shown hash isn't the broadcast tx's");
   console.log("sent", shown, "fee line:", review.split("\n").find((l) => l.includes("INJ") && !l.includes("1.5")));
   await p.click("Done");
@@ -246,7 +257,7 @@ try {
   await p.click("Max");
   await p.click("Review");
   await p.waitText("Sends more than half of this account's INJ.");
-  await p.shot("11-review-max");
+  await p.shot("14-review-max");
   await p.click("Cancel");
   await p.waitText("Balance 5 INJ");
   if (broadcasts.length !== 1) throw new Error("cancel broadcast something");

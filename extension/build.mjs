@@ -45,6 +45,9 @@ const common = {
   format: "esm",
   charset: "utf8",
   alias: { "choice-wallet-vault-glue": join(glue, "choice_wallet_wasm.js") },
+  // The UI's font and images ship inside the extension; nothing is fetched at runtime.
+  loader: { ".woff2": "file", ".png": "file", ".svg": "file" },
+  assetNames: "assets/[name]-[hash]",
   define: { "process.env.NODE_ENV": '"production"' },
   legalComments: "eof",
   logLevel: "warning",

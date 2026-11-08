@@ -285,7 +285,7 @@ The wallet is free. If fees are added later, these rules hold:
 | Need | Choice | Version surveyed 2026-11-08 |
 | --- | --- | --- |
 | Build | esbuild, with a 60-line build script (`extension/build.mjs`). WXT was the first pick, but it pulls 128 npm packages into the build, and build tools can tamper with what they produce; esbuild is 2. Decided 2026-11-08 | 0.28.2 |
-| UI | React, TypeScript (type checks only) | 19.3.1, 7.0.2 |
+| UI | React, TypeScript (type checks only). Choice's visual language and tokens; the font and the listed tokens' logos ship inside the extension, so no page loads anything remote | 19.3.1, 7.0.2 |
 | Package manager | npm with a lockfile, install scripts off, exact versions, and `before` set two weeks back (`.npmrc`). npm workspaces: `chain`, `ui` and `extension`, one lockfile at the root. Twelve packages in all, three of them shipped | npm 11 |
 | WASM glue | `wasm-bindgen-cli` pinned to the crate's exact version (0.2.130), plus a pinned binaryen | |
 | Ledger | Device Management Kit + Cosmos and Ethereum signer kits + WebHID transport | DMK 1.11 |

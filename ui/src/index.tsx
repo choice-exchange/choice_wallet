@@ -1,7 +1,7 @@
 // Choice Wallet's UI, shared by every platform. A platform renders it with `mount` and its
 // own Backend, and adds the CSS that fixes its window size (if any).
 
-/// <reference path="./css.d.ts" />
+/// <reference path="./assets.d.ts" />
 import "./styles.css";
 
 import { StrictMode } from "react";
