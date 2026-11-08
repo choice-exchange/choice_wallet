@@ -463,3 +463,63 @@ fn personal_sign_matches_viem_and_checks_sign_in() {
     let text = json!({ "evm_personal_sign": { "chain": "eip155:1776", "signer": v["signer"], "message": "hello" }});
     assert_eq!(ok("decode", json!({ "request": text }))["display"]["text"], "hello");
 }
+
+#[test]
+fn grants_on_json_paths_get_the_same_treatment() {
+    // EIP-712 v2 typed data carrying a grant, a fee grant and admin changes.
+    let v = vectors("eip712_v2");
+    let c = v["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "mainnet_grants_and_admin_changes")
+        .unwrap();
+    let request = json!({ "evm_typed_data": {
+        "chain": "eip155:1776",
+        "signer": "0x9858EfFD232B4033E47d90003D41EC34EcaEda94",
+        "typed_data": c["typed_data"],
+    }});
+    let risk = &ok("decode", json!({ "request": request }))["risk"];
+    assert_eq!(
+        (risk["level"].as_str(), risk["confirm"].as_str()),
+        (Some("red"), Some("GRANT")),
+        "{risk}"
+    );
+    let rules: Vec<&str> = risk["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["rule"].as_str().unwrap())
+        .collect();
+    for r in [
+        "authz_grant",
+        "fee_grant",
+        "denom_admin",
+        "contract_admin",
+        "authz_revoke",
+        "fee_revoke",
+    ] {
+        assert!(rules.contains(&r), "{r} missing from {rules:?}");
+    }
+
+    // The same grant as a dapp's signAmino sign doc.
+    let m = vectors("messages")["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["name"] == "authz_generic_grant")
+        .unwrap()
+        .clone();
+    let doc = json!({
+        "account_number": "1", "chain_id": "injective-1", "memo": "", "sequence": "0",
+        "fee": { "amount": [], "gas": "200000" }, "msgs": [m["amino"]],
+    });
+    let request =
+        json!({ "cosmos_amino": { "chain": "cosmos:injective-1", "signer": signer_key(0), "sign_doc": doc } });
+    let risk = &ok("decode", json!({ "request": request }))["risk"];
+    assert_eq!(risk["confirm"], "GRANT", "{risk}");
+    assert_eq!(
+        risk["findings"][0]["message"],
+        "inj1d7…z8h8 could send ALL your tokens, until 2030-01-01."
+    );
+}

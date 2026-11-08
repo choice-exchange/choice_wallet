@@ -19,6 +19,10 @@ const fn cosmos(chain_id: &'static str) -> Chain {
             pub_key_type_url: PUB_KEY_TYPE_URL,
         },
         tokenfactory: Some("injective.tokenfactory.v1beta1"),
+        amino_names: &[(
+            "injective/tokenfactory/change-admin",
+            "/injective.tokenfactory.v1beta1.MsgChangeAdmin",
+        )],
     }
 }
 

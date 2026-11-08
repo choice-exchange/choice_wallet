@@ -86,7 +86,7 @@ Protobuf types:
 - Cross-implementation vectors: `tools/vectors/` generates them with injective-ts (sdk-ts 1.20.62) and viem 2.57.7. The Rust tests must match byte for byte. Today that covers:
   - addresses;
   - Direct and amino JSON sign docs, signatures and TxRaw bytes for bank, CW20 and adapter messages;
-  - authz grants (generic and send), execs, revokes, fee grants and revokes, reward withdrawals, the withdraw address, tokenfactory and contract admin changes, each decoded byte-exactly;
+  - authz grants (generic and send), execs, revokes, fee grants and revokes, reward withdrawals, the withdraw address, tokenfactory and contract admin changes, each decoded byte-exactly, and their amino JSON and EIP-712 v2 forms decoding to the same messages (three forms sdk-ts doesn't produce are written from the x/tx rules and marked as such in the tests);
   - Injective EIP-712 v2 typed data (built by injective-ts, hashed and signed by viem);
   - generic EIP-712 hashing and `eth_signTypedData_v4` signatures (nested structs, arrays, signed integers, bytesN);
   - EIP-1559 native and ERC20 transfers;

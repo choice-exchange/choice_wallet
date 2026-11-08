@@ -21,6 +21,7 @@ pub mod chain;
 pub mod cosmwasm;
 pub mod direct;
 mod error;
+mod json;
 pub mod msg;
 #[allow(missing_docs, clippy::all, clippy::pedantic, rustdoc::all)]
 #[rustfmt::skip]

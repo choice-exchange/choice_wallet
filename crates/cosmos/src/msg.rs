@@ -3,6 +3,7 @@
 use choice_wallet_core::hexutil;
 use prost::Name;
 use serde::{Deserialize, Serialize, Serializer};
+use serde_json::Value;
 use serde_json::value::RawValue;
 
 use crate::Error;
@@ -496,9 +497,11 @@ struct MsgExecuteContractJson<'a> {
 
 impl Msg {
     /// Decode one message in protobuf JSON (`{"@type": …, …}`), as EIP-712 typed data
-    /// carries them. Known types with unexpected fields are kept raw, because a field we
-    /// don't know could change what the message does.
-    pub fn from_proto_json(text: &str) -> Result<Self, Error> {
+    /// carries them, for `chain`. Known types with unexpected fields are kept raw, because a
+    /// field we don't know could change what the message does. Bank sends and contract
+    /// calls keep the contract message exactly as written; the other types (grants,
+    /// `MsgExec`, admin changes, …) go through the decoder shared with amino JSON.
+    pub fn from_proto_json(text: &str, chain: &Chain) -> Result<Self, Error> {
         let TypeOnly { type_url } =
             serde_json::from_str(text).map_err(|_| Error::Json("message without @type".into()))?;
         let unknown = || Self::UnknownJson {
@@ -527,7 +530,10 @@ impl Msg {
                 }
                 Err(_) => unknown(),
             },
-            _ => unknown(),
+            _ => {
+                let v: Value = serde_json::from_str(text).map_err(|e| Error::Json(e.to_string()))?;
+                return crate::json::message(&v, crate::json::Form::Proto, chain, 0);
+            }
         };
         Ok(msg)
     }

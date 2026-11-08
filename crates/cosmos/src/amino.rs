@@ -24,8 +24,8 @@ use serde_json::{Map, Value, json};
 
 use crate::Error;
 use crate::chain::Chain;
-use crate::cosmwasm;
 use crate::direct::{self, Decoded, Request};
+use crate::json::{self, Form};
 use crate::msg::{Coin, JsonCoin, Msg, coins_from_json};
 use crate::proto::cosmos::tx::signing::v1beta1::SignMode;
 
@@ -165,24 +165,6 @@ struct AminoMsg {
     value: Value,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct MsgSendValue {
-    amount: Vec<JsonCoin>,
-    from_address: String,
-    to_address: String,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct MsgExecuteContractValue {
-    contract: String,
-    #[serde(default)]
-    funds: Vec<JsonCoin>,
-    msg: Value,
-    sender: String,
-}
-
 /// Check a dapp's `signAmino` StdSignDoc (JSON) for `chain`, signed by `signer`.
 ///
 /// What gets signed is the canonical form of this document. If the dapp then broadcasts a
@@ -203,7 +185,7 @@ pub fn decode_sign_doc(json: &str, chain: &Chain, signer: &PublicKey) -> Result<
     let messages = doc
         .msgs
         .into_iter()
-        .map(decode_amino_msg)
+        .map(|m| decode_amino_msg(m, chain))
         .collect::<Result<Vec<_>, _>>()?;
     for m in &messages {
         if let Some(s) = m.signer()
@@ -237,37 +219,9 @@ pub fn decode_sign_doc(json: &str, chain: &Chain, signer: &PublicKey) -> Result<
     })
 }
 
-fn decode_amino_msg(m: AminoMsg) -> Result<Msg, Error> {
-    let unknown = |m: &AminoMsg| -> Result<Msg, Error> {
-        Ok(Msg::UnknownJson {
-            type_url: m.type_name.clone(),
-            json: canonical(&m.value)?,
-        })
-    };
-    match m.type_name.as_str() {
-        "cosmos-sdk/MsgSend" => match serde_json::from_value::<MsgSendValue>(m.value.clone()) {
-            Ok(v) => Ok(Msg::BankSend {
-                from: v.from_address,
-                to: v.to_address,
-                amount: coins(v.amount)?,
-            }),
-            Err(_) => unknown(&m),
-        },
-        "wasm/MsgExecuteContract" => match serde_json::from_value::<MsgExecuteContractValue>(m.value.clone()) {
-            Ok(v) => {
-                let json = canonical(&v.msg)?;
-                Ok(Msg::ExecuteContract {
-                    call: cosmwasm::parse(json.as_bytes())?,
-                    sender: v.sender,
-                    contract: v.contract,
-                    funds: coins(v.funds)?,
-                    json,
-                })
-            }
-            Err(_) => unknown(&m),
-        },
-        _ => unknown(&m),
-    }
+fn decode_amino_msg(m: AminoMsg, chain: &Chain) -> Result<Msg, Error> {
+    let packed = json!({ "type": m.type_name, "value": m.value });
+    json::message(&packed, Form::Amino, chain, 0)
 }
 
 /// The amino JSON of a message we know, as `x/tx` renders it.

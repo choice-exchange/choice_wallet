@@ -33,6 +33,10 @@ pub struct Chain {
     /// Protobuf package of the chain's tokenfactory module, e.g.
     /// `injective.tokenfactory.v1beta1`, if it has one.
     pub tokenfactory: Option<&'static str>,
+    /// Amino JSON names of the chain's own messages, with their type URLs, e.g.
+    /// `("injective/tokenfactory/change-admin", "/injective.tokenfactory.v1beta1.MsgChangeAdmin")`.
+    /// Cosmos SDK and wasmd names are built in.
+    pub amino_names: &'static [(&'static str, &'static str)],
 }
 
 impl Chain {
@@ -93,6 +97,7 @@ mod tests {
             pub_key_type_url: "/test.PubKey",
         },
         tokenfactory: None,
+        amino_names: &[],
     };
 
     #[test]

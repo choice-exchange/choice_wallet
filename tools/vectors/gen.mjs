@@ -140,6 +140,21 @@ const v2cases = [
     fee: { ...fee, feePayer: a2 }, evmChainId: 1,
   },
   {
+    name: "mainnet_grants_and_admin_changes",
+    msgs: [
+      MsgGrant.fromJSON({ granter: a0, grantee: a1, messageType: "/cosmos.bank.v1beta1.MsgSend", expiration: 1893456000 }),
+      MsgRevoke.fromJSON({ granter: a0, grantee: a1, messageType: "/cosmos.bank.v1beta1.MsgSend" }),
+      MsgGrantAllowance.fromJSON({
+        granter: a0, grantee: a1, allowance: { spendLimit: [{ denom: "inj", amount: "1000" }], expiration: 1893456000 },
+      }),
+      MsgRevokeAllowance.fromJSON({ granter: a0, grantee: a1 }),
+      MsgChangeAdmin.fromJSON({ sender: a0, denom: `factory/${a0}/test`, newAdmin: a1 }),
+      MsgUpdateAdmin.fromJSON({ sender: a0, newAdmin: a1, contract: a2 }),
+    ],
+    tx: { accountNumber: "12345", sequence: "5", timeoutHeight: "0", chainId: "injective-1", memo: "" },
+    fee, evmChainId: 1776,
+  },
+  {
     name: "testnet_bank_to_cw20",
     msgs: [exec(ADAPTER, { redeem_and_transfer: { recipient: a0 } }, [{ denom: `factory/${ADAPTER}/${CW20}`, amount: "7" }])],
     tx: { accountNumber: "9", sequence: "0", timeoutHeight: "0", chainId: "injective-888", memo: "" },
@@ -253,7 +268,13 @@ console.log(`wrote ${aminoOut.cases.length} cases to ${aminoFile}`);
 const SEND_URL = "/cosmos.bank.v1beta1.MsgSend";
 const EXPIRY = 1893456000;
 const valoper = k0.toAddress().toBech32("injvaloper");
-const sdkAny = (m) => ({ type_url: m.toDirectSign().type, value: hex(m.toBinary()) });
+// The amino JSON (Ledger, signAmino) and protobuf JSON (EIP-712 v2) forms sdk-ts gives a
+// message, where it has a class for it.
+const forms = (m) => {
+  const attempt = (f) => { try { return f(); } catch { return null; } };
+  return { amino: attempt(() => m.toAmino()), web3: attempt(() => m.toEip712V2()) };
+};
+const sdkAny = (m) => ({ type_url: m.toDirectSign().type, value: hex(m.toBinary()), ...forms(m) });
 const pbAny = (type_url, T, fields) => ({ type_url, value: hex(T.toBinary(T.create(fields))) });
 const sendAuth = {
   typeUrl: "/cosmos.bank.v1beta1.SendAuthorization",

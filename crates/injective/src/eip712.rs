@@ -167,7 +167,7 @@ pub fn decode_v2(td: &TypedData, network: &Network, signer: &EthAddress) -> Resu
     }
     let messages = raw_msgs
         .into_iter()
-        .map(|m| Msg::from_proto_json(m.get()))
+        .map(|m| Msg::from_proto_json(m.get(), chain))
         .collect::<Result<Vec<_>, _>>()?;
     let signer_addr = chain.address_of(signer);
     for m in &messages {

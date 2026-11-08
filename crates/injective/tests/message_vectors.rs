@@ -307,3 +307,98 @@ fn grants_from_another_account_are_refused() {
     });
     assert_eq!(decode(vec![grant]).unwrap_err(), Error::ForeignSigner(a1));
 }
+
+/// The amino JSON (`signAmino`, Ledger) and protobuf JSON (EIP-712 v2) forms sdk-ts gives
+/// each message must decode to exactly what the protobuf path decodes.
+#[test]
+fn json_paths_agree_with_the_protobuf_path() {
+    let v = vectors();
+    let chain = &MAINNET.cosmos;
+    let mut checked = 0;
+    for m in v["messages"].as_array().unwrap() {
+        let name = m["name"].as_str().unwrap();
+        let want = decoded(name);
+        if m["web3"].is_object() {
+            let got = Msg::from_proto_json(&m["web3"].to_string(), chain).unwrap();
+            assert_eq!(got, want, "{name} protobuf JSON");
+            checked += 1;
+        }
+        if m["amino"].is_object() {
+            let doc = serde_json::json!({
+                "account_number": "1", "chain_id": "injective-1", "memo": "", "sequence": "0",
+                "fee": { "amount": [], "gas": "200000" },
+                "msgs": [m["amino"]],
+            });
+            let tx =
+                choice_wallet_cosmos::amino::decode_sign_doc(&doc.to_string(), chain, &key(0).public_key()).unwrap();
+            assert_eq!(tx.messages, [want], "{name} amino JSON");
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 16, "8 messages have both forms");
+}
+
+/// Messages sdk-ts has no JSON form for, written by hand from the x/tx rules (protobuf
+/// field names, amino names from the protos, timestamps as RFC 3339).
+#[test]
+fn hand_written_json_forms() {
+    let chain = &MAINNET.cosmos;
+    let (a0, a1, a2) = (addr("a0"), addr("a1"), addr("a2"));
+    let cases = [
+        (
+            serde_json::json!({ "@type": "/cosmos.distribution.v1beta1.MsgSetWithdrawAddress", "delegator_address": a0, "withdraw_address": a1 }),
+            serde_json::json!({ "type": "cosmos-sdk/MsgModifyWithdrawAddress", "value": { "delegator_address": a0, "withdraw_address": a1 } }),
+            decoded("set_withdraw_address"),
+        ),
+        (
+            serde_json::json!({ "@type": "/cosmwasm.wasm.v1.MsgClearAdmin", "sender": a0, "contract": a2 }),
+            serde_json::json!({ "type": "wasm/MsgClearAdmin", "value": { "sender": a0, "contract": a2 } }),
+            decoded("wasm_clear_admin"),
+        ),
+        (
+            serde_json::json!({ "@type": "/cosmos.authz.v1beta1.MsgGrant", "granter": a0, "grantee": a1, "grant": {
+                "authorization": { "@type": "/cosmos.bank.v1beta1.SendAuthorization", "spend_limit": [{ "denom": "inj", "amount": "5000" }], "allow_list": [a2] },
+                "expiration": "2030-01-01T00:00:00Z" } }),
+            serde_json::json!({ "type": "cosmos-sdk/MsgGrant", "value": { "granter": a0, "grantee": a1, "grant": {
+                "authorization": { "type": "cosmos-sdk/SendAuthorization", "value": { "spend_limit": [{ "denom": "inj", "amount": "5000" }], "allow_list": [a2] } },
+                "expiration": "2030-01-01T00:00:00Z" } } }),
+            decoded("authz_send_grant"),
+        ),
+    ];
+    for (proto, amino_form, want) in cases {
+        assert_eq!(
+            Msg::from_proto_json(&proto.to_string(), chain).unwrap(),
+            want,
+            "{proto}"
+        );
+        let doc = serde_json::json!({
+            "account_number": "1", "chain_id": "injective-1", "memo": "", "sequence": "0",
+            "fee": { "amount": [], "gas": "200000" }, "msgs": [amino_form],
+        });
+        let tx = choice_wallet_cosmos::amino::decode_sign_doc(&doc.to_string(), chain, &key(0).public_key()).unwrap();
+        assert_eq!(tx.messages, [want], "{amino_form}");
+    }
+
+    // A grant of a kind we can't read is still a grant (the risk rules see it), and a grant
+    // with an extra field is kept raw instead.
+    let odd = serde_json::json!({ "@type": "/cosmos.authz.v1beta1.MsgGrant", "granter": a0, "grantee": a1,
+        "grant": { "authorization": { "@type": "/cosmos.staking.v1beta1.StakeAuthorization", "max_tokens": null } } });
+    assert!(matches!(
+        Msg::from_proto_json(&odd.to_string(), chain).unwrap(),
+        Msg::AuthzGrant {
+            authorization: Authorization::Unknown { .. },
+            expiration: None,
+            ..
+        }
+    ));
+    let mut extra = odd.clone();
+    extra["memo"] = "x".into();
+    assert!(matches!(
+        Msg::from_proto_json(&extra.to_string(), chain).unwrap(),
+        Msg::UnknownJson { .. }
+    ));
+    // Bad timestamps and coins are errors, not unusual messages.
+    let mut late = odd;
+    late["grant"]["expiration"] = "2030-01-01".into();
+    assert!(Msg::from_proto_json(&late.to_string(), chain).is_err());
+}

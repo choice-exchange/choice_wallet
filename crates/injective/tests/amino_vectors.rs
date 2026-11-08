@@ -216,7 +216,7 @@ fn unknown_or_unusual_messages_are_kept_raw() {
     let mut v = doc();
     v["msgs"][0]["type"] = "cosmos-sdk/MsgGrant".into();
     assert!(
-        matches!(&decode(&v).unwrap().messages[0], Msg::UnknownJson { type_url, .. } if type_url == "cosmos-sdk/MsgGrant")
+        matches!(&decode(&v).unwrap().messages[0], Msg::UnknownJson { type_url, .. } if type_url == "/cosmos.authz.v1beta1.MsgGrant")
     );
 }
 
