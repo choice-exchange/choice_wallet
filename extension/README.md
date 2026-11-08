@@ -14,7 +14,7 @@ check from the repo root (npm workspaces):
 
 ```sh
 npm ci              # at the repo root: scripts off, versions pinned (see ../.npmrc)
-npm run check       # TypeScript, ui and extension
+npm run check       # TypeScript: chain, ui and extension
 npm test            # builds dist/ and dist-test/, runs the tests against the real vault
 npm run build       # dist/ only: load it unpacked from chrome://extensions
 ```
@@ -25,6 +25,7 @@ Browser check (Chromium or Chrome for Testing, not branded Chrome):
 
 ```sh
 npm run e2e -- /path/to/chromium "$PWD/extension/dist" /tmp/shots   # absolute paths
+npm run e2e -- /path/to/chromium "$PWD/extension/dist" /tmp/shots --live   # also reads mainnet
 ```
 
 ## Dependencies

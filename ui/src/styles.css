@@ -6,6 +6,7 @@
   --muted: #9aa4b2;
   --accent: #4f8cff;
   --danger: #ff6b6b;
+  --amber: #f0b429;
   color-scheme: dark;
 }
 @media (prefers-color-scheme: light) {
@@ -17,6 +18,7 @@
     --muted: #5b6573;
     --accent: #2563eb;
     --danger: #c62828;
+    --amber: #a86400;
     color-scheme: light;
   }
 }
@@ -46,7 +48,7 @@ button {
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 button.small { padding: 4px 10px; font-size: 12px; }
 button:disabled { opacity: 0.5; cursor: default; }
-input, textarea {
+input, textarea, select {
   font: inherit;
   width: 100%;
   padding: 10px;
@@ -73,3 +75,23 @@ label { display: flex; flex-direction: column; gap: 4px; color: var(--muted); }
 .card button { justify-self: start; }
 .error { color: var(--danger); }
 .footnote { color: var(--muted); font-size: 11px; margin-top: 24px; }
+.buttons { display: flex; gap: 6px; }
+.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; }
+.stack .pair { margin-top: 0; }
+button.selected { border-color: var(--accent); color: var(--accent); }
+button.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+.badge { display: inline-block; margin: -8px 0 12px; padding: 2px 8px; border-radius: 99px; border: 1px solid var(--amber); color: var(--amber); font-size: 12px; }
+.list { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+.list li { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 12px; }
+.list li + li { border-top: 1px solid var(--line); }
+.list .amount { font-variant-numeric: tabular-nums; }
+.denom, .hint { color: var(--muted); font-size: 12px; font-family: ui-monospace, monospace; }
+.hint { font-family: inherit; margin: -6px 0 0; word-break: break-all; }
+.inline { display: flex; gap: 8px; align-items: center; }
+.big { font-size: 20px; font-weight: 600; word-break: break-word; }
+.line { display: flex; justify-content: space-between; gap: 12px; }
+.line span:last-child { text-align: right; word-break: break-all; }
+.finding { margin: 0; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); }
+.finding.amber { border-color: var(--amber); color: var(--amber); }
+.finding.red, .finding.blocked { border-color: var(--danger); color: var(--danger); }
+code { word-break: break-all; }

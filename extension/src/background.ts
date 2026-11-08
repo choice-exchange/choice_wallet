@@ -25,6 +25,7 @@ const service = createService({
   },
   local: store(chrome.storage.local),
   session: store(chrome.storage.session),
+  fetch: (input, init) => fetch(input, init),
   scheduleLock(minutes) {
     void chrome.alarms.create(AUTO_LOCK, { delayInMinutes: minutes });
   },

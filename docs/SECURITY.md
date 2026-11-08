@@ -13,7 +13,7 @@ We build and audit Choice Wallet in house, in the open. This file covers what we
 | Approval reused for a different request | Yes | Approvals are single-use and bound to the request ID. The vault re-decodes at signing and signs only if the digest of the kind, chain, signer and exact signed bytes matches the approved one |
 | Clickjacking or a spoofed approval window | Yes | Buttons disabled ~800 ms after focus; no password entry in approval windows; anti-phishing phrase on the unlock screen |
 | Compromised JavaScript dependency in an extension page | Yes | Every extension page can read the unlocked key, so shipped JS has its own dependency budget, Trusted Types and a strict CSP |
-| Malicious RPC lies about balances or simulation | Partly | Several RPCs, user-settable; dapp-suggested RPCs never used for checks; simulation names its RPC. Light-client proofs in phase 3 |
+| Malicious RPC lies about balances or simulation | Partly | Several RPCs, user-settable; each must serve the expected chain ID; responses checked against the request (account, tx hash, integer amounts); gas price kept within the chain's own bounds and gas estimates capped; the review names the endpoint that simulated; dapp-suggested RPCs never used for checks. Light-client proofs in phase 3 |
 | Stolen keystore file | Yes | Argon2id 64 MiB + XChaCha20-Poly1305; header authenticated; uniform decrypt error |
 | Malicious update pushed through the store | Partly | Verified uploads, group publisher account with hardware keys, reproducible builds, a public watchdog. See Releases for what remains |
 | Malicious dependency (Rust) | Yes | Dependency budget, pinned lockfile, review of every lockfile diff |

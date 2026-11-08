@@ -1,14 +1,17 @@
 // The service worker's logic, without `chrome.*`, so it runs under test. It is the
 // extension's host: it answers the UI's requests (`@choice-wallet/ui/protocol`).
 //
-// - The encrypted keystore and the public account list live in local storage.
+// - The encrypted keystore, the public account list and the settings live in local storage.
 // - While unlocked, the unlock key (Argon2id output, opens only this keystore) lives in
 //   session storage, which Chrome keeps in memory and clears on browser restart or
-//   extension update. Locking deletes it.
+//   extension update. Locking deletes it, and any send waiting for approval.
 // - The vault is stateless: every call that needs a key gets the keystore and unlock key
 //   from here. UI pages never see either.
 
-import type { AccountInfo, NewSecret, Result, Status, UiRequest } from "@choice-wallet/ui/protocol";
+import { isNetworkId, NETWORKS, Pool, type Fetch, type NetworkId } from "@choice-wallet/chain";
+import type { AccountInfo, NewSecret, Result, Settings, Status, UiRequest } from "@choice-wallet/ui/protocol";
+
+import { createSender } from "./send";
 
 type UiResponse<T = unknown> = Result<T>;
 
@@ -23,6 +26,7 @@ export interface Deps {
   vault<T>(method: string, params?: unknown): Promise<Result<T>>;
   local: Store;
   session: Store;
+  fetch: Fetch;
   /** (Re)start the auto-lock timer. */
   scheduleLock(minutes: number): void;
   cancelLock(): void;
@@ -32,6 +36,9 @@ export interface Deps {
 export const AUTO_LOCK_MINUTES = 15;
 
 const err = (code: string, message: string): UiResponse<never> => ({ ok: false, error: { code, message } });
+
+/** User-set LCD endpoints per network; absent means the defaults. */
+type Endpoints = Partial<Record<NetworkId, string[]>>;
 
 export function createService(d: Deps) {
   async function keystore(): Promise<{ keystore?: string; kind?: Status["kind"]; accounts?: AccountInfo[] }> {
@@ -43,6 +50,18 @@ export function createService(d: Deps) {
     return typeof unlock_key === "string" ? unlock_key : undefined;
   }
 
+  async function network(): Promise<NetworkId> {
+    const { network } = await d.local.get(["network"]);
+    return isNetworkId(network) ? network : "mainnet";
+  }
+
+  async function endpoints(net: NetworkId): Promise<string[]> {
+    const { endpoints } = (await d.local.get(["endpoints"])) as { endpoints?: Endpoints };
+    return endpoints?.[net] ?? [...NETWORKS[net].lcd];
+  }
+
+  const sender = createSender({ vault: d.vault, fetch: d.fetch, session: d.session, endpoints });
+
   async function status(): Promise<Status> {
     const ks = await keystore();
     const unlocked = Boolean(ks.keystore) && (await unlockKey()) !== undefined;
@@ -50,6 +69,7 @@ export function createService(d: Deps) {
       hasWallet: Boolean(ks.keystore),
       unlocked,
       kind: ks.kind ?? null,
+      network: await network(),
       accounts: unlocked ? (ks.accounts ?? []) : [],
     };
   }
@@ -88,9 +108,47 @@ export function createService(d: Deps) {
   }
 
   async function lock(): Promise<UiResponse<Status>> {
-    await d.session.remove(["unlock_key"]);
+    await d.session.remove(["unlock_key", "pending_send"]);
     d.cancelLock();
     return { ok: true, result: await status() };
+  }
+
+  async function settings(): Promise<UiResponse<Settings>> {
+    return {
+      ok: true,
+      result: {
+        network: await network(),
+        lcd: { mainnet: await endpoints("mainnet"), testnet: await endpoints("testnet") },
+        lcdDefault: { mainnet: [...NETWORKS.mainnet.lcd], testnet: [...NETWORKS.testnet.lcd] },
+      },
+    };
+  }
+
+  async function saveSettings(net: unknown, lcd: unknown): Promise<UiResponse<Settings>> {
+    if (!isNetworkId(net)) return err("bad_request", "Unknown network.");
+    const all = ((await d.local.get(["endpoints"])) as { endpoints?: Endpoints }).endpoints ?? {};
+    if (lcd === null) {
+      delete all[net];
+    } else {
+      if (!Array.isArray(lcd) || !lcd.every((u) => typeof u === "string")) return err("bad_request", "Endpoints must be a list.");
+      try {
+        all[net] = [...new Pool(lcd as string[], { fetch: d.fetch, identify: async () => {} }).urls];
+      } catch (e) {
+        return err("invalid_endpoint", e instanceof Error ? `${e.message[0]?.toUpperCase()}${e.message.slice(1)}.` : "Invalid endpoint.");
+      }
+    }
+    await d.local.set({ network: net, endpoints: all });
+    return settings();
+  }
+
+  /** The first account and the network, for requests that need an unlocked wallet. */
+  async function active(): Promise<{ account: AccountInfo; net: NetworkId; keystore: string; key: string } | UiResponse<never>> {
+    const ks = await keystore();
+    const key = await unlockKey();
+    const account = ks.accounts?.[0];
+    if (!ks.keystore || key === undefined || !account) return err("locked", "Unlock the wallet first.");
+    d.scheduleLock(AUTO_LOCK_MINUTES);
+    return { account, net: await network(), keystore: ks.keystore, key };
   }
 
   /** Handle one request from an extension page. */
@@ -110,6 +168,21 @@ export function createService(d: Deps) {
         return unlock(r.password);
       case "lock":
         return lock();
+      case "settings":
+        return settings();
+      case "save_settings":
+        return saveSettings(r.network, r.lcd);
+      case "balances":
+      case "prepare_send":
+      case "confirm_send":
+      case "tx_status": {
+        const a = await active();
+        if ("ok" in a) return a;
+        if (r.type === "balances") return sender.balances(a.net, a.account);
+        if (r.type === "prepare_send") return sender.prepare(a.net, a.account, r);
+        if (r.type === "confirm_send") return sender.confirm(a.keystore, a.key, r);
+        return sender.status(a.net, r.hash);
+      }
       default:
         return err("bad_request", "Unknown request.");
     }

@@ -9,6 +9,9 @@ const backend: Backend = {
   copy(text) {
     return navigator.clipboard.writeText(text);
   },
+  openLink(url) {
+    if (url.startsWith("https://")) void chrome.tabs.create({ url });
+  },
 };
 
 mount(document.getElementById("root"), backend);

@@ -121,6 +121,23 @@ How each kind of Injective token is held and moved (checked against the injectiv
 - **One balance per token.** A CW20 and its adapter denom show as one token. A send that needs more than the CW20 side holds redeems the shortfall in the same tx, as Choice already does.
 - The CW20 adapter address is a builder parameter. Only mainnet's (`inj14ejq…euk`) is built in until testnet's is verified.
 
+### Chain client
+
+`chain/` (`@choice-wallet/chain`), TypeScript using only Web APIs, so the extension's service worker and a desktop or mobile web view run the same code. It holds no keys: it reads, simulates and broadcasts signed bytes.
+
+- **Endpoints.** User-settable per network (Settings). Defaults: three independent public LCDs on mainnet (Injective's sentry, Allnodes' publicnode, cosmos.directory) and two on testnet, each checked on 2026-11-08 to answer an extension origin with CORS. Never Choice's alone. Tried in order, starting with the one that answered last. https only, except local http for development.
+- **What counts as an answer.** A JSON `{code, message}` body is the chain's answer at any HTTP status and is not retried elsewhere. Network errors, timeouts (10 s), bodies that aren't JSON, and gRPC unavailable / exhausted / deadline codes move on to the next endpoint. Seen on mainnet: a failing simulation comes back as a 500 carrying the chain's error from the sentry and cosmos.directory, but as a bare 503 from publicnode. Over HTTP/1.1 the sentry also cuts that response short; browsers use HTTP/2.
+- **Checks.** An endpoint must serve the expected chain ID (`node_info`) before it is used. An account response must be for the address asked, a tx lookup for the hash asked, and amounts must be integers.
+- **Gas and fees.** The vault's `simulate_tx` (the transaction with an empty signature) is simulated, then the gas limit is 1.3 times the gas used, at least 50k. A simulation above 3M gas is not believed. The price is the txfees module's current base fee, kept between the chain's minimum (160000000 inj per gas) and 1000 times that (its `max_base_fee_multiplier`). A bank send uses 82,771 gas on mainnet, about 0.000017 INJ.
+- **Broadcast.** The tx hash (SHA-256 of the bytes) is known before sending. A retry that finds the tx already relayed (code 19) succeeds; a sequence mismatch on a retry counts as "maybe sent" and the hash is watched.
+- **Tokens.** A short list the wallet knows, checked by hand on mainnet: INJ, Circle's USDC (`erc20:0xa00C…235a`), Noble USDC, Peggy USDT, USDC and WETH, and ATOM. Any other token shows the symbol from its bank metadata, which its creator chose, so the UI shows the denom beside it and the risk rules name it by its denom. Control, bidi and zero-width characters are stripped from symbols and names.
+
+### Sending
+
+1. **Prepare** (host): read the account, spendable balances and gas price, and check the amount and fee against the balances. Build with a provisional fee, simulate, build again with the real fee. Decode and grade it with the risk rules like any dapp request. The prepared request waits in session storage under its digest.
+2. **Review** (UI): shows only the vault's decode: amounts, the recipient in the chain's own form (and what the user typed, if different), the fee, the findings, and the endpoint that simulated it.
+3. **Confirm** (host): removes the prepared request from storage (so a double click can't send twice), signs it only if its digest is the one the review showed, then broadcasts. The UI watches the hash until it lands in a block.
+
 ### Sign paths
 
 | Path | Used by | Canonical check | Status |
@@ -269,7 +286,7 @@ The wallet is free. If fees are added later, these rules hold:
 | --- | --- | --- |
 | Build | esbuild, with a 60-line build script (`extension/build.mjs`). WXT was the first pick, but it pulls 128 npm packages into the build, and build tools can tamper with what they produce; esbuild is 2. Decided 2026-11-08 | 0.28.2 |
 | UI | React, TypeScript (type checks only) | 19.3.1, 7.0.2 |
-| Package manager | npm with a lockfile, install scripts off, exact versions, and `before` set two weeks back (`.npmrc`). npm workspaces: `ui` and `extension`, one lockfile at the root. Twelve packages in all, three of them shipped | npm 11 |
+| Package manager | npm with a lockfile, install scripts off, exact versions, and `before` set two weeks back (`.npmrc`). npm workspaces: `chain`, `ui` and `extension`, one lockfile at the root. Twelve packages in all, three of them shipped | npm 11 |
 | WASM glue | `wasm-bindgen-cli` pinned to the crate's exact version (0.2.130), plus a pinned binaryen | |
 | Ledger | Device Management Kit + Cosmos and Ethereum signer kits + WebHID transport | DMK 1.11 |
 | Mobile dapp connections (phase 2) | Reown WalletKit | 1.6 |
@@ -282,7 +299,7 @@ injective-ts (1.20.x), ethers and viem are used only to generate test vectors. T
 
 | Phase | Scope |
 | --- | --- |
-| 0. Core and trust model | Rust core, Cosmos and Injective crates, EVM crate, risk rules, vault protocol and WASM build (done). Extension skeleton: the service worker hosting the vault, create / import / unlock / lock in the popup, checked in Chromium (done). The UI as its own package behind a host interface, so desktop and mobile reuse it (done). Extension security model as a written spec with tests. EIP-6963 `rdns` fixed and the injective-ts wallet PR opened. Test vectors from injective-ts 1.20.x and alloy. Real-dapp tx corpus. uniffi targets built in CI |
+| 0. Core and trust model | Rust core, Cosmos and Injective crates, EVM crate, risk rules, vault protocol and WASM build (done). Extension skeleton: the service worker hosting the vault, create / import / unlock / lock in the popup, checked in Chromium (done). The UI as its own package behind a host interface, so desktop and mobile reuse it (done). Balances and bank sends in the extension through the chain client, with user-set endpoints (done). Extension security model as a written spec with tests. EIP-6963 `rdns` fixed and the injective-ts wallet PR opened. Test vectors from injective-ts 1.20.x and alloy. Real-dapp tx corpus. uniffi targets built in CI |
 | 1. Extension beta (Injective) | Create or import a seed, Ledger (DMK), send and receive, one balance list (bank + ERC20 + CW20), dapp signing, simulation, approvals screen, inventory engine, rescue address with a scoped fee grant, Choice apps integrated. In-house audit, Chrome Web Store public beta |
 | 2. Depth and mobile | Rescue Mode, Trezor and Keystone, NFTs, staking, swap. iOS and Android with Reown WalletKit |
 | 3. Multichain | Ethereum, Base, Arbitrum, BSC; Cosmos Hub, Osmosis, Noble (per-chain proto sets); then Solana and Bitcoin. Vault accounts, light client |

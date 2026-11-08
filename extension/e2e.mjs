@@ -1,18 +1,69 @@
 // End-to-end check in a real browser: loads dist/ into Chromium and drives the popup over
 // the DevTools protocol (Node built-ins only, no browser-automation packages).
 //
-//   node e2e.mjs <chromium binary> <dist dir> <screenshot dir>
+//   node e2e.mjs <chromium binary> <dist dir> <screenshot dir> [--live]
 //
 // Needs a Chromium or Chrome for Testing build: branded Chrome no longer loads unpacked
 // extensions from the command line. The extension is loaded with Extensions.loadUnpacked
 // over --remote-debugging-pipe. It creates a throwaway wallet in a temporary profile,
-// which is deleted afterwards.
+// which is deleted afterwards. Sends go to a local fake LCD (below), never a real chain.
+// With --live, it also checks that the default mainnet endpoints answer from the browser.
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const [chrome, ext, out] = process.argv.slice(2);
+const [chrome, ext, out, flag] = process.argv.slice(2);
+const live = flag === "--live";
+
+// A fake mainnet LCD for any address: 5 INJ, 2.5 USDT, and a token that calls itself USDT.
+const USDT = "peggy0xdAC17F958D2ee523a2206206994597C13D831ec7";
+const SCAM = "factory/inj1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqe2hm49/usdt";
+const broadcasts = [];
+const sha = (b64) => createHash("sha256").update(Buffer.from(b64, "base64")).digest("hex").toUpperCase();
+const lcd = createServer((req, res) => {
+  const reply = (status, body) => {
+    res.writeHead(status, { "content-type": "application/json", "access-control-allow-origin": "*", "access-control-allow-headers": "content-type" });
+    res.end(JSON.stringify(body));
+  };
+  if (req.method === "OPTIONS") return reply(204, {});
+  let body = "";
+  req.on("data", (c) => (body += c));
+  req.on("end", () => {
+    const url = new URL(req.url, "http://x");
+    const p = url.pathname;
+    const tail = p.split("/").pop();
+    if (p.endsWith("/node_info")) return reply(200, { default_node_info: { network: "injective-1" } });
+    if (p.startsWith("/cosmos/auth/v1beta1/accounts/")) {
+      return reply(200, { account: { "@type": "/injective.types.v1beta1.EthAccount", base_account: { address: tail, pub_key: null, account_number: "1234", sequence: "0" } } });
+    }
+    if (p.startsWith("/cosmos/bank/v1beta1/spendable_balances/")) {
+      return reply(200, { balances: [{ denom: SCAM, amount: "7000000" }, { denom: "inj", amount: "5000000000000000000" }, { denom: USDT, amount: "2500000" }], pagination: { next_key: null } });
+    }
+    if (p === "/injective/txfees/v1beta1/cur_eip_base_fee") return reply(200, { base_fee: { base_fee: "160000000.000000000000000000" } });
+    if (p === "/cosmos/bank/v1beta1/denoms_metadata_by_query_string") {
+      if (url.searchParams.get("denom") === SCAM) return reply(200, { metadata: { base: SCAM, display: "USDT", symbol: "USDT", name: "Tether USD", decimals: 6, denom_units: [] } });
+      return reply(404, { code: 5, message: "client metadata for denom", details: [] });
+    }
+    if (p === "/cosmos/tx/v1beta1/simulate") return reply(200, { gas_info: { gas_wanted: "150000000", gas_used: "82771" } });
+    if (p === "/cosmos/tx/v1beta1/txs" && req.method === "POST") {
+      const { tx_bytes } = JSON.parse(body);
+      broadcasts.push(tx_bytes);
+      return reply(200, { tx_response: { txhash: sha(tx_bytes), code: 0, raw_log: "" } });
+    }
+    if (p.startsWith("/cosmos/tx/v1beta1/txs/")) {
+      return broadcasts.some((b) => sha(b) === tail)
+        ? reply(200, { tx_response: { txhash: tail, height: "190861703", code: 0, raw_log: "" } })
+        : reply(404, { code: 5, message: `tx not found: ${tail}`, details: [] });
+    }
+    reply(501, { code: 12, message: "Not Implemented", details: [] });
+  });
+});
+await new Promise((r) => lcd.listen(0, "127.0.0.1", r));
+const lcdUrl = `http://127.0.0.1:${lcd.address().port}`;
+
 const profile = mkdtempSync(join(tmpdir(), "cw-e2e-"));
 const proc = spawn(chrome, [
   "--headless=new", `--user-data-dir=${profile}`, "--remote-debugging-pipe", "--enable-unsafe-extension-debugging",
@@ -109,8 +160,21 @@ try {
   await p.fill("input[type=password]", 1, "correct horse battery staple");
   await p.click("Create wallet");
   await p.waitText("Account 1");
-  await p.shot("4-home");
-  const addrs = await p.eval(`[...document.querySelectorAll(".card code")].map((c) => c.textContent)`);
+  if (live) {
+    // The default mainnet endpoints, from the browser: a fresh account has no tokens.
+    await p.waitText("No tokens yet.", 20000);
+    console.log("live: mainnet endpoints answered (no tokens yet)");
+  }
+  async function addresses() {
+    await p.click("Receive");
+    await p.waitText("Both addresses are the same account.");
+    const a = await p.eval(`[...document.querySelectorAll(".card code")].map((c) => c.textContent)`);
+    await p.shot("4-receive");
+    await p.click("Back");
+    await p.waitText("Account 1");
+    return a;
+  }
+  const addrs = await addresses();
   console.log("addresses", addrs);
 
   // 2. Lock, wrong password, unlock.
@@ -128,17 +192,73 @@ try {
   await p.close();
   p = await openPopup();
   await p.waitText("Account 1");
-  const again = await p.eval(`[...document.querySelectorAll(".card code")].map((c) => c.textContent)`);
+  const again = await addresses();
   if (JSON.stringify(again) !== JSON.stringify(addrs)) throw new Error("addresses changed after reopening");
   console.log("reopened: still unlocked, same addresses");
 
-  // 4. A web page can't talk to the service worker: there is no externally_connectable, so
+  // 4. Point the wallet at the fake LCD.
+  await p.click("Settings");
+  await p.waitText("Endpoints, tried in order");
+  await p.fill("textarea", 0, lcdUrl);
+  await p.shot("6-settings");
+  await p.click("Save");
+  await p.waitText("USDT");
+  await p.waitText("factory/inj1");
+  const list = await p.eval(`[...document.querySelectorAll(".list li")].map((li) => li.innerText.replace(/\\s+/g, " "))`);
+  console.log("balances", list);
+  if (list.length !== 3 || !list[0].startsWith("INJ") || !list[2].includes("factory/inj1")) throw new Error("unexpected balance list");
+  await p.shot("7-balances");
+
+  // 5. Send 1.5 INJ to an EVM address; the review shows the vault's decode.
+  const THEM_EVM = "0x9d8A62f656a8d1615C1294fd71e9CFb3E4855A4F";
+  await p.click("Send");
+  await p.waitText("Balance 5 INJ");
+  await p.fill('input[placeholder^="inj1"]', 0, THEM_EVM);
+  await p.fill("input[inputmode=decimal]", 0, "1.5");
+  await p.shot("8-send");
+  await p.click("Review");
+  await p.waitText("Review send");
+  await p.waitText("1.5 INJ");
+  await p.waitText(`You entered ${THEM_EVM}`);
+  await p.waitText(`Simulated on 127.0.0.1:${lcd.address().port}`);
+  // 82,771 gas simulated × 1.3 = 107,603 gas, at 160000000 inj per gas.
+  await p.waitText("0.00001721648 INJ");
+  const review = await p.eval("document.body.innerText");
+  const to = (await p.eval(`document.querySelector(".card code").textContent`)).trim();
+  console.log("review to", to);
+  await p.shot("9-review");
+  await p.click("Confirm and send");
+  await p.waitText("Sent", 15000);
+  await p.shot("10-sent");
+  if (broadcasts.length !== 1) throw new Error(`expected one broadcast, got ${broadcasts.length}`);
+  const tx = Buffer.from(broadcasts[0], "base64");
+  if (!tx.includes(Buffer.from(to))) throw new Error("the broadcast tx doesn't carry the reviewed recipient");
+  const shown = await p.eval(`document.querySelector("code").title`);
+  if (shown !== sha(broadcasts[0])) throw new Error("the shown hash isn't the broadcast tx's");
+  console.log("sent", shown, "fee line:", review.split("\n").find((l) => l.includes("INJ") && !l.includes("1.5")));
+  await p.click("Done");
+  await p.waitText("Account 1");
+
+  // 6. Max: the review shows the risk rules' amber finding. Cancel sends nothing.
+  await p.click("Send");
+  await p.waitText("Balance 5 INJ");
+  await p.fill('input[placeholder^="inj1"]', 0, THEM_EVM);
+  await p.click("Max");
+  await p.click("Review");
+  await p.waitText("Sends more than half of this account's INJ.");
+  await p.shot("11-review-max");
+  await p.click("Cancel");
+  await p.waitText("Balance 5 INJ");
+  if (broadcasts.length !== 1) throw new Error("cancel broadcast something");
+
+  // 7. A web page can't talk to the service worker: there is no externally_connectable, so
   // chrome.runtime isn't even exposed to it.
   const { targetId: webId } = await send("Target.createTarget", { url: "data:text/html,<p>web page</p>" });
   const { sessionId: web } = await send("Target.attachToTarget", { targetId: webId, flatten: true });
   const exposed = await send("Runtime.evaluate", { expression: `typeof chrome !== "undefined" && typeof chrome.runtime?.sendMessage`, returnByValue: true }, web);
   console.log("web page sees chrome.runtime.sendMessage:", exposed.result.value);
 } finally {
+  lcd.close();
   proc.kill();
   await sleep(300);
   rmSync(profile, { recursive: true, force: true });

@@ -9,6 +9,7 @@
     "./protocol": "./src/protocol.ts"
   },
   "dependencies": {
+    "@choice-wallet/chain": "0.1.0",
     "react": "19.3.1",
     "react-dom": "19.3.1"
   }

@@ -10,6 +10,7 @@
     "e2e": "node e2e.mjs"
   },
   "dependencies": {
+    "@choice-wallet/chain": "0.1.0",
     "@choice-wallet/ui": "0.1.0"
   }
 }

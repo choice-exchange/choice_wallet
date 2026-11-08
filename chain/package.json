@@ -1,0 +1,13 @@
+{
+  "name": "@choice-wallet/chain",
+  "version": "0.1.0",
+  "private": true,
+  "license": "GPL-3.0-only",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "node --test \"test/*.test.ts\""
+  }
+}

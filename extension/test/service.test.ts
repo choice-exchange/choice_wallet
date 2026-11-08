@@ -40,6 +40,9 @@ function setup() {
     vault: async (method, params) => callVault(handle, method, params),
     local,
     session,
+    fetch: async () => {
+      throw new Error("no network in these tests");
+    },
     scheduleLock: (m) => void locks.scheduled.push(m),
     cancelLock: () => void locks.cancelled++,
   });
@@ -50,7 +53,7 @@ test("create, lock and unlock a wallet", async () => {
   const { service, local, session, locks } = setup();
   assert.deepEqual(await service.handle({ type: "status" }), {
     ok: true,
-    result: { hasWallet: false, unlocked: false, kind: null, accounts: [] },
+    result: { hasWallet: false, unlocked: false, kind: null, network: "mainnet", accounts: [] },
   });
 
   const created = await service.handle({ type: "create", secret: { mnemonic: PHRASE }, password: PASSWORD });
@@ -68,7 +71,7 @@ test("create, lock and unlock a wallet", async () => {
   assert.ok(!sent.includes(session.data.get("unlock_key") as string));
 
   const locked = await service.handle({ type: "lock" });
-  assert.deepEqual((locked as { result: unknown }).result, { hasWallet: true, unlocked: false, kind: "mnemonic", accounts: [] });
+  assert.deepEqual((locked as { result: unknown }).result, { hasWallet: true, unlocked: false, kind: "mnemonic", network: "mainnet", accounts: [] });
   assert.equal(session.data.has("unlock_key"), false);
   assert.equal(locks.cancelled, 1);
 

@@ -1,7 +1,8 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 
 import { useBackend } from "./backend";
 import type { NewSecret, Reply, Result, Status, UiRequest } from "./protocol";
+import { Page, Wallet } from "./Wallet";
 
 const UNREACHABLE = "The wallet didn't answer. Try again.";
 
@@ -95,7 +96,13 @@ export function App() {
       case "unlock":
         return <Unlock onSubmit={(password) => void run({ type: "unlock", password }, show)} />;
       case "home":
-        return <Home status={screen.status} onLock={() => void run({ type: "lock" }, show)} />;
+        return (
+          <Wallet
+            status={screen.status}
+            onLock={() => void run({ type: "lock" }, show)}
+            onStatus={() => void run({ type: "status" }, show)}
+          />
+        );
     }
   })();
 
@@ -105,16 +112,6 @@ export function App() {
       {error && <p className="error">{error}</p>}
       <p className="footnote">Pre-alpha. Not for real funds.</p>
     </main>
-  );
-}
-
-function Page({ title, lead, children }: { title: string; lead?: string; children: ReactNode }) {
-  return (
-    <section>
-      <h1>{title}</h1>
-      {lead && <p className="muted">{lead}</p>}
-      <div className="stack">{children}</div>
-    </section>
   );
 }
 
@@ -220,50 +217,5 @@ function Unlock({ onSubmit }: { onSubmit: (password: string) => void }) {
         </button>
       </Page>
     </form>
-  );
-}
-
-const SIDES: [string, string][] = [
-  ["cosmos:injective-1", "Injective"],
-  ["eip155:1776", "Injective EVM"],
-];
-
-function Home({ status, onLock }: { status: Status; onLock: () => void }) {
-  const account = status.accounts[0];
-  return (
-    <section>
-      <header className="row">
-        <h1>Account 1</h1>
-        <button className="small" onClick={onLock}>
-          Lock
-        </button>
-      </header>
-      <div className="stack">
-        {account &&
-          SIDES.map(([id, label]) => <Address key={id} label={label} address={account.addresses[id] ?? ""} />)}
-      </div>
-    </section>
-  );
-}
-
-function Address({ label, address }: { label: string; address: string }) {
-  const backend = useBackend();
-  const [copied, setCopied] = useState(false);
-  return (
-    <div className="card">
-      <div className="label">{label}</div>
-      <code>{address}</code>
-      <button
-        className="small"
-        onClick={() =>
-          void backend.copy(address).then(() => {
-            setCopied(true);
-            setTimeout(() => setCopied(false), 1500);
-          })
-        }
-      >
-        {copied ? "Copied" : "Copy"}
-      </button>
-    </div>
   );
 }

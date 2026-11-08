@@ -3,13 +3,14 @@
   "private": true,
   "type": "module",
   "workspaces": [
+    "chain",
     "ui",
     "extension"
   ],
   "scripts": {
-    "check": "tsc -p ui && tsc -p extension",
+    "check": "tsc -p chain && tsc -p ui && tsc -p extension",
     "build": "npm run build -w extension",
-    "test": "npm test -w extension",
+    "test": "npm test -w chain && npm test -w extension",
     "e2e": "npm run e2e -w extension --"
   },
   "devDependencies": {

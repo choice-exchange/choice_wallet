@@ -1,0 +1,8 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    // Web APIs only (the dom lib): no Node or chrome types in what ships.
+    "types": []
+  },
+  "include": ["src"]
+}

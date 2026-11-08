@@ -16,6 +16,7 @@ An open-source, self-custody wallet. Injective first (Cosmos side and Injective 
 | `crates/policy` | Risk rules: grades every decoded request (grants, allowances, permits, precompile calls, sign-in messages, balances, lookalike addresses) |
 | `crates/vault` | The vault protocol: one JSON entry point (`handle`) for every host: keystores, accounts, building sends, decode → approve → sign |
 | `crates/wasm` | The vault compiled to WASM for the extension |
+| `chain` | The chain client (TypeScript, GPL-3.0): user-settable endpoints with failover, balances, gas estimates, broadcasting, token names. No keys |
 | `ui` | The wallet's screens (React, GPL-3.0), shared by every platform. Talks to its host only through a small `Backend` interface. See [ui/README.md](ui/README.md) |
 | `extension` | The Chrome extension (GPL-3.0): the service worker hosts the vault and answers the UI; the popup is `ui` with a `chrome.runtime` backend. See [extension/README.md](extension/README.md) |
 | `tools/protogen` | Dev only: vendors `.proto` files and regenerates the committed prost code |
@@ -31,12 +32,12 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo build --workspace --release --target wasm32-unknown-unknown
 ```
 
-The UI and the extension are npm workspaces, installed and checked from the repo root. The extension build needs the `wasm-bindgen` CLI at exactly 0.2.130, the crate's version (set `WASM_BINDGEN` if it isn't on PATH):
+The chain client, the UI and the extension are npm workspaces, installed and checked from the repo root. The extension build needs the `wasm-bindgen` CLI at exactly 0.2.130, the crate's version (set `WASM_BINDGEN` if it isn't on PATH):
 
 ```sh
 npm ci           # scripts off, exact versions (see .npmrc)
-npm run check    # TypeScript, ui and extension
-npm test         # builds the extension and runs its tests against the real vault
+npm run check    # TypeScript: chain, ui and extension
+npm test         # the chain client's tests, then the extension's against the real vault
 ```
 
 Regenerating protobuf code or test vectors (not needed for a normal build):
@@ -56,4 +57,4 @@ Please report vulnerabilities privately through a GitHub security advisory on th
 
 ## License
 
-The Rust crates are Apache-2.0 ([LICENSE](LICENSE)). The UI and the extension are GPL-3.0, and so will the desktop and mobile apps be. "Choice Wallet" and its logo are trademarks, so forks must rebrand.
+The Rust crates are Apache-2.0 ([LICENSE](LICENSE)). The chain client, the UI and the extension are GPL-3.0, and so will the desktop and mobile apps be. "Choice Wallet" and its logo are trademarks, so forks must rebrand.

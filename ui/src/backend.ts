@@ -12,6 +12,8 @@ export interface Backend {
   send<R extends UiRequest>(request: R): Promise<Result<Reply<R>>>;
   /** Put text on the clipboard. */
   copy(text: string): Promise<void>;
+  /** Open an https link (a block explorer) outside the wallet. */
+  openLink(url: string): void;
 }
 
 export const BackendContext = createContext<Backend | null>(null);
