@@ -1,0 +1,13 @@
+{
+  "name": "choice-wallet-vectors",
+  "private": true,
+  "type": "module",
+  "description": "Dev only: generates cross-implementation test vectors with injective-ts and viem. Never shipped in a wallet build.",
+  "scripts": {
+    "gen": "node gen.mjs && node gen_evm.mjs"
+  },
+  "dependencies": {
+    "@injectivelabs/sdk-ts": "1.20.62",
+    "viem": "2.57.7"
+  }
+}

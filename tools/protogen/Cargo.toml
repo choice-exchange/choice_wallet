@@ -1,0 +1,15 @@
+[package]
+name = "protogen"
+description = "Dev tool: vendors .proto files and regenerates the committed prost code. Never part of a wallet build."
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+
+# Own workspace and lockfile, so these build-time crates never enter the wallet's lockfile.
+[workspace]
+
+[dependencies]
+prost-build = { version = "=0.14.4", default-features = false, features = ["format"] }
+protox = "=0.10.0"
+sha2 = "0.11.1"

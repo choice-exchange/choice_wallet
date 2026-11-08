@@ -16,7 +16,7 @@ Choice Wallet is an open-source, self-custody wallet. It starts as a browser ext
 | Business model | Free, no fees, for now (decided 2026-11-08). Fees may come later, under the rules in [Fees](#fees) |
 | Wallet ID | EIP-6963 `rdns` = `exchange.choice.wallet`, name "Choice Wallet". Official site wallet.choice.exchange (downloads, docs, release hashes). Permanent: never change it (decided 2026-11-08) |
 | Repository | github.com/choice-exchange/choice_wallet, public from the first commit (decided 2026-11-08) |
-| Open | Rescue Mode timing |
+| Rescue | Beta (phase 1) ships the rescue address with a scoped fee grant. Full Rescue Mode waits for phase 2 (decided 2026-11-08) |
 
 ## Why
 
@@ -59,12 +59,16 @@ mobile app (phase 2) ── uniffi ──▶ same Rust core
 | Crate | Job | Status |
 | --- | --- | --- |
 | `choice-wallet-core` | Mnemonic, HD derivation, secp256k1 keys, addresses, encrypted keystore | Built, 29 tests |
-| `choice-wallet-injective` | Injective protobuf (vendored .proto, prost 0.14), Direct / Amino JSON / EIP-712 sign paths, tx building, precompile decoding | Next |
-| `choice-wallet-evm` | EVM tx types 0-2, EIP-712, ABI decoding. alloy 2.5 for types only; signing stays on our k256 0.14 | Planned |
+| `choice-wallet-injective` | Injective protobuf (vendored .proto, prost 0.14), sign paths, tx building, precompile decoding | Direct sign path, bank / CW20 / adapter builders built; byte-identical to injective-ts 1.20.62. Amino JSON and EIP-712 next |
+| `choice-wallet-evm` | EVM tx types 0-2, EIP-712, ABI decoding. Signing on our k256 0.14 | EIP-1559 encode and sign, native and ERC20 transfers built; byte-identical to viem 2.57.7. Dapp requests next |
 | `choice-wallet-policy` | Risk rules over decoded requests | Planned |
 | `choice-wallet-wasm` | wasm-bindgen surface for the extension | Planned |
 
-Not used: `injective-std` and `cosmos-sdk-proto` (both still on prost 0.13; `injective-std` also pulls in cosmwasm-std), and the C `secp256k1` crate (needs a C toolchain for WASM).
+Not used:
+- `injective-std` and `cosmos-sdk-proto`: both still on prost 0.13, and `injective-std` also pulls in cosmwasm-std.
+- The C `secp256k1` crate: it needs a C toolchain for WASM.
+- `alloy-consensus`: even without default features it pulls about 120 crates, including second copies of sha2 and sha3. Dapps send EVM requests as JSON, so the wallet only ever encodes transactions. A 60-line RLP writer, checked byte for byte against viem, does that. `alloy-dyn-abi` may come in later for ABI decoding.
+- injective-core's `.proto` files: injective-core is BUSL-1.1. The two Injective messages we need (the ethsecp256k1 `PubKey` and `ExtensionOptionsWeb3Tx`) are written for this repo from the wire format, and the cross-implementation vectors confirm they match.
 
 ### Keys at rest
 
@@ -83,6 +87,24 @@ Not used: `injective-std` and `cosmos-sdk-proto` (both still on prost 0.13; `inj
 - Two derivation layouts, both supported: `m/44'/60'/0'/0/n` (Keplr, MetaMask, injective-ts) and `m/44'/60'/n'/0/0` (Ledger Live, and injective-ts's Ledger Cosmos strategy).
 - Bank tokens appear once. The MultiVM token standard also exposes them as ERC20s. CW20s get their own label.
 - Mainnet runs cosmos-sdk v0.50.14-inj.11 (checked in the injective-core v1.20.3 source). Its TxBody has no `unordered` or `timeout_timestamp`, so the decoder refuses them on Injective. Chains on v0.53 (phase 3) have both; each chain gets its own proto set.
+
+### Sends and conversions
+
+How each kind of Injective token is held and moved (checked against the injective-core v1.20.3 source and mainnet, 2026-11-08):
+
+| Token | Where the balance lives | Send | Convert |
+| --- | --- | --- | --- |
+| INJ | Bank `inj`. The same balance is the native coin on Injective EVM | Bank `MsgSend`, or an EVM value transfer | Not needed |
+| Bank denoms (`peggy…`, `ibc/…`, `factory/…`) | Bank | `MsgSend`. If the denom has an ERC20 token pair, the same balance is that ERC20, and an EVM `transfer` moves it too | Not needed: the pair is a second view of one balance |
+| Bank-backed ERC20s (`erc20:0x…`) | Bank, through the bank precompile | `MsgSend` or EVM `transfer` | Not needed |
+| Pure ERC20s | The contract's own storage | EVM `transfer` only (EIP-1559 tx) | None |
+| CW20 | The CW20 contract | `MsgExecuteContract` `{"transfer":…}` | To bank: CW20 `send` to the CW20 adapter, which mints `factory/{adapter}/{cw20}`. Back: adapter `redeem_and_transfer` with those coins |
+
+- **CW20 to ERC20** goes through bank. The adapter denom is an ERC20 wherever it has a token pair. At least 500 adapter denoms have one on mainnet (query `/injective/erc20/v1beta1/all_token_pairs`).
+- **Who can create a pair:** anyone for peggy and IBC denoms (`MsgCreateTokenPair` deploys a fixed-supply ERC20). For tokenfactory denoms, only the denom admin or governance; for adapter denoms that admin is the adapter, which has no message for it. "Enable on EVM" for peggy and IBC denoms is a later feature.
+- **The adapter registers a CW20 itself** the first time it receives that CW20, paying the denom creation fee from its own balance. If it can't pay, simulation shows the failure.
+- **One balance per token.** A CW20 and its adapter denom show as one token. A send that needs more than the CW20 side holds redeems the shortfall in the same tx, as Choice already does.
+- The CW20 adapter address is a builder parameter. Only mainnet's (`inj14ejq…euk`) is built in until testnet's is verified.
 
 ### Sign paths
 

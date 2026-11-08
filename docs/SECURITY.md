@@ -49,12 +49,16 @@ The vault is `choice-wallet-core`, `choice-wallet-injective` and, later, the EVM
 | Hashes | `sha2` 0.11, `sha3` 0.12 (RustCrypto) |
 | Keystore | `argon2` 0.6, `chacha20poly1305` 0.11 (RustCrypto) |
 | Encoding | `bech32` 0.12, `prost` 0.14 |
+| JSON inside transactions (CosmWasm messages; amino JSON and EIP-712 next) | `serde` 1.0, `serde_json` 1.0 |
 | Hygiene | `zeroize` 1.9, `getrandom` 0.4, `thiserror` 2 |
-| EVM types (EVM crate) | `alloy-primitives` 1.7, `alloy-consensus` 2.5, `alloy-dyn-abi` 1.7, without their signing features |
+| EVM (EVM crate) | Nothing extra: an in-house RLP writer, checked against viem. `alloy-dyn-abi` 1.7 later if ABI decoding needs it (`alloy-consensus` was measured at about 120 crates and left out) |
 
 Adding a vault dependency needs a written reason in the PR and a second reviewer. Test-only crates (`hex`, `serde_json`) are fine as dev-dependencies.
 
-Protobuf types: the `.proto` files are vendored from the injective-core release that matches mainnet, and the generated prost code is committed. Builds never run `protoc` or fetch anything.
+Protobuf types:
+- The `.proto` files are vendored from the releases mainnet runs: InjectiveLabs/cosmos-sdk v0.50.14-inj.11 and InjectiveLabs/wasmd v0.53.3-inj.3, plus gogoproto and cosmos-proto. `crates/injective/proto/SOURCES.md` lists each file's source, license and SHA-256.
+- injective-core is BUSL-1.1, so its files are not vendored. The two Injective messages we need are written for this repo from the wire format, in `tools/protogen/compat/`.
+- `tools/protogen` (its own workspace and lockfile, pure Rust, no `protoc`) generates the prost code, which is committed. Wallet builds never run it or fetch anything.
 
 ### JavaScript in extension pages
 
@@ -77,7 +81,9 @@ Protobuf types: the `.proto` files are vendored from the injective-core release 
 
 - Spec vectors: BIP-39, BIP-32, EIP-55, EIP-155.
 - Tests, docs and examples use only published vectors (the BIP-39 "abandon … about" phrase, EIP-155's example key) or keys made for the test. Never a real person's address, key or balances.
-- Cross-implementation vectors: `tools/vectors/` generates Injective SignDocs, amino JSON, EIP-712 typed data, signatures and TxRaw bytes with injective-ts 1.20.x. The Rust tests must match byte for byte.
+- Cross-implementation vectors: `tools/vectors/` generates them with injective-ts (sdk-ts 1.20.62) and viem 2.57.7. The Rust tests must match byte for byte. Today that covers addresses, Direct SignDocs, signatures and TxRaw bytes for bank, CW20 and adapter messages, and EIP-1559 native and ERC20 transfers. Amino JSON and EIP-712 come next.
+  - The generator installs with scripts off and npm's `before` date set two weeks back, so every package in its lockfile had been public for at least two weeks.
+  - injective-ts 1.20.21 was a compromised release. Pinned versions stay well clear of it.
 - Real-dapp corpus: transactions captured from Helix, Injective Hub, Mito, Choice and the DEXes, each decoded and round-tripped.
 - Negative tests: tampered keystores, wrong chain, wrong signer, non-canonical encodings, unknown fields, nested unknown `Any`s.
 - Planned: `cargo fuzz` targets for every decoder; property tests for address parsing; `cargo deny` and `cargo audit` in CI.

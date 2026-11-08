@@ -1,4 +1,5 @@
 /target
+tools/protogen/target/
 node_modules/
 *.keystore
 .env

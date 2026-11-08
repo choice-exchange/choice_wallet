@@ -10,6 +10,10 @@ An open-source, self-custody wallet. Injective first (Cosmos side and Injective 
 | Path | What |
 | --- | --- |
 | `crates/core` | Mnemonic, HD derivation, secp256k1 keys, addresses, encrypted keystore |
+| `crates/injective` | Injective protobuf types, the Direct sign path, bank sends, CW20 transfers and CW20 ⇄ bank conversions |
+| `crates/evm` | EIP-1559 transactions: native INJ and ERC20 transfers |
+| `tools/protogen` | Dev only: vendors `.proto` files and regenerates the committed prost code |
+| `tools/vectors` | Dev only: generates test vectors with injective-ts and viem |
 
 ## Build and test
 
@@ -18,7 +22,14 @@ The toolchain is pinned in `rust-toolchain.toml`; rustup installs it on first us
 ```sh
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
-cargo build -p choice-wallet-core --release --target wasm32-unknown-unknown
+cargo build --workspace --release --target wasm32-unknown-unknown
+```
+
+Regenerating protobuf code or test vectors (not needed for a normal build):
+
+```sh
+(cd tools/protogen && cargo run --release -- gen)
+(cd tools/vectors && npm ci && npm run gen)
 ```
 
 ## Status

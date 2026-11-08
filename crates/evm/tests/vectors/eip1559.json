@@ -1,0 +1,81 @@
+{
+  "generator": "tools/vectors/gen_evm.mjs with viem 2.57.7",
+  "phrase": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+  "from": "0x9858EfFD232B4033E47d90003D41EC34EcaEda94",
+  "cases": [
+    {
+      "name": "native_inj",
+      "build": {
+        "kind": "native",
+        "to": "0x6Fac4D18c912343BF86fa7049364Dd4E424Ab9C0",
+        "value": "1500000000000000000"
+      },
+      "chain_id": 1776,
+      "nonce": 0,
+      "max_priority_fee_per_gas": "0",
+      "max_fee_per_gas": "500000000",
+      "gas_limit": 21000,
+      "data": "0x",
+      "unsigned": "0x02ed8206f08080841dcd6500825208946fac4d18c912343bf86fa7049364dd4e424ab9c08814d1120d7b16000080c0",
+      "signing_hash": "0xfd57fd9e08ade57d7b82afe0b724820714c690285bd68e6712c9b42fe0c0ac92",
+      "raw": "0x02f8708206f08080841dcd6500825208946fac4d18c912343bf86fa7049364dd4e424ab9c08814d1120d7b16000080c080a0f7399f5a69f5134dddbe4890074a60a52b33306b5e19c06cc93f59bf7d45f434a016b97f757204c2634980efc990211d34c88d1690a5b18856d3dddf3228acf136",
+      "hash": "0x2970a2997269b1af7922309e328d07a0f7a876cc722566399fe736afec46ae86"
+    },
+    {
+      "name": "native_testnet_big_nonce",
+      "build": {
+        "kind": "native",
+        "to": "0x6Fac4D18c912343BF86fa7049364Dd4E424Ab9C0",
+        "value": "1"
+      },
+      "chain_id": 1439,
+      "nonce": 1000,
+      "max_priority_fee_per_gas": "1",
+      "max_fee_per_gas": "160000000",
+      "gas_limit": 21000,
+      "data": "0x",
+      "unsigned": "0x02e782059f8203e8018409896800825208946fac4d18c912343bf86fa7049364dd4e424ab9c00180c0",
+      "signing_hash": "0x3c7d2d37ea1d2697af112b327996096ddc68297bbe0982fe13c7d4388ae1b801",
+      "raw": "0x02f86a82059f8203e8018409896800825208946fac4d18c912343bf86fa7049364dd4e424ab9c00180c001a012e9a7f043e8ad8a7ece462e2601c9cb77fbd99595695602d7b54c3f539eb458a039645e20fa68580cb2fa1d77ab4a6bc38175b0a40edb80a6f45e6e3e3fc6e74b",
+      "hash": "0x4db9398c2e5cbc0dae68baabf54038341d8fe49b60b0265eb3ce2f9ce7a3ddae"
+    },
+    {
+      "name": "erc20_usdc",
+      "build": {
+        "kind": "erc20",
+        "token": "0xa00C59fF5a080D2b954d0c75e46E22a0c371235a",
+        "to": "0x6Fac4D18c912343BF86fa7049364Dd4E424Ab9C0",
+        "amount": "2500000"
+      },
+      "chain_id": 1776,
+      "nonce": 7,
+      "max_priority_fee_per_gas": "0",
+      "max_fee_per_gas": "500000000",
+      "gas_limit": 65000,
+      "data": "0xa9059cbb0000000000000000000000006fac4d18c912343bf86fa7049364dd4e424ab9c000000000000000000000000000000000000000000000000000000000002625a0",
+      "unsigned": "0x02f86a8206f00780841dcd650082fde894a00c59ff5a080d2b954d0c75e46e22a0c371235a80b844a9059cbb0000000000000000000000006fac4d18c912343bf86fa7049364dd4e424ab9c000000000000000000000000000000000000000000000000000000000002625a0c0",
+      "signing_hash": "0xc2bc8a438fdf429c003787102380e1521518080feb637f787c320dff1eac377b",
+      "raw": "0x02f8ad8206f00780841dcd650082fde894a00c59ff5a080d2b954d0c75e46e22a0c371235a80b844a9059cbb0000000000000000000000006fac4d18c912343bf86fa7049364dd4e424ab9c000000000000000000000000000000000000000000000000000000000002625a0c080a0f2473f36fa25b3a11db6ce9339038ca74b4978a8bd868931e6b7677f2849688aa053ee6a26722841a6c7bb5dc53f074a4c09fac41fb1660644066a60ac85b9a0cc",
+      "hash": "0x82b6632928fdf1a6ba3c24275cbc40cacdedd8d0d3a7bae2b6bde5bf9019b60e"
+    },
+    {
+      "name": "erc20_max_amount_high_fees",
+      "build": {
+        "kind": "erc20",
+        "token": "0xa00C59fF5a080D2b954d0c75e46E22a0c371235a",
+        "to": "0x6Fac4D18c912343BF86fa7049364Dd4E424Ab9C0",
+        "amount": "115792089237316195423570985008687907853269984665640564039457584007913129639935"
+      },
+      "chain_id": 1776,
+      "nonce": 1099511627776,
+      "max_priority_fee_per_gas": "1267650600228229401496703205376",
+      "max_fee_per_gas": "170141183460469231731687303715884105728",
+      "gas_limit": 10000000,
+      "data": "0xa9059cbb0000000000000000000000006fac4d18c912343bf86fa7049364dd4e424ab9c0ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "unsigned": "0x02f88a8206f0860100000000008d1000000000000000000000000090800000000000000000000000000000008398968094a00c59ff5a080d2b954d0c75e46e22a0c371235a80b844a9059cbb0000000000000000000000006fac4d18c912343bf86fa7049364dd4e424ab9c0ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffc0",
+      "signing_hash": "0x5250036d6f5d6a4ad2ef2be3bde178bc51cf87422c3ce3cca444a9cdf10c42b1",
+      "raw": "0x02f8cd8206f0860100000000008d1000000000000000000000000090800000000000000000000000000000008398968094a00c59ff5a080d2b954d0c75e46e22a0c371235a80b844a9059cbb0000000000000000000000006fac4d18c912343bf86fa7049364dd4e424ab9c0ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffc001a0b19ae2ab491dd663cba512ef079a63b9620bb6a3539bb2f17a32a30ae6398791a025e06908cdf2a2fd0c691e91fd09b207001c91437736abaffc4d38d8952b2753",
+      "hash": "0x263807ccaa103587ac97d02833d0f8cd7874bf875b28ce50107d65ce7217a2e0"
+    }
+  ]
+}
