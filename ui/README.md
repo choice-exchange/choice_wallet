@@ -39,6 +39,6 @@ Everything it shows ships with it; nothing is loaded from the network at runtime
   ([OFL.txt](src/assets/fonts/OFL.txt)).
 - `src/assets/choice-mark.svg`: the Choice mark, a trademark (see the repo README).
 - `src/assets/tokens/`: logos of the tokens on the wallet's list, 64 px, from the
-  `injective-lists` token list. Trademarks of their issuers. A logo is chosen by denom and
+  `injective-lists` token list (INJ: the current mark, which that list files under wINJ). Trademarks of their issuers. A logo is chosen by denom and
   only for listed tokens; any other token gets a monogram, so a token that calls itself
   "USDT" never wears USDT's logo.

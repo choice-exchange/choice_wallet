@@ -284,7 +284,9 @@ button.token:hover { background: rgba(255, 255, 255, 0.03); }
 .token .symbol { font-size: 15px; line-height: 20px; font-weight: 600; }
 .token .sub { font-size: 12px; line-height: 16px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .token .sub.denom { font-family: var(--mono); }
+.token .value { display: flex; flex-direction: column; align-items: flex-end; }
 .token .amount { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; }
+.token .usd { font-size: 12px; line-height: 16px; color: var(--dim); font-variant-numeric: tabular-nums; }
 .token-chip { height: 40px; padding: 0 12px 0 6px; border-radius: 99px; border: 1px solid var(--hairline); background: var(--raised); display: inline-flex; align-items: center; gap: 8px; font-weight: 600; font-size: 15px; }
 .token-chip:hover { border-color: #2a2b33; }
 .flag { font-size: 10.5px; line-height: 13px; font-weight: 600; padding: 2px 6px; border-radius: 6px; color: var(--warning); background: rgba(251, 191, 36, 0.1); letter-spacing: 0.02em; }

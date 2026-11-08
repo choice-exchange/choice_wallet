@@ -12,6 +12,7 @@ export function SettingsView({ onDone, onLock }: { onDone: () => void; onLock: (
   const [settings, setSettings] = useState<Settings | null>(null);
   const [net, setNet] = useState<NetworkId>("mainnet");
   const [text, setText] = useState("");
+  const [prices, setPrices] = useState(true);
 
   useEffect(() => {
     void run({ type: "settings" }).then((s) => {
@@ -19,6 +20,7 @@ export function SettingsView({ onDone, onLock }: { onDone: () => void; onLock: (
       setSettings(s);
       setNet(s.network);
       setText(s.lcd[s.network].join("\n"));
+      setPrices(s.prices);
     });
   }, []);
 
@@ -31,7 +33,7 @@ export function SettingsView({ onDone, onLock }: { onDone: () => void; onLock: (
     if (!settings) return;
     const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
     const isDefault = lines.join("\n") === settings.lcdDefault[net].join("\n");
-    if (await run({ type: "save_settings", network: net, lcd: isDefault ? null : lines })) onDone();
+    if (await run({ type: "save_settings", network: net, lcd: isDefault ? null : lines, prices })) onDone();
   }
 
   return (
@@ -74,6 +76,19 @@ export function SettingsView({ onDone, onLock }: { onDone: () => void; onLock: (
             Use the defaults
           </button>
         </div>
+        <div className="eyebrow" style={{ marginTop: 8 }}>
+          USD values
+        </div>
+        <Segmented
+          label="USD values"
+          options={[
+            ["on", "Show"],
+            ["off", "Hide"],
+          ]}
+          value={prices ? "on" : "off"}
+          onChange={(v) => setPrices(v === "on")}
+        />
+        <span className="meta">Mainnet prices from Choice. It sees no balances.</span>
         <div className="eyebrow" style={{ marginTop: 8 }}>
           Security
         </div>

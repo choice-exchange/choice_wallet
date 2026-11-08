@@ -142,6 +142,20 @@ export class Lcd {
     return { symbol: String(m["symbol"] ?? ""), name: String(m["name"] ?? ""), decimals };
   }
 
+  /** The erc20 module's token pairs: bank denom → its ERC20 address on Injective EVM. */
+  async tokenPairs(): Promise<Map<string, string>> {
+    const body = await this.#call("/injective/erc20/v1beta1/all_token_pairs?pagination.limit=10000");
+    const pairs = new Map<string, string>();
+    const list = isObject(body) ? body["token_pairs"] : undefined;
+    if (!Array.isArray(list)) throw new ChainError(-1, "the node returned no token pairs");
+    for (const p of list) {
+      if (isObject(p) && typeof p["bank_denom"] === "string" && typeof p["erc20_address"] === "string" && /^0x[0-9a-fA-F]{40}$/.test(p["erc20_address"])) {
+        pairs.set(p["bank_denom"], p["erc20_address"]);
+      }
+    }
+    return pairs;
+  }
+
   /** Gas a transaction uses, from the vault's `simulate_tx`. */
   async simulate(simulateTxHex: string): Promise<bigint> {
     const body = await this.#call("/cosmos/tx/v1beta1/simulate", { tx_bytes: hexToBase64(simulateTxHex) });

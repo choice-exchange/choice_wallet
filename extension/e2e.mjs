@@ -43,6 +43,9 @@ const lcd = createServer((req, res) => {
       return reply(200, { balances: [{ denom: SCAM, amount: "7000000" }, { denom: "inj", amount: "5000000000000000000" }, { denom: USDT, amount: "2500000" }], pagination: { next_key: null } });
     }
     if (p === "/injective/txfees/v1beta1/cur_eip_base_fee") return reply(200, { base_fee: { base_fee: "160000000.000000000000000000" } });
+    if (p === "/injective/erc20/v1beta1/all_token_pairs") {
+      return reply(200, { token_pairs: [{ bank_denom: USDT, erc20_address: "0x88f7F2b685F9692caf8c478f5BADF09eE9B1Cc13" }], pagination: null });
+    }
     if (p === "/cosmos/bank/v1beta1/denoms_metadata_by_query_string") {
       if (url.searchParams.get("denom") === SCAM) return reply(200, { metadata: { base: SCAM, display: "USDT", symbol: "USDT", name: "Tether USD", decimals: 6, denom_units: [] } });
       return reply(404, { code: 5, message: "client metadata for denom", details: [] });
@@ -213,6 +216,16 @@ try {
   const list = await p.eval(`[...document.querySelectorAll(".token-list .token")].map((li) => li.innerText.replace(/\\s+/g, " "))`);
   console.log("balances", list);
   if (list.length !== 3 || !list[0].startsWith("INJ") || !list[2].includes("factory/inj1")) throw new Error("unexpected balance list");
+  if (live) {
+    // Prices come from Choice for real: the total is in dollars.
+    let hero = "";
+    for (let t = 0; t < 15000 && !hero.startsWith("$"); t += 200) {
+      hero = await p.eval(`document.querySelector(".hero")?.textContent ?? ""`);
+      await sleep(200);
+    }
+    if (!hero.startsWith("$")) throw new Error(`no USD total; hero shows "${hero}"`);
+    console.log("live: Choice prices, total", hero);
+  }
   await p.shot("09-home");
 
   // 5. Send 1.5 INJ to an EVM address; the review shows the vault's decode.

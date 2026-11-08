@@ -60,7 +60,12 @@ export function createService(d: Deps) {
     return endpoints?.[net] ?? [...NETWORKS[net].lcd];
   }
 
-  const sender = createSender({ vault: d.vault, fetch: d.fetch, session: d.session, endpoints });
+  async function showPrices(): Promise<boolean> {
+    const { prices } = await d.local.get(["prices"]);
+    return prices !== false;
+  }
+
+  const sender = createSender({ vault: d.vault, fetch: d.fetch, session: d.session, endpoints, prices: showPrices });
 
   async function status(): Promise<Status> {
     const ks = await keystore();
@@ -120,12 +125,14 @@ export function createService(d: Deps) {
         network: await network(),
         lcd: { mainnet: await endpoints("mainnet"), testnet: await endpoints("testnet") },
         lcdDefault: { mainnet: [...NETWORKS.mainnet.lcd], testnet: [...NETWORKS.testnet.lcd] },
+        prices: await showPrices(),
       },
     };
   }
 
-  async function saveSettings(net: unknown, lcd: unknown): Promise<UiResponse<Settings>> {
+  async function saveSettings(net: unknown, lcd: unknown, prices: unknown): Promise<UiResponse<Settings>> {
     if (!isNetworkId(net)) return err("bad_request", "Unknown network.");
+    if (prices !== undefined && typeof prices !== "boolean") return err("bad_request", "prices must be true or false.");
     const all = ((await d.local.get(["endpoints"])) as { endpoints?: Endpoints }).endpoints ?? {};
     if (lcd === null) {
       delete all[net];
@@ -137,7 +144,7 @@ export function createService(d: Deps) {
         return err("invalid_endpoint", e instanceof Error ? `${e.message[0]?.toUpperCase()}${e.message.slice(1)}.` : "Invalid endpoint.");
       }
     }
-    await d.local.set({ network: net, endpoints: all });
+    await d.local.set({ network: net, endpoints: all, ...(prices === undefined ? {} : { prices }) });
     return settings();
   }
 
@@ -171,7 +178,7 @@ export function createService(d: Deps) {
       case "settings":
         return settings();
       case "save_settings":
-        return saveSettings(r.network, r.lcd);
+        return saveSettings(r.network, r.lcd, r.prices);
       case "balances":
       case "prepare_send":
       case "confirm_send":

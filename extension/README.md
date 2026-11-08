@@ -25,7 +25,14 @@ Browser check (Chromium or Chrome for Testing, not branded Chrome):
 
 ```sh
 npm run e2e -- /path/to/chromium "$PWD/extension/dist" /tmp/shots   # absolute paths
-npm run e2e -- /path/to/chromium "$PWD/extension/dist" /tmp/shots --live   # also reads mainnet
+npm run e2e -- /path/to/chromium "$PWD/extension/dist" /tmp/shots --live   # also reads mainnet and Choice prices
+```
+
+A real send on testnet, from a funded throwaway wallet (the phrase file is read, never
+printed, and the import screen is never captured):
+
+```sh
+node extension/e2e-live.mjs /path/to/chromium "$PWD/extension/dist" /tmp/shots <phrase file> <recipient> 0.5
 ```
 
 ## Dependencies

@@ -6,7 +6,7 @@ import { useEffect, useState } from "react";
 import mark from "./assets/choice-mark.svg";
 import { useBackend } from "./backend";
 import { CheckIcon, CopyIcon, LockIcon, ReceiveIcon, SendIcon, SettingsIcon } from "./icons";
-import { BackBar, Callout, Screen, Segmented, shortAddress } from "./kit";
+import { BackBar, Callout, formatUsd, Screen, Segmented, shortAddress } from "./kit";
 import type { Balance, SendReview, Sent, Status } from "./protocol";
 import { useRequest } from "./request";
 import { Review, SendForm, SentView } from "./Send";
@@ -27,6 +27,7 @@ const EVM = "eip155:1776";
 export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: () => void; onStatus: () => void }) {
   const [view, setView] = useState<View>({ name: "home" });
   const [balances, setBalances] = useState<Balance[] | null>(null);
+  const [totalUsd, setTotalUsd] = useState<number | undefined>(undefined);
   const [refresh, setRefresh] = useState(0);
   const { run, error } = useRequest();
 
@@ -34,7 +35,10 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
     if (view.name !== "home") return;
     let live = true;
     void run({ type: "balances" }).then((r) => {
-      if (live && r) setBalances(r.balances);
+      if (live && r) {
+        setBalances(r.balances);
+        setTotalUsd(r.totalUsd);
+      }
     });
     return () => {
       live = false;
@@ -106,14 +110,24 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
           }
         >
           <div className="plate-warm">
-            <div className="eyebrow">INJ balance</div>
+            {/* The USD total when Choice can price something here; otherwise the INJ balance. */}
+            <div className="eyebrow">{totalUsd === undefined ? "INJ balance" : "Total"}</div>
             {balances === null ? (
               <div className="skeleton" style={{ width: 140, height: 36, margin: "6px 0 4px" }} />
-            ) : (
+            ) : totalUsd === undefined ? (
               <div className="hero" style={{ margin: "4px 0 2px" }}>
                 {formatShort(inj?.amount ?? "0", 18, 4)}
                 <span className="unit">INJ</span>
               </div>
+            ) : (
+              <>
+                <div className="hero" style={{ margin: "4px 0 0" }}>
+                  {formatUsd(totalUsd)}
+                </div>
+                <div className="meta num" style={{ marginBottom: 8 }}>
+                  {formatShort(inj?.amount ?? "0", 18, 4)} INJ
+                </div>
+              </>
             )}
             <CopyPill address={address} />
             <div className="actions" style={{ marginTop: 14 }}>
@@ -143,12 +157,15 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
                     <span className="symbol">{b.symbol}</span>
                     <span className={b.known ? "sub" : "sub denom"}>{b.known ? b.name : shortDenom(b.denom)}</span>
                   </span>
-                  <span className="amount">{formatShort(b.amount, b.decimals)}</span>
+                  <span className="value">
+                    <span className="amount">{formatShort(b.amount, b.decimals)}</span>
+                    {b.usd !== undefined && <span className="usd">{formatUsd(b.usd)}</span>}
+                  </span>
                 </button>
               ))}
             </div>
           )}
-          <p className="footnote">Pre-alpha. Not for real funds.</p>
+          <p className="footnote">{totalUsd === undefined ? "Pre-alpha. Not for real funds." : "Prices from Choice. Pre-alpha. Not for real funds."}</p>
         </Screen>
       );
     }

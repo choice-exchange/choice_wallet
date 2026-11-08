@@ -63,3 +63,11 @@ export function Callout({ level, children }: { level: Level; children: ReactNode
 export function shortAddress(a: string): string {
   return a.length > 20 ? `${a.slice(0, 10)}…${a.slice(-6)}` : a;
 }
+
+const USD = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
+
+/** `$1,234.56`; a non-zero value under a cent shows as `<$0.01`. */
+export function formatUsd(v: number): string {
+  if (v > 0 && v < 0.01) return "<$0.01";
+  return USD.format(v);
+}

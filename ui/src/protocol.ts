@@ -26,7 +26,7 @@ export type UiRequest =
   | { type: "lock" }
   | { type: "settings" }
   /** Switch to `network`, with these LCD endpoints for it (`null`: the defaults). */
-  | { type: "save_settings"; network: NetworkId; lcd: string[] | null }
+  | { type: "save_settings"; network: NetworkId; lcd: string[] | null; prices?: boolean }
   | { type: "balances" }
   /** `amount` in base units, or "max" (the fee token: everything but the fee). */
   | { type: "prepare_send"; denom: string; to: string; amount: string }
@@ -46,9 +46,17 @@ export type Status = {
 
 /** How a token is shown. Symbols of tokens not on the wallet's list (`known: false`) are
  *  whatever their creator chose, so show the denom with them. */
-export type TokenInfo = { denom: string; symbol: string; name: string; decimals: number; known: boolean };
+export type TokenInfo = {
+  denom: string;
+  symbol: string;
+  name: string;
+  decimals: number;
+  known: boolean;
+  /** USD per whole token, from Choice's price index, when it has one (mainnet only). */
+  priceUsd?: string;
+};
 
-export type Balance = TokenInfo & { amount: string };
+export type Balance = TokenInfo & { amount: string; usd?: number };
 
 export type Level = "info" | "amber" | "red" | "blocked";
 
@@ -92,6 +100,8 @@ export type Settings = {
   lcd: Record<NetworkId, string[]>;
   /** The wallet's defaults per network. */
   lcdDefault: Record<NetworkId, string[]>;
+  /** Show USD values (Choice's price index). */
+  prices: boolean;
 };
 
 export type TxState = { state: "pending" | "success" | "failed"; log?: string };
@@ -105,7 +115,8 @@ export type Replies = {
   lock: Status;
   settings: Settings;
   save_settings: Settings;
-  balances: { network: NetworkId; balances: Balance[] };
+  /** `totalUsd` sums the balances that have a price; absent when none do. */
+  balances: { network: NetworkId; balances: Balance[]; totalUsd?: number };
   prepare_send: SendReview;
   confirm_send: Sent;
   tx_status: TxState;

@@ -43,12 +43,13 @@ function memory(): Store & { data: Map<string, unknown> } {
 }
 
 /** A fake mainnet LCD. `balances` and `account` can be changed per test. */
-function chain(opts: { balances?: Record<string, bigint>; account?: boolean; gasUsed?: string } = {}) {
+function chain(opts: { balances?: Record<string, bigint>; account?: boolean; gasUsed?: string; pricesDown?: boolean } = {}) {
   const state = {
     balances: opts.balances ?? { inj: 5n * INJ },
     account: opts.account ?? true,
     broadcasts: [] as string[],
     simulations: 0,
+    priceCalls: 0,
     hosts: new Set<string>(),
   };
   const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status });
@@ -66,6 +67,20 @@ function chain(opts: { balances?: Record<string, bigint>; account?: boolean; gas
       return json(200, { balances: Object.entries(state.balances).map(([denom, a]) => ({ denom, amount: a.toString() })), pagination: { next_key: null } });
     }
     if (p === "/injective/txfees/v1beta1/cur_eip_base_fee") return json(200, { base_fee: { base_fee: "160000000.000000000000000000" } });
+    if (p === "/injective/erc20/v1beta1/all_token_pairs") {
+      return json(200, { token_pairs: [{ bank_denom: USDT, erc20_address: "0x88f7F2b685F9692caf8c478f5BADF09eE9B1Cc13" }], pagination: null });
+    }
+    if (url.host === "evm-api.choice.exchange" && p === "/prices") {
+      state.priceCalls++;
+      if (opts.pricesDown) return new Response("down", { status: 503 });
+      return json(200, {
+        observedAt: "2026-11-08T11:30:00.000Z",
+        prices: [
+          { address: "0x0000000000000000000000000000000000000000", symbol: "INJ", priceUsd: "8" },
+          { address: "0x88f7f2b685f9692caf8c478f5badf09ee9b1cc13", symbol: "USDT", priceUsd: "1" },
+        ],
+      });
+    }
     if (p === "/cosmos/bank/v1beta1/denoms_metadata_by_query_string") {
       const denom = url.searchParams.get("denom");
       if (denom === SCAM) return json(200, { metadata: { base: SCAM, display: "USDT", symbol: "USDT", name: "Tether USD", decimals: 6, denom_units: [] } });
@@ -239,10 +254,41 @@ test("settings: network and endpoints, https only", async () => {
   assert.deepEqual(saved.lcd["mainnet"], ["https://my-node.example"]);
   net.state.hosts.clear();
   ok(await service.handle({ type: "balances" }));
-  assert.deepEqual([...net.state.hosts], ["my-node.example"]);
+  // Chain reads go only to the user's endpoint; the one other host is Choice's price list.
+  assert.deepEqual([...net.state.hosts].sort(), ["evm-api.choice.exchange", "my-node.example"]);
   // Testnet: the status says so, and a mainnet node is refused (it serves injective-1).
   ok(await service.handle({ type: "save_settings", network: "testnet", lcd: null }));
   const st = ok<{ network: string }>(await service.handle({ type: "status" }));
   assert.equal(st.network, "testnet");
   assert.equal(code(await service.handle({ type: "balances" })), "unreachable");
+});
+
+test("USD values: mainnet only, from one bulk price list, and never in the way", async () => {
+  const net = chain({ balances: { [SCAM]: 7n, inj: 5n * INJ, [USDT]: 2_500_000n } });
+  const { service } = await wallet(net);
+  type B = { balances: { symbol: string; usd?: number; priceUsd?: string }[]; totalUsd?: number };
+  const r = ok<B>(await service.handle({ type: "balances" }));
+  assert.deepEqual(r.balances.map((b) => [b.symbol, b.usd]), [["INJ", 40], ["USDT", 2.5], ["USDT", undefined]]);
+  assert.equal(r.totalUsd, 42.5);
+  // The review prices the amount and the fee.
+  const review = ok<Review & { tokens: Record<string, { priceUsd?: string }> }>(
+    await service.handle({ type: "prepare_send", denom: "inj", to: ME, amount: INJ.toString() }),
+  );
+  assert.equal(review.tokens["inj"]?.priceUsd, "8");
+  // Cached: one price request for both.
+  assert.equal(net.state.priceCalls, 1);
+
+  // Switched off: no request, no values.
+  ok(await service.handle({ type: "save_settings", network: "mainnet", lcd: null, prices: false }));
+  const off = ok<B>(await service.handle({ type: "balances" }));
+  assert.equal(off.totalUsd, undefined);
+  assert.ok(off.balances.every((b) => b.usd === undefined));
+  assert.equal(net.state.priceCalls, 1);
+  assert.equal(ok<{ prices: boolean }>(await service.handle({ type: "settings" })).prices, false);
+
+  // Choice down: balances still come back, without USD.
+  const down = await wallet(chain({ pricesDown: true }));
+  const d = ok<B>(await down.service.handle({ type: "balances" }));
+  assert.equal(d.balances.length, 1);
+  assert.equal(d.totalUsd, undefined);
 });

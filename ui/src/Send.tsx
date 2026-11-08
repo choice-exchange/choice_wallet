@@ -1,11 +1,11 @@
 // Send: the form (with its token picker), the review, and the sent screen.
 
-import { formatShort, formatUnits, parseUnits, shortDenom } from "@choice-wallet/chain";
+import { formatShort, formatUnits, parseUnits, shortDenom, usdValue } from "@choice-wallet/chain";
 import { useEffect, useState, type FormEvent } from "react";
 
 import { useBackend } from "./backend";
 import { CheckIcon, ChevronDownIcon, ClockIcon, CloseIcon, ExternalIcon } from "./icons";
-import { BackBar, Callout, Screen, shortAddress } from "./kit";
+import { BackBar, Callout, formatUsd, Screen, shortAddress } from "./kit";
 import type { Balance, Coin, DecodedMsg, NetworkId, SendReview, Sent, TxState } from "./protocol";
 import { useRequest } from "./request";
 import { TokenMark } from "./TokenMark";
@@ -166,6 +166,16 @@ export function Review({
     const t = tokens[c.denom];
     return t ? `${formatUnits(c.amount, t.decimals)} ${t.symbol}` : `${c.amount} ${c.denom}`;
   };
+  /** "≈ $1.23" for coins Choice can price, else nothing. */
+  const usd = (cs: Coin[]) => {
+    let v = 0;
+    for (const c of cs) {
+      const t = tokens[c.denom];
+      if (!t?.priceUsd) return null;
+      v += usdValue(c.amount, t.decimals, t.priceUsd);
+    }
+    return cs.length ? `≈ ${formatUsd(v)}` : null;
+  };
   const blocked = risk.level === "blocked";
   const needsWord = risk.confirm !== undefined && typed.trim() !== risk.confirm;
 
@@ -217,6 +227,7 @@ export function Review({
                 </div>
               );
             })}
+            {usd(m.amount) && <div className="meta num" style={{ marginTop: 4, marginLeft: 46 }}>{usd(m.amount)}</div>}
             <hr className="divider" style={{ margin: "14px 0 12px" }} />
             <div className="eyebrow">To</div>
             <code className="mono recipient" style={{ display: "block", marginTop: 6, fontSize: 14, lineHeight: "21px" }}>
@@ -234,7 +245,10 @@ export function Review({
       <div className="well rows">
         <div className="row">
           <span>Network fee</span>
-          <span className="num">{display.fee.amount.map(coin).join(" + ") || "None"}</span>
+          <span className="num">
+            {display.fee.amount.map(coin).join(" + ") || "None"}
+            {usd(display.fee.amount) && <span className="meta"> {usd(display.fee.amount)}</span>}
+          </span>
         </div>
         <div className="row">
           <span>Network</span>

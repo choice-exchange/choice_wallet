@@ -13,12 +13,16 @@ import {
   describeToken,
   explorerTxUrl,
   Lcd,
+  fetchPrices,
   NETWORKS,
+  priceAddress,
   shortDenom,
   Unreachable,
+  usdValue,
   type Coin,
   type Fetch,
   type NetworkId,
+  type PriceList,
   type Token,
 } from "@choice-wallet/chain";
 import type { AccountInfo, Balance, Result, Risk, SendReview, Sent, TxState } from "@choice-wallet/ui/protocol";
@@ -31,7 +35,12 @@ export interface SendDeps {
   session: Store;
   /** The endpoints the user chose for a network (or the defaults). */
   endpoints(network: NetworkId): Promise<readonly string[]>;
+  /** Whether to show USD values (the user can turn them off). */
+  prices(): Promise<boolean>;
 }
+
+const PRICE_TTL_MS = 60_000;
+const PAIRS_TTL_MS = 3_600_000;
 
 /** What `confirm` needs, kept in session storage between the two steps. */
 interface Pending {
@@ -66,6 +75,44 @@ export function createSender(d: SendDeps) {
     return c;
   }
 
+  let priceCache: { at: number; list: Promise<PriceList> } | null = null;
+  const pairCache = new Map<NetworkId, { at: number; pairs: Promise<Map<string, string>> }>();
+
+  /** USD prices for these denoms, where Choice has one. Mainnet only. Never an error: with
+   *  no prices the wallet shows amounts alone. */
+  async function pricesFor(network: NetworkId, client: Lcd, denoms: Iterable<string>): Promise<Map<string, string>> {
+    const out = new Map<string, string>();
+    if (network !== "mainnet" || !(await d.prices())) return out;
+    try {
+      const now = Date.now();
+      if (!priceCache || now - priceCache.at > PRICE_TTL_MS) {
+        const entry = { at: now, list: fetchPrices(d.fetch) };
+        priceCache = entry;
+        entry.list.catch(() => {
+          if (priceCache === entry) priceCache = null;
+        });
+      }
+      let pc = pairCache.get(network);
+      if (!pc || now - pc.at > PAIRS_TTL_MS) {
+        const entry = { at: now, pairs: client.tokenPairs() };
+        pairCache.set(network, entry);
+        entry.pairs.catch(() => {
+          if (pairCache.get(network) === entry) pairCache.delete(network);
+        });
+        pc = entry;
+      }
+      const [{ prices }, pairs] = await Promise.all([priceCache.list, pc.pairs]);
+      for (const dn of denoms) {
+        const a = priceAddress(dn, pairs);
+        const p = a === undefined ? undefined : prices.get(a);
+        if (p) out.set(dn, p);
+      }
+    } catch {
+      // No prices this time.
+    }
+    return out;
+  }
+
   function token(network: NetworkId, client: Lcd, denom: string): Promise<Token> {
     const key = `${network} ${denom}`;
     let t = tokenCache.get(key);
@@ -86,14 +133,23 @@ export function createSender(d: SendDeps) {
     throw e;
   }
 
-  async function balances(network: NetworkId, account: AccountInfo): Promise<Result<{ network: NetworkId; balances: Balance[] }>> {
+  async function balances(network: NetworkId, account: AccountInfo): Promise<Result<{ network: NetworkId; balances: Balance[]; totalUsd?: number }>> {
     const client = await lcd(network);
     try {
       const coins = await client.balances(address(network, account));
       const list = await Promise.all(coins.map(async (c) => ({ ...(await token(network, client, c.denom)), amount: c.amount })));
       // INJ first, then the wallet's known tokens, then the rest.
       list.sort((a, b) => rank(network, a) - rank(network, b) || a.symbol.localeCompare(b.symbol));
-      return { ok: true, result: { network, balances: list } };
+      const px = await pricesFor(network, client, list.map((b) => b.denom));
+      let total = 0;
+      const priced: Balance[] = list.map((b) => {
+        const p = px.get(b.denom);
+        if (!p) return b;
+        const usd = usdValue(b.amount, b.decimals, p);
+        total += usd;
+        return { ...b, priceUsd: p, usd };
+      });
+      return { ok: true, result: { network, balances: priced, ...(px.size > 0 ? { totalUsd: total } : {}) } };
     } catch (e) {
       return chainFailure(e);
     }
@@ -174,7 +230,16 @@ export function createSender(d: SendDeps) {
       await d.session.set({ pending_send: pending });
       const denoms = new Set<string>(display.fee.amount.map((c) => c.denom));
       for (const m of display.messages) if (Array.isArray(m["amount"])) for (const c of m["amount"] as Coin[]) denoms.add(c.denom);
-      const tokens = Object.fromEntries(await Promise.all([...denoms].map(async (dn) => [dn, await token(network, client, dn)] as const)));
+      const px = await pricesFor(network, client, denoms);
+      const tokens = Object.fromEntries(
+        await Promise.all(
+          [...denoms].map(async (dn) => {
+            const t = await token(network, client, dn);
+            const p = px.get(dn);
+            return [dn, p ? { ...t, priceUsd: p } : t] as const;
+          }),
+        ),
+      );
       return { ok: true, result: { digest, display, risk: risk as Risk, tokens, checkedBy } };
     } catch (e) {
       return chainFailure(e);
