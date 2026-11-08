@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "build": "node build.mjs",
+    "dev": "node build.mjs --dev",
     "test": "node build.mjs --test && node --test \"dist-test/*.test.js\"",
     "e2e": "node e2e.mjs"
   },

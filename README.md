@@ -38,6 +38,7 @@ The chain client, the UI and the extension are npm workspaces, installed and che
 npm ci           # scripts off, exact versions (see .npmrc)
 npm run check    # TypeScript: chain, ui and extension
 npm test         # the chain client's tests, the UI's (QR encoder, token filter), then the extension's against the real vault
+npm run dev      # a dev build that rebuilds and reloads itself in Chrome on every change (see extension/README.md)
 ```
 
 Regenerating protobuf code or test vectors (not needed for a normal build):

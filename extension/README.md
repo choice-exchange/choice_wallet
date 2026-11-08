@@ -21,6 +21,20 @@ npm run build       # dist/ only: load it unpacked from chrome://extensions
 
 Set `WASM_BINDGEN=/path/to/wasm-bindgen` if it isn't on PATH.
 
+## Watching changes
+
+```sh
+npm run dev         # at the repo root: builds dist-dev/ and rebuilds on every change
+```
+
+Load `extension/dist-dev` unpacked (chrome://extensions, Developer mode, Load unpacked).
+It shows as "Choice Wallet (dev)" with a DEV badge. Open the popup, or
+`chrome-extension://<its id>/popup.html` in a tab for the same wallet centred on the page.
+An open wallet page reloads itself when the UI changes; when the service worker, the vault
+or the manifest changes, the whole extension reloads (which locks it, like any update) and
+a wallet tab reopens. Dev code lives in `src/dev/` and is only in dev builds. Use a
+throwaway wallet on testnet.
+
 Browser check (Chromium or Chrome for Testing, not branded Chrome):
 
 ```sh

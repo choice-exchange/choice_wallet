@@ -1,3 +1,9 @@
 /* The toolbar popup sizes itself to its content, so it needs a fixed size (Chrome caps a
    popup at 800 by 600). */
 html, body { width: 360px; height: 600px; overflow: hidden; }
+
+/* Opened in a tab (chrome-extension://…/popup.html): the same 360 by 600 wallet, centred. */
+@media (min-width: 420px) {
+  html { width: 100%; height: 100%; display: grid; place-items: center; background: #050607; }
+  body { border-radius: 20px; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 40px 120px -40px rgba(0, 0, 0, 0.9); }
+}

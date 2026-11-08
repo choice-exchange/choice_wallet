@@ -1,42 +1,68 @@
-// Builds the extension into dist/: the vault (Rust → WASM → wasm-bindgen glue), the
-// service worker and popup bundles (esbuild; the popup is the shared UI in ../ui), and the
-// static files.
+// Builds the extension: the vault (Rust → WASM → wasm-bindgen glue), the service worker and
+// popup bundles (esbuild; the popup is the shared UI in ../ui), and the static files.
 //
 //   node build.mjs           build dist/ (load it unpacked in Chrome)
 //   node build.mjs --test    also build dist-test/, which `node --test` runs
+//   node build.mjs --dev     build dist-dev/ and keep rebuilding on every change (see below)
 //
 // Needs cargo and wasm-bindgen exactly 0.2.130, the crate's version. Set WASM_BINDGEN to
 // its path if it isn't on PATH.
+//
+// Dev builds (`npm run dev`) are for watching changes land: "Choice Wallet (dev)" with a DEV
+// badge, built into dist-dev/ so a release build never carries dev code. After each rebuild
+// dist-dev/dev-build.json gets new hashes; an open wallet page polls it and reloads itself
+// when the UI changed, or reloads the whole extension when the service worker, the vault or
+// the manifest did (that locks the wallet, like any extension update).
 
 import { execFileSync } from "node:child_process";
-import { cpSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { build } from "esbuild";
+import { build, context } from "esbuild";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, "..");
 const WASM_BINDGEN_VERSION = "0.2.130";
 const wasmBindgen = process.env.WASM_BINDGEN ?? "wasm-bindgen";
 const withTests = process.argv.includes("--test");
+const dev = process.argv.includes("--dev");
+const glue = join(here, "build/vault");
+const dist = join(here, dev ? "dist-dev" : "dist");
 
 // 1. The vault.
-execFileSync("cargo", ["build", "--release", "-p", "choice-wallet-wasm", "--target", "wasm32-unknown-unknown"], {
-  cwd: repo,
-  stdio: "inherit",
-});
-const version = execFileSync(wasmBindgen, ["--version"]).toString().trim();
-if (version !== `wasm-bindgen ${WASM_BINDGEN_VERSION}`) {
-  throw new Error(`need wasm-bindgen ${WASM_BINDGEN_VERSION}, found "${version}"`);
+function buildVault() {
+  execFileSync("cargo", ["build", "--release", "-p", "choice-wallet-wasm", "--target", "wasm32-unknown-unknown"], {
+    cwd: repo,
+    stdio: "inherit",
+  });
+  const version = execFileSync(wasmBindgen, ["--version"]).toString().trim();
+  if (version !== `wasm-bindgen ${WASM_BINDGEN_VERSION}`) {
+    throw new Error(`need wasm-bindgen ${WASM_BINDGEN_VERSION}, found "${version}"`);
+  }
+  rmSync(glue, { recursive: true, force: true });
+  execFileSync(
+    wasmBindgen,
+    ["--target", "web", "--out-dir", glue, join(repo, "target/wasm32-unknown-unknown/release/choice_wallet_wasm.wasm")],
+    { stdio: "inherit" },
+  );
 }
-const glue = join(here, "build/vault");
-rmSync(glue, { recursive: true, force: true });
-execFileSync(
-  wasmBindgen,
-  ["--target", "web", "--out-dir", glue, join(repo, "target/wasm32-unknown-unknown/release/choice_wallet_wasm.wasm")],
-  { stdio: "inherit" },
-);
+
+/** The static files, and the vault's WASM. A dev build names itself and loads dev.js. */
+function copyStatic() {
+  cpSync(join(here, "public"), dist, { recursive: true });
+  mkdirSync(join(dist, "vault"), { recursive: true });
+  cpSync(join(glue, "choice_wallet_wasm_bg.wasm"), join(dist, "vault/choice_wallet_wasm_bg.wasm"));
+  if (dev) {
+    const manifest = JSON.parse(readFileSync(join(here, "public/manifest.json"), "utf8"));
+    manifest.name = `${manifest.name} (dev)`;
+    manifest.action.default_title = `${manifest.action.default_title} (dev)`;
+    writeFileSync(join(dist, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
+    const page = readFileSync(join(here, "public/popup.html"), "utf8");
+    writeFileSync(join(dist, "popup.html"), page.replace("</body>", '  <script type="module" src="dev.js"></script>\n  </body>'));
+  }
+}
 
 // 2. Bundles. No minification, so a store reviewer (or anyone) can read what ships.
 const common = {
@@ -48,31 +74,91 @@ const common = {
   // The UI's font and images ship inside the extension; nothing is fetched at runtime.
   loader: { ".woff2": "file", ".png": "file", ".svg": "file" },
   assetNames: "assets/[name]-[hash]",
-  define: { "process.env.NODE_ENV": '"production"' },
+  define: { "process.env.NODE_ENV": dev ? '"development"' : '"production"' },
   legalComments: "eof",
   logLevel: "warning",
 };
-const dist = join(here, "dist");
-rmSync(dist, { recursive: true, force: true });
-await build({
+const app = {
   ...common,
   platform: "browser",
   target: "chrome120",
-  entryPoints: { background: "src/background.ts", popup: "src/popup.ts" },
+  entryPoints: dev
+    ? { background: "src/dev/background.ts", popup: "src/popup.ts", dev: "src/dev/page.ts" }
+    : { background: "src/background.ts", popup: "src/popup.ts" },
   outdir: dist,
-});
-cpSync(join(here, "public"), dist, { recursive: true });
-mkdirSync(join(dist, "vault"), { recursive: true });
-cpSync(join(glue, "choice_wallet_wasm_bg.wasm"), join(dist, "vault/choice_wallet_wasm_bg.wasm"));
-console.log(`built ${dist}`);
+};
 
-// 3. Tests, run against the same WASM vault.
-if (withTests) {
-  const out = join(here, "dist-test");
-  rmSync(out, { recursive: true, force: true });
-  const entryPoints = readdirSync(join(here, "test"))
-    .filter((f) => f.endsWith(".test.ts"))
-    .map((f) => join("test", f));
-  await build({ ...common, platform: "node", target: "node22", entryPoints, outdir: out });
-  cpSync(join(glue, "choice_wallet_wasm_bg.wasm"), join(out, "choice_wallet_wasm_bg.wasm"));
+if (!dev) {
+  buildVault();
+  rmSync(dist, { recursive: true, force: true });
+  await build(app);
+  copyStatic();
+  console.log(`built ${dist}`);
+
+  // 3. Tests, run against the same WASM vault.
+  if (withTests) {
+    const out = join(here, "dist-test");
+    rmSync(out, { recursive: true, force: true });
+    const entryPoints = readdirSync(join(here, "test"))
+      .filter((f) => f.endsWith(".test.ts"))
+      .map((f) => join("test", f));
+    await build({ ...common, platform: "node", target: "node22", entryPoints, outdir: out });
+    cpSync(join(glue, "choice_wallet_wasm_bg.wasm"), join(out, "choice_wallet_wasm_bg.wasm"));
+  }
+} else {
+  // Watch mode: esbuild follows the UI, chain and extension sources itself; the Rust crates
+  // and public/ are watched here.
+  const digest = (files) => {
+    const h = createHash("sha256");
+    for (const f of files) h.update(existsSync(join(dist, f)) ? readFileSync(join(dist, f)) : "");
+    return h.digest("hex").slice(0, 16);
+  };
+  const stamp = () => {
+    const assets = existsSync(join(dist, "assets")) ? readdirSync(join(dist, "assets")).map((f) => `assets/${f}`).sort() : [];
+    const s = {
+      page: digest(["popup.js", "popup.css", "popup.html", "shell.css", ...assets]),
+      worker: digest(["background.js", "manifest.json", "vault/choice_wallet_wasm_bg.wasm"]),
+    };
+    writeFileSync(join(dist, "dev-build.json"), JSON.stringify(s) + "\n");
+    console.log(`[dev] ${new Date().toLocaleTimeString()} page ${s.page} worker ${s.worker}`);
+  };
+  const debounce = (fn, ms = 300) => {
+    let t;
+    return () => {
+      clearTimeout(t);
+      t = setTimeout(fn, ms);
+    };
+  };
+
+  buildVault();
+  rmSync(dist, { recursive: true, force: true });
+  mkdirSync(dist, { recursive: true });
+  copyStatic();
+  const ctx = await context({
+    ...app,
+    plugins: [
+      {
+        name: "dev-stamp",
+        setup(b) {
+          b.onEnd((r) => {
+            if (r.errors.length === 0) stamp();
+          });
+        },
+      },
+    ],
+  });
+  await ctx.watch();
+
+  watch(join(here, "public"), { recursive: true }, debounce(() => (copyStatic(), stamp())));
+  const vault = debounce(() => {
+    try {
+      buildVault(); // a new glue file also wakes esbuild, which stamps
+      copyStatic();
+      stamp();
+    } catch (e) {
+      console.error(`[dev] vault build failed: ${e.message}`);
+    }
+  }, 500);
+  watch(join(repo, "crates"), { recursive: true }, vault);
+  console.log(`[dev] watching; load ${dist} unpacked in Chrome (chrome://extensions, Developer mode, Load unpacked)`);
 }
