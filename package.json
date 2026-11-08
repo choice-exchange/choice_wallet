@@ -10,7 +10,7 @@
   "scripts": {
     "check": "tsc -p chain && tsc -p ui && tsc -p extension",
     "build": "npm run build -w extension",
-    "test": "npm test -w chain && npm test -w extension",
+    "test": "npm test -w chain && npm test -w ui && npm test -w extension",
     "e2e": "npm run e2e -w extension --"
   },
   "devDependencies": {

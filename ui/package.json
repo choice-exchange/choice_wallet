@@ -6,7 +6,11 @@
   "type": "module",
   "exports": {
     ".": "./src/index.tsx",
-    "./protocol": "./src/protocol.ts"
+    "./protocol": "./src/protocol.ts",
+    "./token-filter": "./src/tokenFilter.ts"
+  },
+  "scripts": {
+    "test": "node --test \"test/*.test.ts\""
   },
   "dependencies": {
     "@choice-wallet/chain": "0.1.0",

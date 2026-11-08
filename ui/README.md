@@ -25,6 +25,9 @@ mount(document.getElementById("root"), backend);
 - The stylesheet sets no window size. A platform with a fixed-size window adds its own CSS
   (the extension's popup is 360px wide).
 - No build step of its own: each platform's esbuild bundles it, with its CSS and assets.
+- The pure parts have tests (`npm test -w ui`): the QR encoder ([src/qr.ts](src/qr.ts)) and the
+  token filter ([src/tokenFilter.ts](src/tokenFilter.ts)), which hosts can import as
+  `@choice-wallet/ui/token-filter` without React.
 
 ## Look
 

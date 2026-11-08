@@ -28,6 +28,10 @@ npm run e2e -- /path/to/chromium "$PWD/extension/dist" /tmp/shots   # absolute p
 npm run e2e -- /path/to/chromium "$PWD/extension/dist" /tmp/shots --live   # also reads mainnet and Choice prices
 ```
 
+With `E2E_QR_DECODER=/path/to/reader` (any program that prints the text of the QR code in
+the PNG it is given), the Receive screenshots are decoded and must match the addresses on
+screen.
+
 A real send on testnet, from a funded throwaway wallet (the phrase file is read, never
 printed, and the import screen is never captured):
 

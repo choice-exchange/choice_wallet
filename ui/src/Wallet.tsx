@@ -1,17 +1,20 @@
-// The unlocked wallet: home (balance and tokens), receive, send and settings.
+// The unlocked wallet: home (balance and tokens), receive, send, tokens and settings.
 
-import { formatShort, shortDenom } from "@choice-wallet/chain";
-import { useEffect, useState } from "react";
+import { formatShort, NETWORKS, shortDenom } from "@choice-wallet/chain";
+import { useEffect, useRef, useState } from "react";
 
 import mark from "./assets/choice-mark.svg";
 import { useBackend } from "./backend";
-import { CheckIcon, CopyIcon, LockIcon, ReceiveIcon, SendIcon, SettingsIcon } from "./icons";
+import { CheckIcon, ChevronRightIcon, CopyIcon, EyeOffIcon, LockIcon, ReceiveIcon, SendIcon, SettingsIcon } from "./icons";
 import { BackBar, Callout, formatUsd, Screen, Segmented, shortAddress } from "./kit";
-import type { Balance, SendReview, Sent, Status } from "./protocol";
+import type { Balance, SendReview, Sent, Status, TokenFilter } from "./protocol";
+import { QrCode } from "./QrCode";
 import { useRequest } from "./request";
 import { Review, SendForm, SentView } from "./Send";
 import { SettingsView } from "./Settings";
+import { applyFilter, DEFAULT_FILTER } from "./tokenFilter";
 import { TokenMark } from "./TokenMark";
+import { TokensView } from "./Tokens";
 
 type View =
   | { name: "home" }
@@ -19,25 +22,32 @@ type View =
   | { name: "send"; denom?: string }
   | { name: "review"; review: SendReview; entered: string; denom: string }
   | { name: "sent"; sent: Sent }
+  | { name: "tokens" }
   | { name: "settings" };
 
 const COSMOS = "cosmos:injective-1";
 const EVM = "eip155:1776";
 
 export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: () => void; onStatus: () => void }) {
+  const backend = useBackend();
   const [view, setView] = useState<View>({ name: "home" });
   const [balances, setBalances] = useState<Balance[] | null>(null);
-  const [totalUsd, setTotalUsd] = useState<number | undefined>(undefined);
+  const [filter, setFilter] = useState<TokenFilter>(DEFAULT_FILTER);
+  const [prices, setPrices] = useState(true);
   const [refresh, setRefresh] = useState(0);
-  const { run, error } = useRequest();
+  const { run, error, setError } = useRequest();
+
+  // The last filter save, so a refresh never reads the filter before it lands.
+  const saving = useRef<Promise<unknown>>(Promise.resolve());
 
   useEffect(() => {
     if (view.name !== "home") return;
     let live = true;
-    void run({ type: "balances" }).then((r) => {
+    void saving.current.then(() => run({ type: "balances" })).then((r) => {
       if (live && r) {
         setBalances(r.balances);
-        setTotalUsd(r.totalUsd);
+        setFilter(r.filter);
+        setPrices(r.prices);
       }
     });
     return () => {
@@ -49,16 +59,42 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
     setRefresh((n) => n + 1);
     setView({ name: "home" });
   };
+  /** Apply a filter change now; put it back if the host refuses it. */
+  const changeFilter = (next: TokenFilter) => {
+    const before = filter;
+    setFilter(next);
+    saving.current = saving.current
+      .then(() => backend.send({ type: "save_token_filter", filter: next }))
+      .then((r) => {
+        if (!r.ok) {
+          setFilter(before);
+          setError(r.error.message);
+        }
+      });
+  };
   const account = status.accounts[0];
   const address = account?.addresses[COSMOS] ?? "";
+  const sorted = balances ? applyFilter(balances, filter, NETWORKS[status.network].feeDenom) : null;
+  const totalUsd = sorted?.totalUsd;
 
   switch (view.name) {
     case "receive":
       return <Receive addresses={account?.addresses ?? {}} onBack={home} />;
+    case "tokens":
+      return (
+        <TokensView
+          balances={balances ?? []}
+          filter={filter}
+          network={status.network}
+          prices={prices}
+          onChange={changeFilter}
+          onBack={() => setView({ name: "home" })}
+        />
+      );
     case "send":
       return (
         <SendForm
-          balances={balances ?? []}
+          balances={sorted?.shown ?? []}
           denom={view.denom}
           onReview={(review, entered, denom) => setView({ name: "review", review, entered, denom })}
           onBack={home}
@@ -131,7 +167,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
             )}
             <CopyPill address={address} />
             <div className="actions" style={{ marginTop: 14 }}>
-              <button className="action" disabled={!balances?.length} onClick={() => setView({ name: "send" })}>
+              <button className="action" disabled={!sorted?.shown.length} onClick={() => setView({ name: "send" })}>
                 <SendIcon /> Send
               </button>
               <button className="action plain" onClick={() => setView({ name: "receive" })}>
@@ -140,17 +176,22 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
             </div>
           </div>
 
-          <div className="eyebrow" style={{ marginTop: 6 }}>
-            Tokens{balances?.length ? ` · ${balances.length}` : ""}
+          <div className="section-head">
+            <span className="eyebrow">Tokens{sorted?.shown.length ? ` · ${sorted.shown.length}` : ""}</span>
+            {balances !== null && balances.length > 0 && (
+              <button className="link" onClick={() => setView({ name: "tokens" })}>
+                Manage
+              </button>
+            )}
           </div>
           {error && <Callout level="amber">{error}</Callout>}
-          {balances === null ? (
+          {sorted === null ? (
             !error && [0, 1, 2].map((i) => <div key={i} className="skeleton" style={{ height: 40 }} />)
-          ) : balances.length === 0 ? (
+          ) : sorted.shown.length === 0 && sorted.hidden.length === 0 ? (
             <p className="empty">No tokens yet. Use Receive to get your address.</p>
           ) : (
             <div className="token-list">
-              {balances.map((b) => (
+              {sorted.shown.map((b) => (
                 <button key={b.denom} className="token" title={b.denom} onClick={() => setView({ name: "send", denom: b.denom })}>
                   <TokenMark denom={b.denom} symbol={b.symbol} known={b.known} />
                   <span className="name">
@@ -163,6 +204,13 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
                   </span>
                 </button>
               ))}
+              {sorted.hidden.length > 0 && (
+                <button className="hidden-row" onClick={() => setView({ name: "tokens" })}>
+                  <EyeOffIcon size={16} />
+                  {sorted.hidden.length} hidden {sorted.hidden.length === 1 ? "token" : "tokens"}
+                  <ChevronRightIcon size={16} />
+                </button>
+              )}
             </div>
           )}
           <p className="footnote">{totalUsd === undefined ? "Pre-alpha. Not for real funds." : "Prices from Choice. Pre-alpha. Not for real funds."}</p>
@@ -232,7 +280,12 @@ function Receive({ addresses, onBack }: { addresses: Record<string, string>; onB
       />
       <div className="surface-hero">
         <div className="eyebrow">{side === "cosmos" ? "Injective address" : "EVM address"}</div>
-        <div className="well" style={{ marginTop: 10 }}>
+        {address && (
+          <div className="qr-frame">
+            <QrCode text={address} />
+          </div>
+        )}
+        <div className="well">
           <code className="mono address" style={{ fontSize: 15, lineHeight: "22px" }}>
             {address}
           </code>

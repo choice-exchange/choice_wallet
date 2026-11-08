@@ -50,6 +50,18 @@ export function Segmented<T extends string>({
   );
 }
 
+/** An on/off setting that takes effect at once. */
+export function Switch({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <button type="button" role="switch" aria-checked={checked} className="switch-row" onClick={() => onChange(!checked)}>
+      <span>{label}</span>
+      <span className="switch" aria-hidden="true">
+        <span />
+      </span>
+    </button>
+  );
+}
+
 export function Callout({ level, children }: { level: Level; children: ReactNode }) {
   return (
     <div className={`callout ${level}`} role={level === "info" ? undefined : "alert"}>

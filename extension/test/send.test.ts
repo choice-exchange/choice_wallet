@@ -50,6 +50,7 @@ function chain(opts: { balances?: Record<string, bigint>; account?: boolean; gas
     broadcasts: [] as string[],
     simulations: 0,
     priceCalls: 0,
+    pricesDown: opts.pricesDown ?? false,
     hosts: new Set<string>(),
   };
   const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status });
@@ -72,7 +73,7 @@ function chain(opts: { balances?: Record<string, bigint>; account?: boolean; gas
     }
     if (url.host === "evm-api.choice.exchange" && p === "/prices") {
       state.priceCalls++;
-      if (opts.pricesDown) return new Response("down", { status: 503 });
+      if (state.pricesDown) return new Response("down", { status: 503 });
       return json(200, {
         observedAt: "2026-11-08T11:30:00.000Z",
         prices: [
@@ -109,10 +110,9 @@ function chain(opts: { balances?: Record<string, bigint>; account?: boolean; gas
   return { state, fetch };
 }
 
-async function wallet(net = chain()) {
-  const local = memory();
-  const session = memory();
-  const service = createService({
+/** A service on these stores: a second one on the same stores is a service worker restart. */
+function serviceOn(net: ReturnType<typeof chain>, local: Store, session: Store) {
+  return createService({
     vault: async (method, params) => callVault(handle, method, params),
     local,
     session,
@@ -120,6 +120,12 @@ async function wallet(net = chain()) {
     scheduleLock: () => {},
     cancelLock: () => {},
   });
+}
+
+async function wallet(net = chain()) {
+  const local = memory();
+  const session = memory();
+  const service = serviceOn(net, local, session);
   const r = await service.handle({ type: "create", secret: { mnemonic: PHRASE }, password: PASSWORD });
   assert.ok(r.ok, JSON.stringify(r));
   return { service, session, local, net };
@@ -266,10 +272,10 @@ test("settings: network and endpoints, https only", async () => {
 test("USD values: mainnet only, from one bulk price list, and never in the way", async () => {
   const net = chain({ balances: { [SCAM]: 7n, inj: 5n * INJ, [USDT]: 2_500_000n } });
   const { service } = await wallet(net);
-  type B = { balances: { symbol: string; usd?: number; priceUsd?: string }[]; totalUsd?: number };
   const r = ok<B>(await service.handle({ type: "balances" }));
-  assert.deepEqual(r.balances.map((b) => [b.symbol, b.usd]), [["INJ", 40], ["USDT", 2.5], ["USDT", undefined]]);
-  assert.equal(r.totalUsd, 42.5);
+  assert.deepEqual(r.balances.map((b) => [b.symbol, b.usd, b.onChoice]), [["INJ", 40, true], ["USDT", 2.5, true], ["USDT", undefined, undefined]]);
+  assert.equal(r.prices, true);
+  assert.deepEqual(r.filter, { all: false, hideSmall: false, shown: [], hidden: [] });
   // The review prices the amount and the fee.
   const review = ok<Review & { tokens: Record<string, { priceUsd?: string }> }>(
     await service.handle({ type: "prepare_send", denom: "inj", to: ME, amount: INJ.toString() }),
@@ -278,17 +284,66 @@ test("USD values: mainnet only, from one bulk price list, and never in the way",
   // Cached: one price request for both.
   assert.equal(net.state.priceCalls, 1);
 
-  // Switched off: no request, no values.
+  // Switched off: no request, no values. What Choice said before still counts for the filter.
   ok(await service.handle({ type: "save_settings", network: "mainnet", lcd: null, prices: false }));
   const off = ok<B>(await service.handle({ type: "balances" }));
-  assert.equal(off.totalUsd, undefined);
   assert.ok(off.balances.every((b) => b.usd === undefined));
+  assert.deepEqual(off.balances.map((b) => b.onChoice), [true, true, undefined]);
+  assert.equal(off.prices, false);
   assert.equal(net.state.priceCalls, 1);
   assert.equal(ok<{ prices: boolean }>(await service.handle({ type: "settings" })).prices, false);
 
   // Choice down: balances still come back, without USD.
   const down = await wallet(chain({ pricesDown: true }));
   const d = ok<B>(await down.service.handle({ type: "balances" }));
-  assert.equal(d.balances.length, 1);
-  assert.equal(d.totalUsd, undefined);
+  assert.deepEqual(d.balances.map((b) => [b.symbol, b.usd, b.onChoice]), [["INJ", undefined, undefined]]);
+});
+
+type B = { balances: { symbol: string; usd?: number; priceUsd?: string; onChoice?: boolean }[]; filter: unknown; prices: boolean };
+
+test("a token Choice priced this week stays priced for the filter while Choice is down", async () => {
+  const net = chain({ balances: { inj: 5n * INJ, [USDT]: 2_500_000n } });
+  const { service, local, session } = await wallet(net);
+  ok(await service.handle({ type: "balances" }));
+  const seen = local.data.get("choice_seen") as Record<string, number>;
+  assert.deepEqual(Object.keys(seen).sort(), ["0x0000000000000000000000000000000000000000", "0x88f7f2b685f9692caf8c478f5badf09ee9b1cc13"]);
+
+  net.state.pricesDown = true;
+  const restarted = ok<B>(await serviceOn(net, local, session).handle({ type: "balances" }));
+  assert.deepEqual(restarted.balances.map((b) => [b.symbol, b.usd, b.onChoice]), [["INJ", undefined, true], ["USDT", undefined, true]]);
+
+  // Past a week it no longer counts, and is dropped.
+  const old = Date.now() - 8 * 24 * 3_600_000;
+  local.data.set("choice_seen", Object.fromEntries(Object.keys(seen).map((a) => [a, old])));
+  const later = ok<B>(await serviceOn(net, local, session).handle({ type: "balances" }));
+  assert.ok(later.balances.every((b) => b.onChoice === undefined));
+
+  // Back up: remembered again, without the stale entries.
+  net.state.pricesDown = false;
+  ok(await serviceOn(net, local, session).handle({ type: "balances" }));
+  assert.ok(Object.values(local.data.get("choice_seen") as Record<string, number>).every((t) => t > old));
+});
+
+test("token filter: kept per network, and checked", async () => {
+  const { service, local } = await wallet(chain({ balances: { inj: 5n * INJ, [SCAM]: 7n } }));
+  const f = { all: false, hideSmall: true, shown: [SCAM], hidden: [USDT] };
+  assert.deepEqual(ok(await service.handle({ type: "save_token_filter", filter: f })), f);
+  assert.deepEqual(ok<B>(await service.handle({ type: "balances" })).filter, f);
+  // Duplicates are dropped.
+  assert.deepEqual(ok(await service.handle({ type: "save_token_filter", filter: { ...f, shown: [SCAM, SCAM] } })), f);
+
+  // Another network has its own, starting from the default.
+  ok(await service.handle({ type: "save_settings", network: "testnet", lcd: null }));
+  const t = { all: true, hideSmall: false, shown: [], hidden: [] };
+  ok(await service.handle({ type: "save_token_filter", filter: t }));
+  assert.deepEqual(local.data.get("token_filter"), { mainnet: f, testnet: t });
+
+  const many = Array.from({ length: 501 }, (_, i) => `factory/inj1x/t${i}`);
+  for (const bad of [null, "all", { ...f, all: "yes" }, { ...f, shown: ["../../x"] }, { ...f, shown: [USDT] }, { ...f, hidden: many }, { ...f, shown: undefined }]) {
+    assert.equal(code(await service.handle({ type: "save_token_filter", filter: bad })), "bad_request", JSON.stringify(bad)?.slice(0, 80));
+  }
+  // A damaged stored filter reads as the default.
+  local.data.set("token_filter", { mainnet: { all: 1 } });
+  ok(await service.handle({ type: "save_settings", network: "mainnet", lcd: null }));
+  assert.deepEqual(ok<B>(await service.handle({ type: "balances" })).filter, { all: false, hideSmall: false, shown: [], hidden: [] });
 });

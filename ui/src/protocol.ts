@@ -28,6 +28,8 @@ export type UiRequest =
   /** Switch to `network`, with these LCD endpoints for it (`null`: the defaults). */
   | { type: "save_settings"; network: NetworkId; lcd: string[] | null; prices?: boolean }
   | { type: "balances" }
+  /** Which tokens the current network's lists show (see `TokenFilter`). */
+  | { type: "save_token_filter"; filter: TokenFilter }
   /** `amount` in base units, or "max" (the fee token: everything but the fee). */
   | { type: "prepare_send"; denom: string; to: string; amount: string }
   /** Sign and broadcast the prepared send whose review showed `digest`. `confirm` is the
@@ -56,7 +58,26 @@ export type TokenInfo = {
   priceUsd?: string;
 };
 
-export type Balance = TokenInfo & { amount: string; usd?: number };
+export type Balance = TokenInfo & {
+  amount: string;
+  usd?: number;
+  /** Choice has priced it within the past week: it trades somewhere real. Filters only;
+   *  `priceUsd` is the price to show. */
+  onChoice?: boolean;
+};
+
+/** Which tokens the lists show, per network. Anyone can send any token to any address, so
+ *  by default only the fee token, the wallet's listed tokens and tokens Choice prices show.
+ *  Hidden tokens stay in the account. */
+export type TokenFilter = {
+  /** Show every token, not only listed and priced ones. */
+  all: boolean;
+  /** Also hide priced tokens worth under $1. */
+  hideSmall: boolean;
+  /** The user's own choices, over the rules above. */
+  shown: string[];
+  hidden: string[];
+};
 
 export type Level = "info" | "amber" | "red" | "blocked";
 
@@ -115,8 +136,9 @@ export type Replies = {
   lock: Status;
   settings: Settings;
   save_settings: Settings;
-  /** `totalUsd` sums the balances that have a price; absent when none do. */
-  balances: { network: NetworkId; balances: Balance[]; totalUsd?: number };
+  /** Every balance; the UI applies `filter`. `prices` is the USD values setting. */
+  balances: { network: NetworkId; balances: Balance[]; filter: TokenFilter; prices: boolean };
+  save_token_filter: TokenFilter;
   prepare_send: SendReview;
   confirm_send: Sent;
   tx_status: TxState;

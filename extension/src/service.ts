@@ -9,7 +9,8 @@
 //   from here. UI pages never see either.
 
 import { isNetworkId, NETWORKS, Pool, type Fetch, type NetworkId } from "@choice-wallet/chain";
-import type { AccountInfo, NewSecret, Result, Settings, Status, UiRequest } from "@choice-wallet/ui/protocol";
+import type { AccountInfo, NewSecret, Result, Settings, Status, TokenFilter, UiRequest } from "@choice-wallet/ui/protocol";
+import { DEFAULT_FILTER } from "@choice-wallet/ui/token-filter";
 
 import { createSender } from "./send";
 
@@ -40,6 +41,24 @@ const err = (code: string, message: string): UiResponse<never> => ({ ok: false, 
 /** User-set LCD endpoints per network; absent means the defaults. */
 type Endpoints = Partial<Record<NetworkId, string[]>>;
 
+/** A bank denom, as the Cosmos SDK allows them. */
+const DENOM = /^[a-zA-Z][a-zA-Z0-9/:._-]{2,127}$/;
+/** Each of the filter's lists keeps at most this many denoms. */
+const MAX_CHOICES = 500;
+
+/** A filter from the UI or from storage, checked: null if it isn't one. */
+function tokenFilterFrom(v: unknown): TokenFilter | null {
+  if (typeof v !== "object" || v === null) return null;
+  const f = v as Record<string, unknown>;
+  const list = (x: unknown) =>
+    Array.isArray(x) && x.length <= MAX_CHOICES && x.every((d) => typeof d === "string" && DENOM.test(d)) ? [...new Set(x as string[])] : null;
+  const shown = list(f["shown"]);
+  const hidden = list(f["hidden"]);
+  if (typeof f["all"] !== "boolean" || typeof f["hideSmall"] !== "boolean" || !shown || !hidden) return null;
+  if (shown.some((d) => hidden.includes(d))) return null;
+  return { all: f["all"], hideSmall: f["hideSmall"], shown, hidden };
+}
+
 export function createService(d: Deps) {
   async function keystore(): Promise<{ keystore?: string; kind?: Status["kind"]; accounts?: AccountInfo[] }> {
     return (await d.local.get(["keystore", "kind", "accounts"])) as never;
@@ -65,7 +84,21 @@ export function createService(d: Deps) {
     return prices !== false;
   }
 
-  const sender = createSender({ vault: d.vault, fetch: d.fetch, session: d.session, endpoints, prices: showPrices });
+  const sender = createSender({ vault: d.vault, fetch: d.fetch, local: d.local, session: d.session, endpoints, prices: showPrices });
+
+  async function tokenFilter(net: NetworkId): Promise<TokenFilter> {
+    const { token_filter } = (await d.local.get(["token_filter"])) as { token_filter?: Partial<Record<NetworkId, unknown>> };
+    return tokenFilterFrom(token_filter?.[net]) ?? DEFAULT_FILTER;
+  }
+
+  async function saveTokenFilter(filter: unknown): Promise<UiResponse<TokenFilter>> {
+    const f = tokenFilterFrom(filter);
+    if (!f) return err("bad_request", "Not a token filter.");
+    const net = await network();
+    const { token_filter } = (await d.local.get(["token_filter"])) as { token_filter?: Partial<Record<NetworkId, unknown>> };
+    await d.local.set({ token_filter: { ...(token_filter ?? {}), [net]: f } });
+    return { ok: true, result: f };
+  }
 
   async function status(): Promise<Status> {
     const ks = await keystore();
@@ -179,13 +212,19 @@ export function createService(d: Deps) {
         return settings();
       case "save_settings":
         return saveSettings(r.network, r.lcd, r.prices);
+      case "save_token_filter":
+        return saveTokenFilter(r.filter);
       case "balances":
       case "prepare_send":
       case "confirm_send":
       case "tx_status": {
         const a = await active();
         if ("ok" in a) return a;
-        if (r.type === "balances") return sender.balances(a.net, a.account);
+        if (r.type === "balances") {
+          const b = await sender.balances(a.net, a.account);
+          if (!b.ok) return b;
+          return { ok: true, result: { ...b.result, filter: await tokenFilter(a.net), prices: await showPrices() } };
+        }
         if (r.type === "prepare_send") return sender.prepare(a.net, a.account, r);
         if (r.type === "confirm_send") return sender.confirm(a.keystore, a.key, r);
         return sender.status(a.net, r.hash);

@@ -37,7 +37,7 @@ The chain client, the UI and the extension are npm workspaces, installed and che
 ```sh
 npm ci           # scripts off, exact versions (see .npmrc)
 npm run check    # TypeScript: chain, ui and extension
-npm test         # the chain client's tests, then the extension's against the real vault
+npm test         # the chain client's tests, the UI's (QR encoder, token filter), then the extension's against the real vault
 ```
 
 Regenerating protobuf code or test vectors (not needed for a normal build):

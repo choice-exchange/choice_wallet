@@ -32,6 +32,8 @@ import type { Store } from "./service";
 export interface SendDeps {
   vault<T>(method: string, params?: unknown): Promise<Result<T>>;
   fetch: Fetch;
+  /** Holds `choice_seen`: when Choice last priced each token (public data, no balances). */
+  local: Store;
   session: Store;
   /** The endpoints the user chose for a network (or the defaults). */
   endpoints(network: NetworkId): Promise<readonly string[]>;
@@ -41,6 +43,9 @@ export interface SendDeps {
 
 const PRICE_TTL_MS = 60_000;
 const PAIRS_TTL_MS = 3_600_000;
+/** A token Choice priced this recently still counts as priced for the token filter, so a
+ *  Choice outage doesn't make tokens vanish. */
+const SEEN_MS = 7 * 24 * 3_600_000;
 
 /** What `confirm` needs, kept in session storage between the two steps. */
 interface Pending {
@@ -78,37 +83,51 @@ export function createSender(d: SendDeps) {
   let priceCache: { at: number; list: Promise<PriceList> } | null = null;
   const pairCache = new Map<NetworkId, { at: number; pairs: Promise<Map<string, string>> }>();
 
-  /** USD prices for these denoms, where Choice has one. Mainnet only. Never an error: with
-   *  no prices the wallet shows amounts alone. */
-  async function pricesFor(network: NetworkId, client: Lcd, denoms: Iterable<string>): Promise<Map<string, string>> {
-    const out = new Map<string, string>();
-    if (network !== "mainnet" || !(await d.prices())) return out;
-    try {
-      const now = Date.now();
-      if (!priceCache || now - priceCache.at > PRICE_TTL_MS) {
-        const entry = { at: now, list: fetchPrices(d.fetch) };
-        priceCache = entry;
-        entry.list.catch(() => {
-          if (priceCache === entry) priceCache = null;
-        });
-      }
-      let pc = pairCache.get(network);
-      if (!pc || now - pc.at > PAIRS_TTL_MS) {
-        const entry = { at: now, pairs: client.tokenPairs() };
-        pairCache.set(network, entry);
-        entry.pairs.catch(() => {
-          if (pairCache.get(network) === entry) pairCache.delete(network);
-        });
-        pc = entry;
-      }
-      const [{ prices }, pairs] = await Promise.all([priceCache.list, pc.pairs]);
-      for (const dn of denoms) {
-        const a = priceAddress(dn, pairs);
-        const p = a === undefined ? undefined : prices.get(a);
-        if (p) out.set(dn, p);
-      }
-    } catch {
-      // No prices this time.
+  /** Choice's view of these denoms (mainnet only): the price to show, where it has one
+   *  now, and whether it priced the token within `SEEN_MS` (for the token filter). Never
+   *  an error: with no prices the wallet shows amounts alone. With USD values off, Choice
+   *  isn't asked, and only what it said before counts. */
+  async function choiceFor(network: NetworkId, client: Lcd, denoms: Iterable<string>): Promise<{ prices: Map<string, string>; onChoice: Set<string> }> {
+    const out = { prices: new Map<string, string>(), onChoice: new Set<string>() };
+    if (network !== "mainnet") return out;
+    const now = Date.now();
+    const ask = await d.prices();
+    // When Choice last priced each address, kept a week.
+    const stored = ((await d.local.get(["choice_seen"]))["choice_seen"] ?? {}) as Record<string, number>;
+    const seen: Record<string, number> = {};
+    for (const [a, t] of Object.entries(stored)) if (typeof t === "number" && now - t < SEEN_MS) seen[a] = t;
+    if (!ask && Object.keys(seen).length === 0) return out;
+
+    if (ask && (!priceCache || now - priceCache.at > PRICE_TTL_MS)) {
+      const entry = { at: now, list: fetchPrices(d.fetch) };
+      priceCache = entry;
+      entry.list.catch(() => {
+        if (priceCache === entry) priceCache = null;
+      });
+    }
+    let pc = pairCache.get(network);
+    if (!pc || now - pc.at > PAIRS_TTL_MS) {
+      const entry = { at: now, pairs: client.tokenPairs() };
+      pairCache.set(network, entry);
+      entry.pairs.catch(() => {
+        if (pairCache.get(network) === entry) pairCache.delete(network);
+      });
+      pc = entry;
+    }
+    const [list, pairs] = await Promise.all([
+      ask && priceCache ? priceCache.list.catch(() => null) : null,
+      pc.pairs.catch(() => new Map<string, string>()),
+    ]);
+    if (list) {
+      for (const a of list.prices.keys()) seen[a] = now;
+      await d.local.set({ choice_seen: seen });
+    }
+    for (const dn of denoms) {
+      const a = priceAddress(dn, pairs);
+      if (a === undefined) continue;
+      const p = list?.prices.get(a);
+      if (p) out.prices.set(dn, p);
+      if (p || seen[a] !== undefined) out.onChoice.add(dn);
     }
     return out;
   }
@@ -133,23 +152,21 @@ export function createSender(d: SendDeps) {
     throw e;
   }
 
-  async function balances(network: NetworkId, account: AccountInfo): Promise<Result<{ network: NetworkId; balances: Balance[]; totalUsd?: number }>> {
+  /** Every balance, sorted: INJ, the wallet's known tokens, then by USD value, then the rest
+   *  by symbol. The UI filters. */
+  async function balances(network: NetworkId, account: AccountInfo): Promise<Result<{ network: NetworkId; balances: Balance[] }>> {
     const client = await lcd(network);
     try {
       const coins = await client.balances(address(network, account));
       const list = await Promise.all(coins.map(async (c) => ({ ...(await token(network, client, c.denom)), amount: c.amount })));
-      // INJ first, then the wallet's known tokens, then the rest.
-      list.sort((a, b) => rank(network, a) - rank(network, b) || a.symbol.localeCompare(b.symbol));
-      const px = await pricesFor(network, client, list.map((b) => b.denom));
-      let total = 0;
-      const priced: Balance[] = list.map((b) => {
-        const p = px.get(b.denom);
-        if (!p) return b;
-        const usd = usdValue(b.amount, b.decimals, p);
-        total += usd;
-        return { ...b, priceUsd: p, usd };
+      const choice = await choiceFor(network, client, list.map((b) => b.denom));
+      const out: Balance[] = list.map((b) => {
+        const p = choice.prices.get(b.denom);
+        const seen = choice.onChoice.has(b.denom) ? { onChoice: true } : {};
+        return p ? { ...b, ...seen, priceUsd: p, usd: usdValue(b.amount, b.decimals, p) } : { ...b, ...seen };
       });
-      return { ok: true, result: { network, balances: priced, ...(px.size > 0 ? { totalUsd: total } : {}) } };
+      out.sort((a, b) => rank(network, a) - rank(network, b) || (b.usd ?? -1) - (a.usd ?? -1) || a.symbol.localeCompare(b.symbol));
+      return { ok: true, result: { network, balances: out } };
     } catch (e) {
       return chainFailure(e);
     }
@@ -230,7 +247,7 @@ export function createSender(d: SendDeps) {
       await d.session.set({ pending_send: pending });
       const denoms = new Set<string>(display.fee.amount.map((c) => c.denom));
       for (const m of display.messages) if (Array.isArray(m["amount"])) for (const c of m["amount"] as Coin[]) denoms.add(c.denom);
-      const px = await pricesFor(network, client, denoms);
+      const px = (await choiceFor(network, client, denoms)).prices;
       const tokens = Object.fromEntries(
         await Promise.all(
           [...denoms].map(async (dn) => {

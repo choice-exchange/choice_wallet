@@ -8,7 +8,11 @@
 // over --remote-debugging-pipe. It creates a throwaway wallet in a temporary profile,
 // which is deleted afterwards. Sends go to a local fake LCD (below), never a real chain.
 // With --live, it also checks that the default mainnet endpoints answer from the browser.
-import { spawn } from "node:child_process";
+//
+// Set E2E_QR_DECODER to a program that prints the text of the QR code in the PNG it is
+// given (any independent reader) and the Receive screenshots are decoded and checked
+// against the addresses on screen.
+import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -18,7 +22,8 @@ import { join } from "node:path";
 const [chrome, ext, out, flag] = process.argv.slice(2);
 const live = flag === "--live";
 
-// A fake mainnet LCD for any address: 5 INJ, 2.5 USDT, and a token that calls itself USDT.
+// A fake mainnet LCD for any address: 5 INJ, 2.5 USDT, and a token that calls itself USDT
+// (unlisted and unpriced, so the token filter hides it).
 const USDT = "peggy0xdAC17F958D2ee523a2206206994597C13D831ec7";
 const SCAM = "factory/inj1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqe2hm49/usdt";
 const broadcasts = [];
@@ -139,6 +144,7 @@ try {
         await sleep(250); // let the screen's entrance animation finish
         const { data } = await send("Page.captureScreenshot", { format: "png" }, sessionId);
         writeFileSync(join(out, `${name}.png`), Buffer.from(data, "base64"));
+        return join(out, `${name}.png`);
       },
       close: () => send("Target.closeTarget", { targetId }),
     };
@@ -172,13 +178,22 @@ try {
     console.log("live: mainnet endpoints answered (no tokens yet)");
     await p.shot("05-home-empty");
   }
+  /** The QR code on screen must read back as the address beside it. */
+  async function checkQr(png, address) {
+    if (!(await p.eval(`!!document.querySelector("svg.qr")`))) throw new Error("no QR code on Receive");
+    if (!process.env.E2E_QR_DECODER) return;
+    const read = execFileSync(process.env.E2E_QR_DECODER, [png]).toString().trim();
+    if (read !== address) throw new Error(`QR reads "${read}", the screen says "${address}"`);
+    console.log("QR decodes to", read);
+  }
   async function addresses() {
     await p.click("Receive");
     await p.waitText("Both addresses are the same account.");
     const a = [await p.eval(`document.querySelector(".address").textContent`)];
-    await p.shot("06-receive");
+    await checkQr(await p.shot("06-receive"), a[0]);
     await p.click("EVM (0x)");
     a.push(await p.eval(`document.querySelector(".address").textContent`));
+    await checkQr(await p.shot("06b-receive-evm"), a[1]);
     await p.click("Back");
     await p.waitText("Account 1");
     return a;
@@ -212,10 +227,14 @@ try {
   await p.shot("08-settings");
   await p.click("Save");
   await p.waitText("USDT");
-  await p.waitText("factory/inj1");
-  const list = await p.eval(`[...document.querySelectorAll(".token-list .token")].map((li) => li.innerText.replace(/\\s+/g, " "))`);
+  // The look-alike USDT is unlisted and unpriced: hidden, behind a row that says so.
+  await p.waitText("1 hidden token");
+  const homeTokens = () => p.eval(`[...document.querySelectorAll(".token-list .token")].map((li) => li.innerText.replace(/\\s+/g, " "))`);
+  const list = await homeTokens();
   console.log("balances", list);
-  if (list.length !== 3 || !list[0].startsWith("INJ") || !list[2].includes("factory/inj1")) throw new Error("unexpected balance list");
+  if (list.length !== 2 || !list[0].startsWith("INJ") || !list[1].startsWith("USDT") || list.join(" ").includes("factory/inj1")) {
+    throw new Error("unexpected balance list");
+  }
   if (live) {
     // Prices come from Choice for real: the total is in dollars.
     let hero = "";
@@ -227,6 +246,36 @@ try {
     console.log("live: Choice prices, total", hero);
   }
   await p.shot("09-home");
+
+  // 4b. The token filter: show the hidden token, which sticks across a reopen; hide it again.
+  await p.click("1 hidden token");
+  await p.waitText("Unlisted");
+  await p.shot("09b-tokens");
+  await p.click("Show USDT"); // only the hidden one offers "Show"
+  await p.waitText("Hidden tokens stay in your account.");
+  if (await p.eval(`document.body.innerText.includes("Unlisted")`)) throw new Error("the token is still hidden");
+  await p.click("Back");
+  await p.waitText("factory/inj1");
+  await p.close();
+  p = await openPopup();
+  await p.waitText("factory/inj1");
+  if ((await homeTokens()).length !== 3) throw new Error("the shown token didn't stay shown");
+  await p.click("Manage");
+  await p.waitText("Hidden tokens stay in your account.");
+  // Hiding it again drops the choice: it is back to hidden by the rules.
+  await p.eval(`document.querySelector('.token[title="${SCAM}"] button').click()`);
+  await p.waitText("Unlisted");
+  await p.click("Hide under $1");
+  if ((await p.eval(`document.querySelector("[role=switch]").getAttribute("aria-checked")`)) !== "true") throw new Error("the switch didn't switch");
+  await p.click("Hide USDT"); // the real one: now hidden by hand
+  await p.waitText("Hidden by you");
+  await p.shot("09c-tokens-hidden-by-you");
+  await p.click("Show USDT"); // the first "Show" is the real USDT's, listed first
+  await p.click("Hide under $1");
+  await p.click("Back");
+  await p.waitText("1 hidden token");
+  if ((await homeTokens()).length !== 2) throw new Error("hiding didn't hide");
+  console.log("token filter: hidden by default, shown and hidden by hand, kept across a reopen");
 
   // 5. Send 1.5 INJ to an EVM address; the review shows the vault's decode.
   const THEM_EVM = "0x9d8A62f656a8d1615C1294fd71e9CFb3E4855A4F";
