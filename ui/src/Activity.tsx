@@ -1,6 +1,7 @@
 // Activity (a tab): what each recent transaction did to this account, newest first, from
-// the user's own endpoints. Junk sent to the account (only tokens the filter hides, and
-// not signed here) sits behind a row, like on the home screen. A row opens the explorer.
+// the user's own endpoints (Blockscout only finds EVM transfers others made; the LCD has
+// the say). Junk (not signed here, and only tokens the filter hides, in or out) sits behind
+// a row, like on the home screen. A row opens the explorer: Blockscout for an EVM one.
 
 import { explorerTxUrl, formatShort, NETWORKS, shortDenom } from "@choice-wallet/chain";
 import { useEffect, useState, type ReactNode } from "react";
@@ -8,6 +9,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { useBackend } from "./backend";
 import {
   ChartIcon,
+  CheckIcon,
   ChevronDownIcon,
   CodeIcon,
   EyeOffIcon,
@@ -31,6 +33,7 @@ const TITLE: Record<ActivityKind, string> = {
   receive: "Received",
   swap: "Swap",
   convert: "Converted",
+  approve: "Approved",
   contract: "Contract call",
   evm: "EVM transaction",
   orderbook: "INJ orderbook",
@@ -47,6 +50,7 @@ const ICON: Record<ActivityKind, (p: { size?: number }) => ReactNode> = {
   receive: ReceiveIcon,
   swap: SwapIcon,
   convert: SwapIcon,
+  approve: CheckIcon,
   contract: CodeIcon,
   evm: CodeIcon,
   orderbook: ChartIcon,
@@ -69,6 +73,7 @@ export function ActivityView({ network, tabs }: { network: NetworkId; tabs: Reac
   const [page, setPage] = useState(1);
   const [more, setMore] = useState(false);
   const [cutoff, setCutoff] = useState<string | null>(null);
+  const [indexDown, setIndexDown] = useState(false);
   const [showHidden, setShowHidden] = useState(false);
   const [reload, setReload] = useState(0);
 
@@ -85,6 +90,7 @@ export function ActivityView({ network, tabs }: { network: NetworkId; tabs: Reac
     setPage(p);
     setMore(r.more);
     setCutoff(r.cutoff);
+    setIndexDown(r.evmIndexDown === true);
   }
 
   useEffect(() => {
@@ -92,7 +98,8 @@ export function ActivityView({ network, tabs }: { network: NetworkId; tabs: Reac
   }, [network, reload]);
 
   const fee = NETWORKS[network].feeDenom;
-  /** Junk: not signed here, and every token it brought is one the filter hides. */
+  /** Junk: not signed here, and every token it moved is one the filter hides. Out counts
+   *  too: any contract can log a "transfer" from this account of a token it made up. */
   const junk = (a: ActivityItem) =>
     filter !== null &&
     !a.signed &&
@@ -100,7 +107,7 @@ export function ActivityView({ network, tabs }: { network: NetworkId; tabs: Reac
     a.changes.every((c) => {
       const t = tokens[c.denom];
       const b: Balance = { denom: c.denom, symbol: t?.symbol ?? "", name: t?.name ?? "", decimals: t?.decimals ?? 0, known: t?.known ?? false, amount: "0", ...(t?.onChoice ? { onChoice: true } : {}) };
-      return !c.amount.startsWith("-") && hiddenWhy(b, filter, fee) !== null;
+      return hiddenWhy(b, filter, fee) !== null;
     });
   const loaded = (items ?? []).filter((a) => cutoff === null || BigInt(a.height) >= BigInt(cutoff));
   const hiddenCount = loaded.filter(junk).length;
@@ -139,7 +146,7 @@ export function ActivityView({ network, tabs }: { network: NetworkId; tabs: Reac
               <div className="eyebrow">{g.day}</div>
               <div className="activity-list">
                 {g.rows.map((a) => (
-                  <Row key={a.hash} a={a} tokens={tokens} dim={junk(a)} onOpen={() => backend.openLink(explorerTxUrl(NETWORKS[network], a.hash))} />
+                  <Row key={a.hash} a={a} tokens={tokens} dim={junk(a)} onOpen={() => backend.openLink(explorerTxUrl(NETWORKS[network], a.evmHash ?? a.hash))} />
                 ))}
               </div>
             </div>
@@ -158,6 +165,7 @@ export function ActivityView({ network, tabs }: { network: NetworkId; tabs: Reac
           )}
         </>
       )}
+      {indexDown && <p className="footnote">Blockscout didn't answer, so some EVM transfers may be missing.</p>}
       <p className="footnote">From your endpoints. How far back depends on the node.</p>
     </Screen>
   );
@@ -166,14 +174,13 @@ export function ActivityView({ network, tabs }: { network: NetworkId; tabs: Reac
 function Row({ a, tokens, dim, onOpen }: { a: ActivityItem; tokens: Tokens; dim: boolean; onOpen: () => void }) {
   const Icon = a.ok ? ICON[a.kind] : WarningIcon;
   const incoming = a.ok && a.changes.length > 0 && a.changes.every((c) => !c.amount.startsWith("-"));
-  const title = a.kind === "other" ? (a.label ?? TITLE.other) : TITLE[a.kind];
-  const who =
-    a.counterparty === undefined
-      ? ""
-      : ` · ${a.kind === "receive" ? "from" : a.kind === "stake" || a.kind === "unstake" || a.kind === "redelegate" ? "with" : "to"} ${shortAddress(a.counterparty)}`;
+  const revoked = a.approval?.amount === "0";
+  const title = a.kind === "other" ? (a.label ?? TITLE.other) : revoked ? "Approval removed" : TITLE[a.kind];
+  const preposition = a.kind === "receive" ? "from" : a.kind === "approve" ? "for" : a.kind === "stake" || a.kind === "unstake" || a.kind === "redelegate" ? "with" : "to";
+  const who = a.counterparty === undefined ? "" : ` · ${preposition} ${shortAddress(a.counterparty)}`;
   const lines = a.changes.slice(0, 2);
   return (
-    <button className={dim ? "activity is-hidden" : "activity"} title={a.hash} onClick={onOpen}>
+    <button className={dim ? "activity is-hidden" : "activity"} title={a.evmHash ?? a.hash} onClick={onOpen}>
       <span className={`activity-icon${!a.ok ? " failed" : incoming ? " in" : ""}`}>
         <Icon size={18} />
       </span>
@@ -194,7 +201,8 @@ function Row({ a, tokens, dim, onOpen }: { a: ActivityItem; tokens: Tokens; dim:
           </span>
         ))}
         {a.changes.length > 2 && <span className="amount dim">+{a.changes.length - 2} more</span>}
-        {lines.length === 0 && a.fee.length > 0 && <span className="amount dim">Fee {amountLabel(a.fee[0]!, tokens).replace(/^[-+]/, "")}</span>}
+        {a.approval && !revoked && <span className="amount dim">{allowanceLabel(a.approval, tokens)}</span>}
+        {lines.length === 0 && (!a.approval || revoked) && a.fee.length > 0 && <span className="amount dim">Fee {amountLabel(a.fee[0]!, tokens).replace(/^[-+]/, "")}</span>}
       </span>
     </button>
   );
@@ -206,6 +214,14 @@ function amountLabel(c: Coin, tokens: Tokens): string {
   const abs = neg ? c.amount.slice(1) : c.amount;
   const symbol = t ? (t.known ? t.symbol : t.symbol || shortDenom(c.denom)) : shortDenom(c.denom);
   return `${neg ? "-" : "+"}${formatShort(abs, t?.decimals ?? 0, 4)} ${symbol}`;
+}
+
+/** An allowance: "Unlimited USDT" at the sizes wallets and routers use for "all of it". */
+function allowanceLabel(ap: NonNullable<ActivityItem["approval"]>, tokens: Tokens): string {
+  const t = tokens[ap.denom];
+  const symbol = t ? (t.known ? t.symbol : t.symbol || shortDenom(ap.denom)) : shortDenom(ap.denom);
+  if (BigInt(ap.amount) >= 2n ** 128n) return `Unlimited ${symbol}`;
+  return `${formatShort(ap.amount, t?.decimals ?? 0, 4)} ${symbol}`;
 }
 
 function dayLabel(iso: string): string {

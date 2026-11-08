@@ -19,6 +19,8 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { approvalLog, ethMessage, rawTx, resultData, transferLog } from "../chain/test/evm-fixture.ts";
+
 const [chrome, ext, out, flag] = process.argv.slice(2);
 const live = flag === "--live";
 
@@ -51,6 +53,37 @@ const indexed = (hash, height, time, from, to, amount) => ({
   },
   events: [...moved(from, FEE_COLLECTOR, "17216480000000inj"), { type: "tx", attributes: attrs({ fee: "17216480000000inj", fee_payer: from }) }, ...moved(from, to, amount)],
 });
+// EVM transactions for Activity, as the LCD indexes them: an approval this wallet signed
+// (USDT's ERC20, bank-backed, for a router), and from someone else (the EIP-155 example
+// key) 2 LUMA, an ERC20 with no bank form, that only Blockscout finds; plus a zero-value
+// USDT "transfer" out of the wallet to a look-alike (address poisoning), which must not show.
+let me0x = ""; // the wallet's 0x address, once the e2e has read it
+const ROUTER = "0x4444444444444444444444444444444444444444";
+const LUMA = "0xb0d94f200998997cf8175ae7ddf039927a8b3ef4";
+const USDT_ERC20 = "0x88f7f2b685f9692caf8c478f5badf09ee9b1cc13";
+const SENDER_EVM = "0x9d8a62f656a8d1615c1294fd71e9cfb3e4855a4f";
+const evmHash = (height) => `0x${height.toString(16).padStart(64, "e")}`;
+const evmIndexed = (height, time, o) => ({
+  txhash: height.toString(16).padStart(64, "C"),
+  height: String(height),
+  timestamp: time.toISOString(),
+  code: 0,
+  raw_log: "",
+  data: resultData(evmHash(height), o.logs),
+  tx: { body: { messages: [ethMessage(o.from, rawTx({ to: o.to }))] }, auth_info: { fee: { amount: [{ denom: "inj", amount: "4032160000000" }], gas_limit: "25201" } } },
+  events: [
+    ...moved(o.fromInj, FEE_COLLECTOR, "4032160000000inj"),
+    { type: "tx", attributes: attrs({ fee: "4032160000000inj" }) },
+    { type: "message", attributes: attrs({ action: "/injective.evm.v1.MsgEthereumTx", sender: o.fromInj }) },
+    { type: "ethereum_tx", attributes: attrs({ ethereumTxHash: evmHash(height), recipient: o.to }) },
+  ],
+});
+const evmTxs = (me, now) => ({
+  approval: evmIndexed(850, new Date(now - 1_200_000), { from: me0x.toLowerCase(), fromInj: me, to: USDT_ERC20, logs: [approvalLog(USDT_ERC20, me0x, ROUTER, 2n ** 256n - 1n)] }),
+  [evmHash(860)]: evmIndexed(860, new Date(now - 600_000), { from: SENDER_EVM, fromInj: FRIEND, to: LUMA, logs: [transferLog(LUMA, SENDER_EVM, me0x, 2n * 10n ** 18n)] }),
+  [evmHash(855)]: evmIndexed(855, new Date(now - 900_000), { from: SENDER_EVM, fromInj: FRIEND, to: USDT_ERC20, logs: [transferLog(USDT_ERC20, me0x, SENDER_EVM, 0n)] }),
+});
+let meInj = "";
 const lcd = createServer((req, res) => {
   const reply = (status, body) => {
     res.writeHead(status, { "content-type": "application/json", "access-control-allow-origin": "*", "access-control-allow-headers": "content-type" });
@@ -103,15 +136,28 @@ const lcd = createServer((req, res) => {
       broadcasts.push(tx_bytes);
       return reply(200, { tx_response: { txhash: sha(tx_bytes), code: 0, raw_log: "" } });
     }
+    if (p === "/api" && url.searchParams.get("action") === "tokentx") {
+      // Blockscout: the wallet's ERC20 transfers, newest first.
+      if (url.searchParams.get("address")?.toLowerCase() !== me0x.toLowerCase() || url.searchParams.get("page") !== "1") return reply(200, { message: "No token transfers found", result: [], status: "0" });
+      return reply(200, { message: "OK", status: "1", result: [860, 855].map((h) => ({ blockNumber: String(h), hash: evmHash(h), value: "1" })) });
+    }
     if (p === "/cosmos/tx/v1beta1/txs" && req.method === "GET") {
-      // The tx index: a receive and a junk airdrop, and the send once it's broadcast.
+      // The tx index: a receive and a junk airdrop, an EVM approval, and the send once it's
+      // broadcast; by EVM hash, what Blockscout named.
       const q = url.searchParams.get("query") ?? "";
-      const me = /'([a-z0-9]+)'$/.exec(q)?.[1] ?? "";
       if (url.searchParams.get("page") !== "1") return reply(500, { code: 13, message: "failed to search for txs: page should be within [1, 1] range, given 2" });
       const now = Date.now();
-      const list = q.startsWith("message.sender=")
-        ? broadcasts.map((b) => indexed(sha(b), 900, new Date(now - 60_000), me, SENT_TO, "1500000000000000000inj"))
-        : [indexed("A".repeat(64), 800, new Date(now - 3_600_000), FRIEND, me, `2500000${USDT}`), indexed("B".repeat(64), 700, new Date(now - 26 * 3_600_000), FRIEND, me, `7000000${SCAM}`)];
+      const byHash = /^ethereum_tx\.ethereumTxHash='(0x[0-9a-f]{64})'$/.exec(q);
+      if (byHash) {
+        const t = evmTxs(meInj, now)[byHash[1]];
+        return reply(200, { tx_responses: t ? [t] : [], total: t ? "1" : "0" });
+      }
+      const me = /'([a-z0-9]+)'$/.exec(q)?.[1] ?? "";
+      meInj = me;
+      const list =
+        q.startsWith("message.sender=") || q.startsWith("coin_spent.spender=")
+          ? [...broadcasts.map((b) => indexed(sha(b), 900, new Date(now - 60_000), me, SENT_TO, "1500000000000000000inj")), ...(me0x ? [evmTxs(me, now).approval] : [])]
+          : [indexed("A".repeat(64), 800, new Date(now - 3_600_000), FRIEND, me, `2500000${USDT}`), indexed("B".repeat(64), 700, new Date(now - 26 * 3_600_000), FRIEND, me, `7000000${SCAM}`)];
       return reply(200, { tx_responses: list, total: String(list.length) });
     }
     if (p.startsWith("/cosmos/tx/v1beta1/txs/")) {
@@ -257,6 +303,7 @@ try {
   }
   const addrs = await addresses();
   console.log("addresses", addrs);
+  me0x = addrs[1];
 
   // 2. Lock, wrong password, unlock.
   await p.click("Lock");
@@ -281,6 +328,7 @@ try {
   await p.click("Settings");
   await p.waitText("Tried in order, one per line.");
   await p.fill("textarea", 0, lcdUrl);
+  await p.fill("textarea", 2, lcdUrl); // Blockscout too
   await p.shot("08-settings");
   await p.click("Save");
   await p.waitText("USDT");
@@ -431,7 +479,8 @@ try {
   await p.waitText("Balance 5 INJ");
   if (broadcasts.length !== 1) throw new Error("cancel broadcast something");
 
-  // 6b. The tabs: Activity shows the send and the receive; the junk airdrop is hidden.
+  // 6b. The tabs: Activity shows the send, the receive, the EVM approval and the LUMA that
+  // Blockscout found; the junk airdrop is hidden and the zero-value "transfer" isn't there.
   await p.click("Back");
   await p.waitText("Account 1");
   await p.click("Activity");
@@ -439,19 +488,34 @@ try {
   const rows = () => p.eval(`[...document.querySelectorAll(".activity")].map((r) => r.innerText.replace(/\\s+/g, " "))`);
   const shownRows = await rows();
   console.log("activity", shownRows);
-  if (shownRows.length !== 2 || !shownRows[0].startsWith("Sent") || !shownRows[0].includes("-1.5 INJ") || !shownRows[1].startsWith("Received") || !shownRows[1].includes("+2.5 USDT")) {
+  const [sent, luma, approved, usdt] = shownRows;
+  if (
+    shownRows.length !== 4 ||
+    !sent.startsWith("Sent") ||
+    !sent.includes("-1.5 INJ") ||
+    !luma.startsWith("Received") ||
+    !luma.includes("from 0x9d8a62f6…855a4f") ||
+    !luma.includes("+2 LUMA") ||
+    !approved.startsWith("Approved") ||
+    !approved.includes("for 0x44444444…444444") ||
+    !approved.includes("Unlimited USDT") ||
+    !usdt.startsWith("Received") ||
+    !usdt.includes("+2.5 USDT")
+  ) {
     throw new Error("unexpected activity");
   }
-  if ((await p.eval(`document.querySelector(".activity").title`)) !== sha(broadcasts[0])) throw new Error("the sent row isn't the broadcast tx");
+  const titles = await p.eval(`[...document.querySelectorAll(".activity")].map((r) => r.title)`);
+  if (titles[0] !== sha(broadcasts[0])) throw new Error("the sent row isn't the broadcast tx");
+  if (titles[1] !== evmHash(860)) throw new Error("the LUMA row isn't named by its EVM hash");
   await p.shot("15-activity");
   await p.click("1 from hidden tokens");
-  if ((await rows()).length !== 3) throw new Error("the hidden row didn't open");
+  if ((await rows()).length !== 5) throw new Error("the hidden row didn't open");
   await p.click("Settings");
   await p.waitText("Tried in order, one per line.");
   await p.shot("16-settings-tab");
   await p.click("Wallet");
   await p.waitText("1 hidden token");
-  console.log("tabs: Activity (send, receive, junk hidden), Settings, back to Wallet");
+  console.log("tabs: Activity (send, receive, EVM approval, LUMA found through Blockscout; junk hidden, poisoning dropped), Settings, back to Wallet");
 
   // 8. A site: finds the wallet through EIP-6963 (window.ethereum untouched), connects
   // through an approval window (rejected once, then approved), gets a message signed, and

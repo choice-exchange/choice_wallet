@@ -5,10 +5,17 @@
 // for this address), whatever the messages were, so swaps, contract calls and IBC show
 // what actually moved. CW20 tokens move inside their contracts, so their `wasm` events
 // (transfer, send, mint, burn) count too, under the token's `cw20:` key. The fee is
-// reported apart, when this account paid it. Transfers that never touch either (pure ERC20
-// tokens on the EVM side) don't show here.
+// reported apart, when this account paid it.
+//
+// EVM transactions are in the same index (see ./evmtx.ts). Most ERC20s on Injective are
+// bank-backed (a token pair, or an `erc20:` denom), so their moves are bank events like any
+// other; an ERC20 with no bank form moves only in its contract's logs, which count under
+// its `evm:` key. Which tokens have a bank form comes from the erc20 module's pairs, so a
+// move never counts twice.
 
+import { EVM_MSG, erc20Event, evmCall, transferRecipient, type Erc20Event } from "./evmtx.ts";
 import type { Coin, IndexedTx, TxEvent } from "./lcd.ts";
+import { evmDenom } from "./tokens.ts";
 import { toBigInt } from "./units.ts";
 
 export type ActivityKind =
@@ -16,6 +23,7 @@ export type ActivityKind =
   | "receive"
   | "swap"
   | "convert"
+  | "approve"
   | "contract"
   | "evm"
   | "orderbook"
@@ -42,6 +50,19 @@ export interface Activity {
   changes: Coin[];
   /** The fee, when this account paid it. */
   fee: Coin[];
+  /** An EVM transaction's own 0x hash (its explorer page is Blockscout's). */
+  evmHash?: string;
+  /** For kind "approve": who may now spend how much of which token ("0" takes it back). */
+  approval?: { denom: string; spender: string; amount: string };
+}
+
+/** What `summarize` needs to read EVM transactions for this account. */
+export interface EvmView {
+  /** This account's 0x address. */
+  address: string;
+  /** ERC20s with a bank form (lowercase address → bank denom), from the erc20 module's token
+   *  pairs. Null when the node couldn't say: then no log counts, rather than one twice. */
+  pairs: ReadonlyMap<string, string> | null;
 }
 
 /** "100inj,5peggy0x…" (an event's amount) as coins. */
@@ -76,8 +97,14 @@ function cw20Move(e: TxEvent): { token: string; from?: string; to?: string; amou
 }
 
 /** What a transaction's events did to `address`: the net change per denom (a CW20 under
- *  its `cw20:` key), the fee left out when `address` paid it, and who sent what arrived. */
-export function balanceChanges(events: readonly TxEvent[], address: string, fee: readonly Coin[]): { changes: Coin[]; signed: boolean; from?: string } {
+ *  its `cw20:` key), the fee left out when `address` paid it, and who sent what arrived.
+ *  `signer` says `address` signed it where the events don't name a fee payer (EVM). */
+export function balanceChanges(
+  events: readonly TxEvent[],
+  address: string,
+  fee: readonly Coin[],
+  signer = false,
+): { changes: Coin[]; signed: boolean; from?: string } {
   const net = new Map<string, bigint>();
   const add = (coins: Coin[], sign: bigint) => {
     for (const c of coins) net.set(c.denom, (net.get(c.denom) ?? 0n) + sign * toBigInt(c.amount));
@@ -94,25 +121,107 @@ export function balanceChanges(events: readonly TxEvent[], address: string, fee:
     if (m?.from === address) add([{ denom: m.token, amount: m.amount }], -1n);
     if (m?.to === address && m.from && from === undefined) from = m.from;
   }
-  const signed = feePayer === address;
+  const signed = signer || feePayer === address;
   if (signed) add([...fee], 1n); // the fee is reported apart
   const changes = [...net].filter(([, a]) => a !== 0n).map(([denom, a]) => ({ denom, amount: a.toString() }));
   return { changes, signed, ...(from ? { from } : {}) };
 }
 
-export function summarize(tx: IndexedTx, address: string): Activity {
-  const { changes, signed, from } = balanceChanges(tx.events, address, tx.fee);
+const ERC20_DENOM = /^erc20:(0x[0-9a-fA-F]{40})$/;
+
+export function summarize(tx: IndexedTx, address: string, evm?: EvmView): Activity {
+  const call = tx.evm && tx.messages[0] ? evmCall(tx.messages[0]) : null;
+  const me = evm?.address.toLowerCase();
+  // An EVM transaction names no fee payer: its signer is in the signed bytes (and, when it
+  // ran, in the `message` event as the bech32 sender).
+  const evmSigner =
+    tx.evm !== undefined &&
+    ((call !== null && call.from === me) || tx.events.some((e) => e.type === "message" && attr(e, "action") === EVM_MSG && attr(e, "sender") === address));
+  const bank = balanceChanges(tx.events, address, tx.fee, evmSigner);
+  const { signed } = bank;
+  let { changes, from } = bank;
+
+  // ERC20 logs: who moved what, and what counts that bank events didn't already.
+  const events = (tx.evm?.logs ?? []).map(erc20Event).filter((e): e is Erc20Event => e !== null);
+  const local = new Map<string, string>(); // bank-backed tokens this tx's bank events name
+  for (const e of tx.events) {
+    if (e.type !== "coin_spent" && e.type !== "coin_received") continue;
+    for (const c of parseCoins(attr(e, "amount") ?? "")) {
+      const m = ERC20_DENOM.exec(c.denom);
+      if (m) local.set(m[1]!.toLowerCase(), c.denom);
+    }
+  }
+  const bankOf = (token: string) => evm?.pairs?.get(token) ?? local.get(token);
+  const keyOf = (token: string) => bankOf(token) ?? evmDenom(token);
+  const transfers = events.filter((e): e is Extract<Erc20Event, { kind: "transfer" }> => e.kind === "transfer" && e.amount > 0n);
+  if (me && evm?.pairs) {
+    const net = new Map(changes.map((c) => [c.denom, BigInt(c.amount)])); // signed, from balanceChanges
+    for (const m of transfers) {
+      if (bankOf(m.token)) continue;
+      const key = evmDenom(m.token);
+      if (m.to === me) net.set(key, (net.get(key) ?? 0n) + m.amount);
+      if (m.from === me) net.set(key, (net.get(key) ?? 0n) - m.amount);
+    }
+    changes = [...net].filter(([, a]) => a !== 0n).map(([denom, a]) => ({ denom, amount: a.toString() }));
+  }
+  if (tx.evm && me) {
+    // Who sent what arrived, in the EVM's own terms.
+    const t = transfers.find((m) => m.to === me);
+    if (t) from = t.from;
+    else if (call && call.to === me && call.value > 0n) from = call.from;
+  }
+
   const ups = changes.filter((c) => !c.amount.startsWith("-")).length;
   const downs = changes.length - ups;
   const up = ups > 0;
   const down = downs > 0;
 
-  const base = { hash: tx.hash, height: tx.height.toString(), time: tx.time, ok: tx.code === 0, signed, changes, fee: signed ? tx.fee : [] };
+  const base = {
+    hash: tx.hash,
+    height: tx.height.toString(),
+    time: tx.time,
+    ok: tx.code === 0,
+    signed,
+    changes,
+    fee: signed ? tx.fee : [],
+    ...(tx.evm?.hash ? { evmHash: tx.evm.hash } : {}),
+  };
   const types = tx.messages.map((m) => String(m["@type"] ?? ""));
   const first = tx.messages[0] ?? {};
   const t = types[0] ?? "";
   const str = (k: string) => (typeof first[k] === "string" ? (first[k] as string) : undefined);
   const kindOf = (kind: ActivityKind, counterparty?: string): Activity => ({ ...base, kind, ...(counterparty ? { counterparty } : {}) });
+
+  if (t === EVM_MSG) {
+    if (!signed && up && !down) return kindOf("receive", from);
+    if (signed && !base.ok) {
+      // It reverted: say what it tried, from the signed call.
+      const to = call ? transferRecipient(call.input) : null;
+      if (to) return kindOf("send", to);
+      if (call?.to && call.input === "0x" && call.value > 0n) return kindOf("send", call.to);
+      return call?.to ? kindOf("contract", call.to) : kindOf("evm");
+    }
+    if (signed) {
+      const approvals = events.filter((e): e is Extract<Erc20Event, { kind: "approval" }> => e.kind === "approval" && e.owner === me);
+      const a = approvals[approvals.length - 1];
+      if (changes.length === 0 && a) return { ...kindOf("approve", a.spender), approval: { denom: keyOf(a.token), spender: a.spender, amount: a.amount.toString() } };
+      if (downs === 1 && ups === 0) {
+        const outs = transfers.filter((m) => m.from === me);
+        if (outs.length === 1 && keyOf(outs[0]!.token) === changes[0]!.denom) return kindOf("send", outs[0]!.to);
+        if (outs.length === 0 && call?.to && call.input === "0x" && changes[0]!.denom === "inj") return kindOf("send", call.to);
+      }
+    }
+    if (ups === 1 && downs === 1) {
+      // INJ wrapped into (or out of) the contract called, one for one: wINJ.
+      const [a, b] = changes as [Coin, Coin];
+      const same = a.amount.replace("-", "") === b.amount.replace("-", "");
+      const other = a.denom === "inj" ? b.denom : b.denom === "inj" ? a.denom : null;
+      if (same && other && call?.to && other.toLowerCase() === `erc20:${call.to}`) return kindOf("convert");
+      return kindOf("swap");
+    }
+    if (call && call.to === null) return { ...kindOf("other"), label: "Contract created" };
+    return kindOf("contract", call?.to ?? undefined);
+  }
 
   if (t === "/cosmos.bank.v1beta1.MsgSend") {
     if (str("from_address") === address) return kindOf("send", str("to_address"));
@@ -143,7 +252,6 @@ export function summarize(tx: IndexedTx, address: string): Activity {
     if (downs === 1 && ups === 0 && typeof recipient === "string" && changes[0]!.denom === `cw20:${str("contract")}`) return kindOf("send", recipient);
     return kindOf("contract", str("contract"));
   }
-  if (t === "/injective.evm.v1.MsgEthereumTx") return kindOf("evm");
   if (t === "/cosmos.bank.v1beta1.MsgMultiSend") return kindOf(up ? "receive" : "send");
   const name = t.split(".").pop() ?? "";
   return { ...kindOf("other"), label: name.replace(/^Msg/, "") || "Transaction" };

@@ -25,9 +25,9 @@ export type UiRequest =
   | { type: "unlock"; password: string }
   | { type: "lock" }
   | { type: "settings" }
-  /** Switch to `network`, with these LCD and EVM endpoints for it (`null`: the defaults;
-   *  left out: unchanged). */
-  | { type: "save_settings"; network: NetworkId; lcd: string[] | null; evm?: string[] | null; prices?: boolean }
+  /** Switch to `network`, with these LCD, EVM and Blockscout endpoints for it (`null`: the
+   *  defaults; left out: unchanged; an empty Blockscout list turns it off). */
+  | { type: "save_settings"; network: NetworkId; lcd: string[] | null; evm?: string[] | null; evmIndex?: string[] | null; prices?: boolean }
   | { type: "balances" }
   /** Which tokens the current network's lists show (see `TokenFilter`). */
   | { type: "save_token_filter"; filter: TokenFilter }
@@ -160,6 +160,7 @@ export type ActivityKind =
   | "receive"
   | "swap"
   | "convert"
+  | "approve"
   | "contract"
   | "evm"
   | "orderbook"
@@ -185,6 +186,10 @@ export type ActivityItem = {
   /** Net change per denom, signed base units, fee left out. */
   changes: Coin[];
   fee: Coin[];
+  /** An EVM transaction's 0x hash: its explorer page is Blockscout's. */
+  evmHash?: string;
+  /** For kind "approve": who may spend how much of which token ("0" takes it back). */
+  approval?: { denom: string; spender: string; amount: string };
 };
 
 export type ActivityPage = {
@@ -198,6 +203,8 @@ export type ActivityPage = {
    *  down to here. Null when nothing is left to load. */
   cutoff: string | null;
   filter: TokenFilter;
+  /** Blockscout didn't answer: ERC20s others sent may be missing. */
+  evmIndexDown?: true;
 };
 
 export type Settings = {
@@ -209,6 +216,9 @@ export type Settings = {
   /** EVM JSON-RPC endpoints in use per network, and the defaults. */
   evm: Record<NetworkId, string[]>;
   evmDefault: Record<NetworkId, string[]>;
+  /** Blockscout instances per network (empty: off), and the defaults. */
+  evmIndex: Record<NetworkId, string[]>;
+  evmIndexDefault: Record<NetworkId, string[]>;
   /** Show USD values (Choice's price index). */
   prices: boolean;
 };

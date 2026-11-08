@@ -8,6 +8,7 @@ import { Lcd } from "../src/lcd.ts";
 import { NETWORKS } from "../src/networks.ts";
 import { ChainError, Unreachable, type Fetch } from "../src/pool.ts";
 import { adapterCw20, adapterDenom, cw20Address, cw20Denom, describeToken, otherForm, shortDenom } from "../src/tokens.ts";
+import { ethMessage, rawTx, resultData, transferCall, transferLog } from "./evm-fixture.ts";
 
 const ADDR = "inj1npvwllfr9dqr8erajqqr6s0vxnk2ak55re90dz";
 const NODE_INFO = { default_node_info: { network: "injective-1" } };
@@ -236,4 +237,42 @@ test("endpoints must be https (or local http)", () => {
   assert.throws(() => new Lcd(NETWORKS.mainnet, ["http://evil.example"], fake({}).fetch), /https/);
   assert.throws(() => new Lcd(NETWORKS.mainnet, [], fake({}).fetch), /no endpoints/);
   new Lcd(NETWORKS.mainnet, ["http://127.0.0.1:8080/"], fake({}).fetch);
+});
+
+// -- EVM transactions in the index (see ../src/evmtx.ts) --
+
+const EVM_HASH = `0x${"ab".repeat(32)}`;
+const ME_EVM = "0x9858effd232b4033e47d90003d41ec34ecaeda94";
+const THEM_EVM = "0x9d8a62f656a8d1615c1294fd71e9cfb3e4855a4f";
+const LUMA = "0xb0d94f200998997cf8175ae7ddf039927a8b3ef4";
+const evmResponse = (o: { code?: number; hash?: string; raw_log?: string; data?: string }) => ({
+  txhash: "cd".repeat(32),
+  height: "147664258",
+  timestamp: "2026-11-09T08:00:00Z",
+  code: o.code ?? 0,
+  raw_log: o.raw_log ?? "",
+  data: o.data ?? resultData(o.hash ?? EVM_HASH, [transferLog(LUMA, ME_EVM, THEM_EVM, 5n)]),
+  tx: { body: { messages: [ethMessage(ME_EVM, rawTx({ to: LUMA, input: transferCall(THEM_EVM, 5n) }))] }, auth_info: { fee: { amount: [{ denom: "inj", amount: "1" }] } } },
+  events: o.code ? [] : [{ type: "ethereum_tx", attributes: [{ key: "ethereumTxHash", value: o.hash ?? EVM_HASH }] }],
+});
+
+test("EVM transactions: the hash and logs from the result; a reverted one's hash from its log", async () => {
+  const reverted = `failed to execute message; message index: 0: {"tx_hash":"0x${"ef".repeat(32)}","gas_used":974469,"reason":"","vm_error":"execution reverted"}`;
+  const { fetch, calls } = fake({
+    "a.example": (path) => {
+      const q = new URLSearchParams(path.split("?")[1]).get("query") ?? "";
+      if (q === `ethereum_tx.ethereumTxHash='${EVM_HASH}'`) return { status: 200, body: { tx_responses: [evmResponse({})], total: "1" } };
+      if (q.startsWith("ethereum_tx.")) return { status: 200, body: { tx_responses: [evmResponse({ hash: `0x${"00".repeat(32)}` })], total: "1" } };
+      return { status: 200, body: { tx_responses: [evmResponse({}), evmResponse({ code: 3, raw_log: reverted, data: "" })], total: "2" } };
+    },
+  });
+  const c = lcd(fetch, ["a.example"]);
+  const [ran, failed] = (await c.searchTxs("x='y'", 1, 50)).txs;
+  assert.deepEqual(ran!.evm, { hash: EVM_HASH, logs: [transferLog(LUMA, ME_EVM, THEM_EVM, 5n)] });
+  assert.deepEqual(failed!.evm, { hash: `0x${"ef".repeat(32)}`, logs: [] });
+  // By EVM hash: the node's answer must be that transaction.
+  assert.equal((await c.txByEvmHash(EVM_HASH.toUpperCase().replace("0X", "0x")))!.hash, "CD".repeat(32));
+  assert.equal(await c.txByEvmHash(`0x${"12".repeat(32)}`), null);
+  await assert.rejects(c.txByEvmHash("0x12"), RangeError);
+  assert.ok(calls.every((x) => x.startsWith("GET a.example/cosmos/tx/v1beta1/txs")));
 });

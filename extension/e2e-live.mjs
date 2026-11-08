@@ -9,7 +9,9 @@
 // `amount` into the bank form through the CW20 adapter, and converts all of that back.
 // With `site` in its place, a local test site does it instead, through the wallet's
 // provider: connect, eth_sendTransaction of `amount` INJ, then window.choice signDirect of a
-// bank send of `amount` INJ, broadcast with sendTx. Otherwise it sends `amount` INJ.
+// bank send of `amount` INJ, broadcast with sendTx. With `activity`, it sends nothing: it
+// opens Activity and prints what testnet's endpoints and Blockscout say the account did,
+// which must include an EVM transaction. Otherwise it sends `amount` INJ.
 //
 // The phrase is read from the file and typed into the import screen. It is never printed
 // and that screen is never captured. The browser profile, with the encrypted keystore in
@@ -184,7 +186,20 @@ try {
   console.log("sender", from, "holds", before.from.toString(), "inj");
   await shot("live-1-home");
 
-  if (tokenContract === "site") {
+  if (tokenContract === "activity") {
+    // 3a. Activity, read back from testnet's own endpoints and Blockscout.
+    await click("Activity");
+    let rows = [];
+    for (let t = 0; t < 30000 && rows.length === 0; t += 500) {
+      rows = await evalIn(`[...document.querySelectorAll(".activity")].map((r) => [r.title, r.innerText.replace(/\\s+/g, " ")])`);
+      if (rows.length === 0) await new Promise((r) => setTimeout(r, 500));
+    }
+    for (const [hash, text] of rows) console.log(" ", hash.startsWith("0x") ? "EVM   " : "Cosmos", text);
+    if (!rows.some(([hash]) => hash.startsWith("0x"))) throw new Error("no EVM transaction in Activity");
+    if (await evalIn(`document.body.innerText.includes("Blockscout didn't answer")`)) throw new Error("Blockscout didn't answer");
+    await shot("live-activity");
+    console.log("LIVE ACTIVITY OK");
+  } else if (tokenContract === "site") {
     // 3s. A site, served here on 127.0.0.1, through the provider and approval windows.
     const server = createServer((req, res) => {
       res.writeHead(req.url === "/" ? 200 : 204, { "content-type": "text/html" });

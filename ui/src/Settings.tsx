@@ -14,6 +14,7 @@ export function SettingsView({ onDone, onLock, tabs }: { onDone: () => void; onL
   const [net, setNet] = useState<NetworkId>("mainnet");
   const [text, setText] = useState("");
   const [evmText, setEvmText] = useState("");
+  const [indexText, setIndexText] = useState("");
   const [prices, setPrices] = useState(true);
   const backend = useBackend();
   const [sites, setSites] = useState<Connection[]>([]);
@@ -29,6 +30,7 @@ export function SettingsView({ onDone, onLock, tabs }: { onDone: () => void; onL
       setNet(s.network);
       setText(s.lcd[s.network].join("\n"));
       setEvmText(s.evm[s.network].join("\n"));
+      setIndexText(s.evmIndex[s.network].join("\n"));
       setPrices(s.prices);
     });
   }, []);
@@ -38,6 +40,7 @@ export function SettingsView({ onDone, onLock, tabs }: { onDone: () => void; onL
     if (settings) {
       setText(settings.lcd[n].join("\n"));
       setEvmText(settings.evm[n].join("\n"));
+      setIndexText(settings.evmIndex[n].join("\n"));
     }
   };
   async function save(e: FormEvent) {
@@ -46,6 +49,7 @@ export function SettingsView({ onDone, onLock, tabs }: { onDone: () => void; onL
     const lines = (t: string) => t.split("\n").map((l) => l.trim()).filter(Boolean);
     const lcd = lines(text);
     const evm = lines(evmText);
+    const evmIndex = lines(indexText);
     const same = (a: string[], b: string[]) => a.join("\n") === b.join("\n");
     if (
       await run({
@@ -53,6 +57,7 @@ export function SettingsView({ onDone, onLock, tabs }: { onDone: () => void; onL
         network: net,
         lcd: same(lcd, settings.lcdDefault[net]) ? null : lcd,
         evm: same(evm, settings.evmDefault[net]) ? null : evm,
+        evmIndex: same(evmIndex, settings.evmIndexDefault[net]) ? null : evmIndex,
         prices,
       })
     ) {
@@ -111,6 +116,19 @@ export function SettingsView({ onDone, onLock, tabs }: { onDone: () => void; onL
           value={evmText}
           onChange={(e) => setEvmText(e.target.value)}
         />
+        <label className="meta" htmlFor="evm-index">
+          EVM history (Blockscout)
+        </label>
+        <textarea
+          id="evm-index"
+          className="textarea"
+          rows={1}
+          spellCheck={false}
+          aria-label="Blockscout"
+          value={indexText}
+          onChange={(e) => setIndexText(e.target.value)}
+        />
+        <span className="meta">Finds tokens others send you. Empty turns it off.</span>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
           <span className="meta">Tried in order, one per line.</span>
           <button
@@ -121,6 +139,7 @@ export function SettingsView({ onDone, onLock, tabs }: { onDone: () => void; onL
               if (!settings) return;
               setText(settings.lcdDefault[net].join("\n"));
               setEvmText(settings.evmDefault[net].join("\n"));
+              setIndexText(settings.evmIndexDefault[net].join("\n"));
             }}
           >
             Use the defaults

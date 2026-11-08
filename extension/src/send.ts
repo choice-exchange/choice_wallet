@@ -15,6 +15,7 @@ import {
   cw20Address,
   cw20Denom,
   describeToken,
+  EvmIndex,
   EvmRpc,
   evmAddress,
   evmDenom,
@@ -34,7 +35,9 @@ import {
   Unreachable,
   usdValue,
   type Coin,
+  type EvmView,
   type Fetch,
+  type IndexedTx,
   type NetworkId,
   type PriceList,
   type Token,
@@ -52,6 +55,8 @@ export interface SendDeps {
   /** The endpoints the user chose for a network (or the defaults): LCD and EVM JSON-RPC. */
   endpoints(network: NetworkId): Promise<readonly string[]>;
   evmEndpoints(network: NetworkId): Promise<readonly string[]>;
+  /** Blockscout instances for EVM history; empty when the user turned it off. */
+  evmIndexEndpoints(network: NetworkId): Promise<readonly string[]>;
   /** Whether to show USD values (the user can turn them off). */
   prices(): Promise<boolean>;
 }
@@ -74,8 +79,10 @@ interface Pending {
   evm?: boolean;
 }
 
-/** Index entries per query per page (the node's `limit`). */
+/** Index entries per query per page (the node's `limit`), and Blockscout transfers per page. */
 const ACTIVITY_PAGE = 50;
+/** Transactions found through Blockscout, looked up on the LCD at once. */
+const LOOKUP_PARALLEL = 6;
 
 /** Gas assumed while estimating an EVM transfer, and the most an estimate is believed
  *  (an ERC20 transfer uses about 35k to 60k). */
@@ -116,9 +123,8 @@ export function createSender(d: SendDeps) {
   /** Per LCD client, so per network and endpoint set: new endpoints are asked afresh. */
   const pairCache = new Map<Lcd, { at: number; pairs: Promise<Map<string, string>> }>();
 
-  /** The erc20 module's token pairs (bank denom → ERC20 address), cached an hour. Empty
-   *  when the node can't say. */
-  function pairsFor(_network: NetworkId, client: Lcd): Promise<Map<string, string>> {
+  /** The erc20 module's token pairs (bank denom → ERC20 address), cached an hour. */
+  function pairsEntry(client: Lcd): Promise<Map<string, string>> {
     const now = Date.now();
     let pc = pairCache.get(client);
     if (!pc || now - pc.at > PAIRS_TTL_MS) {
@@ -129,7 +135,11 @@ export function createSender(d: SendDeps) {
       });
       pc = entry;
     }
-    return pc.pairs.catch(() => new Map<string, string>());
+    return pc.pairs;
+  }
+  /** The pairs, empty when the node can't say. */
+  function pairsFor(_network: NetworkId, client: Lcd): Promise<Map<string, string>> {
+    return pairsEntry(client).catch(() => new Map<string, string>());
   }
 
   type ChoiceView = {
@@ -192,6 +202,20 @@ export function createSender(d: SendDeps) {
     if (!c) {
       c = new EvmRpc(NETWORKS[network], urls, d.fetch);
       evmClients.set(key, c);
+    }
+    return c;
+  }
+
+  const indexClients = new Map<string, EvmIndex>();
+  /** Blockscout for this network, or null when the user turned it off. */
+  async function evmIndex(network: NetworkId): Promise<EvmIndex | null> {
+    const urls = await d.evmIndexEndpoints(network);
+    if (urls.length === 0) return null;
+    const key = `${network} ${urls.join(" ")}`;
+    let c = indexClients.get(key);
+    if (!c) {
+      c = new EvmIndex(urls, d.fetch);
+      indexClients.set(key, c);
     }
     return c;
   }
@@ -387,28 +411,80 @@ export function createSender(d: SendDeps) {
     }
   }
 
-  /** A page of activity: what this account signed, and what it received, merged. */
+  /** A page of activity, merged from what the account signed, spent and received in the
+   *  tx index (a reverted EVM transaction has no signer event, only its fee spent), and the
+   *  ERC20 transfers Blockscout knows of. Each of those is looked up on the user's LCD and
+   *  read like the rest; one that changed nothing here (a zero-value transfer, as address
+   *  poisoning sends) is left out. */
   async function activity(network: NetworkId, account: AccountInfo, page: unknown): Promise<Result<Omit<ActivityPage, "filter">>> {
     if (typeof page !== "number" || !Number.isInteger(page) || page < 1 || page > 1000) return fail("bad_request", "Not a page number.");
     const client = await lcd(network);
     const me = address(network, account);
+    const me0x = account.addresses[NETWORKS[network].evm];
     try {
-      const pages = await Promise.all(
-        [`message.sender='${me}'`, `coin_received.receiver='${me}'`].map((q) => client.searchTxs(q, page, ACTIVITY_PAGE)),
-      );
-      const lists = pages.map((p) => p.txs.map((tx) => summarize(tx, me)));
-      // A list that goes on past its last item: below the highest of those last items, a
-      // next page could still hold rows newer than what's shown.
-      const open = lists.filter((l, i) => !pages[i]!.done && l.length > 0);
-      const lows = open.map((l) => l.reduce((m, a) => (BigInt(a.height) < m ? BigInt(a.height) : m), BigInt(l[0]!.height)));
+      const index = me0x ? await evmIndex(network) : null;
+      let indexDown = false;
+      const [pages, found, pairs] = await Promise.all([
+        Promise.all([`message.sender='${me}'`, `coin_spent.spender='${me}'`, `coin_received.receiver='${me}'`].map((q) => client.searchTxs(q, page, ACTIVITY_PAGE))),
+        index && me0x
+          ? index.transfers(me0x, page, ACTIVITY_PAGE).catch((e: unknown) => {
+              if (!(e instanceof Unreachable || e instanceof ChainError)) throw e;
+              indexDown = true;
+              return null;
+            })
+          : null,
+        pairsEntry(client).then(
+          (m) => new Map([...m].map(([denom, erc20]) => [erc20.toLowerCase(), denom])),
+          () => null,
+        ),
+      ]);
+      const view: EvmView | undefined = me0x ? { address: me0x, pairs } : undefined;
+      const lists = pages.map((p) => p.txs.map((tx) => summarize(tx, me, view)));
+      // Each list goes on past its last item unless it's done: below the highest of those
+      // last heights, a next page could still hold rows newer than what's shown.
+      const streams = pages.map((p) => ({ heights: p.txs.map((t) => t.height), done: p.done }));
+      if (found) {
+        const have = new Map(lists.flat().flatMap((a) => (a.evmHash ? [[a.evmHash, BigInt(a.height)] as const] : [])));
+        const missing = found.txs.filter((t) => !have.has(t.hash));
+        const got: (IndexedTx | null)[] = new Array(missing.length).fill(null);
+        let next = 0;
+        await Promise.all(
+          Array.from({ length: Math.min(LOOKUP_PARALLEL, missing.length) }, async () => {
+            while (next < missing.length) {
+              const i = next++;
+              try {
+                got[i] = await client.txByEvmHash(missing[i]!.hash);
+              } catch (e) {
+                if (!(e instanceof Unreachable || e instanceof ChainError)) throw e;
+              }
+            }
+          }),
+        );
+        const confirmed = got.filter((tx): tx is IndexedTx => tx !== null);
+        lists.push(confirmed.map((tx) => summarize(tx, me, view)).filter((a) => a.signed || a.changes.length > 0));
+        // Only heights the LCD confirmed count toward the cutoff: hashes Blockscout made up
+        // can't hold back rows the node did confirm.
+        const already = found.txs.flatMap((t) => (have.has(t.hash) ? [have.get(t.hash)!] : []));
+        streams.push({ heights: [...already, ...confirmed.map((tx) => tx.height)], done: found.done });
+      }
+      const open = streams.filter((st) => !st.done && st.heights.length > 0);
+      const lows = open.map((st) => st.heights.reduce((m, h) => (h < m ? h : m)));
       const cutoff = lows.length > 0 ? lows.reduce((a, b) => (a > b ? a : b)).toString() : null;
       const items = mergeActivity(lists);
-      const denoms = new Set(items.flatMap((a) => [...a.changes, ...a.fee].map((c) => c.denom)));
+      const denoms = new Set(items.flatMap((a) => [...a.changes, ...a.fee].map((c) => c.denom).concat(a.approval ? [a.approval.denom] : [])));
       const choice = await choiceFor(network, client, denoms);
-      const tokens = Object.fromEntries(
-        await Promise.all([...denoms].map(async (dn) => [dn, { ...(await token(network, client, dn)), ...(choice.onChoice.has(dn) ? { onChoice: true } : {}) }] as const)),
+      const described = await Promise.all(
+        [...denoms].map(async (dn) => {
+          const a = evmAddress(dn);
+          const t = a ? await erc20Token(network, await evm(network), a).catch(() => null) : await token(network, client, dn);
+          return t ? ([dn, { ...t, ...(choice.onChoice.has(dn) ? { onChoice: true } : {}) }] as const) : null;
+        }),
       );
-      return { ok: true, result: { network, items, tokens, more: pages.some((p) => !p.done), cutoff } };
+      const tokens = Object.fromEntries(described.filter((x) => x !== null));
+      return {
+        ok: true,
+        result: { network, items, tokens, more: streams.some((st) => !st.done), cutoff, ...(indexDown ? { evmIndexDown: true as const } : {}) },
+      };
     } catch (e) {
       return chainFailure(e);
     }

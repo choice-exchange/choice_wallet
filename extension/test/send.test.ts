@@ -5,6 +5,8 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
 
+import { transferCall, transferLog } from "../../chain/test/evm-fixture";
+
 import {
   ADAPTER,
   ADDED,
@@ -36,6 +38,8 @@ import {
   bech32Of,
   chain,
   code,
+  evmHashAt,
+  evmIndexed,
   indexed,
   memory,
   moved,
@@ -279,6 +283,63 @@ test("activity: what it signed and what it received, merged, with how to show ea
   assert.equal(code(await service.handle({ type: "activity", page: "1" })), "bad_request");
   ok(await service.handle({ type: "lock" }));
   assert.equal(code(await service.handle({ type: "activity", page: 1 })), "locked");
+});
+
+test("activity: EVM transactions, and ERC20s others sent, found through Blockscout and read from the LCD", async () => {
+  const net = chain();
+  const me = ME_EVM.toLowerCase();
+  const them = THEM_EVM.toLowerCase();
+  // ME sent 5 LUMA (no bank form) on the EVM side: in the signed list, its logs say what moved.
+  net.state.signedEvm = [evmIndexed(110, { from: me, fromInj: ME, to: LUMA, input: transferCall(them, 5n * INJ), logs: [transferLog(LUMA, me, them, 5n * INJ)] })];
+  // Others: 2 LUMA to ME (only Blockscout knows), a zero-value "transfer" from ME (address
+  // poisoning), and one the LCD's index doesn't have.
+  const got = evmIndexed(115, { from: them, fromInj: THEM, to: LUMA, logs: [transferLog(LUMA, them, me, 2n * INJ)] });
+  const poison = evmIndexed(112, { from: them, fromInj: THEM, to: USDT_ERC20, logs: [transferLog(USDT_ERC20, me, them, 0n)] });
+  net.state.byEvmHash = { [evmHashAt(115)]: got, [evmHashAt(112)]: poison };
+  net.state.blockscout = [115, 112, 110, 105].map((h) => ({ hash: evmHashAt(h), blockNumber: h }));
+  const { service } = await wallet(net);
+  type Page = {
+    items: { height: string; kind: string; counterparty?: string; signed: boolean; changes: { denom: string; amount: string }[]; evmHash?: string }[];
+    tokens: Record<string, { symbol: string }>;
+    cutoff: string | null;
+    evmIndexDown?: boolean;
+  };
+  const page = ok<Page>(await service.handle({ type: "activity", page: 1 }));
+  assert.deepEqual(
+    page.items.map((a) => [a.height, a.kind, a.counterparty, a.signed]),
+    [["120", "receive", THEM, false], ["115", "receive", them, false], ["110", "send", them, true], ["100", "send", THEM, true], ["90", "receive", THEM, false]],
+  );
+  assert.deepEqual(page.items[1]!.changes, [{ denom: `evm:${LUMA}`, amount: (2n * INJ).toString() }]);
+  assert.deepEqual(page.items[2]!.changes, [{ denom: `evm:${LUMA}`, amount: (-5n * INJ).toString() }]);
+  assert.equal(page.items[2]!.evmHash, evmHashAt(110));
+  assert.equal(page.tokens[`evm:${LUMA}`]?.symbol, "LUMA");
+  assert.equal(page.cutoff, "100");
+  // Blockscout was asked for ME's 0x address; the LCD only for what the page didn't have.
+  assert.deepEqual(net.state.blockscoutCalls, [`?module=account&action=tokentx&address=${ME_EVM}&page=1&offset=50&sort=desc`]);
+  assert.deepEqual(net.state.evmLookups.sort(), [evmHashAt(115), evmHashAt(112), evmHashAt(105)].sort());
+
+  // A full page of hashes Blockscout made up, at the newest height: nothing to show, and they
+  // can't hold back the rows the LCD confirmed (only confirmed heights count to the cutoff).
+  net.state.blockscout = Array.from({ length: 50 }, (_, i) => ({ hash: evmHashAt(5000 + i), blockNumber: 999_999 }));
+  const made = ok<Page>(await service.handle({ type: "activity", page: 1 }));
+  assert.deepEqual([made.items.map((a) => a.height), made.cutoff], [["120", "110", "100", "90"], "100"]);
+
+  // Blockscout down: the rest of the page stands, and says so.
+  net.state.blockscout = "down";
+  const down = ok<Page>(await service.handle({ type: "activity", page: 1 }));
+  assert.equal(down.evmIndexDown, true);
+  assert.deepEqual(down.items.map((a) => a.height), ["120", "110", "100", "90"]);
+
+  // Turned off: an empty list. Blockscout isn't asked; the defaults bring it back.
+  const off = ok<{ evmIndex: Record<string, string[]> }>(await service.handle({ type: "save_settings", network: "mainnet", lcd: null, evmIndex: [] }));
+  assert.deepEqual(off.evmIndex.mainnet, []);
+  const asked = net.state.blockscoutCalls.length;
+  const quiet = ok<Page>(await service.handle({ type: "activity", page: 1 }));
+  assert.equal(net.state.blockscoutCalls.length, asked);
+  assert.equal(quiet.evmIndexDown, undefined);
+  const back = ok<{ evmIndex: Record<string, string[]> }>(await service.handle({ type: "save_settings", network: "mainnet", lcd: null, evmIndex: null }));
+  assert.deepEqual(back.evmIndex.mainnet, ["https://blockscout.injective.network"]);
+  assert.equal(code(await service.handle({ type: "save_settings", network: "mainnet", lcd: null, evmIndex: ["http://scout.example"] })), "invalid_endpoint");
 });
 
 test("EVM-only tokens: found through Choice's list or added by hand, never twice", async () => {

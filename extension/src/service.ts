@@ -91,12 +91,18 @@ export function createService(d: Deps) {
     return evm_endpoints?.[net] ?? [...NETWORKS[net].evmRpc];
   }
 
+  /** Blockscout instances for EVM history; an empty list is off. */
+  async function evmIndexEndpoints(net: NetworkId): Promise<string[]> {
+    const { evm_index } = (await d.local.get(["evm_index"])) as { evm_index?: Endpoints };
+    return evm_index?.[net] ?? [...NETWORKS[net].evmIndex];
+  }
+
   async function showPrices(): Promise<boolean> {
     const { prices } = await d.local.get(["prices"]);
     return prices !== false;
   }
 
-  const sender = createSender({ vault: d.vault, fetch: d.fetch, local: d.local, session: d.session, endpoints, evmEndpoints, prices: showPrices });
+  const sender = createSender({ vault: d.vault, fetch: d.fetch, local: d.local, session: d.session, endpoints, evmEndpoints, evmIndexEndpoints, prices: showPrices });
 
   const dapps = createDapps({
     vault: d.vault,
@@ -216,13 +222,16 @@ export function createService(d: Deps) {
         lcdDefault: { mainnet: [...NETWORKS.mainnet.lcd], testnet: [...NETWORKS.testnet.lcd] },
         evm: { mainnet: await evmEndpoints("mainnet"), testnet: await evmEndpoints("testnet") },
         evmDefault: { mainnet: [...NETWORKS.mainnet.evmRpc], testnet: [...NETWORKS.testnet.evmRpc] },
+        evmIndex: { mainnet: await evmIndexEndpoints("mainnet"), testnet: await evmIndexEndpoints("testnet") },
+        evmIndexDefault: { mainnet: [...NETWORKS.mainnet.evmIndex], testnet: [...NETWORKS.testnet.evmIndex] },
         prices: await showPrices(),
       },
     };
   }
 
-  /** A network's endpoint list after a change: `null` is the defaults; `undefined` leaves it. */
-  function nextEndpoints(all: Endpoints, net: NetworkId, urls: unknown): Endpoints | UiResponse<never> {
+  /** A network's endpoint list after a change: `null` is the defaults; `undefined` leaves it.
+   *  An empty list is allowed only where it means "off" (`canBeEmpty`). */
+  function nextEndpoints(all: Endpoints, net: NetworkId, urls: unknown, canBeEmpty = false): Endpoints | UiResponse<never> {
     if (urls === undefined) return all;
     const next = { ...all };
     if (urls === null) {
@@ -230,6 +239,10 @@ export function createService(d: Deps) {
       return next;
     }
     if (!Array.isArray(urls) || !urls.every((u) => typeof u === "string")) return err("bad_request", "Endpoints must be a list.");
+    if (canBeEmpty && urls.every((u) => !(u as string).trim())) {
+      next[net] = [];
+      return next;
+    }
     try {
       next[net] = [...new Pool(urls as string[], { fetch: d.fetch, identify: async () => {} }).urls];
     } catch (e) {
@@ -238,16 +251,18 @@ export function createService(d: Deps) {
     return next;
   }
 
-  async function saveSettings(net: unknown, lcd: unknown, evm: unknown, prices: unknown): Promise<UiResponse<Settings>> {
+  async function saveSettings(net: unknown, lcd: unknown, evm: unknown, evmIndex: unknown, prices: unknown): Promise<UiResponse<Settings>> {
     if (!isNetworkId(net)) return err("bad_request", "Unknown network.");
     if (prices !== undefined && typeof prices !== "boolean") return err("bad_request", "prices must be true or false.");
-    const stored = (await d.local.get(["endpoints", "evm_endpoints"])) as { endpoints?: Endpoints; evm_endpoints?: Endpoints };
+    const stored = (await d.local.get(["endpoints", "evm_endpoints", "evm_index"])) as { endpoints?: Endpoints; evm_endpoints?: Endpoints; evm_index?: Endpoints };
     const lcdAll = nextEndpoints(stored.endpoints ?? {}, net, lcd);
     if ("ok" in lcdAll) return lcdAll as UiResponse<never>;
     const evmAll = nextEndpoints(stored.evm_endpoints ?? {}, net, evm);
     if ("ok" in evmAll) return evmAll as UiResponse<never>;
+    const indexAll = nextEndpoints(stored.evm_index ?? {}, net, evmIndex, true);
+    if ("ok" in indexAll) return indexAll as UiResponse<never>;
     const before = await network();
-    await d.local.set({ network: net, endpoints: lcdAll, evm_endpoints: evmAll, ...(prices === undefined ? {} : { prices }) });
+    await d.local.set({ network: net, endpoints: lcdAll, evm_endpoints: evmAll, evm_index: indexAll, ...(prices === undefined ? {} : { prices }) });
     if (net !== before) d.notify();
     return settings();
   }
@@ -282,7 +297,7 @@ export function createService(d: Deps) {
       case "settings":
         return settings();
       case "save_settings":
-        return saveSettings(r.network, r.lcd, r.evm, r.prices);
+        return saveSettings(r.network, r.lcd, r.evm, r.evmIndex, r.prices);
       case "save_token_filter":
         return saveTokenFilter(r.filter);
       case "add_token": {

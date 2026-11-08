@@ -3,6 +3,7 @@
 // use; an endpoint that serves another chain is skipped.
 
 import { hexToBase64 } from "./encoding.ts";
+import { EVM_MSG, evmResults, failedEvmHash, type EvmLog } from "./evmtx.ts";
 import { MIN_GAS_PRICE, type Network } from "./networks.ts";
 import { ChainError, Down, isObject, Pool, type Fetch } from "./pool.ts";
 import { ceilDecimal, toBigInt } from "./units.ts";
@@ -49,6 +50,9 @@ export interface IndexedTx {
   messages: Record<string, unknown>[];
   fee: Coin[];
   events: TxEvent[];
+  /** For an EVM transaction: its 0x hash (null if the node didn't say) and its logs (none
+   *  when it reverted). */
+  evm?: { hash: string | null; logs: EvmLog[] };
 }
 
 export interface Broadcast {
@@ -283,6 +287,16 @@ export class Lcd {
     })) as { txs: IndexedTx[]; done: boolean };
   }
 
+  /** The indexed transaction behind an EVM hash, or null if this node's index doesn't have
+   *  it (a node indexes its own window of history). Reverted transactions emit no
+   *  `ethereum_tx` event, so only ones that ran are found this way. */
+  async txByEvmHash(hash: string): Promise<IndexedTx | null> {
+    const h = hash.toLowerCase();
+    if (!/^0x[0-9a-f]{64}$/.test(h)) throw new RangeError(`not an EVM hash: ${hash}`);
+    const { txs } = await this.searchTxs(`ethereum_tx.ethereumTxHash='${h}'`, 1, 1);
+    return txs.find((t) => t.evm?.hash === h) ?? null;
+  }
+
   /** A transaction's result, or null while it isn't in a block (or never made it). */
   async tx(hash: string): Promise<TxStatus | null> {
     let body: unknown;
@@ -322,15 +336,24 @@ function indexedTx(r: unknown): IndexedTx {
     throw new Down("malformed tx");
   }
   const events = parseEvents(r["events"]);
-  return {
+  const messages = body["messages"].filter(isObject);
+  const code = Number(r["code"] ?? 0);
+  const out: IndexedTx = {
     hash: r["txhash"].toUpperCase(),
     height: toBigInt(String(r["height"])),
     time: r["timestamp"],
-    code: Number(r["code"] ?? 0),
-    messages: body["messages"].filter(isObject),
+    code,
+    messages,
     fee: Array.isArray(fee) ? fee.map(coin) : [],
     events,
   };
+  if (messages.length === 1 && messages[0]!["@type"] === EVM_MSG) {
+    const result = code === 0 && typeof r["data"] === "string" ? evmResults(r["data"])[0] : undefined;
+    const announced = events.find((e) => e.type === "ethereum_tx")?.attributes.find((a) => a.key === "ethereumTxHash")?.value.toLowerCase();
+    const hash = result?.hash ?? (announced && /^0x[0-9a-f]{64}$/.test(announced) ? announced : null) ?? failedEvmHash(String(r["raw_log"] ?? ""));
+    out.evm = { hash, logs: result?.logs ?? [] };
+  }
+  return out;
 }
 
 function parseEvents(list: unknown[]): TxEvent[] {

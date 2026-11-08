@@ -62,6 +62,8 @@ node extension/e2e-live.mjs /path/to/chromium "$PWD/extension/dist" /tmp/shots <
 # or a test site on 127.0.0.1, through the provider: connect, eth_sendTransaction, and a
 # bank send signed with window.choice signDirect and broadcast with sendTx:
 node extension/e2e-live.mjs /path/to/chromium "$PWD/extension/dist" /tmp/shots <phrase file> <recipient> 0.001 site
+# or no send: print Activity as testnet's endpoints and Blockscout give it (EVM rows included):
+node extension/e2e-live.mjs /path/to/chromium "$PWD/extension/dist" /tmp/shots <phrase file> none 0 activity
 ```
 
 ## Dependencies

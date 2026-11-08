@@ -7,6 +7,7 @@ import { readFileSync } from "node:fs";
 
 import { handle, initSync } from "choice-wallet-vault-glue";
 
+import { ethMessage, rawTx, resultData, type Log } from "../../chain/test/evm-fixture";
 import { createService, type Store } from "../src/service";
 import { callVault } from "../src/vault";
 
@@ -64,6 +65,30 @@ export const indexed = (height: number, from: string, to: string, amount: string
   events: [...moved(from, FEE_COLLECTOR, "17216480000000inj"), { type: "tx", attributes: attrs({ fee: "17216480000000inj", fee_payer: from }) }, ...moved(from, to, amount)],
 });
 export const SIGNED = [indexed(100, ME, THEM, "1000000000000000000inj")];
+
+/** An EVM transaction as the LCD indexes it: the fee (no fee payer named), the `message`
+ *  event with the bech32 sender, then `events`; the logs in its result. Its EVM hash is
+ *  the height's, so tests can name it. */
+export const evmHashAt = (height: number) => `0x${height.toString(16).padStart(64, "e")}`;
+export function evmIndexed(height: number, o: { from: string; fromInj: string; to: string; input?: string; value?: bigint; logs?: Log[]; events?: unknown[] }) {
+  const hash = evmHashAt(height);
+  return {
+    txhash: height.toString(16).padStart(64, "c"),
+    height: String(height),
+    timestamp: "2026-11-09T08:00:00Z",
+    code: 0,
+    raw_log: "",
+    data: resultData(hash, o.logs ?? []),
+    tx: { body: { messages: [ethMessage(o.from, rawTx({ to: o.to, value: o.value ?? 0n, input: o.input ?? "0x" }))] }, auth_info: { fee: { amount: [{ denom: "inj", amount: "4032160000000" }], gas_limit: "25201" } } },
+    events: [
+      ...moved(o.fromInj, FEE_COLLECTOR, "4032160000000inj"),
+      { type: "tx", attributes: attrs({ fee: "4032160000000inj" }) },
+      { type: "message", attributes: attrs({ action: "/injective.evm.v1.MsgEthereumTx", sender: o.fromInj }) },
+      ...(o.events ?? []),
+      { type: "ethereum_tx", attributes: attrs({ ethereumTxHash: hash, recipient: o.to }) },
+    ],
+  };
+}
 export const RECEIVED = [indexed(120, THEM, ME, `2500000${USDT}`), indexed(90, THEM, ME, `7000000${SCAM}`)];
 
 // EVM-only tokens (no bank denom): one Choice prices, one to add by hand, and a contract
@@ -113,6 +138,15 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
     priceCalls: 0,
     pricesDown: opts.pricesDown ?? false,
     hosts: new Set<string>(),
+    /** More of what ME signed (EVM transactions), and what the LCD finds by EVM hash. */
+    signedEvm: [] as unknown[],
+    byEvmHash: {} as Record<string, unknown>,
+    /** EVM hashes asked of the LCD. */
+    evmLookups: [] as string[],
+    /** Blockscout's ERC20 transfers for ME (newest first), or down. */
+    blockscout: [] as { hash: string; blockNumber: number }[] | "down",
+    /** Blockscout queries asked. */
+    blockscoutCalls: [] as string[],
   };
   const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status });
   type Rpc = { id: number; method: string; params: { to: string; data: string }[] };
@@ -189,6 +223,12 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
       }
       return json(500, { code: 2, message: "unknown variant", details: [] });
     }
+    if (url.host === "blockscout.injective.network" && p === "/api") {
+      state.blockscoutCalls.push(url.search);
+      if (state.blockscout === "down") return new Response("<html>502</html>", { status: 502 });
+      const rows = state.blockscout.map((t) => ({ blockNumber: String(t.blockNumber), hash: t.hash, from: THEM_EVM.toLowerCase(), to: ME_EVM.toLowerCase(), value: "1" }));
+      return json(200, rows.length ? { message: "OK", result: rows, status: "1" } : { message: "No token transfers found", result: [], status: "0" });
+    }
     if (url.host === "evm-api.choice.exchange" && p === "/prices") {
       state.priceCalls++;
       if (state.pricesDown) return new Response("down", { status: 503 });
@@ -232,8 +272,14 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
       if (url.searchParams.get("page") !== "1") {
         return json(500, { code: 13, message: "failed to search for txs: page should be within [1, 1] range, given 2", details: [] });
       }
+      const byHash = /^ethereum_tx\.ethereumTxHash='(0x[0-9a-f]{64})'$/.exec(q);
+      if (byHash) {
+        state.evmLookups.push(byHash[1]!);
+        const t = state.byEvmHash[byHash[1]!];
+        return json(200, { tx_responses: t ? [t] : [], total: t ? "1" : "0" });
+      }
       // The signed list goes on for pages; the received one fits in this page.
-      if (q === `message.sender='${ME}'`) return json(200, { tx_responses: SIGNED, total: "120" });
+      if (q === `message.sender='${ME}'`) return json(200, { tx_responses: [...SIGNED, ...state.signedEvm], total: "120" });
       return json(200, { tx_responses: q === `coin_received.receiver='${ME}'` ? RECEIVED : [], total: "2" });
     }
     if (p.startsWith("/cosmos/tx/v1beta1/txs/")) {

@@ -16,7 +16,7 @@ An open-source, self-custody wallet. Injective first (Cosmos side and Injective 
 | `crates/policy` | Risk rules: grades every decoded request (grants, allowances, permits, precompile calls, sign-in messages, balances, lookalike addresses) |
 | `crates/vault` | The vault protocol: one JSON entry point (`handle`) for every host: keystores, accounts, building sends, decode → approve → sign |
 | `crates/wasm` | The vault compiled to WASM for the extension |
-| `chain` | The chain client (TypeScript, GPL-3.0): user-settable endpoints with failover, bank, CW20 and ERC20 balances, gas estimates, broadcasting, token names. No keys |
+| `chain` | The chain client (TypeScript, GPL-3.0): user-settable endpoints with failover, bank, CW20 and ERC20 balances, gas estimates, broadcasting, token names, activity (Cosmos and EVM transactions). No keys |
 | `ui` | The wallet's screens (React, GPL-3.0), shared by every platform. Talks to its host only through a small `Backend` interface. See [ui/README.md](ui/README.md) |
 | `extension` | The Chrome extension (GPL-3.0): the service worker hosts the vault and answers the UI; the popup is `ui` with a `chrome.runtime` backend. See [extension/README.md](extension/README.md) |
 | `tools/protogen` | Dev only: vendors `.proto` files and regenerates the committed prost code |

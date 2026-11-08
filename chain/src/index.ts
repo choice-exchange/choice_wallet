@@ -2,9 +2,11 @@
 // checks what comes back. No keys here: it reads, simulates and broadcasts signed bytes.
 // Web APIs only (fetch, crypto.subtle), so it runs in a service worker, a web view or Node.
 
-export { balanceChanges, mergeActivity, parseCoins, summarize, type Activity, type ActivityKind } from "./activity.ts";
+export { balanceChanges, mergeActivity, parseCoins, summarize, type Activity, type ActivityKind, type EvmView } from "./activity.ts";
 export { bytesToHex, cosmosTxHash, hexToBase64, hexToBytes } from "./encoding.ts";
 export { abiString, EvmRpc, word, type Call } from "./evm.ts";
+export { EvmIndex } from "./evmindex.ts";
+export { erc20Event, evmCall, evmResults, type Erc20Event, type EvmCall, type EvmLog } from "./evmtx.ts";
 export {
   cleanMessage,
   Lcd,
