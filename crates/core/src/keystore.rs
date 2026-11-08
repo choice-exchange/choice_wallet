@@ -160,9 +160,63 @@ pub fn seal(secret: &Secret, password: &[u8], params: KdfParams) -> Result<Vec<u
     Ok(out)
 }
 
+/// The key a keystore is encrypted under, derived from its password. Holding it opens the
+/// keystore without running Argon2 again, so a host keeps it while the wallet is unlocked
+/// (the extension in `chrome.storage.session`) and drops it on lock. It opens only the
+/// keystore it was derived from.
+pub struct UnlockKey(Zeroizing<[u8; 32]>);
+
+impl UnlockKey {
+    /// From the 32 bytes a host stored.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
+        let mut key = Zeroizing::new([0u8; 32]);
+        if bytes.len() != 32 {
+            return Err(Error::Keystore("unlock key must be 32 bytes"));
+        }
+        key.copy_from_slice(bytes);
+        Ok(Self(key))
+    }
+
+    /// The raw bytes, for the host to store while unlocked.
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+impl core::fmt::Debug for UnlockKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("UnlockKey(<redacted>)")
+    }
+}
+
 /// Decrypt a keystore. A wrong password and a damaged keystore give the same
 /// error, [`Error::Decrypt`].
 pub fn open(blob: &[u8], password: &[u8]) -> Result<Secret, Error> {
+    let key = unlock(blob, password)?;
+    open_with_key(blob, &key)
+}
+
+/// Check `password` against a keystore and return its [`UnlockKey`].
+pub fn unlock(blob: &[u8], password: &[u8]) -> Result<UnlockKey, Error> {
+    let (params, header, ciphertext) = parse(blob)?;
+    let key = UnlockKey(derive_key(password, &header[18..34], params)?);
+    decrypt(header, ciphertext, &key)?;
+    Ok(key)
+}
+
+/// Decrypt a keystore with the key [`unlock`] returned.
+pub fn open_with_key(blob: &[u8], key: &UnlockKey) -> Result<Secret, Error> {
+    let (_, header, ciphertext) = parse(blob)?;
+    let plaintext = decrypt(header, ciphertext, key)?;
+    match (plaintext.first(), plaintext.get(1..)) {
+        (Some(&KIND_MNEMONIC), Some(entropy)) => Mnemonic::from_entropy(entropy).map(Secret::Mnemonic),
+        (Some(&KIND_PRIVATE_KEY), Some(key)) if key.len() == 32 => PrivateKey::from_bytes(key).map(Secret::PrivateKey),
+        _ => Err(Error::Keystore("unknown secret kind")),
+    }
+    .map_err(|_| Error::Keystore("damaged secret"))
+}
+
+fn parse(blob: &[u8]) -> Result<(KdfParams, &[u8], &[u8]), Error> {
     if blob.len() < HEADER_LEN + TAG_LEN + 1 || &blob[0..4] != MAGIC {
         return Err(Error::Keystore("not a Choice Wallet keystore"));
     }
@@ -179,12 +233,14 @@ pub fn open(blob: &[u8], password: &[u8]) -> Result<Secret, Error> {
         p_cost: be(14..18),
     };
     params.check()?;
-
     let (header, ciphertext) = blob.split_at(HEADER_LEN);
-    let key = derive_key(password, &header[18..34], params)?;
-    let cipher = XChaCha20Poly1305::new_from_slice(&key[..]).map_err(|_| Error::Decrypt)?;
+    Ok((params, header, ciphertext))
+}
+
+fn decrypt(header: &[u8], ciphertext: &[u8], key: &UnlockKey) -> Result<Zeroizing<Vec<u8>>, Error> {
+    let cipher = XChaCha20Poly1305::new_from_slice(&key.0[..]).map_err(|_| Error::Decrypt)?;
     let nonce = XNonce::try_from(&header[34..58]).map_err(|_| Error::Decrypt)?;
-    let plaintext = Zeroizing::new(
+    Ok(Zeroizing::new(
         cipher
             .decrypt(
                 &nonce,
@@ -194,14 +250,7 @@ pub fn open(blob: &[u8], password: &[u8]) -> Result<Secret, Error> {
                 },
             )
             .map_err(|_| Error::Decrypt)?,
-    );
-
-    match (plaintext.first(), plaintext.get(1..)) {
-        (Some(&KIND_MNEMONIC), Some(entropy)) => Mnemonic::from_entropy(entropy).map(Secret::Mnemonic),
-        (Some(&KIND_PRIVATE_KEY), Some(key)) if key.len() == 32 => PrivateKey::from_bytes(key).map(Secret::PrivateKey),
-        _ => Err(Error::Keystore("unknown secret kind")),
-    }
-    .map_err(|_| Error::Keystore("damaged secret"))
+    ))
 }
 
 #[cfg(test)]
@@ -302,5 +351,20 @@ mod tests {
     fn debug_is_redacted() {
         let s = format!("{:?}", Secret::Mnemonic(Mnemonic::parse(ABANDON).unwrap()));
         assert!(!s.contains("abandon"), "{s}");
+    }
+
+    #[test]
+    fn unlock_key_opens_only_its_keystore() {
+        let blob = sealed_mnemonic();
+        let key = unlock(&blob, PASSWORD).unwrap();
+        assert!(matches!(open_with_key(&blob, &key).unwrap(), Secret::Mnemonic(_)));
+        // Stored and restored by a host.
+        let restored = UnlockKey::from_bytes(key.as_bytes()).unwrap();
+        assert!(open_with_key(&blob, &restored).is_ok());
+        // Another keystore with the same password has its own salt, so its own key.
+        assert_eq!(open_with_key(&sealed_mnemonic(), &key).unwrap_err(), Error::Decrypt);
+        assert_eq!(unlock(&blob, b"wrong password").unwrap_err(), Error::Decrypt);
+        assert!(UnlockKey::from_bytes(&[0; 31]).is_err());
+        assert_eq!(format!("{key:?}"), "UnlockKey(<redacted>)");
     }
 }

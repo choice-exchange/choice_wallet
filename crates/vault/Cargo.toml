@@ -1,0 +1,20 @@
+[package]
+name = "choice-wallet-vault"
+description = "Choice Wallet's vault API: one JSON request/response entry point, the same for the extension (WASM), desktop and mobile"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+choice-wallet-core.workspace = true
+choice-wallet-cosmos.workspace = true
+choice-wallet-evm.workspace = true
+choice-wallet-injective.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+hex.workspace = true

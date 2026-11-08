@@ -10,7 +10,7 @@
 pub mod address;
 mod error;
 pub mod hd;
-mod hexutil;
+pub mod hexutil;
 pub mod keystore;
 pub mod mnemonic;
 mod random;

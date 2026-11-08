@@ -15,7 +15,8 @@ use crate::Error;
 use crate::msg::is_canonical_amount;
 
 /// A contract call parsed from a `MsgExecuteContract`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContractCall {
     /// CW20 `transfer`: move `amount` to `recipient`.
     Cw20Transfer {

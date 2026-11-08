@@ -1,5 +1,7 @@
 use std::fmt;
 
+use choice_wallet_core::hexutil;
+
 use crate::Error;
 
 /// An unsigned 256-bit integer, stored big-endian.
@@ -55,6 +57,63 @@ impl U256 {
         }
         Ok(Self(out))
     }
+
+    /// Parse a JSON-RPC quantity: `0x` and hex digits without leading zeros (`0x0` is zero).
+    pub fn from_quantity(s: &str) -> Result<Self, Error> {
+        let bad = || Error::Quantity(s.into());
+        let digits = s.strip_prefix("0x").ok_or_else(bad)?;
+        if digits.is_empty() || digits.len() > 64 || (digits.len() > 1 && digits.starts_with('0')) {
+            return Err(bad());
+        }
+        let padded = format!("{digits:0>64}");
+        let mut out = [0u8; 32];
+        hexutil::decode_into(&padded, &mut out).map_err(|_| bad())?;
+        Ok(Self(out))
+    }
+
+    /// As a JSON-RPC quantity, e.g. `0x0`, `0x1a`.
+    pub fn to_quantity(&self) -> String {
+        let hex = hexutil::encode(&self.0);
+        let trimmed = hex.trim_start_matches('0');
+        format!("0x{}", if trimmed.is_empty() { "0" } else { trimmed })
+    }
+
+    /// `a * b`. Two 128-bit numbers always multiply within 256 bits.
+    pub fn product(a: u128, b: u128) -> Self {
+        let limbs = |v: u128| [v as u64, (v >> 64) as u64]; // little-endian
+        let (a, b) = (limbs(a), limbs(b));
+        let mut r = [0u64; 4];
+        for i in 0..2 {
+            let mut carry = 0u128;
+            for j in 0..2 {
+                let t = u128::from(r[i + j]) + u128::from(a[i]) * u128::from(b[j]) + carry;
+                r[i + j] = t as u64;
+                carry = t >> 64;
+            }
+            r[i + 2] = carry as u64;
+        }
+        let mut out = [0u8; 32];
+        for (k, limb) in r.iter().rev().enumerate() {
+            out[k * 8..k * 8 + 8].copy_from_slice(&limb.to_be_bytes());
+        }
+        Self(out)
+    }
+
+    /// The value as a `u64`, if it fits.
+    pub fn to_u64(&self) -> Option<u64> {
+        self.0[..24]
+            .iter()
+            .all(|&b| b == 0)
+            .then(|| u64::from_be_bytes(self.0[24..].try_into().expect("8 bytes")))
+    }
+
+    /// The value as a `u128`, if it fits.
+    pub fn to_u128(&self) -> Option<u128> {
+        self.0[..16]
+            .iter()
+            .all(|&b| b == 0)
+            .then(|| u128::from_be_bytes(self.0[16..].try_into().expect("16 bytes")))
+    }
 }
 
 impl fmt::Display for U256 {
@@ -101,6 +160,46 @@ mod tests {
             U256::from_dec_str("340282366920938463463374607431768211455").unwrap(),
             U256::from_u128(u128::MAX)
         );
+    }
+
+    #[test]
+    fn products() {
+        assert_eq!(U256::product(0, u128::MAX), U256::ZERO);
+        assert_eq!(U256::product(21000, 500_000_000).to_string(), "10500000000000");
+        assert_eq!(
+            U256::product(21000, u128::MAX).to_string(),
+            "7145929705339707732730866756067132440555000"
+        );
+        assert_eq!(
+            U256::product(u128::MAX, u128::MAX).to_string(),
+            "115792089237316195423570985008687907852589419931798687112530834793049593217025"
+        );
+    }
+
+    #[test]
+    fn quantities() {
+        for (q, n) in [
+            ("0x0", 0u128),
+            ("0x1", 1),
+            ("0x1a", 26),
+            ("0xDE0B6B3A7640000", 1_000_000_000_000_000_000),
+        ] {
+            let v = U256::from_quantity(q).unwrap();
+            assert_eq!(v.to_u128(), Some(n), "{q}");
+            assert_eq!(v.to_quantity(), q.to_lowercase(), "{q}");
+        }
+        let max = format!("0x{}", "f".repeat(64));
+        assert_eq!(U256::from_quantity(&max).unwrap(), U256::MAX);
+        assert_eq!(U256::MAX.to_u128(), None);
+        assert_eq!(U256::from_u128(u128::from(u64::MAX) + 1).to_u64(), None);
+        let too_long = format!("0x1{}", "0".repeat(64));
+        for bad in ["", "0x", "0x00", "0x01", "1a", "0X1", "0xg", "-0x1", too_long.as_str()] {
+            assert_eq!(
+                U256::from_quantity(bad).unwrap_err(),
+                Error::Quantity(bad.into()),
+                "{bad:?}"
+            );
+        }
     }
 
     #[test]

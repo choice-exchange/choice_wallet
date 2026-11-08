@@ -30,7 +30,7 @@ use crate::msg::{Coin, JsonCoin, Msg, coins_from_json};
 use crate::proto::cosmos::tx::signing::v1beta1::SignMode;
 
 /// The fee of an amino transaction.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct AminoFee {
     /// Coins paid.
     pub amount: Vec<Coin>,

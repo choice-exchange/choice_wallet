@@ -15,7 +15,7 @@
 use choice_wallet_core::EthAddress;
 use choice_wallet_cosmos::msg::{Coin, Msg};
 use choice_wallet_evm::eip712::TypedData;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_json::value::RawValue;
 
@@ -26,7 +26,7 @@ use crate::chain::Network;
 const VERIFYING_CONTRACT: &str = "0xCcCCccccCCCCcCCCCCCcCcCccCcCCCcCcccccccC";
 
 /// The fee of an EIP-712 transaction.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Web3Fee {
     /// Coins paid.
     pub amount: Vec<Coin>,
@@ -37,7 +37,7 @@ pub struct Web3Fee {
 }
 
 /// A decoded Injective EIP-712 v2 transaction.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Web3Tx {
     /// The EIP-712 domain chain ID: the network's EVM chain ID, or Ethereum's.
     pub evm_chain_id: u64,

@@ -1,0 +1,16 @@
+[package]
+name = "choice-wallet-wasm"
+description = "wasm-bindgen surface of Choice Wallet's vault, for the browser extension's service worker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+choice-wallet-vault.workspace = true
+wasm-bindgen.workspace = true
+zeroize.workspace = true

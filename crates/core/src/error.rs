@@ -22,6 +22,9 @@ pub enum Error {
     /// The bytes are not a valid secp256k1 public key.
     #[error("invalid public key")]
     InvalidPublicKey,
+    /// Not valid hex of the expected length.
+    #[error("invalid hex")]
+    InvalidHex,
     /// The address string is malformed, has a bad checksum or a wrong prefix.
     #[error("invalid address")]
     InvalidAddress,

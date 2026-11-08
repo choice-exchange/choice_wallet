@@ -10,7 +10,7 @@ We build and audit Choice Wallet in house, in the open. This file covers what we
 | Dapp or our own UI misdescribes a request | Yes | The vault decodes the exact bytes it signs. Non-canonical bytes are refused |
 | Request for the wrong chain (testnet/mainnet replay) | Yes | Chain ID checked against the connected chain before signing |
 | Web page sends privileged messages (unlock, approve, export) | Yes | The service worker accepts them only from its own extension pages (`sender.id`, `sender.url`) |
-| Approval reused for a different request | Yes | Approvals are single-use and bound to the request ID plus a hash of the decoded request |
+| Approval reused for a different request | Yes | Approvals are single-use and bound to the request ID. The vault re-decodes at signing and signs only if the digest of the kind, chain, signer and exact signed bytes matches the approved one |
 | Clickjacking or a spoofed approval window | Yes | Buttons disabled ~800 ms after focus; no password entry in approval windows; anti-phishing phrase on the unlock screen |
 | Compromised JavaScript dependency in an extension page | Yes | Every extension page can read the unlocked key, so shipped JS has its own dependency budget, Trusted Types and a strict CSP |
 | Malicious RPC lies about balances or simulation | Partly | Several RPCs, user-settable; dapp-suggested RPCs never used for checks; simulation names its RPC. Light-client proofs in phase 3 |
@@ -22,9 +22,9 @@ We build and audit Choice Wallet in house, in the open. This file covers what we
 
 ## Rules for vault code
 
-The vault is `choice-wallet-core`, `choice-wallet-cosmos`, `choice-wallet-injective`, `choice-wallet-evm` and, later, the policy and WASM crates.
+The vault is `choice-wallet-core`, `choice-wallet-cosmos`, `choice-wallet-injective`, `choice-wallet-evm`, `choice-wallet-vault`, `choice-wallet-wasm` and, next, the policy crate.
 
-- `#![forbid(unsafe_code)]` in every vault crate.
+- `#![forbid(unsafe_code)]` in every vault crate, except `choice-wallet-wasm`: the glue `#[wasm_bindgen]` generates uses `unsafe`. That crate is one function and contains no `unsafe` of its own.
 - Secrets are zeroized on drop (`Zeroizing`, `ZeroizeOnDrop`). `Debug` on secret types prints `<redacted>`.
 - No logging of secrets, seeds, private keys, passwords or derived keys. Errors never include secret material.
 - Decrypt failures return one error for wrong password and corrupted data.
@@ -49,8 +49,9 @@ The vault is `choice-wallet-core`, `choice-wallet-cosmos`, `choice-wallet-inject
 | Hashes | `sha2` 0.11, `sha3` 0.12 (RustCrypto) |
 | Keystore | `argon2` 0.6, `chacha20poly1305` 0.11 (RustCrypto) |
 | Encoding | `bech32` 0.12, `prost` 0.14 |
-| JSON inside transactions (CosmWasm messages; amino JSON and EIP-712 next) | `serde` 1.0, `serde_json` 1.0 |
-| Hygiene | `zeroize` 1.9, `getrandom` 0.4, `thiserror` 2 |
+| JSON inside transactions (CosmWasm messages, amino JSON, EIP-712) and the vault protocol | `serde` 1.0, `serde_json` 1.0 |
+| Hygiene | `zeroize` 1.9 (with its `serde` feature, so passwords deserialize straight into wiped buffers), `getrandom` 0.4, `thiserror` 2 |
+| WASM glue (WASM crate only) | `wasm-bindgen` 0.2.130, pinned exactly. Already in the lockfile through getrandom's browser backend |
 | EVM (EVM crate) | Nothing extra: an in-house RLP writer, checked against viem. `alloy-dyn-abi` 1.7 later if ABI decoding needs it (`alloy-consensus` was measured at about 120 crates and left out) |
 
 Adding a vault dependency needs a written reason in the PR and a second reviewer. Test-only crates (`hex`) are fine as dev-dependencies.
@@ -89,6 +90,7 @@ Protobuf types:
   - Injective EIP-712 v2 typed data (built by injective-ts, hashed and signed by viem);
   - generic EIP-712 hashing and `eth_signTypedData_v4` signatures (nested structs, arrays, signed integers, bytesN);
   - EIP-1559 native and ERC20 transfers.
+- The same vectors also run end to end through the vault protocol (`crates/vault/src/tests.rs`): what a host gets back from `handle` must match too, and approvals must refuse a changed request, another account and a stale digest.
 - Where injective-ts and the chain disagree (amino JSON zero `timeout_height`, HTML escaping), the tests follow the chain's source. The escaping cases were checked against Go's `encoding/json`.
   - The generator installs with scripts off and npm's `before` date set two weeks back, so every package in its lockfile had been public for at least two weeks.
   - injective-ts 1.20.21 was a compromised release. Pinned versions stay well clear of it.

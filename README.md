@@ -12,7 +12,9 @@ An open-source, self-custody wallet. Injective first (Cosmos side and Injective 
 | `crates/core` | Mnemonic, HD derivation, secp256k1 keys, addresses, encrypted keystore |
 | `crates/cosmos` | Cosmos SDK sign paths (Direct, amino JSON), message decoding (sends, contract calls, grants, admin changes) and builders, for any chain given its profile |
 | `crates/injective` | Injective networks, CW20 ⇄ bank conversions through the CW20 adapter, EIP-712 v2 decoding |
-| `crates/evm` | EIP-1559 transactions (native INJ and ERC20 transfers), EIP-712 typed data |
+| `crates/evm` | EIP-1559 transactions (native INJ and ERC20 transfers), `eth_sendTransaction` requests, EIP-712 typed data |
+| `crates/vault` | The vault protocol: one JSON entry point (`handle`) for every host: keystores, accounts, building sends, decode → approve → sign |
+| `crates/wasm` | The vault compiled to WASM for the extension |
 | `tools/protogen` | Dev only: vendors `.proto` files and regenerates the committed prost code |
 | `tools/vectors` | Dev only: generates test vectors with injective-ts and viem |
 
@@ -24,6 +26,12 @@ The toolchain is pinned in `rust-toolchain.toml`; rustup installs it on first us
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo build --workspace --release --target wasm32-unknown-unknown
+```
+
+JavaScript glue for the extension (the `wasm-bindgen` CLI must be exactly 0.2.130, the crate's version):
+
+```sh
+wasm-bindgen --target web --out-dir pkg target/wasm32-unknown-unknown/release/choice_wallet_wasm.wasm
 ```
 
 Regenerating protobuf code or test vectors (not needed for a normal build):

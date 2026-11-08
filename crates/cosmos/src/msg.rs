@@ -1,7 +1,8 @@
 //! Messages decoded from a transaction body.
 
+use choice_wallet_core::hexutil;
 use prost::Name;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize, Serializer};
 use serde_json::value::RawValue;
 
 use crate::Error;
@@ -18,7 +19,7 @@ use crate::wkt::Any;
 
 /// A bank coin with a valid denom and a canonical positive amount. In JSON it reads
 /// `{"denom": …, "amount": …}`, with the same checks.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(try_from = "JsonCoin")]
 pub struct Coin {
     denom: String,
@@ -103,7 +104,8 @@ pub(crate) fn coins_from_proto(coins: Vec<ProtoCoin>) -> Result<Vec<Coin>, Error
 }
 
 /// What an authz grant lets the grantee do.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum Authorization {
     /// `GenericAuthorization`: run any message of this type as the granter, without limit.
     Generic {
@@ -122,12 +124,14 @@ pub enum Authorization {
         /// Its type URL.
         type_url: String,
         /// Its protobuf bytes.
+        #[serde(serialize_with = "hex_bytes")]
         value: Vec<u8>,
     },
 }
 
 /// What a fee grant lets the grantee spend on fees.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum Allowance {
     /// `BasicAllowance`. An empty `spend_limit` means no limit.
     Basic {
@@ -157,12 +161,15 @@ pub enum Allowance {
         /// Its type URL.
         type_url: String,
         /// Its protobuf bytes.
+        #[serde(serialize_with = "hex_bytes")]
         value: Vec<u8>,
     },
 }
 
-/// A message from a transaction body.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A message from a transaction body. In JSON (for the approval screen) it is tagged by
+/// `type`, e.g. `{"type": "bank_send", "from": …}`; raw bytes are hex.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum Msg {
     /// `cosmos.bank.v1beta1.MsgSend`.
     BankSend {
@@ -278,6 +285,7 @@ pub enum Msg {
         /// Its type URL.
         type_url: String,
         /// Its protobuf bytes.
+        #[serde(serialize_with = "hex_bytes")]
         value: Vec<u8>,
     },
     /// Any other message, from a JSON sign path (EIP-712). Shown raw, with extra friction.
@@ -287,6 +295,10 @@ pub enum Msg {
         /// The message's JSON exactly as signed.
         json: String,
     },
+}
+
+fn hex_bytes<S: Serializer>(bytes: &[u8], s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_str(&hexutil::encode(bytes))
 }
 
 /// How deep `MsgExec` may nest. Real dapps use one level; more is refused.

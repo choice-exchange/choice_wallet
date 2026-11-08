@@ -8,8 +8,9 @@ Choice Wallet is an open-source, self-custody wallet. It starts as a browser ext
 
 | Topic | Decision |
 | --- | --- |
-| Core language | Rust 1.99.1. Compiled to WASM for the extension, to native code through uniffi for iOS and Android |
+| Core language | Rust 1.99.1. Compiled to WASM for the extension, linked natively for desktop and mobile |
 | First platform | Chrome extension, listed on the Chrome Web Store only (Brave and Edge users install from there). Mobile in phase 2 |
+| Other platforms | One vault protocol and one React UI for every platform (2026-11-08). Desktop (Linux first) is a Tauri 2 app that links the vault natively, so keys never enter its web view. Mobile picks Tauri mobile or React Native with uniffi at phase 2. See [Platforms](#platforms) |
 | v1 accounts | Seed phrase, private key import, Ledger, watch-only. Trezor and Keystone in phase 2. No social login, no MPC, no key shares held by anyone but the user |
 | Ledger | Ledger Device Management Kit only. Injective Cosmos txs go through Ledger's Cosmos app; EVM txs through its Ethereum app |
 | Audits | Built and audited in house, in the open. Process in [SECURITY.md](SECURITY.md) |
@@ -48,10 +49,11 @@ popup / side panel ◀── privileged messages ──▶ service worker
 approval window          (own pages only)       ├─ origin permissions, approvals
                                                 ├─ policy + risk rules
                                                 ├─ RPC pool (user-settable)
-                                                └─ vault: Rust core → WASM
+                                                └─ vault: Rust → WASM, handle(json) → json
                                                      seed · derivation · signing · decoders
 Ledger (WebHID, paired in a tab) ◀──────────────┘
-mobile app (phase 2) ── uniffi ──▶ same Rust core
+desktop app (Tauri) ── same React UI ── Rust host ──▶ same vault, linked natively
+mobile app (phase 2) ──────────────────────────────▶ same vault
 ```
 
 ### Crates
@@ -62,8 +64,9 @@ mobile app (phase 2) ── uniffi ──▶ same Rust core
 | `choice-wallet-cosmos` | Cosmos SDK protobuf (vendored .proto, prost 0.14), the Direct and amino JSON sign paths, message decoding, builders. Works for any chain described by a profile (chain ID, bech32 prefix, key type, tokenfactory package) | Direct and amino JSON paths; bank and CW20 builders. On the Direct path, also authz grants, execs (decoded recursively) and revokes, fee grants, the rewards withdraw address, tokenfactory and contract admin changes. The JSON paths still show those as raw. Only ethsecp256k1 keys so far; standard secp256k1 (SHA-256, RIPEMD-160 addresses) comes with the first such chain |
 | `choice-wallet-injective` | Injective's profiles, CW20 adapter conversions, EIP-712 v2 decoding, precompile decoding | Mainnet and testnet profiles, adapter builders, EIP-712 v2. Together with the cosmos crate, byte-identical to injective-ts 1.20.62 (and viem for EIP-712). Precompile decoding next |
 | `choice-wallet-evm` | EVM tx types 0-2, EIP-712, ABI decoding. Signing on our k256 0.14 | EIP-1559 encode and sign, native and ERC20 transfers, strict EIP-712 typed data. Byte-identical to viem 2.57.7. Dapp transaction requests next |
-| `choice-wallet-policy` | Risk rules over decoded requests | Planned |
-| `choice-wallet-wasm` | wasm-bindgen surface for the extension | Planned |
+| `choice-wallet-vault` | The vault protocol: one JSON entry point for every host. Keystores, unlock keys, accounts by CAIP-2 chain, building the wallet's own sends, decode → approve → sign | Built. Signatures through the protocol match the injective-ts and viem vectors |
+| `choice-wallet-wasm` | wasm-bindgen surface for the extension: `handle(json) → json` | Built (1.2 MB before wasm-opt). Smoke-tested in Node: Argon2id unlock about 130 ms, signing about 4 ms |
+| `choice-wallet-policy` | Risk rules over decoded requests | Next |
 
 Not used:
 - `injective-std` and `cosmos-sdk-proto`: both still on prost 0.13, and `injective-std` also pulls in cosmwasm-std.
@@ -71,11 +74,22 @@ Not used:
 - `alloy-consensus`: even without default features it pulls about 120 crates, including second copies of sha2 and sha3. Dapps send EVM requests as JSON, so the wallet only ever encodes transactions. A 60-line RLP writer, checked byte for byte against viem, does that. `alloy-dyn-abi` may come in later for ABI decoding.
 - injective-core's `.proto` files: injective-core is BUSL-1.1. Injective's ethsecp256k1 `PubKey` has the same wire format as cosmos-sdk's secp256k1 `PubKey`, and the tokenfactory `MsgChangeAdmin` is written for this repo from the wire format. The cross-implementation vectors confirm both.
 
+### Vault protocol
+
+Every host talks to the vault the same way: `handle('{"method": …, "params": {…}}')` returns `{"ok": true, "result": …}` or `{"ok": false, "error": {"code", "message"}}`. The method list is in `crates/vault/src/lib.rs`.
+
+- **Stateless.** The host keeps the encrypted keystore and, while unlocked, the unlock key (the Argon2id output). Each signing call decrypts the keystore with it, derives the account key, signs and drops both. The extension's service worker survives being stopped because nothing lives in WASM memory between calls.
+- **Hosts add the secrets.** UI pages send requests without the keystore or unlock key; the host fills them in. On desktop and mobile they never reach the web view.
+- **Chains by CAIP-2 ID** (`cosmos:injective-1`, `eip155:1776`). Accounts list an address for every known chain, so adding a chain doesn't change the protocol.
+- **Approvals are bound to bytes.** `decode` returns what the approval screen shows and a digest over the request kind, chain, signer and the exact bytes (or EIP-712 hash) to be signed. `sign` decodes again and signs only if the digest matches the approved one, so an approval can't sign a different request or with a different account.
+- **The wallet's own sends get no shortcut.** `build_cosmos` and `build_evm` return a sign request in the same form a dapp's would take, which then goes through `decode` and `sign`.
+- EVM transaction requests are `eth_sendTransaction` objects after the host fills in nonce, gas and fees. Only EIP-1559; legacy gas prices, access lists, EIP-7702 authorizations and contract creation are refused.
+
 ### Keys at rest
 
 - The secret is sealed with Argon2id (64 MiB, 3 passes) and XChaCha20-Poly1305. The header (format version, KDF parameters, salt, nonce) is authenticated as associated data, so it can't be changed undetected.
 - The keystore stores mnemonic entropy or a raw private key, never the phrase text.
-- While unlocked, the derived key sits in `chrome.storage.session`. Chrome doesn't write it to disk (the OS can still swap or hibernate memory), and content scripts can't read it. Every extension page can, which is why extension-page JavaScript is inside the security boundary.
+- While unlocked, the unlock key (the Argon2id output, which opens only this keystore) sits in `chrome.storage.session`. Chrome doesn't write it to disk (the OS can still swap or hibernate memory), and content scripts can't read it. Every extension page can, which is why extension-page JavaScript is inside the security boundary. The desktop app keeps it in the Rust process instead.
 - `storage.session` is cleared when the extension is disabled, reloaded or updated, and when the browser restarts. Users unlock again after every update.
 - Auto-lock runs on `chrome.alarms` (30 s minimum), because the service worker is stopped after 30 s idle and timers die with it.
 - Zeroize is best-effort once a secret crosses the WASM/JS boundary (a typed password or pasted phrase is a JS string).
@@ -220,6 +234,18 @@ A red request reads like: "inj1d7…z8h8 could send ALL your tokens, with no end
 - **Address book** and CEX memo warnings.
 - **Light-client checks (phase 3).** Verify balances with proofs against a CometBFT light client (`tendermint-light-client-verifier`), so an RPC can't lie about them.
 
+## Platforms
+
+| Platform | UI | Vault | Dapps connect through | Ledger |
+| --- | --- | --- | --- | --- |
+| Chrome extension (phase 1) | React in extension pages | WASM in the service worker | Injected EIP-1193 / EIP-6963 and Keplr-style providers | DMK over WebHID |
+| Desktop, Linux first (after the beta) | The same React UI in a Tauri 2 web view (WebKitGTK on Linux) | Linked natively in the Rust host; keys never enter the web view | WalletConnect (Reown WalletKit). Later, the extension as a thin connector over Chrome native messaging | A Rust HID transport: WebKitGTK has no WebHID, so DMK can't run there |
+| iOS, Android (phase 2) | Tauri mobile, or React Native with uniffi; decided at phase 2 | Linked natively | WalletConnect, in-app browser | Bluetooth (DMK or native) |
+
+What keeps this one codebase:
+- The vault protocol is the only interface between UI and keys, and it is the same JSON everywhere.
+- The React UI reaches the vault, storage and windows only through a small host interface, with one implementation per platform. No `chrome.*` calls outside it.
+
 ## Fees
 
 The wallet is free. If fees are added later, these rules hold:
@@ -249,7 +275,7 @@ injective-ts (1.20.x), ethers and viem are used only to generate test vectors. T
 
 | Phase | Scope |
 | --- | --- |
-| 0. Core and trust model | Rust core (done). Injective crate: vendored protos, all four sign paths with recursive canonical checks, precompile decoding. EVM crate. Risk rules. Extension security model as a written spec with tests. EIP-6963 `rdns` fixed and the injective-ts wallet PR opened. Test vectors from injective-ts 1.20.x and alloy. Real-dapp tx corpus. uniffi targets built in CI |
+| 0. Core and trust model | Rust core, Cosmos and Injective crates, EVM crate, vault protocol and WASM build (done). Precompile decoding. Risk rules. Extension security model as a written spec with tests. EIP-6963 `rdns` fixed and the injective-ts wallet PR opened. Test vectors from injective-ts 1.20.x and alloy. Real-dapp tx corpus. uniffi targets built in CI |
 | 1. Extension beta (Injective) | Create or import a seed, Ledger (DMK), send and receive, one balance list (bank + ERC20 + CW20), dapp signing, simulation, approvals screen, inventory engine, rescue address with a scoped fee grant, Choice apps integrated. In-house audit, Chrome Web Store public beta |
 | 2. Depth and mobile | Rescue Mode, Trezor and Keystone, NFTs, staking, swap. iOS and Android with Reown WalletKit |
 | 3. Multichain | Ethereum, Base, Arbitrum, BSC; Cosmos Hub, Osmosis, Noble (per-chain proto sets); then Solana and Bitcoin. Vault accounts, light client |

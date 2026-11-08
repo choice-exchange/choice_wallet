@@ -220,6 +220,7 @@ version = "0.1.0"
 dependencies = [
  "choice-wallet-core",
  "hex",
+ "serde",
  "serde_json",
  "thiserror",
 ]
@@ -235,6 +236,29 @@ dependencies = [
  "prost",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "choice-wallet-vault"
+version = "0.1.0"
+dependencies = [
+ "choice-wallet-core",
+ "choice-wallet-cosmos",
+ "choice-wallet-evm",
+ "choice-wallet-injective",
+ "hex",
+ "serde",
+ "serde_json",
+ "zeroize",
+]
+
+[[package]]
+name = "choice-wallet-wasm"
+version = "0.1.0"
+dependencies = [
+ "choice-wallet-vault",
+ "wasm-bindgen",
+ "zeroize",
 ]
 
 [[package]]
@@ -1022,6 +1046,7 @@ version = "1.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e13084392c5e4bc371903e2935a5eaeed24905a7511356b883835e18a78f6879"
 dependencies = [
+ "serde",
  "zeroize_derive",
 ]
 

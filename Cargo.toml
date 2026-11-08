@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/cosmos", "crates/evm", "crates/injective"]
+members = ["crates/core", "crates/cosmos", "crates/evm", "crates/injective", "crates/vault", "crates/wasm"]
 # Dev tools have their own lockfiles, so their dependencies never enter the wallet's.
 exclude = ["tools/protogen"]
 
@@ -16,6 +16,7 @@ choice-wallet-core = { path = "crates/core" }
 choice-wallet-cosmos = { path = "crates/cosmos" }
 choice-wallet-evm = { path = "crates/evm" }
 choice-wallet-injective = { path = "crates/injective" }
+choice-wallet-vault = { path = "crates/vault" }
 
 # Vault dependency budget: see docs/SECURITY.md before adding anything here.
 # Versions surveyed on crates.io 2026-11-08: each is the newest stable release.
@@ -33,7 +34,9 @@ serde_json = { version = "1.0.154", default-features = false, features = ["std",
 sha2 = { version = "0.11.1", default-features = false }
 sha3 = { version = "0.12.0", default-features = false }
 thiserror = "2.0.21"
-zeroize = { version = "1.9.1", features = ["derive"] }
+zeroize = { version = "1.9.1", features = ["derive", "serde"] }
+# Only in the WASM crate. Already in the lockfile through getrandom's `wasm_js` backend.
+wasm-bindgen = { version = "=0.2.130", default-features = false, features = ["std"] }
 
 # Test-only.
 hex = "0.4.3"

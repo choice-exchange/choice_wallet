@@ -41,7 +41,7 @@ pub struct Request {
 }
 
 /// The fee, as decoded.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Fee {
     /// Coins paid.
     pub amount: Vec<Coin>,
