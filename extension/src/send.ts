@@ -8,15 +8,21 @@
 //    The pending request is removed first, so a double click can't send twice.
 
 import {
+  adapterCw20,
+  adapterDenom,
   ChainError,
   cosmosTxHash,
+  cw20Address,
+  cw20Denom,
   describeToken,
   EvmRpc,
   evmAddress,
   evmDenom,
   explorerTxUrl,
+  isContractAddress,
   isObject,
   MIN_GAS_PRICE,
+  otherForm,
   word,
   Lcd,
   fetchPrices,
@@ -76,6 +82,13 @@ const ACTIVITY_PAGE = 50;
 const EVM_SIMULATION_GAS = 100_000n;
 const EVM_MAX_GAS = 1_000_000n;
 
+/** CW20 balance queries in flight at once (one smart query per token). */
+const CW20_PARALLEL = 6;
+/** At most this many CW20s are asked about because their bank form has an ERC20 pair (2 of
+ *  mainnet's 1,112 pairs on 2026-11-09), so a chain with many can't flood the endpoints.
+ *  CW20s held in bank form or added by hand are always asked. */
+const CW20_FROM_PAIRS = 50;
+
 /** Gas assumed for the simulation's own fee. */
 const SIMULATION_GAS = 200_000n;
 const MIN_GAS = 50_000n;
@@ -100,18 +113,19 @@ export function createSender(d: SendDeps) {
   }
 
   let priceCache: { at: number; list: Promise<PriceList> } | null = null;
-  const pairCache = new Map<NetworkId, { at: number; pairs: Promise<Map<string, string>> }>();
+  /** Per LCD client, so per network and endpoint set: new endpoints are asked afresh. */
+  const pairCache = new Map<Lcd, { at: number; pairs: Promise<Map<string, string>> }>();
 
   /** The erc20 module's token pairs (bank denom → ERC20 address), cached an hour. Empty
    *  when the node can't say. */
-  function pairsFor(network: NetworkId, client: Lcd): Promise<Map<string, string>> {
+  function pairsFor(_network: NetworkId, client: Lcd): Promise<Map<string, string>> {
     const now = Date.now();
-    let pc = pairCache.get(network);
+    let pc = pairCache.get(client);
     if (!pc || now - pc.at > PAIRS_TTL_MS) {
       const entry = { at: now, pairs: client.tokenPairs() };
-      pairCache.set(network, entry);
+      pairCache.set(client, entry);
       entry.pairs.catch(() => {
-        if (pairCache.get(network) === entry) pairCache.delete(network);
+        if (pairCache.get(client) === entry) pairCache.delete(client);
       });
       pc = entry;
     }
@@ -154,8 +168,12 @@ export function createSender(d: SendDeps) {
       for (const a of list.prices.keys()) seen[a] = now;
       await d.local.set({ choice_seen: seen });
     }
+    const bankForm = (dn: string) => {
+      const c = cw20Address(dn);
+      return c ? adapterDenom(network, c) : null;
+    };
     for (const dn of denoms) {
-      const a = priceAddress(dn, pairs);
+      const a = priceAddress(dn, pairs, bankForm);
       if (a === undefined) continue;
       const p = list?.prices.get(a);
       if (p) out.prices.set(dn, p);
@@ -192,10 +210,47 @@ export function createSender(d: SendDeps) {
     return t;
   }
 
+  /** Tokens the user added by contract: ERC20s (0x…) and CW20s (inj1…). */
   async function customTokens(network: NetworkId): Promise<string[]> {
     const { custom_tokens } = (await d.local.get(["custom_tokens"])) as { custom_tokens?: Partial<Record<NetworkId, unknown>> };
     const list = custom_tokens?.[network];
-    return Array.isArray(list) ? list.filter((a): a is string => typeof a === "string" && /^0x[0-9a-f]{40}$/.test(a)) : [];
+    return Array.isArray(list) ? list.filter((a): a is string => typeof a === "string" && (/^0x[0-9a-f]{40}$/.test(a) || isContractAddress(a))) : [];
+  }
+
+  /** CW20 balances. A CW20 lives in its contract, which no bank query sees, so the wallet
+   *  asks each candidate: the CW20 behind every adapter bank denom that has an ERC20 pair
+   *  (the CW20s that matter on Injective today), behind every adapter denom this account
+   *  holds, and the user's own additions (shown even at zero). Prices come later. */
+  async function cw20Holdings(network: NetworkId, client: Lcd, account: AccountInfo, bank: readonly Balance[]): Promise<Balance[]> {
+    const custom = (await customTokens(network)).filter(isContractAddress);
+    const candidates = new Set(custom);
+    const paired = [...(await pairsFor(network, client)).keys()].map((dn) => adapterCw20(network, dn)).filter((c): c is string => c !== null);
+    for (const c of paired.slice(0, CW20_FROM_PAIRS)) candidates.add(c);
+    for (const b of bank) {
+      const c = adapterCw20(network, b.denom);
+      if (c) candidates.add(c);
+    }
+    const holder = address(network, account);
+    const list = [...candidates];
+    const amounts: (bigint | null)[] = new Array(list.length).fill(null);
+    let next = 0;
+    await Promise.all(
+      Array.from({ length: Math.min(CW20_PARALLEL, list.length) }, async () => {
+        while (next < list.length) {
+          const i = next++;
+          amounts[i] = await client.cw20Balance(list[i]!, holder);
+        }
+      }),
+    );
+    const out: Balance[] = [];
+    await Promise.all(
+      list.map(async (c, i) => {
+        const amount = amounts[i];
+        if (amount === null || amount === undefined || (amount === 0n && !custom.includes(c))) return;
+        out.push({ ...(await token(network, client, cw20Denom(c))), amount: amount.toString() });
+      }),
+    );
+    return out;
   }
 
   /** ERC20s with no bank denom that this account holds (or added by hand). Candidates are
@@ -203,7 +258,7 @@ export function createSender(d: SendDeps) {
    *  already covers (an `erc20:` denom or a token pair) is left to the bank list, so no
    *  token shows twice. */
   async function evmOnly(network: NetworkId, client: Lcd, account: AccountInfo, bank: readonly Balance[], choice: ChoiceView): Promise<Balance[]> {
-    const custom = await customTokens(network);
+    const custom = (await customTokens(network)).filter((a) => a.startsWith("0x"));
     const candidates = new Set([...choice.seen, ...custom].map((a) => a.toLowerCase()));
     candidates.delete("0x0000000000000000000000000000000000000000");
     if (candidates.size === 0) return [];
@@ -234,8 +289,21 @@ export function createSender(d: SendDeps) {
   /** What a contract address is, for "add a token": the bank denom that already covers it,
    *  or the EVM-only token it is. */
   async function inspectToken(network: NetworkId, address: unknown): Promise<Result<{ denom: string; symbol: string }>> {
-    if (typeof address !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(address.trim())) return fail("invalid_address", "Enter a token contract address (0x…).");
-    const a = address.trim().toLowerCase();
+    const entered = typeof address === "string" ? address.trim() : "";
+    if (isContractAddress(entered.toLowerCase())) {
+      // A CW20, by its contract on the Cosmos side.
+      const c = entered.toLowerCase();
+      const client = await lcd(network);
+      try {
+        const info = await client.cw20Info(c);
+        if (!info) return fail("not_a_token", "That address isn't a CW20 token.");
+        return { ok: true, result: { denom: cw20Denom(c), symbol: (await token(network, client, cw20Denom(c))).symbol } };
+      } catch (e) {
+        return chainFailure(e);
+      }
+    }
+    if (!/^0x[0-9a-fA-F]{40}$/.test(entered)) return fail("invalid_address", "Enter a token contract address (0x… or inj1…).");
+    const a = entered.toLowerCase();
     if (a === "0x0000000000000000000000000000000000000000") return fail("invalid_address", "That's native INJ, already in your list.");
     const client = await lcd(network);
     try {
@@ -256,6 +324,7 @@ export function createSender(d: SendDeps) {
     if (!t) {
       t = describeToken(client, network, denom);
       tokenCache.set(key, t);
+      t.catch(() => tokenCache.delete(key));
     }
     return t;
   }
@@ -276,12 +345,15 @@ export function createSender(d: SendDeps) {
     const client = await lcd(network);
     try {
       const coins = await client.balances(address(network, account));
-      const list = await Promise.all(coins.map(async (c) => ({ ...(await token(network, client, c.denom)), amount: c.amount })));
+      const bank: Balance[] = await Promise.all(coins.map(async (c) => ({ ...(await token(network, client, c.denom)), amount: c.amount })));
+      const list = [...bank, ...(await cw20Holdings(network, client, account, bank))];
       const choice = await choiceFor(network, client, list.map((b) => b.denom));
       const out: Balance[] = list.map((b) => {
         const p = choice.prices.get(b.denom);
         const seen = choice.onChoice.has(b.denom) ? { onChoice: true } : {};
-        return p ? { ...b, ...seen, priceUsd: p, usd: usdValue(b.amount, b.decimals, p) } : { ...b, ...seen };
+        const other = otherForm(network, b.denom);
+        const more = { ...seen, ...(other ? { convertsTo: other } : {}) };
+        return p ? { ...b, ...more, priceUsd: p, usd: usdValue(b.amount, b.decimals, p) } : { ...b, ...more };
       });
       // EVM-only tokens: a failure here leaves the bank list standing.
       let evmDown = false;
@@ -326,25 +398,78 @@ export function createSender(d: SendDeps) {
   }
 
   async function prepare(network: NetworkId, account: AccountInfo, req: { denom: string; to: string; amount: string }): Promise<Result<SendReview>> {
-    const net = NETWORKS[network];
-    const client = await lcd(network);
-    const max = req.amount === "max";
     if (typeof req.denom !== "string" || !req.denom) return fail("bad_request", "Pick a token.");
     if (evmAddress(req.denom)) return prepareEvm(network, account, req);
-    if (!max && !(typeof req.amount === "string" && /^[0-9]+$/.test(req.amount) && BigInt(req.amount) > 0n)) {
+    const cw20 = cw20Address(req.denom);
+    return prepareCosmos(network, account, {
+      denom: req.denom,
+      amount: req.amount,
+      messages: (amount) => [
+        cw20
+          ? { type: "cw20_transfer", contract: cw20, to: req.to, amount: amount.toString() }
+          : { type: "bank_send", to: req.to, amount: [{ denom: req.denom, amount: amount.toString() }] },
+      ],
+    });
+  }
+
+  /** Convert a token into its other form through the network's CW20 adapter: a CW20 into
+   *  its bank denom (which also makes it an ERC20 where it has a pair), or back. One for
+   *  one; the adapter is the only contract involved. */
+  async function prepareConvert(network: NetworkId, account: AccountInfo, req: { denom: string; amount: string }): Promise<Result<SendReview>> {
+    if (typeof req.denom !== "string") return fail("bad_request", "Pick a token.");
+    const cw20 = cw20Address(req.denom);
+    const inner = adapterCw20(network, req.denom);
+    if (!cw20 && !inner) return fail("bad_request", "This token has no other form.");
+    return prepareCosmos(network, account, {
+      denom: req.denom,
+      amount: req.amount,
+      knownContracts: [NETWORKS[network].cw20Adapter],
+      returned: true,
+      messages: (amount) => [cw20 ? { type: "cw20_to_bank", contract: cw20, amount: amount.toString() } : { type: "bank_to_cw20", contract: inner, amount: amount.toString() }],
+    });
+  }
+
+  /** A Cosmos transaction the wallet builds, spending `amount` (or all, "max") of `denom`
+   *  (a bank denom or a `cw20:` key): simulate it for gas, build it again with the real
+   *  fee, decode and grade it. */
+  async function prepareCosmos(
+    network: NetworkId,
+    account: AccountInfo,
+    spec: {
+      denom: string;
+      amount: string;
+      messages: (amount: bigint) => unknown[];
+      knownContracts?: string[];
+      /** It all comes back in another form (a conversion): the share-of-balance warnings
+       *  don't apply, so the spent token's balance is left out of the risk context. The
+       *  amount was checked against it here. */
+      returned?: boolean;
+    },
+  ): Promise<Result<SendReview>> {
+    const net = NETWORKS[network];
+    const client = await lcd(network);
+    const max = spec.amount === "max";
+    if (!max && !(typeof spec.amount === "string" && /^[0-9]+$/.test(spec.amount) && BigInt(spec.amount) > 0n)) {
       return fail("invalid_amount", "Enter an amount above zero.");
     }
+    const cw20 = cw20Address(spec.denom);
     try {
       const from = address(network, account);
-      const [acct, coins, price] = await Promise.all([client.account(from), client.balances(from), client.gasPrice()]);
+      const [acct, coins, price, cw20Held] = await Promise.all([
+        client.account(from),
+        client.balances(from),
+        client.gasPrice(),
+        cw20 ? client.cw20Balance(cw20, from) : Promise.resolve(null),
+      ]);
       if (!acct) return fail("no_funds", "This account has no funds yet.");
-      const held = (denom: string) => BigInt(coins.find((c) => c.denom === denom)?.amount ?? "0");
-      const symbol = (await token(network, client, req.denom)).symbol;
+      if (cw20 && cw20Held === null) return fail("not_a_token", "That contract isn't a CW20 token.");
+      const held = (denom: string) => (cw20 && denom === spec.denom ? cw20Held! : BigInt(coins.find((c) => c.denom === denom)?.amount ?? "0"));
+      const symbol = (await token(network, client, spec.denom)).symbol;
       const feeSymbol = (await token(network, client, net.feeDenom)).symbol;
-      const sameDenom = req.denom === net.feeDenom;
-      const amountFor = (fee: bigint) => (max ? held(req.denom) - (sameDenom ? fee : 0n) : BigInt(req.amount));
+      const sameDenom = spec.denom === net.feeDenom;
+      const amountFor = (fee: bigint) => (max ? held(spec.denom) - (sameDenom ? fee : 0n) : BigInt(spec.amount));
       const check = (amount: bigint, fee: bigint): Result<never> | null => {
-        if (amount <= 0n || amount > held(req.denom)) return fail("insufficient", `Not enough ${symbol}.`);
+        if (amount <= 0n || amount > held(spec.denom)) return fail("insufficient", `Not enough ${symbol}.`);
         if ((sameDenom ? amount : 0n) + fee > held(net.feeDenom)) return fail("insufficient", `Not enough ${feeSymbol} for the fee.`);
         return null;
       };
@@ -352,7 +477,7 @@ export function createSender(d: SendDeps) {
         d.vault<{ request: unknown; simulate_tx: string }>("build_cosmos", {
           chain: net.cosmos,
           signer: account.public_key,
-          messages: [{ type: "bank_send", to: req.to, amount: [{ denom: req.denom, amount: amount.toString() }] }],
+          messages: spec.messages(amount),
           account_number: acct.accountNumber.toString(),
           sequence: acct.sequence.toString(),
           fee: { amount: [{ denom: net.feeDenom, amount: (gas * price).toString() }], gas_limit: gas.toString() },
@@ -377,16 +502,23 @@ export function createSender(d: SendDeps) {
       const built = await build(amount, gas);
       if (!built.ok) return built;
 
-      // Symbols for the risk rules' messages: the wallet's list, else the short denom (a
+      // Balances and symbols for the risk rules, keyed as they are: bank denoms, and a
+      // CW20 by its contract. Symbols are the wallet's list, else the short denom (a
       // creator-chosen symbol could pass for another token).
+      const balances: Record<string, string> = Object.fromEntries(coins.map((c) => [c.denom, c.amount]));
       const symbols: Record<string, string> = {};
       for (const c of coins) {
         const t = await token(network, client, c.denom);
         symbols[c.denom] = t.known ? t.symbol : shortDenom(c.denom);
       }
+      if (cw20) {
+        balances[cw20] = cw20Held!.toString();
+        symbols[cw20] = shortDenom(spec.denom);
+      }
+      if (spec.returned) delete balances[cw20 ?? spec.denom];
       const decoded = await d.vault<Pick<SendReview, "digest" | "risk"> & { display: CosmosDisplay }>("decode", {
         request: built.result.request,
-        context: { balances: Object.fromEntries(coins.map((c) => [c.denom, c.amount])), symbols },
+        context: { balances, symbols, known_contracts: spec.knownContracts ?? [] },
       });
       if (!decoded.ok) return decoded;
       const { digest, display, risk } = decoded.result;
@@ -399,8 +531,7 @@ export function createSender(d: SendDeps) {
         blocked: risk.level === "blocked",
       };
       await d.session.set({ pending_send: pending });
-      const denoms = new Set<string>(display.fee.amount.map((c) => c.denom));
-      for (const m of display.messages) if (Array.isArray(m["amount"])) for (const c of m["amount"] as Coin[]) denoms.add(c.denom);
+      const denoms = displayDenoms(network, display);
       const px = (await choiceFor(network, client, denoms)).prices;
       const tokens = Object.fromEntries(
         await Promise.all(
@@ -561,7 +692,31 @@ export function createSender(d: SendDeps) {
     }
   }
 
-  return { balances, activity, inspectToken, prepare, confirm, status };
+  return { balances, activity, inspectToken, prepare, prepareConvert, confirm, status };
+}
+
+/** Every token a decoded Cosmos transaction moves, by the wallet's keys: the fee, coins
+ *  sent or attached, a CW20 by its `cw20:` key, and what an adapter conversion returns. */
+export function displayDenoms(network: NetworkId, display: CosmosDisplay): Set<string> {
+  const out = new Set<string>(display.fee.amount.map((c) => c.denom));
+  const coins = (v: unknown) => (Array.isArray(v) ? (v as Coin[]).filter((c) => typeof c?.denom === "string") : []);
+  for (const msg of display.messages) {
+    const m = msg as Record<string, unknown>;
+    for (const c of [...coins(m["amount"]), ...coins(m["funds"])]) out.add(c.denom);
+    const call = isObject(m["call"]) ? m["call"] : null;
+    const contract = typeof m["contract"] === "string" ? m["contract"] : "";
+    if (!call || !isContractAddress(contract)) continue;
+    if (call["type"] === "cw20_transfer" || call["type"] === "cw20_send" || call["type"] === "cw20_increase_allowance") out.add(cw20Denom(contract));
+    // A CW20 sent to the adapter comes back as its bank form.
+    if (call["type"] === "cw20_send" && call["contract"] === NETWORKS[network].cw20Adapter) out.add(adapterDenom(network, contract));
+    if (call["type"] === "adapter_redeem") {
+      for (const f of coins(m["funds"])) {
+        const inner = adapterCw20(network, f.denom);
+        if (inner) out.add(cw20Denom(inner));
+      }
+    }
+  }
+  return out;
 }
 
 function address(network: NetworkId, account: AccountInfo): string {

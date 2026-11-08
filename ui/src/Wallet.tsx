@@ -1,5 +1,5 @@
 // The unlocked wallet: three tabs (Wallet, Activity, Settings), and the flows that open
-// over them full screen (receive, send, tokens).
+// over them full screen (receive, a token, send, convert, manage tokens).
 
 import { formatShort, NETWORKS, shortDenom } from "@choice-wallet/chain";
 import { useEffect, useRef, useState } from "react";
@@ -14,6 +14,7 @@ import { QrCode } from "./QrCode";
 import { useRequest } from "./request";
 import { Review, SendForm, SentView } from "./Send";
 import { SettingsView } from "./Settings";
+import { ConvertForm, TokenView } from "./Token";
 import { applyFilter, DEFAULT_FILTER } from "./tokenFilter";
 import { TokenMark } from "./TokenMark";
 import { TokensView } from "./Tokens";
@@ -24,9 +25,11 @@ type Tab = "wallet" | "activity" | "settings";
 type View =
   | { name: "home" }
   | { name: "receive" }
+  | { name: "token"; denom: string }
   | { name: "send"; denom?: string }
-  | { name: "review"; review: SendReview; entered: string; denom: string }
-  | { name: "sent"; sent: Sent }
+  | { name: "convert"; denom: string }
+  | { name: "review"; review: SendReview; entered: string; back: View }
+  | { name: "sent"; sent: Sent; converting: boolean }
   | { name: "tokens" };
 
 const COSMOS = "cosmos:injective-1";
@@ -142,27 +145,57 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
           onBack={() => setView({ name: "home" })}
         />
       );
+    case "token": {
+      const t = balances?.find((b) => b.denom === view.denom);
+      if (!t) return null;
+      return (
+        <TokenView
+          token={t}
+          feeDenom={NETWORKS[status.network].feeDenom}
+          onSend={() => setView({ name: "send", denom: t.denom })}
+          onConvert={() => setView({ name: "convert", denom: t.denom })}
+          onBack={home}
+        />
+      );
+    }
     case "send":
       return (
         <SendForm
           balances={sorted?.shown ?? []}
           denom={view.denom}
-          onReview={(review, entered, denom) => setView({ name: "review", review, entered, denom })}
+          onReview={(review, entered, denom) => setView({ name: "review", review, entered, back: { name: "send", denom } })}
           onBack={home}
         />
       );
+    case "convert": {
+      const t = balances?.find((b) => b.denom === view.denom);
+      if (!t) return null;
+      return (
+        <ConvertForm
+          token={t}
+          onReview={(review) => setView({ name: "review", review, entered: "", back: { name: "convert", denom: t.denom } })}
+          onBack={() => setView({ name: "token", denom: t.denom })}
+        />
+      );
+    }
     case "review":
       return (
         <Review
           review={view.review}
           entered={view.entered}
           network={status.network}
-          onSent={(sent) => setView({ name: "sent", sent })}
-          onCancel={() => setView({ name: "send", denom: view.denom })}
+          onSent={(sent) => {
+            const back = view.back;
+            // What a conversion makes is what the user asked for: show it, like a token added by hand.
+            const made = back.name === "convert" ? balances?.find((b) => b.denom === back.denom)?.convertsTo : undefined;
+            if (made && !filter.shown.includes(made)) changeFilter({ ...filter, shown: [...filter.shown, made], hidden: filter.hidden.filter((x) => x !== made) });
+            setView({ name: "sent", sent, converting: back.name === "convert" });
+          }}
+          onCancel={() => setView(view.back)}
         />
       );
     case "sent":
-      return <SentView sent={view.sent} onDone={home} />;
+      return <SentView sent={view.sent} onDone={home} converting={view.converting} />;
     case "home": {
       if (tab === "activity") return <ActivityView network={status.network} tabs={tabs} />;
       if (tab === "settings") {
@@ -248,7 +281,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
                   key={b.denom}
                   className="token"
                   title={b.denom}
-                  onClick={() => setView({ name: "send", denom: b.denom })}
+                  onClick={() => setView({ name: "token", denom: b.denom })}
                 >
                   <TokenMark denom={b.denom} symbol={b.symbol} known={b.known} />
                   <span className="name">

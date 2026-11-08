@@ -4,8 +4,10 @@
 //
 //   node e2e-live.mjs <chromium binary> <dist dir> <screenshot dir> <phrase file> <recipient> <amount> [token contract]
 //
-// With a token contract (an ERC20 with no bank denom), the wallet adds it by contract and
-// sends `amount` of it on the EVM side; otherwise it sends `amount` INJ.
+// With a token contract, the wallet adds it by contract. An ERC20 with no bank denom (0x…):
+// it sends `amount` of it on the EVM side. A CW20 (inj1…): it sends `amount` of it, converts
+// `amount` into the bank form through the CW20 adapter, and converts all of that back.
+// Otherwise it sends `amount` INJ.
 //
 // The phrase is read from the file and typed into the import screen. It is never printed
 // and that screen is never captured. The browser profile, with the encrypted keystore in
@@ -63,6 +65,10 @@ async function evmRpc(method, params) {
   if (r.error) throw new Error(`${method}: ${r.error.message}`);
   return r.result;
 }
+/** Testnet's CW20 adapter (as in chain/src/networks.ts). */
+const ADAPTER = "inj1hdvy6tl89llqy3ze8lv6mz5qh66sx9enn0jxg6";
+const smart = async (contract, q) => (await lcd(`/cosmwasm/wasm/v1/contract/${contract}/smart/${encodeURIComponent(Buffer.from(JSON.stringify(q)).toString("base64"))}`)).data;
+const denomOf = async (addr, denom) => BigInt((await lcd(`/cosmos/bank/v1beta1/spendable_balances/${addr}`)).balances.find((c) => c.denom === denom)?.amount ?? "0");
 const tokenOf = async (addr0x) => BigInt(await evmRpc("eth_call", [{ to: tokenContract, data: `0x70a08231${addr0x.slice(2).toLowerCase().padStart(64, "0")}` }, "latest"]));
 
 try {
@@ -94,6 +100,24 @@ try {
       const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
       Object.getOwnPropertyDescriptor(proto, "value").set.call(el, ${JSON.stringify(value)});
       el.dispatchEvent(new Event("input", { bubbles: true })); })()`);
+  /** Wait for the sent screen to say the tx is in a block; its hash. */
+  const landed = async () => {
+    for (let n = 0; ; n += 500) {
+      const t = await text();
+      if (t.includes("It's in a block.")) break;
+      if (t.includes("Failed") || t.includes("Not confirmed yet")) throw new Error(`did not land: ${t}`);
+      if (n > 90000) throw new Error("timed out waiting for the block");
+      await sleep(500);
+    }
+    return evalIn(`document.querySelector("[data-hash]").dataset.hash`);
+  };
+  /** A Cosmos tx from the chain, and the INJ fee it charged. */
+  const cosmosTx = async (hash) => {
+    const tx = (await lcd(`/cosmos/tx/v1beta1/txs/${hash}`)).tx_response;
+    if (tx.code !== 0) throw new Error(`tx failed: ${tx.raw_log}`);
+    return { tx, fee: BigInt(tx.tx.auth_info.fee.amount.find((c) => c.denom === "inj").amount) };
+  };
+  const openToken = (denom) => evalIn(`[...document.querySelectorAll(".token")].find((t) => t.title === ${JSON.stringify(denom)}).click()`);
   const shot = async (name) => {
     await sleep(250);
     const { data } = await send("Page.captureScreenshot", { format: "png" }, sessionId);
@@ -123,7 +147,95 @@ try {
   console.log("sender", from, "holds", before.from.toString(), "inj");
   await shot("live-1-home");
 
-  if (tokenContract) {
+  if (tokenContract?.startsWith("inj1")) {
+    // 3c. A CW20: add it by contract, send some from its screen, convert some into its bank
+    // form and all of that back. The chain's own numbers after each step.
+    const cw = tokenContract;
+    const bank = `factory/${ADAPTER}/${cw}`;
+    const { decimals, symbol } = await smart(cw, { token_info: {} });
+    const cwOf = async (a) => BigInt((await smart(cw, { balance: { address: a } })).balance);
+    const [whole, frac = ""] = amount.split(".");
+    const units = BigInt(whole) * 10n ** BigInt(decimals) + BigInt((frac + "0".repeat(decimals)).slice(0, decimals) || "0");
+    await click("Manage");
+    await waitText("Hidden tokens stay in your account.");
+    await click("Add a token by contract");
+    await fill('input[aria-label="Token contract"]', 0, cw);
+    await click("Add");
+    await waitText(`CW20 · ${cw.slice(0, 8)}…${cw.slice(-4)}`, 20000);
+    await click("Back");
+    await waitText(symbol);
+    await openToken(`cw20:${cw}`);
+    await waitText("Convert to bank token");
+    await shot("live-c1-token");
+
+    // Send.
+    await click("Send");
+    await waitText("Balance");
+    await fill('input[placeholder^="inj1"]', 0, recipient);
+    await fill("input[inputmode=decimal]", 0, amount);
+    await click("Review");
+    await waitText("Review send", 30000);
+    let review = await text();
+    if (!review.includes("Injective testnet")) throw new Error("the review is not for Injective testnet; stopping");
+    if (!review.includes(`CW20 ${cw}`)) throw new Error("the review doesn't name the CW20 contract");
+    const to = (await evalIn(`document.querySelector(".recipient").textContent`)).trim();
+    let before = { from: await cwOf(from), to: await cwOf(to), inj: await injOf(from) };
+    await shot("live-c2-review-send");
+    await click("Confirm and send");
+    let hash = await landed();
+    await shot("live-c3-sent");
+    let { tx, fee } = await cosmosTx(hash);
+    let after = { from: await cwOf(from), to: await cwOf(to), inj: await injOf(from) };
+    console.log(`send ${hash}: height ${tx.height}, gas ${tx.gas_used}/${tx.gas_wanted}, fee ${fee} inj; recipient +${after.to - before.to}, sender -${before.from - after.from} (expected ${units})`);
+    if (after.to - before.to !== units || before.from - after.from !== units) throw new Error("CW20 balances moved by the wrong amount");
+    if (before.inj - after.inj !== fee) throw new Error("the sender paid more INJ than the fee");
+    await click("Done");
+    await waitText("Account 1");
+
+    // Convert `amount` into the bank form.
+    await openToken(`cw20:${cw}`);
+    await click("Convert to bank token");
+    await waitText(`You get the same amount of ${symbol}`);
+    await fill("input[inputmode=decimal]", 0, amount);
+    await click("Review");
+    await waitText("Review conversion", 30000);
+    review = await text();
+    if (!review.includes("Same token, other form, one for one.")) throw new Error("not a conversion review");
+    await shot("live-c4-review-convert");
+    before = { cw: await cwOf(from), bank: await denomOf(from, bank), inj: await injOf(from) };
+    await click("Confirm and convert");
+    hash = await landed();
+    await shot("live-c5-converted");
+    ({ tx, fee } = await cosmosTx(hash));
+    after = { cw: await cwOf(from), bank: await denomOf(from, bank), inj: await injOf(from) };
+    console.log(`to bank ${hash}: height ${tx.height}, gas ${tx.gas_used}/${tx.gas_wanted}, fee ${fee} inj; CW20 -${before.cw - after.cw}, bank form +${after.bank - before.bank} (expected ${units})`);
+    if (before.cw - after.cw !== units || after.bank - before.bank !== units) throw new Error("the conversion moved the wrong amounts");
+    if (before.inj - after.inj !== fee) throw new Error("the conversion cost more INJ than the fee");
+    await click("Done");
+    await waitText("Account 1");
+
+    // And all of the bank form back: it's on the home list (the wallet shows what it made).
+    for (let n = 0; !(await evalIn(`[...document.querySelectorAll(".token")].some((t) => t.title === ${JSON.stringify(bank)})`)); n += 300) {
+      if (n > 20000) throw new Error("the bank form isn't on the home list after converting");
+      await sleep(300);
+    }
+    await shot("live-c5b-home-both-forms");
+    await openToken(bank);
+    await click("Convert to CW20");
+    await click("Max");
+    await click("Review");
+    await waitText("Review conversion", 30000);
+    before = { cw: await cwOf(from), bank: await denomOf(from, bank), inj: await injOf(from) };
+    await shot("live-c6-review-back");
+    await click("Confirm and convert");
+    hash = await landed();
+    ({ tx, fee } = await cosmosTx(hash));
+    after = { cw: await cwOf(from), bank: await denomOf(from, bank), inj: await injOf(from) };
+    console.log(`to CW20 ${hash}: height ${tx.height}, gas ${tx.gas_used}/${tx.gas_wanted}, fee ${fee} inj; bank form -${before.bank - after.bank}, CW20 +${after.cw - before.cw}`);
+    if (after.bank !== 0n || after.cw - before.cw !== before.bank) throw new Error("converting back moved the wrong amounts");
+    if (before.inj - after.inj !== fee) throw new Error("converting back cost more INJ than the fee");
+    console.log("LIVE CW20 SEND AND CONVERSIONS OK");
+  } else if (tokenContract) {
     // 3t. Add the token by contract, send it from its row, and check the chain.
     await click("Manage");
     await waitText("Hidden tokens stay in your account.");

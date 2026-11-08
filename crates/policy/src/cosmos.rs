@@ -101,15 +101,19 @@ fn message(m: &Msg, signer: &str, ctx: &Context, mut outflows: Option<&mut Outfl
                 ContractCall::Cw20Send {
                     contract: to, amount, ..
                 } => {
-                    out.push(finding(
-                        "cw20_send",
-                        Level::Info,
-                        format!(
-                            "Sends tokens to contract {}, which runs its own code with them.",
-                            short(to)
-                        ),
-                        json!({ "token": contract, "to": to, "amount": amount }),
-                    ));
+                    // A contract the host knows (the CW20 adapter, for the wallet's own
+                    // conversions) needs no note; the amount still counts below.
+                    if !known_contract(ctx, to) {
+                        out.push(finding(
+                            "cw20_send",
+                            Level::Info,
+                            format!(
+                                "Sends tokens to contract {}, which runs its own code with them.",
+                                short(to)
+                            ),
+                            json!({ "token": contract, "to": to, "amount": amount }),
+                        ));
+                    }
                     if let Some(o) = outflows {
                         o.add_str(contract, amount);
                     }
@@ -353,6 +357,8 @@ mod tests {
 
     const ME: &str = "inj1npvwllfr9dqr8erajqqr6s0vxnk2ak55re90dz";
     const OTHER: &str = "inj1d7ky6xxfzg6rh7r05uzfxexafepy4wwqp4z8h8";
+    /// The mainnet CW20 adapter (a published contract).
+    const ADAPTER: &str = "inj14ejqjyq8um4p3xfqj74yld5waqljf88f9eneuk";
 
     fn grade(msgs: &[Msg]) -> Assessment {
         cosmos(msgs, ME, CosmosFee::default(), &Context::default())
@@ -448,6 +454,30 @@ mod tests {
         }]);
         assert_eq!(a.level, Level::Red);
         assert_eq!(rules(&a), ["unknown_message", "authz_exec"]);
+    }
+
+    #[test]
+    fn cw20_send_notes_unknown_contracts_only() {
+        let send = Msg::ExecuteContract {
+            sender: ME.into(),
+            contract: OTHER.into(),
+            funds: vec![],
+            json: String::new(),
+            call: ContractCall::Cw20Send {
+                contract: ADAPTER.into(),
+                amount: "5".into(),
+                msg: String::new(),
+            },
+        };
+        assert_eq!(rules(&grade(std::slice::from_ref(&send))), ["cw20_send"]);
+        let ctx = Context {
+            known_contracts: vec![ADAPTER.into()],
+            balances: [(OTHER.to_owned(), "5".to_owned())].into(),
+            ..Default::default()
+        };
+        let a = cosmos(&[send], ME, CosmosFee::default(), &ctx);
+        // No note about the contract; spending the whole balance is still said.
+        assert!(!rules(&a).contains(&"cw20_send"), "{:?}", rules(&a));
     }
 
     #[test]

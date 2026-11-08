@@ -81,11 +81,26 @@ const ERC20: Record<string, { symbol: string; name: string; decimals: number }> 
   [USDT_ERC20]: { symbol: "USDT", name: "Tether USD", decimals: 6 },
 };
 
+// CW20s (published mainnet contracts): SHROOM's, whose adapter bank form has an ERC20 pair
+// Choice prices, and NONJA's, to add by hand. The adapter itself is a contract but no CW20.
+const ADAPTER = "inj14ejqjyq8um4p3xfqj74yld5waqljf88f9eneuk";
+const CW = "inj1300xcg9naqy00fujsr9r8alwk7dh65uqu87xm8";
+const CW_ADDED = "inj1fu5u29slsg2xtsj7v5la22vl4mr4ywl7wlqeck";
+const CW_BANK = `factory/${ADAPTER}/${CW}`;
+const CW_PAIR = "0x3333333333333333333333333333333333333333";
+const CW20: Record<string, { symbol: string; name: string; decimals: number }> = {
+  [CW]: { symbol: "SHROOM", name: "shroomin", decimals: 18 },
+  [CW_ADDED]: { symbol: "NONJA", name: "nonja", decimals: 18 },
+};
+
 /** A fake mainnet LCD and EVM JSON-RPC. `balances`, `evm` and `account` can be changed per test. */
-function chain(opts: { balances?: Record<string, bigint>; evm?: Record<string, bigint>; account?: boolean; gasUsed?: string; pricesDown?: boolean } = {}) {
+function chain(opts: { balances?: Record<string, bigint>; evm?: Record<string, bigint>; cw20?: Record<string, bigint>; account?: boolean; gasUsed?: string; pricesDown?: boolean } = {}) {
   const state = {
     balances: opts.balances ?? { inj: 5n * INJ },
     evm: opts.evm ?? {},
+    cw20: opts.cw20 ?? {},
+    /** CW20 contracts asked for a balance. */
+    cw20Calls: [] as string[],
     evmDown: false,
     /** Contracts asked for a balance on the EVM side. */
     evmBalanceCalls: [] as string[],
@@ -150,7 +165,27 @@ function chain(opts: { balances?: Record<string, bigint>; evm?: Record<string, b
     }
     if (p === "/injective/txfees/v1beta1/cur_eip_base_fee") return json(200, { base_fee: { base_fee: "160000000.000000000000000000" } });
     if (p === "/injective/erc20/v1beta1/all_token_pairs") {
-      return json(200, { token_pairs: [{ bank_denom: USDT, erc20_address: "0x88f7F2b685F9692caf8c478f5BADF09eE9B1Cc13" }], pagination: null });
+      return json(200, {
+        token_pairs: [
+          { bank_denom: USDT, erc20_address: "0x88f7F2b685F9692caf8c478f5BADF09eE9B1Cc13" },
+          { bank_denom: CW_BANK, erc20_address: CW_PAIR },
+        ],
+        pagination: null,
+      });
+    }
+    const smart = /^\/cosmwasm\/wasm\/v1\/contract\/([^/]+)\/smart\/([^/]+)$/.exec(p);
+    if (smart) {
+      // CW20 queries as wasmd answers them; any other contract refuses.
+      const t = CW20[smart[1]!];
+      const q = JSON.parse(atob(decodeURIComponent(smart[2]!))) as { balance?: { address: string }; token_info?: object };
+      if (!t) return json(500, { code: 2, message: "query wasm contract failed: Error parsing into type", details: [] });
+      if (q.token_info) return json(200, { data: { ...t, total_supply: "1000000000000000000000000000" } });
+      if (q.balance) {
+        state.cw20Calls.push(smart[1]!);
+        assert.equal(q.balance.address, ME);
+        return json(200, { data: { balance: (state.cw20[smart[1]!] ?? 0n).toString() } });
+      }
+      return json(500, { code: 2, message: "unknown variant", details: [] });
     }
     if (url.host === "evm-api.choice.exchange" && p === "/prices") {
       state.priceCalls++;
@@ -161,6 +196,7 @@ function chain(opts: { balances?: Record<string, bigint>; evm?: Record<string, b
           { address: "0x0000000000000000000000000000000000000000", symbol: "INJ", priceUsd: "8" },
           { address: "0x88f7f2b685f9692caf8c478f5badf09ee9b1cc13", symbol: "USDT", priceUsd: "1" },
           { address: LUMA, symbol: "LUMA", priceUsd: "0.002" },
+          { address: CW_PAIR, symbol: "SHROOM", priceUsd: "0.5" },
         ],
       });
     }
@@ -406,7 +442,7 @@ test("a token Choice priced this week stays priced for the filter while Choice i
   const { service, local, session } = await wallet(net);
   ok(await service.handle({ type: "balances" }));
   const seen = local.data.get("choice_seen") as Record<string, number>;
-  assert.deepEqual(Object.keys(seen).sort(), ["0x0000000000000000000000000000000000000000", "0x88f7f2b685f9692caf8c478f5badf09ee9b1cc13", LUMA]);
+  assert.deepEqual(Object.keys(seen).sort(), ["0x0000000000000000000000000000000000000000", CW_PAIR, "0x88f7f2b685f9692caf8c478f5badf09ee9b1cc13", LUMA]);
 
   net.state.pricesDown = true;
   const restarted = ok<B>(await serviceOn(net, local, session).handle({ type: "balances" }));
@@ -577,4 +613,65 @@ test("an EVM-only token's send: an ERC20 transfer the vault decodes and signs, f
   net.state.balances = {};
   assert.equal(code(await service.handle({ type: "prepare_send", denom: `evm:${LUMA}`, to: THEM_EVM, amount })), "insufficient");
   assert.equal(net.state.evmSent.length, 1);
+});
+
+test("CW20s: found through pairs, held bank forms and additions; priced as their bank form", async () => {
+  const { service, net } = await wallet(chain({ cw20: { [CW]: 3n * INJ } }));
+  type B = { denom: string; symbol: string; amount: string; usd?: number; convertsTo?: string; known: boolean };
+  const first = ok<{ balances: B[] }>(await service.handle({ type: "balances" })).balances;
+  const shroom = first.find((b) => b.denom === `cw20:${CW}`);
+  assert.deepEqual(
+    { symbol: shroom?.symbol, amount: shroom?.amount, usd: shroom?.usd, convertsTo: shroom?.convertsTo, known: shroom?.known },
+    { symbol: "SHROOM", amount: (3n * INJ).toString(), usd: 1.5, convertsTo: CW_BANK, known: false },
+  );
+  // Only the paired CW20 was asked: nothing else is a candidate yet.
+  assert.deepEqual(net.state.cw20Calls, [CW]);
+
+  // Added by contract: shown at zero, and its CW20 is asked from then on.
+  const added = ok<{ denom: string; symbol: string; filter: { shown: string[] } }>(await service.handle({ type: "add_token", address: CW_ADDED.toUpperCase() }));
+  assert.deepEqual([added.denom, added.symbol], [`cw20:${CW_ADDED}`, "NONJA"]);
+  assert.ok(added.filter.shown.includes(`cw20:${CW_ADDED}`));
+  const after = ok<{ balances: B[] }>(await service.handle({ type: "balances" })).balances;
+  assert.equal(after.find((b) => b.denom === `cw20:${CW_ADDED}`)?.amount, "0");
+  assert.equal(code(await service.handle({ type: "add_token", address: ADAPTER })), "not_a_token");
+
+  // The bank form, held: convertible back, and priced through its pair.
+  net.state.balances[CW_BANK] = 2n * INJ;
+  const bank = ok<{ balances: B[] }>(await service.handle({ type: "balances" })).balances.find((b) => b.denom === CW_BANK);
+  assert.deepEqual([bank?.symbol, bank?.usd, bank?.convertsTo], ["SHROOM", 1, `cw20:${CW}`]);
+});
+
+test("a CW20 send: a cw20_transfer the vault decodes and signs, checked against the CW20 balance", async () => {
+  const { service, net } = await wallet(chain({ cw20: { [CW]: 3n * INJ } }));
+  assert.equal(code(await service.handle({ type: "prepare_send", denom: `cw20:${CW}`, to: THEM, amount: (4n * INJ).toString() })), "insufficient");
+  const review = ok<Review>(await service.handle({ type: "prepare_send", denom: `cw20:${CW}`, to: THEM, amount: "max" }));
+  const m = review.display.messages[0] as unknown as { type: string; contract: string; call: { type: string; recipient: string; amount: string } };
+  assert.deepEqual([m.type, m.contract, m.call], ["execute_contract", CW, { type: "cw20_transfer", recipient: THEM, amount: (3n * INJ).toString() }]);
+  assert.equal(review.tokens[`cw20:${CW}`]?.symbol, "SHROOM");
+  // All of it, against the CW20's own balance, said in the risk rules' words.
+  assert.ok(review.risk.findings.some((f) => f.rule === "most_of_balance"), JSON.stringify(review.risk));
+  const sent = ok<{ hash: string }>(await service.handle({ type: "confirm_send", digest: review.digest, ...(review.risk.confirm ? { confirm: review.risk.confirm } : {}) }));
+  assert.equal(net.state.broadcasts.length, 1);
+  assert.match(sent.hash, /^[0-9A-F]{64}$/);
+});
+
+test("conversions: a CW20 into its bank form and back, through the adapter only", async () => {
+  const { service } = await wallet(chain({ cw20: { [CW]: 3n * INJ }, balances: { inj: 5n * INJ, [CW_BANK]: 2n * INJ } }));
+  type Msg = { type: string; contract: string; funds: { denom: string; amount: string }[]; call: Record<string, unknown> };
+  const toBank = ok<Review>(await service.handle({ type: "prepare_convert", denom: `cw20:${CW}`, amount: INJ.toString() }));
+  const a = toBank.display.messages[0] as unknown as Msg;
+  assert.deepEqual([a.contract, a.call], [CW, { type: "cw20_send", contract: ADAPTER, amount: INJ.toString(), msg: "" }]);
+  // The adapter is the wallet's own known contract: no note about a contract running code,
+  // and converting most of a balance loses none of it.
+  assert.deepEqual(toBank.risk.findings, [], JSON.stringify(toBank.risk));
+  assert.ok(toBank.tokens[CW_BANK] && toBank.tokens[`cw20:${CW}`]);
+
+  const back = ok<Review>(await service.handle({ type: "prepare_convert", denom: CW_BANK, amount: "max" }));
+  const b = back.display.messages[0] as unknown as Msg;
+  assert.deepEqual([b.contract, b.funds, b.call["type"]], [ADAPTER, [{ denom: CW_BANK, amount: (2n * INJ).toString() }], "adapter_redeem"]);
+  assert.ok(back.tokens[`cw20:${CW}`], "the CW20 it returns is described");
+  assert.deepEqual(back.risk.findings, [], JSON.stringify(back.risk));
+
+  assert.equal(code(await service.handle({ type: "prepare_convert", denom: "inj", amount: "1" })), "bad_request");
+  assert.equal(code(await service.handle({ type: "prepare_convert", denom: `cw20:${CW}`, amount: (4n * INJ).toString() })), "insufficient");
 });

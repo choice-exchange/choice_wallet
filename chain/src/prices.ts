@@ -36,11 +36,16 @@ export async function fetchPrices(fetch: Fetch, url = CHOICE_PRICES): Promise<Pr
 
 const NATIVE = "0x0000000000000000000000000000000000000000";
 
-/** The address Choice prices a bank denom under, if it has one. */
-export function priceAddress(denom: string, pairs: ReadonlyMap<string, string>): string | undefined {
+/** The address Choice prices a denom under, if it has one. A CW20 is priced as its
+ *  adapter bank denom (`cw20Bank`), the same token one for one. */
+export function priceAddress(denom: string, pairs: ReadonlyMap<string, string>, cw20Bank?: (denom: string) => string | null): string | undefined {
   if (denom === "inj") return NATIVE;
   if (denom.startsWith("erc20:")) return denom.slice("erc20:".length).toLowerCase();
   if (denom.startsWith("evm:")) return denom.slice("evm:".length).toLowerCase();
+  if (denom.startsWith("cw20:")) {
+    const bank = cw20Bank?.(denom);
+    return bank ? pairs.get(bank)?.toLowerCase() : undefined;
+  }
   return pairs.get(denom)?.toLowerCase();
 }
 

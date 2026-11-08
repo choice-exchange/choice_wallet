@@ -161,6 +161,36 @@ export class Lcd {
     return { symbol: String(m["symbol"] ?? ""), name: String(m["name"] ?? ""), decimals };
   }
 
+  /** A contract's answer to a smart query; null when the contract refuses it (not that
+   *  kind of contract, or no contract there). */
+  async smart(contract: string, query: unknown): Promise<unknown> {
+    const q = encodeURIComponent(btoa(JSON.stringify(query)));
+    try {
+      const body = await this.#call(`/cosmwasm/wasm/v1/contract/${encodeURIComponent(contract)}/smart/${q}`);
+      return isObject(body) && "data" in body ? body["data"] : null;
+    } catch (e) {
+      if (e instanceof ChainError) return null;
+      throw e;
+    }
+  }
+
+  /** A CW20's balance for `holder` in base units, or null if `contract` isn't a CW20. */
+  async cw20Balance(contract: string, holder: string): Promise<bigint | null> {
+    const r = await this.smart(contract, { balance: { address: holder } });
+    const b = isObject(r) ? r["balance"] : undefined;
+    return typeof b === "string" && /^[0-9]{1,78}$/.test(b) ? BigInt(b) : null;
+  }
+
+  /** A CW20's `token_info`, or null if `contract` isn't a CW20. As with bank metadata, the
+   *  symbol and name are whatever the token's creator chose. */
+  async cw20Info(contract: string): Promise<DenomMetadata | null> {
+    const r = await this.smart(contract, { token_info: {} });
+    if (!isObject(r)) return null;
+    const { symbol, name, decimals } = r;
+    if (typeof symbol !== "string" || typeof decimals !== "number" || !Number.isInteger(decimals) || decimals < 0 || decimals > 36) return null;
+    return { symbol, name: typeof name === "string" ? name : "", decimals };
+  }
+
   /** The erc20 module's token pairs: bank denom → its ERC20 address on Injective EVM. */
   async tokenPairs(): Promise<Map<string, string>> {
     const body = await this.#call("/injective/erc20/v1beta1/all_token_pairs?pagination.limit=10000");

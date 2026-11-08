@@ -56,11 +56,12 @@ pub const MAINNET: Network = Network {
     eip712_chain_ids: &[1776, 1],
 };
 
-/// Injective testnet.
+/// Injective testnet. Its adapter (Injective's, label "Cw20Adapter") was checked with a
+/// round trip on 2026-11-09: a CW20 in, the bank denom out, and back.
 pub const TESTNET: Network = Network {
     cosmos: cosmos("injective-888"),
     evm_chain_id: 1439,
-    cw20_adapter: None,
+    cw20_adapter: Some("inj1hdvy6tl89llqy3ze8lv6mz5qh66sx9enn0jxg6"),
     eip712_chain_ids: &[1439, 11155111],
 };
 

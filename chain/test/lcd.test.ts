@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { Lcd } from "../src/lcd.ts";
 import { NETWORKS } from "../src/networks.ts";
 import { ChainError, Unreachable, type Fetch } from "../src/pool.ts";
-import { describeToken } from "../src/tokens.ts";
+import { adapterCw20, adapterDenom, cw20Address, cw20Denom, describeToken, otherForm, shortDenom } from "../src/tokens.ts";
 
 const ADDR = "inj1npvwllfr9dqr8erajqqr6s0vxnk2ak55re90dz";
 const NODE_INFO = { default_node_info: { network: "injective-1" } };
@@ -172,6 +172,64 @@ test("tokens: the wallet's list first, then chain metadata, sanitised", async ()
   const long = "factory/inj14ejqjyq8um4p3xfqj74yld5waqljf88f9eneuk/inj1q6zlut7gtkzknkk773jecujwsdkgq882akqksk";
   const t3 = await describeToken(lcd(fake({}).fetch), "mainnet", long);
   assert.deepEqual(t3, { denom: long, symbol: "factory/inj1…akqksk", name: "", decimals: 0, known: false });
+});
+
+// SHROOM's CW20 on mainnet (a published contract), and its adapter bank form.
+const SHROOM_CW20 = "inj1300xcg9naqy00fujsr9r8alwk7dh65uqu87xm8";
+const SHROOM_BANK = `factory/inj14ejqjyq8um4p3xfqj74yld5waqljf88f9eneuk/${SHROOM_CW20}`;
+
+/** A host that answers CW20 smart queries for SHROOM_CW20 as mainnet does (2026-11-09),
+ *  and refuses them for any other contract the way wasmd does. */
+const cw20Host = (balance: string): Route => (p) => {
+  const m = /\/cosmwasm\/wasm\/v1\/contract\/([^/]+)\/smart\/(.+)$/.exec(p);
+  if (!m) return undefined;
+  if (m[1] !== SHROOM_CW20) return { status: 500, body: { code: 2, message: "query wasm contract failed: Error parsing into type", details: [] } };
+  const q = JSON.parse(atob(decodeURIComponent(m[2]!))) as Record<string, unknown>;
+  if ("token_info" in q) return { status: 200, body: { data: { name: "shroomin", symbol: "SHROOM", decimals: 18, total_supply: "1000000000000000000000000000" } } };
+  if ("balance" in q) return { status: 200, body: { data: { balance } } };
+  return { status: 500, body: { code: 2, message: "unknown variant" } };
+};
+
+test("CW20 tokens: balances and token_info by smart query; other contracts are not tokens", async () => {
+  const { fetch, calls } = fake({ "a.example": cw20Host("42") });
+  const c = lcd(fetch);
+  assert.equal(await c.cw20Balance(SHROOM_CW20, ADDR), 42n);
+  assert.deepEqual(await c.cw20Info(SHROOM_CW20), { symbol: "SHROOM", name: "shroomin", decimals: 18 });
+  assert.equal(await c.cw20Balance("inj14ejqjyq8um4p3xfqj74yld5waqljf88f9eneuk", ADDR), null);
+  assert.equal(await c.cw20Info("inj14ejqjyq8um4p3xfqj74yld5waqljf88f9eneuk"), null);
+  // A refusal is the contract's answer, not the node's trouble: no other endpoint is asked.
+  assert.ok(calls.every((x) => x.includes("a.example")));
+  const odd = lcd(fake({ "a.example": cw20Host("1e9") }).fetch);
+  assert.equal(await odd.cw20Balance(SHROOM_CW20, ADDR), null);
+
+  // The CW20 and its bank form are described by the contract (the bank form has no metadata).
+  const t = await describeToken(c, "mainnet", cw20Denom(SHROOM_CW20));
+  assert.deepEqual(t, { denom: `cw20:${SHROOM_CW20}`, symbol: "SHROOM", name: "shroomin", decimals: 18, known: false });
+  const b = await describeToken(c, "mainnet", SHROOM_BANK);
+  assert.deepEqual(b, { denom: SHROOM_BANK, symbol: "SHROOM", name: "shroomin", decimals: 18, known: false });
+  // The token factory's empty metadata (as testnet's adapter denoms have it) defers to the CW20.
+  const empty = { base: SHROOM_BANK, display: "", name: "", symbol: "", decimals: 0, denom_units: [{ denom: SHROOM_BANK, exponent: 0, aliases: [] }] };
+  const withEmpty = lcd(fake({ "a.example": (p) => (p.includes("denoms_metadata") ? { status: 200, body: { metadata: empty } } : cw20Host("42")(p)) }).fetch);
+  assert.deepEqual(await describeToken(withEmpty, "mainnet", SHROOM_BANK), { denom: SHROOM_BANK, symbol: "SHROOM", name: "shroomin", decimals: 18, known: false });
+  // A node that can't be reached is an error, not a description made without asking.
+  await assert.rejects(describeToken(lcd(fake({ "a.example": () => "network-error", "b.example": () => "network-error" }).fetch), "mainnet", cw20Denom(SHROOM_CW20)), Unreachable);
+});
+
+test("CW20 keys and forms: cw20: keys, the adapter's bank denom, and back", () => {
+  assert.equal(cw20Denom(SHROOM_CW20), `cw20:${SHROOM_CW20}`);
+  assert.equal(cw20Address(`cw20:${SHROOM_CW20}`), SHROOM_CW20);
+  assert.equal(cw20Address(SHROOM_CW20), null);
+  assert.equal(cw20Address("cw20:inj1short"), null);
+  assert.throws(() => cw20Denom("0x9858EfFD232B4033E47d90003D41EC34EcaEda94"), RangeError);
+  assert.equal(adapterDenom("mainnet", SHROOM_CW20), SHROOM_BANK);
+  assert.equal(adapterCw20("mainnet", SHROOM_BANK), SHROOM_CW20);
+  // Another network's adapter, or another creator's factory denom, is not the adapter's.
+  assert.equal(adapterCw20("testnet", SHROOM_BANK), null);
+  assert.equal(adapterCw20("mainnet", `factory/inj1nk9x9ajk4rgkzhqjjn7hr6w0k0jg2kj0knl55v/${SHROOM_CW20}`), null);
+  assert.equal(otherForm("mainnet", `cw20:${SHROOM_CW20}`), SHROOM_BANK);
+  assert.equal(otherForm("mainnet", SHROOM_BANK), `cw20:${SHROOM_CW20}`);
+  assert.equal(otherForm("mainnet", "inj"), null);
+  assert.equal(shortDenom(`cw20:${SHROOM_CW20}`), "inj1300x…7xm8");
 });
 
 test("endpoints must be https (or local http)", () => {

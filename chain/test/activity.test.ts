@@ -100,6 +100,47 @@ test("an airdrop through someone else's contract call reads as a receive from th
   assert.deepEqual(a.changes, [{ denom: JUNK, amount: "1000000" }]);
 });
 
+// SHROOM's CW20 and the mainnet CW20 adapter (both published contracts).
+const CW = "inj1300xcg9naqy00fujsr9r8alwk7dh65uqu87xm8";
+const ADAPTER = "inj14ejqjyq8um4p3xfqj74yld5waqljf88f9eneuk";
+const BANK_FORM = `factory/${ADAPTER}/${CW}`;
+const wasm = (attrs: Record<string, string>) => ev("wasm", { _contract_address: CW, ...attrs });
+
+test("CW20 tokens: a transfer is a send, someone else's is a receive", () => {
+  const exec = { "@type": "/cosmwasm.wasm.v1.MsgExecuteContract", sender: ME, contract: CW, msg: { transfer: { recipient: THEM, amount: "5" } }, funds: [] };
+  const out = summarize(tx(30, [exec], [...feePaidBy(ME), wasm({ action: "transfer", from: ME, to: THEM, amount: "5" })]), ME);
+  assert.equal(out.kind, "send");
+  assert.equal(out.counterparty, THEM);
+  assert.deepEqual(out.changes, [{ denom: `cw20:${CW}`, amount: "-5" }]);
+
+  const theirs = { ...exec, sender: THEM, msg: { transfer: { recipient: ME, amount: "7" } } };
+  const back = summarize(tx(31, [theirs], [...feePaidBy(THEM), wasm({ action: "transfer", from: THEM, to: ME, amount: "7" })]), ME);
+  assert.equal(back.kind, "receive");
+  assert.equal(back.counterparty, THEM);
+  assert.deepEqual(back.changes, [{ denom: `cw20:${CW}`, amount: "7" }]);
+});
+
+test("CW20 adapter conversions, both ways, read as conversions", () => {
+  const toBank = { "@type": "/cosmwasm.wasm.v1.MsgExecuteContract", sender: ME, contract: CW, msg: { send: { contract: ADAPTER, amount: "9", msg: "" } }, funds: [] };
+  const a = summarize(
+    tx(32, [toBank], [...feePaidBy(ME), wasm({ action: "send", from: ME, to: ADAPTER, amount: "9" }), ev("coin_received", { receiver: ME, amount: `9${BANK_FORM}` })]),
+    ME,
+  );
+  assert.equal(a.kind, "convert");
+  assert.deepEqual(a.changes, [
+    { denom: `cw20:${CW}`, amount: "-9" },
+    { denom: BANK_FORM, amount: "9" },
+  ]);
+
+  const redeem = { "@type": "/cosmwasm.wasm.v1.MsgExecuteContract", sender: ME, contract: ADAPTER, msg: { redeem_and_transfer: { recipient: ME } }, funds: [{ denom: BANK_FORM, amount: "4" }] };
+  const b = summarize(tx(33, [redeem], [...feePaidBy(ME), ...move(ME, ADAPTER, `4${BANK_FORM}`), wasm({ action: "transfer", from: ADAPTER, to: ME, amount: "4" })]), ME);
+  assert.equal(b.kind, "convert");
+
+  // Different amounts are a swap, not a conversion.
+  const c = summarize(tx(34, [redeem], [...feePaidBy(ME), ...move(ME, ADAPTER, `4${BANK_FORM}`), wasm({ action: "transfer", from: ADAPTER, to: ME, amount: "3" })]), ME);
+  assert.equal(c.kind, "swap");
+});
+
 test("a failed send: nothing moved but the fee", () => {
   const a = summarize(tx(15, [send(ME, THEM, "99inj")], feePaidBy(ME), 5), ME);
   assert.equal(a.ok, false);

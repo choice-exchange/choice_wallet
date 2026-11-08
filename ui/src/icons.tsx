@@ -167,3 +167,8 @@ export const ClockIcon = (p: P) => (
     <path d="M12 7v5l3 2" />
   </Icon>
 );
+export const ArrowDownIcon = (p: P) => (
+  <Icon {...p}>
+    <path d="M12 5v14M6 13l6 6 6-6" />
+  </Icon>
+);

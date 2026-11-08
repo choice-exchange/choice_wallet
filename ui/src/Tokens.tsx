@@ -126,7 +126,7 @@ function AddToken({ onAdd }: { onAdd: (contract: string) => Promise<string | nul
       <div className="eyebrow">Add a token</div>
       <input
         className="input mono"
-        placeholder="0x… token contract"
+        placeholder="0x… or inj1… contract"
         aria-label="Token contract"
         spellCheck={false}
         autoFocus

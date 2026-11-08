@@ -1,6 +1,6 @@
 // Layout and small controls every screen uses.
 
-import { evmAddress, shortDenom } from "@choice-wallet/chain";
+import { cw20Address, evmAddress, shortDenom } from "@choice-wallet/chain";
 import type { ReactNode } from "react";
 
 import { BackIcon, InfoIcon, WarningIcon } from "./icons";
@@ -78,7 +78,9 @@ export function Callout({ level, children }: { level: Level; children: ReactNode
  *  lives (its denom, or "EVM" and its contract), since an unlisted symbol proves nothing. */
 export function tokenSub(t: { denom: string; name: string; known: boolean }): string {
   if (t.known) return t.name;
-  return evmAddress(t.denom) ? `EVM · ${shortDenom(t.denom)}` : shortDenom(t.denom);
+  if (evmAddress(t.denom)) return `EVM · ${shortDenom(t.denom)}`;
+  if (cw20Address(t.denom)) return `CW20 · ${shortDenom(t.denom)}`;
+  return shortDenom(t.denom);
 }
 
 /** `inj1npvwllfr…re90dz`: enough of both ends to check by eye. */

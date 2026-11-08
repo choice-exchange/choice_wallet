@@ -3,8 +3,10 @@
 //
 // Balance changes come from the bank module's own events (`coin_spent` and `coin_received`
 // for this address), whatever the messages were, so swaps, contract calls and IBC show
-// what actually moved. The fee is reported apart, when this account paid it. Transfers
-// that never touch the bank module (pure ERC20 tokens on the EVM side) don't show here.
+// what actually moved. CW20 tokens move inside their contracts, so their `wasm` events
+// (transfer, send, mint, burn) count too, under the token's `cw20:` key. The fee is
+// reported apart, when this account paid it. Transfers that never touch either (pure ERC20
+// tokens on the EVM side) don't show here.
 
 import type { Coin, IndexedTx, TxEvent } from "./lcd.ts";
 import { toBigInt } from "./units.ts";
@@ -13,6 +15,7 @@ export type ActivityKind =
   | "send"
   | "receive"
   | "swap"
+  | "convert"
   | "contract"
   | "evm"
   | "orderbook"
@@ -53,6 +56,25 @@ export function parseCoins(s: string): Coin[] {
 
 const attr = (e: TxEvent, key: string) => e.attributes.find((a) => a.key === key)?.value;
 
+const CONTRACT = /^inj1(?:[02-9ac-hj-np-z]{38}|[02-9ac-hj-np-z]{58})$/;
+const MOVES = new Set(["transfer", "send", "transfer_from", "send_from"]);
+
+/** A CW20's movement in one `wasm` event, as (from, to, amount); null for anything else. */
+function cw20Move(e: TxEvent): { token: string; from?: string; to?: string; amount: string } | null {
+  if (e.type !== "wasm") return null;
+  const contract = attr(e, "_contract_address");
+  const action = attr(e, "action");
+  const amount = attr(e, "amount");
+  if (!contract || !CONTRACT.test(contract) || !action || !amount || !/^[0-9]{1,78}$/.test(amount)) return null;
+  const token = `cw20:${contract}`;
+  const from = attr(e, "from");
+  const to = attr(e, "to");
+  if (MOVES.has(action) && from && to) return { token, from, to, amount };
+  if (action === "mint" && to) return { token, to, amount };
+  if ((action === "burn" || action === "burn_from") && from) return { token, from, amount };
+  return null;
+}
+
 export function summarize(tx: IndexedTx, address: string): Activity {
   const net = new Map<string, bigint>();
   const add = (coins: Coin[], sign: bigint) => {
@@ -65,6 +87,10 @@ export function summarize(tx: IndexedTx, address: string): Activity {
     if (e.type === "coin_spent" && attr(e, "spender") === address) add(parseCoins(attr(e, "amount") ?? ""), -1n);
     if (e.type === "tx" && attr(e, "fee_payer") !== undefined) feePayer = attr(e, "fee_payer");
     if (e.type === "transfer" && attr(e, "recipient") === address && from === undefined) from = attr(e, "sender");
+    const m = cw20Move(e);
+    if (m?.to === address) add([{ denom: m.token, amount: m.amount }], 1n);
+    if (m?.from === address) add([{ denom: m.token, amount: m.amount }], -1n);
+    if (m?.to === address && m.from && from === undefined) from = m.from;
   }
   const signed = feePayer === address;
   if (signed) add(tx.fee, 1n); // the fee is reported apart
@@ -93,8 +119,23 @@ export function summarize(tx: IndexedTx, address: string): Activity {
   if (t === "/cosmos.staking.v1beta1.MsgBeginRedelegate") return kindOf("redelegate", str("validator_dst_address"));
   if (t === "/cosmos.distribution.v1beta1.MsgWithdrawDelegatorReward") return kindOf("rewards");
   if (t.startsWith("/injective.exchange.")) return kindOf("orderbook");
-  if (ups === 1 && downs === 1) return kindOf("swap"); // one token out, another in
-  if (t === "/cosmwasm.wasm.v1.MsgExecuteContract") return kindOf("contract", str("contract"));
+  if (ups === 1 && downs === 1) {
+    // The same token in its other form, one for one: a CW20 adapter conversion.
+    const [a, b] = changes.map((c) => c.denom);
+    const cw20 = [a, b].find((dn) => dn?.startsWith("cw20:"))?.slice(5);
+    const other = [a, b].find((dn) => !dn?.startsWith("cw20:"));
+    const same = changes[0]!.amount.replace("-", "") === changes[1]!.amount.replace("-", "");
+    if (cw20 && other?.startsWith("factory/") && other.endsWith(`/${cw20}`) && same) return kindOf("convert");
+    return kindOf("swap"); // one token out, another in
+  }
+  if (t === "/cosmwasm.wasm.v1.MsgExecuteContract") {
+    // A CW20 `transfer` reads as a send to its recipient.
+    const call = first["msg"];
+    const to = typeof call === "object" && call !== null ? (call as Record<string, unknown>)["transfer"] : undefined;
+    const recipient = typeof to === "object" && to !== null ? (to as Record<string, unknown>)["recipient"] : undefined;
+    if (downs === 1 && ups === 0 && typeof recipient === "string" && changes[0]!.denom === `cw20:${str("contract")}`) return kindOf("send", recipient);
+    return kindOf("contract", str("contract"));
+  }
   if (t === "/injective.evm.v1.MsgEthereumTx") return kindOf("evm");
   if (t === "/cosmos.bank.v1beta1.MsgMultiSend") return kindOf(up ? "receive" : "send");
   const name = t.split(".").pop() ?? "";

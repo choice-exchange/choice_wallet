@@ -31,13 +31,16 @@ export type UiRequest =
   | { type: "balances" }
   /** Which tokens the current network's lists show (see `TokenFilter`). */
   | { type: "save_token_filter"; filter: TokenFilter }
-  /** Add a token by its contract address (0x…): an ERC20 with no bank denom joins the
-   *  list; one a bank denom covers is just shown. */
+  /** Add a token by its contract address: an ERC20 (0x…) with no bank denom, or a CW20
+   *  (inj1…), joins the list; one a bank denom covers is just shown. */
   | { type: "add_token"; address: string }
   /** One page (from 1) of the account's activity, from the node's tx index. */
   | { type: "activity"; page: number }
   /** `amount` in base units, or "max" (the fee token: everything but the fee). */
   | { type: "prepare_send"; denom: string; to: string; amount: string }
+  /** Convert `amount` (base units, or "max") of a token into its other form (`convertsTo`):
+   *  a CW20 into its bank denom through the CW20 adapter, or back. Confirmed like a send. */
+  | { type: "prepare_convert"; denom: string; amount: string }
   /** Sign and broadcast the prepared send whose review showed `digest`. `confirm` is the
    *  word the review asked for, if any. */
   | { type: "confirm_send"; digest: string; confirm?: string }
@@ -70,6 +73,10 @@ export type Balance = TokenInfo & {
   /** Choice has priced it within the past week: it trades somewhere real. Filters only;
    *  `priceUsd` is the price to show. */
   onChoice?: boolean;
+  /** The same token in another form, one for one, that the wallet can convert this into:
+   *  a CW20's bank denom (`factory/{adapter}/{cw20}`), or the CW20 (`cw20:inj1…`) behind
+   *  one. */
+  convertsTo?: string;
 };
 
 /** Which tokens the lists show, per network. Anyone can send any token to any address, so
@@ -142,6 +149,7 @@ export type ActivityKind =
   | "send"
   | "receive"
   | "swap"
+  | "convert"
   | "contract"
   | "evm"
   | "orderbook"
@@ -207,13 +215,14 @@ export type Replies = {
   settings: Settings;
   save_settings: Settings;
   /** Every balance; the UI applies `filter`. `prices` is the USD values setting. EVM-only
-   *  tokens (denom `evm:0x…`) are in the list; `evmDown` says the EVM endpoints didn't
-   *  answer, so they may be missing. */
+   *  tokens (denom `evm:0x…`) and CW20s (`cw20:inj1…`) are in the list; `evmDown` says the
+   *  EVM endpoints didn't answer, so EVM-only tokens may be missing. */
   balances: { network: NetworkId; balances: Balance[]; filter: TokenFilter; prices: boolean; evmDown?: true };
   add_token: { denom: string; symbol: string; filter: TokenFilter };
   save_token_filter: TokenFilter;
   activity: ActivityPage;
   prepare_send: SendReview;
+  prepare_convert: SendReview;
   confirm_send: Sent;
   tx_status: TxState;
 };

@@ -34,5 +34,11 @@ test("denoms map to the address Choice prices them under", () => {
   assert.equal(priceAddress("erc20:0xa00C59fF5a080D2b954d0c75e46E22a0c371235a", pairs), "0xa00c59ff5a080d2b954d0c75e46e22a0c371235a");
   assert.equal(priceAddress("peggy0xdAC17F958D2ee523a2206206994597C13D831ec7", pairs), "0x88f7f2b685f9692caf8c478f5badf09ee9b1cc13");
   assert.equal(priceAddress("factory/inj1x/abc", pairs), undefined);
+  // A CW20 is priced as its adapter bank form.
+  const cw20 = "inj1300xcg9naqy00fujsr9r8alwk7dh65uqu87xm8";
+  const bank = `factory/inj14ejqjyq8um4p3xfqj74yld5waqljf88f9eneuk/${cw20}`;
+  const withBank = new Map([[bank, "0x2222222222222222222222222222222222222222"]]);
+  assert.equal(priceAddress(`cw20:${cw20}`, withBank, (d) => (d === `cw20:${cw20}` ? bank : null)), "0x2222222222222222222222222222222222222222");
+  assert.equal(priceAddress(`cw20:${cw20}`, withBank), undefined);
   assert.equal(usdValue("2500000", 6, "2"), 5);
 });

@@ -22,10 +22,15 @@ export interface Network {
   lcd: readonly string[];
   /** Default EVM JSON-RPC endpoints, tried in order. */
   evmRpc: readonly string[];
+  /** Injective's CW20 adapter: it wraps a CW20 into the bank denom `factory/{adapter}/{cw20}`
+   *  and back. The vault holds the same address and builds conversions with its own copy. */
+  cw20Adapter: string;
 }
 
 // Checked 2026-11-08: each answers with CORS for an extension origin, and serves the right
 // chain ID. LCDs: Injective's sentry, Allnodes' publicnode, cosmos.directory's proxy.
+// CW20 adapters checked 2026-11-09: mainnet's is labelled "Injective CW20 Adapter" and has
+// no admin; testnet's is Injective's "Cw20Adapter" (it has an admin, as testnet contracts do).
 export const NETWORKS: Readonly<Record<NetworkId, Network>> = {
   mainnet: {
     id: "mainnet",
@@ -43,6 +48,7 @@ export const NETWORKS: Readonly<Record<NetworkId, Network>> = {
       "https://rest.cosmos.directory/injective",
     ],
     evmRpc: ["https://sentry.evm-rpc.injective.network", "https://injective-evm-rpc.publicnode.com"],
+    cw20Adapter: "inj14ejqjyq8um4p3xfqj74yld5waqljf88f9eneuk",
   },
   testnet: {
     id: "testnet",
@@ -56,6 +62,7 @@ export const NETWORKS: Readonly<Record<NetworkId, Network>> = {
     evmExplorerTx: "https://testnet.blockscout.injective.network/tx/{hash}",
     lcd: ["https://testnet.sentry.lcd.injective.network", "https://injective-testnet-rest.publicnode.com"],
     evmRpc: ["https://k8s.testnet.json-rpc.injective.network", "https://injective-testnet-evm-rpc.publicnode.com"],
+    cw20Adapter: "inj1hdvy6tl89llqy3ze8lv6mz5qh66sx9enn0jxg6",
   },
 };
 

@@ -26,6 +26,8 @@ const live = flag === "--live";
 // (unlisted and unpriced, so the token filter hides it).
 const USDT = "peggy0xdAC17F958D2ee523a2206206994597C13D831ec7";
 const SCAM = "factory/inj1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqe2hm49/usdt";
+// SHROOM's CW20 (a published mainnet contract), held: 3, added by its contract below.
+const CW20 = "inj1300xcg9naqy00fujsr9r8alwk7dh65uqu87xm8";
 const broadcasts = [];
 const sha = (b64) => createHash("sha256").update(Buffer.from(b64, "base64")).digest("hex").toUpperCase();
 // Indexed transactions for Activity, shaped like mainnet's (bank events and the fee payer).
@@ -71,6 +73,14 @@ const lcd = createServer((req, res) => {
     if (p === "/injective/txfees/v1beta1/cur_eip_base_fee") return reply(200, { base_fee: { base_fee: "160000000.000000000000000000" } });
     if (p === "/injective/erc20/v1beta1/all_token_pairs") {
       return reply(200, { token_pairs: [{ bank_denom: USDT, erc20_address: "0x88f7F2b685F9692caf8c478f5BADF09eE9B1Cc13" }], pagination: null });
+    }
+    const smart = /^\/cosmwasm\/wasm\/v1\/contract\/([^/]+)\/smart\/([^/]+)$/.exec(p);
+    if (smart) {
+      // CW20 queries as wasmd answers them; any other contract refuses.
+      const q = JSON.parse(Buffer.from(decodeURIComponent(smart[2]), "base64").toString());
+      if (smart[1] !== CW20) return reply(500, { code: 2, message: "query wasm contract failed: Error parsing into type" });
+      if (q.token_info) return reply(200, { data: { name: "shroomin", symbol: "SHROOM", decimals: 18, total_supply: "1000000000000000000000000000" } });
+      return reply(200, { data: { balance: "3000000000000000000" } });
     }
     if (p === "/cosmos/bank/v1beta1/denoms_metadata_by_query_string") {
       if (url.searchParams.get("denom") === SCAM) return reply(200, { metadata: { base: SCAM, display: "USDT", symbol: "USDT", name: "Tether USD", decimals: 6, denom_units: [] } });
@@ -325,6 +335,39 @@ try {
   await p.waitText("LUMA");
   if (await p.eval(`document.body.innerText.includes("EVM tokens may be missing")`)) throw new Error("the EVM endpoints didn't answer from the browser");
   console.log("add token: a non-token refused, LUMA (EVM-only) added from the live EVM side");
+
+  // 4d. A CW20, added by its contract: its own screen, and the review of a conversion into
+  // its bank form (cancelled here; the live testnet run converts for real).
+  await p.click("Manage");
+  await p.waitText("Hidden tokens stay in your account.");
+  await p.click("Add a token by contract");
+  await p.fill('input[aria-label="Token contract"]', 0, CW20);
+  await p.click("Add");
+  await p.waitText("CW20 · inj1300x…7xm8", 20000);
+  await p.click("Back");
+  await p.waitText("SHROOM");
+  await p.eval(`document.querySelector('.token[title="cw20:${CW20}"]').click()`);
+  await p.waitText("Convert to bank token");
+  await p.waitText(CW20);
+  await p.shot("09e-token-cw20");
+  await p.click("Convert to bank token");
+  await p.waitText("You get the same amount of SHROOM");
+  await p.click("Max");
+  await p.click("Review");
+  await p.waitText("Review conversion", 15000);
+  await p.waitText("Same token, other form, one for one.");
+  const eyebrows = await p.eval(`[...document.querySelectorAll(".eyebrow")].map((e) => e.textContent).join(" | ")`);
+  if (!eyebrows.includes("You convert · CW20") || !eyebrows.includes("You get · Bank token")) throw new Error(`conversion review: ${eyebrows}`);
+  await p.waitText("3 SHROOM");
+  if (await p.eval(`document.body.innerText.includes("runs its own code")`)) throw new Error("the adapter shouldn't get a contract note");
+  await p.shot("09f-review-conversion");
+  await p.click("Cancel");
+  await p.waitText("You get the same amount of SHROOM");
+  await p.click("Back");
+  await p.click("Back");
+  await p.waitText("Account 1");
+  if (broadcasts.length !== 0) throw new Error("a cancelled conversion was broadcast");
+  console.log("CW20: added by contract, its screen, a conversion reviewed and cancelled");
 
   // 5. Send 1.5 INJ to an EVM address; the review shows the vault's decode.
   const THEM_EVM = "0x9d8A62f656a8d1615C1294fd71e9CFb3E4855A4F";

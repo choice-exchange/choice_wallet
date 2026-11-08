@@ -1,14 +1,29 @@
 // Send: the form (with its token picker), the review, and the sent screen.
 
-import { evmAddress, evmDenom, formatShort, formatUnits, NETWORKS, parseUnits, shortDenom, usdValue } from "@choice-wallet/chain";
+import { cw20Address, evmAddress, formatShort, formatUnits, parseUnits, shortDenom, usdValue } from "@choice-wallet/chain";
 import { useEffect, useState, type FormEvent } from "react";
 
 import { useBackend } from "./backend";
-import { CheckIcon, ChevronDownIcon, ClockIcon, CloseIcon, ExternalIcon } from "./icons";
+import { ArrowDownIcon, CheckIcon, ChevronDownIcon, ClockIcon, CloseIcon, ExternalIcon } from "./icons";
 import { BackBar, Callout, formatUsd, Screen, shortAddress, tokenSub } from "./kit";
-import type { Balance, Coin, CosmosDisplay, DecodedMsg, EvmDisplay, NetworkId, SendReview, Sent, TxState } from "./protocol";
+import type { Balance, Coin, NetworkId, SendReview, Sent, TokenInfo, TxState } from "./protocol";
 import { useRequest } from "./request";
+import { shown } from "./review";
 import { TokenMark } from "./TokenMark";
+
+/** An amount typed into a form: base units (or "max"), or what's wrong with it. */
+export function parseEntered(amount: string, max: boolean, token: Balance): { parsed: string | null; problem: string | null } {
+  if (max) return { parsed: "max", problem: null };
+  if (!amount.trim()) return { parsed: null, problem: null };
+  try {
+    const v = parseUnits(amount, token.decimals);
+    if (v === 0n) return { parsed: null, problem: "Enter an amount above zero." };
+    if (v > BigInt(token.amount)) return { parsed: null, problem: `That's more ${token.symbol} than you have.` };
+    return { parsed: v.toString(), problem: null };
+  } catch (e) {
+    return { parsed: null, problem: e instanceof Error ? e.message : String(e) };
+  }
+}
 
 export function SendForm({
   balances,
@@ -57,19 +72,7 @@ export function SendForm({
     );
   }
 
-  let parsed: string | null = null;
-  let problem: string | null = null;
-  if (max) parsed = "max";
-  else if (amount.trim()) {
-    try {
-      const v = parseUnits(amount, token.decimals);
-      if (v === 0n) problem = "Enter an amount above zero.";
-      else if (v > BigInt(token.amount)) problem = `That's more ${token.symbol} than you have.`;
-      else parsed = v.toString();
-    } catch (e) {
-      problem = e instanceof Error ? e.message : String(e);
-    }
-  }
+  const { parsed, problem } = parseEntered(amount, max, token);
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -138,38 +141,35 @@ export function SendForm({
   );
 }
 
-type BankSend = { type: "bank_send"; from: string; to: string; amount: Coin[] };
-
-function isBankSend(m: DecodedMsg): m is BankSend {
-  return m.type === "bank_send" && typeof m["to"] === "string" && Array.isArray(m["amount"]);
-}
-
-/** What the review shows, from either kind of decode: the sends, anything else the
- *  transaction does, and the fee. For EVM that is gas limit × max fee per gas, which is
- *  what Injective charges (no refund of unused gas). */
-type Shown = { sends: { coins: Coin[]; to: string }[]; others: string[]; fee: Coin[]; memo: string; evm: boolean };
-
-function shown(display: SendReview["display"], feeDenom: string): Shown {
-  if (display.kind === "evm_transaction") {
-    const d = display as EvmDisplay;
-    const fee = [{ denom: feeDenom, amount: d.max_gas_cost }];
-    const base = { fee, memo: "", evm: true };
-    if (d.call.type === "erc20_transfer") return { ...base, sends: [{ coins: [{ denom: evmDenom(d.to), amount: d.call.amount }], to: d.call.to }], others: [] };
-    if (d.call.type === "transfer") return { ...base, sends: [{ coins: [{ denom: feeDenom, amount: d.value }], to: d.to }], others: [] };
-    return { ...base, sends: [], others: [`Contract call to ${d.to}`] };
-  }
-  const c = display as CosmosDisplay;
-  return {
-    sends: c.messages.filter(isBankSend).map((m) => ({ coins: m.amount, to: m.to })),
-    others: c.messages.filter((m) => !isBankSend(m)).map((m) => m.type),
-    fee: c.fee.amount,
-    memo: c.memo,
-    evm: false,
-  };
-}
-
 /** The approval screen. Everything on it comes from the vault's decode of the transaction
  *  that will be signed, not from what the form asked for. */
+/** What a token is, in a word or two, for a review: an unlisted token's symbol is
+ *  whatever its creator chose, so its contract or denom goes with it. */
+function realName(denom: string, t: TokenInfo | undefined): string | null {
+  if (t?.known) return null;
+  const evm = evmAddress(denom);
+  if (evm) return `EVM token ${evm}`;
+  const cw20 = cw20Address(denom);
+  return cw20 ? `CW20 ${cw20}` : denom;
+}
+
+/** One amount, in full (never rounded), with its token. The type steps down as it gets longer. */
+function Figure({ coin, t }: { coin: Coin; t: TokenInfo | undefined }) {
+  const figure = t ? formatUnits(coin.amount, t.decimals) : coin.amount;
+  const size = figure.length > 16 ? 18 : figure.length > 10 ? 22 : 28;
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 8 }}>
+      <TokenMark denom={coin.denom} symbol={t?.symbol ?? coin.denom} known={t?.known ?? false} />
+      <span className="hero" style={{ fontSize: size, lineHeight: `${size + 6}px`, wordBreak: "break-all" }}>
+        {figure} <span className="unit">{t?.symbol ?? shortDenom(coin.denom)}</span>
+      </span>
+    </div>
+  );
+}
+
+/** Which form a token is in, for a conversion. */
+const formName = (denom: string) => (cw20Address(denom) ? "CW20" : "Bank token");
+
 export function Review({
   review,
   entered,
@@ -184,7 +184,8 @@ export function Review({
   onCancel: () => void;
 }) {
   const { risk, tokens } = review;
-  const view = shown(review.display, NETWORKS[network].feeDenom);
+  const view = shown(review.display, network);
+  const converting = view.converts.length > 0 && view.sends.length === 0;
   const [typed, setTyped] = useState("");
   const { run, error, busy } = useRequest();
   const coin = (c: Coin) => {
@@ -211,7 +212,7 @@ export function Review({
 
   return (
     <Screen
-      top={<BackBar title="Review send" onBack={onCancel} />}
+      top={<BackBar title={converting ? "Review conversion" : "Review send"} onBack={onCancel} />}
       foot={
         <>
           {error && <Callout level="red">{error}</Callout>}
@@ -220,7 +221,7 @@ export function Review({
             disabled={busy || blocked || needsWord}
             onClick={() => void confirm()}
           >
-            {busy ? "Sending…" : "Confirm and send"}
+            {converting ? (busy ? "Converting…" : "Confirm and convert") : busy ? "Sending…" : "Confirm and send"}
           </button>
           <button className="btn btn-quiet" onClick={onCancel} disabled={busy}>
             Cancel
@@ -235,42 +236,58 @@ export function Review({
         </Callout>
       ))}
       {view.sends.map((m, i) => (
-          <div className="surface-hero" key={i}>
-            <div className="eyebrow">You send</div>
-            {m.coins.map((c) => {
-              const t = tokens[c.denom];
-              const figure = t ? formatUnits(c.amount, t.decimals) : c.amount;
-              // The full figure, never rounded; the type steps down as it gets longer.
-              const size = figure.length > 16 ? 18 : figure.length > 10 ? 22 : 28;
-              return (
-                <div key={c.denom} style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 8 }}>
-                  <TokenMark denom={c.denom} symbol={t?.symbol ?? c.denom} known={t?.known ?? false} />
-                  <span className="hero" style={{ fontSize: size, lineHeight: `${size + 6}px`, wordBreak: "break-all" }}>
-                    {figure} <span className="unit">{t?.symbol ?? shortDenom(c.denom)}</span>
-                  </span>
-                </div>
-              );
-            })}
-            {usd(m.coins) && <div className="meta num" style={{ marginTop: 4, marginLeft: 46 }}>{usd(m.coins)}</div>}
-            {/* An unlisted token's symbol is whatever its creator chose: show what it really is. */}
-            {m.coins
-              .filter((c) => !tokens[c.denom]?.known)
-              .map((c) => (
+        <div className="surface-hero" key={i}>
+          <div className="eyebrow">You send</div>
+          {m.coins.map((c) => (
+            <Figure key={c.denom} coin={c} t={tokens[c.denom]} />
+          ))}
+          {usd(m.coins) && <div className="meta num" style={{ marginTop: 4, marginLeft: 46 }}>{usd(m.coins)}</div>}
+          {m.coins.map((c) => {
+            const real = realName(c.denom, tokens[c.denom]);
+            return (
+              real && (
                 <div key={c.denom} className="meta mono" style={{ marginTop: 4, marginLeft: 46, wordBreak: "break-all" }}>
-                  {evmAddress(c.denom) ? `EVM token ${evmAddress(c.denom)}` : c.denom}
+                  {real}
                 </div>
-              ))}
-            <hr className="divider" style={{ margin: "14px 0 12px" }} />
-            <div className="eyebrow">To</div>
-            <code className="mono recipient" style={{ display: "block", marginTop: 6, fontSize: 14, lineHeight: "21px" }}>
-              {m.to}
-            </code>
-            {entered.toLowerCase() !== m.to.toLowerCase() && (
-              <div className="meta" style={{ marginTop: 4, wordBreak: "break-all" }}>
-                You entered {entered}
-              </div>
-            )}
+              )
+            );
+          })}
+          <hr className="divider" style={{ margin: "14px 0 12px" }} />
+          <div className="eyebrow">To</div>
+          <code className="mono recipient" style={{ display: "block", marginTop: 6, fontSize: 14, lineHeight: "21px" }}>
+            {m.to}
+          </code>
+          {entered.toLowerCase() !== m.to.toLowerCase() && (
+            <div className="meta" style={{ marginTop: 4, wordBreak: "break-all" }}>
+              You entered {entered}
+            </div>
+          )}
+        </div>
+      ))}
+      {view.converts.map((cv, i) => (
+        <div className="surface-hero" key={`c${i}`}>
+          <div className="eyebrow">You convert · {formName(cv.from.denom)}</div>
+          <Figure coin={cv.from} t={tokens[cv.from.denom]} />
+          {realName(cv.from.denom, tokens[cv.from.denom]) && (
+            <div className="meta mono" style={{ marginTop: 4, marginLeft: 46, wordBreak: "break-all" }}>
+              {realName(cv.from.denom, tokens[cv.from.denom])}
+            </div>
+          )}
+          <div className="convert-arrow" aria-hidden="true">
+            <ArrowDownIcon size={18} />
           </div>
+          <div className="eyebrow">You get · {formName(cv.to.denom)}</div>
+          <Figure coin={cv.to} t={tokens[cv.to.denom]} />
+          {usd([cv.to]) && <div className="meta num" style={{ marginTop: 4, marginLeft: 46 }}>{usd([cv.to])}</div>}
+          {cv.recipient !== (review.display as { signer?: string }).signer && (
+            <div className="meta" style={{ marginTop: 8, wordBreak: "break-all" }}>
+              Delivered to {cv.recipient}
+            </div>
+          )}
+          <p className="meta" style={{ marginTop: 10 }}>
+            Same token, other form, one for one. Through Injective&apos;s CW20 adapter.
+          </p>
+        </div>
       ))}
       {view.others.map((o, i) => (
         <div className="surface" key={`o${i}`}>
@@ -317,7 +334,7 @@ export function Review({
 const POLL_MS = 1500;
 const POLL_TRIES = 40;
 
-export function SentView({ sent, onDone }: { sent: Sent; onDone: () => void }) {
+export function SentView({ sent, onDone, converting = false }: { sent: Sent; onDone: () => void; converting?: boolean }) {
   const backend = useBackend();
   const [state, setState] = useState<TxState | { state: "slow" }>({ state: "pending" });
 
@@ -346,7 +363,7 @@ export function SentView({ sent, onDone }: { sent: Sent; onDone: () => void }) {
   }, [sent.hash]);
 
   const s = state.state;
-  const title = { pending: "Sending", slow: "Not confirmed yet", success: "Sent", failed: "Failed" }[s];
+  const title = { pending: converting ? "Converting" : "Sending", slow: "Not confirmed yet", success: converting ? "Converted" : "Sent", failed: "Failed" }[s];
   const lead = {
     pending: "Waiting for the next block.",
     slow: "Check the explorer for its status.",

@@ -8,7 +8,7 @@
 // - The vault is stateless: every call that needs a key gets the keystore and unlock key
 //   from here. UI pages never see either.
 
-import { isNetworkId, NETWORKS, Pool, type Fetch, type NetworkId } from "@choice-wallet/chain";
+import { cw20Address, evmAddress, isNetworkId, NETWORKS, Pool, type Fetch, type NetworkId } from "@choice-wallet/chain";
 import type { AccountInfo, NewSecret, Result, Settings, Status, TokenFilter, UiRequest } from "@choice-wallet/ui/protocol";
 import { DEFAULT_FILTER } from "@choice-wallet/ui/token-filter";
 
@@ -93,18 +93,18 @@ export function createService(d: Deps) {
 
   const sender = createSender({ vault: d.vault, fetch: d.fetch, local: d.local, session: d.session, endpoints, evmEndpoints, prices: showPrices });
 
-  /** Add a token by contract address: an EVM-only token joins the list (kept per network,
-   *  at most `MAX_CUSTOM`), and either way the token is shown even if the filter would
-   *  hide it, since the user asked for it. */
+  /** Add a token by contract address: an EVM-only token or a CW20 joins the list (kept per
+   *  network, at most `MAX_CUSTOM`), and either way the token is shown even if the filter
+   *  would hide it, since the user asked for it. */
   async function addToken(address: unknown): Promise<UiResponse<{ denom: string; symbol: string; filter: TokenFilter }>> {
     const net = await network();
     const found = await sender.inspectToken(net, address);
     if (!found.ok) return found;
     const { denom } = found.result;
-    if (denom.startsWith("evm:")) {
+    const a = evmAddress(denom) ?? cw20Address(denom);
+    if (a) {
       const { custom_tokens } = (await d.local.get(["custom_tokens"])) as { custom_tokens?: Partial<Record<NetworkId, string[]>> };
       const list = Array.isArray(custom_tokens?.[net]) ? custom_tokens[net] : [];
-      const a = denom.slice(4);
       if (!list.includes(a)) {
         if (list.length >= MAX_CUSTOM) return err("too_many", `At most ${MAX_CUSTOM} added tokens.`);
         await d.local.set({ custom_tokens: { ...(custom_tokens ?? {}), [net]: [...list, a] } });
@@ -266,6 +266,7 @@ export function createService(d: Deps) {
       case "balances":
       case "activity":
       case "prepare_send":
+      case "prepare_convert":
       case "confirm_send":
       case "tx_status": {
         const a = await active();
@@ -281,6 +282,7 @@ export function createService(d: Deps) {
           return { ok: true, result: { ...page.result, filter: await tokenFilter(a.net) } };
         }
         if (r.type === "prepare_send") return sender.prepare(a.net, a.account, r);
+        if (r.type === "prepare_convert") return sender.prepareConvert(a.net, a.account, r);
         if (r.type === "confirm_send") return sender.confirm(a.keystore, a.key, r);
         return sender.status(a.net, r.hash);
       }

@@ -51,8 +51,10 @@ printed, and the import screen is never captured):
 
 ```sh
 node extension/e2e-live.mjs /path/to/chromium "$PWD/extension/dist" /tmp/shots <phrase file> <recipient> 0.5
-# or send an ERC20 with no bank denom, added by its contract:
+# or send an ERC20 with no bank denom, added by its contract (0x…):
 node extension/e2e-live.mjs /path/to/chromium "$PWD/extension/dist" /tmp/shots <phrase file> <recipient> 250 <token contract>
+# or a CW20 (inj1…): send it, convert that much to its bank form, and all of that back:
+node extension/e2e-live.mjs /path/to/chromium "$PWD/extension/dist" /tmp/shots <phrase file> <recipient> 125 <cw20 contract>
 ```
 
 ## Dependencies
