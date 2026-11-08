@@ -47,6 +47,8 @@ pub struct Fee {
     pub gas_limit: u64,
     /// Account that pays the fee through a fee grant, if any.
     pub granter: Option<String>,
+    /// The fee payer, when the request names one explicitly. It can only be the signer.
+    pub payer: Option<String>,
 }
 
 /// A request that passed every check in [`decode`]. Only this can be signed.
@@ -113,6 +115,17 @@ pub struct Signed {
 
 /// Check a request for `chain_id`, to be signed by `signer`.
 pub fn decode(request: Request, chain_id: &str, signer: &PublicKey) -> Result<Decoded, Error> {
+    decode_with_mode(request, chain_id, signer, SignMode::Direct)
+}
+
+/// The checks of [`decode`], for a transaction whose signer info declares `mode`. The
+/// amino JSON path uses this with LEGACY_AMINO_JSON.
+pub(crate) fn decode_with_mode(
+    request: Request,
+    chain_id: &str,
+    signer: &PublicKey,
+    mode: SignMode,
+) -> Result<Decoded, Error> {
     if request.chain_id != chain_id {
         return Err(Error::WrongChain {
             expected: chain_id.into(),
@@ -154,9 +167,8 @@ pub fn decode(request: Request, chain_id: &str, signer: &PublicKey) -> Result<De
     if pk.key != signer_key {
         return Err(Error::WrongSigner);
     }
-    let direct = SignMode::Direct as i32;
     match info.mode_info.as_ref().and_then(|m| m.sum.as_ref()) {
-        Some(mode_info::Sum::Single(s)) if s.mode == direct => {}
+        Some(mode_info::Sum::Single(s)) if s.mode == mode as i32 => {}
         _ => return Err(Error::SignMode),
     }
     let fee = auth.fee.ok_or(Error::MissingFee)?;
@@ -167,6 +179,7 @@ pub fn decode(request: Request, chain_id: &str, signer: &PublicKey) -> Result<De
         amount: coins_from_proto(fee.amount)?,
         gas_limit: fee.gas_limit,
         granter: (!fee.granter.is_empty()).then_some(fee.granter),
+        payer: (!fee.payer.is_empty()).then_some(fee.payer),
     };
 
     Ok(Decoded {
@@ -186,11 +199,25 @@ pub fn sign(decoded: &Decoded, key: &PrivateKey) -> Result<Signed, Error> {
         return Err(Error::KeyMismatch);
     }
     let signature = key.sign_keccak256(&decoded.sign_doc_bytes());
-    let tx_raw = TxRaw {
-        body_bytes: decoded.request.body_bytes.clone(),
-        auth_info_bytes: decoded.request.auth_info_bytes.clone(),
-        signatures: vec![signature.to_vec()],
+    Ok(Signed {
+        signature,
+        tx_raw: decoded.tx_raw(&signature),
+    })
+}
+
+impl Decoded {
+    /// The signer's compressed public key.
+    pub(crate) fn signer_key(&self) -> &[u8; 33] {
+        &self.signer
     }
-    .encode_to_vec();
-    Ok(Signed { signature, tx_raw })
+
+    /// `TxRaw` with `signature` attached.
+    pub(crate) fn tx_raw(&self, signature: &[u8; 64]) -> Vec<u8> {
+        TxRaw {
+            body_bytes: self.request.body_bytes.clone(),
+            auth_info_bytes: self.request.auth_info_bytes.clone(),
+            signatures: vec![signature.to_vec()],
+        }
+        .encode_to_vec()
+    }
 }

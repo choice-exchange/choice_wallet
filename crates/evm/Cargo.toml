@@ -1,6 +1,6 @@
 [package]
 name = "choice-wallet-evm"
-description = "EVM transactions for Choice Wallet: EIP-1559 encoding and signing, native and ERC20 transfers"
+description = "EVM transactions for Choice Wallet: EIP-1559 encoding and signing, native and ERC20 transfers, EIP-712 typed data"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,8 +9,8 @@ repository.workspace = true
 
 [dependencies]
 choice-wallet-core.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
 hex.workspace = true
-serde_json.workspace = true

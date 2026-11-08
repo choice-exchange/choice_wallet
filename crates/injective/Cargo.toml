@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 choice-wallet-core.workspace = true
+choice-wallet-evm.workspace = true
 prost.workspace = true
 serde.workspace = true
 serde_json.workspace = true

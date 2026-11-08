@@ -54,6 +54,20 @@ impl Coin {
     }
 }
 
+/// A coin as it appears in JSON sign paths (`{"denom": …, "amount": …}`, either order).
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct JsonCoin {
+    denom: String,
+    amount: String,
+}
+
+impl JsonCoin {
+    pub(crate) fn into_coin(self) -> Result<Coin, Error> {
+        Coin::new(&self.denom, &self.amount)
+    }
+}
+
 /// Decode a list of coins, refusing invalid ones.
 pub(crate) fn coins_from_proto(coins: Vec<ProtoCoin>) -> Result<Vec<Coin>, Error> {
     coins.into_iter().map(Coin::from_proto).collect()
@@ -91,6 +105,13 @@ pub enum Msg {
         /// Its protobuf bytes.
         value: Vec<u8>,
     },
+    /// Any other message, from a JSON sign path (EIP-712). Shown raw, with extra friction.
+    UnknownJson {
+        /// Its type URL (`@type`).
+        type_url: String,
+        /// The message's JSON exactly as signed.
+        json: String,
+    },
 }
 
 impl Msg {
@@ -127,7 +148,7 @@ impl Msg {
         match self {
             Self::BankSend { from, .. } => Some(from),
             Self::ExecuteContract { sender, .. } => Some(sender),
-            Self::Unknown { .. } => None,
+            Self::Unknown { .. } | Self::UnknownJson { .. } => None,
         }
     }
 }

@@ -65,4 +65,10 @@ pub enum Error {
     /// The key doesn't belong to the request's signer.
     #[error("this key does not match the request's signer")]
     KeyMismatch,
+    /// An amino JSON sign doc that isn't shaped as the chain would render it.
+    #[error("invalid amino JSON: {0}")]
+    Amino(String),
+    /// Typed data claims to be an Injective transaction but isn't shaped like one.
+    #[error("not a valid Injective EIP-712 transaction: {0}")]
+    Eip712(String),
 }

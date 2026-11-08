@@ -1,0 +1,54 @@
+{
+  "generator": "tools/vectors/gen.mjs: typed data from @injectivelabs/sdk-ts 1.20.62, hashed and signed with viem 2.57.7",
+  "phrase": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+  "cases": [
+    {
+      "name": "mainnet_send_and_cw20_transfer",
+      "typed_data": "{\"types\":{\"EIP712Domain\":[{\"name\":\"name\",\"type\":\"string\"},{\"name\":\"version\",\"type\":\"string\"},{\"name\":\"chainId\",\"type\":\"uint256\"},{\"name\":\"verifyingContract\",\"type\":\"address\"},{\"name\":\"salt\",\"type\":\"string\"}],\"Tx\":[{\"name\":\"context\",\"type\":\"string\"},{\"name\":\"msgs\",\"type\":\"string\"}]},\"primaryType\":\"Tx\",\"domain\":{\"name\":\"Injective Web3\",\"version\":\"1.0.0\",\"chainId\":\"0x6f0\",\"verifyingContract\":\"0xCcCCccccCCCCcCCCCCCcCcCccCcCCCcCcccccccC\",\"salt\":\"0\"},\"message\":{\"context\":\"{\\\"account_number\\\":12345,\\\"chain_id\\\":\\\"injective-1\\\",\\\"fee\\\":{\\\"amount\\\":[{\\\"denom\\\":\\\"inj\\\",\\\"amount\\\":\\\"160000000000000\\\"}],\\\"gas\\\":160000},\\\"memo\\\":\\\"hello\\\",\\\"sequence\\\":3,\\\"timeout_height\\\":0}\",\"msgs\":\"[{\\\"@type\\\":\\\"/cosmos.bank.v1beta1.MsgSend\\\",\\\"from_address\\\":\\\"inj1npvwllfr9dqr8erajqqr6s0vxnk2ak55re90dz\\\",\\\"to_address\\\":\\\"inj1d7ky6xxfzg6rh7r05uzfxexafepy4wwqp4z8h8\\\",\\\"amount\\\":[{\\\"denom\\\":\\\"inj\\\",\\\"amount\\\":\\\"1000000000000000000\\\"}]},{\\\"@type\\\":\\\"/cosmwasm.wasm.v1.MsgExecuteContract\\\",\\\"sender\\\":\\\"inj1npvwllfr9dqr8erajqqr6s0vxnk2ak55re90dz\\\",\\\"contract\\\":\\\"inj1keckja4ra05d8xkwkpph9u30lrngqtt6vv34da\\\",\\\"msg\\\":{\\\"transfer\\\":{\\\"recipient\\\":\\\"inj1d7ky6xxfzg6rh7r05uzfxexafepy4wwqp4z8h8\\\",\\\"amount\\\":\\\"5\\\"}},\\\"funds\\\":[]}]\"}}",
+      "hash": "0xc874ec8714489ad6c1ffcb414d70a4a534606b65b09d28de4325bf5b6b2a3ea3",
+      "signature": "0x21b4857a14825855444170310cf550383d8c398b35fc85fe39eb43144e797b473a9ad438fb2d894e3d3417dcea13b7a294b2cfaea1ab93a040d6ba94a74879dc1c",
+      "expect": {
+        "evm_chain_id": 1776,
+        "chain_id": "injective-1",
+        "account_number": 12345,
+        "sequence": 3,
+        "timeout_height": 0,
+        "memo": "hello",
+        "fee_payer": null,
+        "messages": 2
+      }
+    },
+    {
+      "name": "mainnet_eth_chain_id_fee_delegation",
+      "typed_data": "{\"types\":{\"EIP712Domain\":[{\"name\":\"name\",\"type\":\"string\"},{\"name\":\"version\",\"type\":\"string\"},{\"name\":\"chainId\",\"type\":\"uint256\"},{\"name\":\"verifyingContract\",\"type\":\"address\"},{\"name\":\"salt\",\"type\":\"string\"}],\"Tx\":[{\"name\":\"context\",\"type\":\"string\"},{\"name\":\"msgs\",\"type\":\"string\"}]},\"primaryType\":\"Tx\",\"domain\":{\"name\":\"Injective Web3\",\"version\":\"1.0.0\",\"chainId\":\"0x1\",\"verifyingContract\":\"0xCcCCccccCCCCcCCCCCCcCcCccCcCCCcCcccccccC\",\"salt\":\"0\"},\"message\":{\"context\":\"{\\\"account_number\\\":12345,\\\"chain_id\\\":\\\"injective-1\\\",\\\"fee\\\":{\\\"amount\\\":[{\\\"denom\\\":\\\"inj\\\",\\\"amount\\\":\\\"160000000000000\\\"}],\\\"gas\\\":160000,\\\"payer\\\":\\\"inj1keckja4ra05d8xkwkpph9u30lrngqtt6vv34da\\\"},\\\"memo\\\":\\\"\\\",\\\"sequence\\\":4,\\\"timeout_height\\\":150000000}\",\"msgs\":\"[{\\\"@type\\\":\\\"/cosmwasm.wasm.v1.MsgExecuteContract\\\",\\\"sender\\\":\\\"inj1npvwllfr9dqr8erajqqr6s0vxnk2ak55re90dz\\\",\\\"contract\\\":\\\"inj1keckja4ra05d8xkwkpph9u30lrngqtt6vv34da\\\",\\\"msg\\\":{\\\"send\\\":{\\\"contract\\\":\\\"inj14ejqjyq8um4p3xfqj74yld5waqljf88f9eneuk\\\",\\\"amount\\\":\\\"1000000\\\",\\\"msg\\\":\\\"\\\"}},\\\"funds\\\":[]}]\"}}",
+      "hash": "0x4a9987ccdddf9094c9e75237e95ac0e1ca62b4d6cc310baaa73ba4301abfd55c",
+      "signature": "0x597160ad4eb8c3c1771e7d2364546cda634fd8e2bb7c37ea5cad19671ac1c5ee4e49d6e4146167f48903fbd660d5c0eb02cb91f0f43c357ca15ea1a5e93b19aa1b",
+      "expect": {
+        "evm_chain_id": 1,
+        "chain_id": "injective-1",
+        "account_number": 12345,
+        "sequence": 4,
+        "timeout_height": 150000000,
+        "memo": "",
+        "fee_payer": "inj1keckja4ra05d8xkwkpph9u30lrngqtt6vv34da",
+        "messages": 1
+      }
+    },
+    {
+      "name": "testnet_bank_to_cw20",
+      "typed_data": "{\"types\":{\"EIP712Domain\":[{\"name\":\"name\",\"type\":\"string\"},{\"name\":\"version\",\"type\":\"string\"},{\"name\":\"chainId\",\"type\":\"uint256\"},{\"name\":\"verifyingContract\",\"type\":\"address\"},{\"name\":\"salt\",\"type\":\"string\"}],\"Tx\":[{\"name\":\"context\",\"type\":\"string\"},{\"name\":\"msgs\",\"type\":\"string\"}]},\"primaryType\":\"Tx\",\"domain\":{\"name\":\"Injective Web3\",\"version\":\"1.0.0\",\"chainId\":\"0x59f\",\"verifyingContract\":\"0xCcCCccccCCCCcCCCCCCcCcCccCcCCCcCcccccccC\",\"salt\":\"0\"},\"message\":{\"context\":\"{\\\"account_number\\\":9,\\\"chain_id\\\":\\\"injective-888\\\",\\\"fee\\\":{\\\"amount\\\":[{\\\"denom\\\":\\\"inj\\\",\\\"amount\\\":\\\"160000000000000\\\"}],\\\"gas\\\":160000},\\\"memo\\\":\\\"\\\",\\\"sequence\\\":0,\\\"timeout_height\\\":0}\",\"msgs\":\"[{\\\"@type\\\":\\\"/cosmwasm.wasm.v1.MsgExecuteContract\\\",\\\"sender\\\":\\\"inj1npvwllfr9dqr8erajqqr6s0vxnk2ak55re90dz\\\",\\\"contract\\\":\\\"inj14ejqjyq8um4p3xfqj74yld5waqljf88f9eneuk\\\",\\\"msg\\\":{\\\"redeem_and_transfer\\\":{\\\"recipient\\\":\\\"inj1npvwllfr9dqr8erajqqr6s0vxnk2ak55re90dz\\\"}},\\\"funds\\\":[{\\\"denom\\\":\\\"factory/inj14ejqjyq8um4p3xfqj74yld5waqljf88f9eneuk/inj1keckja4ra05d8xkwkpph9u30lrngqtt6vv34da\\\",\\\"amount\\\":\\\"7\\\"}]}]\"}}",
+      "hash": "0x89c5f4c3437dd0ec965260b52ec5b0165edf0de75a0ef4c84d05ba665cbb0b87",
+      "signature": "0x6a07cd6011f7477fefeacf1af33bcd8e6e837b63bc6a3551c3011fa8c1e12eb77bd37636405faa8f7a92526ed00202759d906ae922efcae8e3f9cb13b039a8dc1c",
+      "expect": {
+        "evm_chain_id": 1439,
+        "chain_id": "injective-888",
+        "account_number": 9,
+        "sequence": 0,
+        "timeout_height": 0,
+        "memo": "",
+        "fee_payer": null,
+        "messages": 1
+      }
+    }
+  ]
+}

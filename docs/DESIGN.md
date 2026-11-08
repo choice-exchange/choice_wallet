@@ -59,8 +59,8 @@ mobile app (phase 2) ── uniffi ──▶ same Rust core
 | Crate | Job | Status |
 | --- | --- | --- |
 | `choice-wallet-core` | Mnemonic, HD derivation, secp256k1 keys, addresses, encrypted keystore | Built, 29 tests |
-| `choice-wallet-injective` | Injective protobuf (vendored .proto, prost 0.14), sign paths, tx building, precompile decoding | Direct sign path, bank / CW20 / adapter builders built; byte-identical to injective-ts 1.20.62. Amino JSON and EIP-712 next |
-| `choice-wallet-evm` | EVM tx types 0-2, EIP-712, ABI decoding. Signing on our k256 0.14 | EIP-1559 encode and sign, native and ERC20 transfers built; byte-identical to viem 2.57.7. Dapp requests next |
+| `choice-wallet-injective` | Injective protobuf (vendored .proto, prost 0.14), sign paths, tx building, precompile decoding | Direct, amino JSON and EIP-712 v2 paths; bank / CW20 / adapter builders. Byte-identical to injective-ts 1.20.62 (and viem for EIP-712). Precompile decoding and more message types next |
+| `choice-wallet-evm` | EVM tx types 0-2, EIP-712, ABI decoding. Signing on our k256 0.14 | EIP-1559 encode and sign, native and ERC20 transfers, strict EIP-712 typed data. Byte-identical to viem 2.57.7. Dapp transaction requests next |
 | `choice-wallet-policy` | Risk rules over decoded requests | Planned |
 | `choice-wallet-wasm` | wasm-bindgen surface for the extension | Planned |
 
@@ -108,14 +108,21 @@ How each kind of Injective token is held and moved (checked against the injectiv
 
 ### Sign paths
 
-| Path | Used by | Canonical check |
-| --- | --- | --- |
-| SIGN_MODE_DIRECT (protobuf) | Our own txs; `signDirect` from Cosmos dapps | Decode and re-encode, recursing into every `Any` (MsgExec, grant authorizations, feegrant allowances, the signer pubkey). Byte-identical or refused |
-| LEGACY_AMINO_JSON | Ledger Cosmos app; `signAmino` | Strict JSON: sorted keys, duplicate keys refused, unknown fields refused. Re-serialise and compare |
-| Injective EIP-712 (v1 and v2) | Ledger Ethereum app; EVM wallets on Cosmos dapps | Rebuild the typed data from the decoded tx and compare. Only the `ExtensionOptionsWeb3Tx` extension is allowed, and its `typedDataChainID` and the inner `chain_id` are checked |
-| EVM txs, types 0, 1, 2 | Injective EVM and other EVM chains | Decode with alloy. Type 4 / `authorizationList` (EIP-7702) is refused: Injective EVM doesn't support it |
+| Path | Used by | Canonical check | Status |
+| --- | --- | --- | --- |
+| SIGN_MODE_DIRECT (protobuf) | Our own txs; `signDirect` from Cosmos dapps | Decode and re-encode, recursing into every `Any` (MsgExec, grant authorizations, feegrant allowances, the signer pubkey). Byte-identical or refused | Built |
+| LEGACY_AMINO_JSON | Ledger Cosmos app; `signAmino` | Our own txs: amino JSON derived from the protobuf tx exactly as the chain derives it. Dapp sign docs: strict shape, signed in canonical form | Built |
+| Injective EIP-712 v2 | EVM wallets on Cosmos dapps (`eth_signTypedData_v4`) | Strict typed data; the "Injective Web3" domain, its types, the `context` and the `msgs` must have exactly the v2 shape | Built (decode and sign). Building our own EIP-712 txs isn't needed |
+| Injective EIP-712 v1 | injective-ts sends it to EVM wallets not on its v2 list | Typed data derived from amino JSON | Not recognised; shown as generic typed data. We ask to be on the v2 list instead |
+| EVM txs, types 0, 1, 2 | Injective EVM and other EVM chains | Type 4 / `authorizationList` (EIP-7702) is refused: Injective EVM doesn't support it | EIP-1559 sends built; dapp requests next |
 
 Other rules in every path: one signer only; the signer key must be ours; the chain ID must match the connected chain; the tip field is refused. A CosmWasm `msg` is JSON inside protobuf: parse it strictly (duplicate keys refused) and show it raw next to any friendly rendering.
+
+What the chain checks, and so what we match (injective-core v1.20.3, cosmos-sdk `x/tx` v0.50.14-inj.11):
+
+- **Amino JSON.** Keys are sorted at every level. Zero values are left out unless the proto marks them `dont_omitempty`, so `timeout_height` appears only when it isn't 0. Integers are strings, and strings get Go's escaping, including `<`, `>`, `&`, U+2028 and U+2029. CosmWasm messages are inlined and re-sorted, with their numbers read as float64. So a contract message with a number that isn't a safe integer is refused on this path. injective-ts writes `"timeout_height":"0"` and doesn't HTML-escape, so its amino signatures fail in those cases; ours follow the chain.
+- **EIP-712 v2.** `Tx { context: string, msgs: string }` under the domain "Injective Web3", version "1.0.0", `verifyingContract` `0xCcCC…cccC`, salt "0". The domain chain ID may be the network's EVM chain ID or Ethereum's (1 or 1776 on mainnet, 11155111 or 1439 on testnet), so MetaMask needn't switch networks. The signature is 65 bytes, `r || s || v`. A fee payer in `context` means fee delegation (e.g. Injective's web3 gateway). It is shown, and the user signs it.
+- **Generic EIP-712** (`eth_signTypedData_v4`): every declared field must be present and typed correctly, undeclared fields are refused, `bytesN` must be exactly N bytes, and integers must fit their width. That's stricter than most wallets, so what the screen shows is exactly what's hashed. The real-dapp corpus will show whether any dapp relies on looser parsing.
 
 Before beta, the decoders are tested against a corpus of real transactions from Helix, Injective Hub, Mito, Choice and the DEXes. Without that, an encoder that writes default-valued fields would get legitimate txs refused.
 
@@ -142,7 +149,7 @@ This is designed before the UI is built, because retrofitting it is expensive.
 ## Connecting to dapps
 
 - **EVM:** an EIP-1193 provider announced through EIP-6963 with `rdns` `exchange.choice.wallet`, so no fight over `window.ethereum`.
-- **Injective dapps need a PR first.** injective-ts finds EIP-6963 wallets by a fixed list of `rdns` values tied to its `Wallet` enum, so until we're added, Helix and Hub won't see us. The PR to `wallet-base`, `wallet-evm` and `wallet-cosmos` is phase 0 work.
+- **Injective dapps need a PR first.** injective-ts finds EIP-6963 wallets by a fixed list of `rdns` values tied to its `Wallet` enum, so until we're added, Helix and Hub won't see us. The PR to `wallet-base`, `wallet-evm` and `wallet-cosmos` is phase 0 work. It also puts Choice Wallet on the EIP-712 v2-only list (`isEip712V2OnlyWallet`), so Injective dapps send us v2 typed data, which we decode, rather than v1.
 - **Cosmos provider:** `window.choice`, Keplr-compatible:
   - Methods: `enable`, `getKey` (with `algo: "ethsecp256k1"`, `isNanoLedger`, `ethereumHexAddress`), `signDirect`, `signAmino`, `getOfflineSigner`, `getOfflineSignerOnlyAmino`, `getOfflineSignerAuto`, `signArbitrary` / `verifyArbitrary` (ADR-036, with its own risk rule), `signEthereum`, `sendTx`.
   - A keystore-change event.

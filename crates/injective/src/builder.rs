@@ -135,6 +135,27 @@ pub fn direct_request(
     messages: Vec<Any>,
     opts: &TxOptions,
 ) -> Result<Request, Error> {
+    tx_request(network, signer, messages, opts, SignMode::Direct)
+}
+
+/// Wrap `messages` into a LEGACY_AMINO_JSON transaction for `signer`, for hardware wallets
+/// that sign amino JSON (Ledger's Cosmos app). Pass it to [`crate::amino::from_tx`].
+pub fn amino_request(
+    network: &Network,
+    signer: &PublicKey,
+    messages: Vec<Any>,
+    opts: &TxOptions,
+) -> Result<Request, Error> {
+    tx_request(network, signer, messages, opts, SignMode::LegacyAminoJson)
+}
+
+fn tx_request(
+    network: &Network,
+    signer: &PublicKey,
+    messages: Vec<Any>,
+    opts: &TxOptions,
+    mode: SignMode,
+) -> Result<Request, Error> {
     if messages.is_empty() {
         return Err(Error::NoMessages);
     }
@@ -151,9 +172,7 @@ pub fn direct_request(
                 key: signer.compressed().to_vec(),
             })),
             mode_info: Some(ModeInfo {
-                sum: Some(mode_info::Sum::Single(mode_info::Single {
-                    mode: SignMode::Direct as i32,
-                })),
+                sum: Some(mode_info::Sum::Single(mode_info::Single { mode: mode as i32 })),
             }),
             sequence: opts.sequence,
         }],

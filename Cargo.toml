@@ -28,7 +28,7 @@ k256 = { version = "0.14.0", default-features = false, features = ["ecdsa", "std
 prost = { version = "0.14.4", default-features = false, features = ["std", "derive"] }
 # JSON inside transactions: CosmWasm messages now, amino JSON and EIP-712 next.
 serde = { version = "1.0.229", default-features = false, features = ["std", "derive"] }
-serde_json = { version = "1.0.154", default-features = false, features = ["std"] }
+serde_json = { version = "1.0.154", default-features = false, features = ["std", "raw_value"] }
 sha2 = { version = "0.11.1", default-features = false }
 sha3 = { version = "0.12.0", default-features = false }
 thiserror = "2.0.21"

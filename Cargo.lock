@@ -217,6 +217,7 @@ name = "choice-wallet-injective"
 version = "0.1.0"
 dependencies = [
  "choice-wallet-core",
+ "choice-wallet-evm",
  "hex",
  "prost",
  "serde",

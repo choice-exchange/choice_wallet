@@ -1,0 +1,31 @@
+{
+  "generator": "tools/vectors/gen_evm.mjs with viem 2.57.7",
+  "phrase": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+  "signer": "0x9858EfFD232B4033E47d90003D41EC34EcaEda94",
+  "cases": [
+    {
+      "name": "mail_spec_example",
+      "typed_data": "{\"domain\":{\"name\":\"Ether Mail\",\"version\":\"1\",\"chainId\":\"1\",\"verifyingContract\":\"0xCcCCccccCCCCcCCCCCCcCcCccCcCCCcCcccccccC\"},\"types\":{\"EIP712Domain\":[{\"name\":\"name\",\"type\":\"string\"},{\"name\":\"version\",\"type\":\"string\"},{\"name\":\"chainId\",\"type\":\"uint256\"},{\"name\":\"verifyingContract\",\"type\":\"address\"}],\"Person\":[{\"name\":\"name\",\"type\":\"string\"},{\"name\":\"wallet\",\"type\":\"address\"}],\"Mail\":[{\"name\":\"from\",\"type\":\"Person\"},{\"name\":\"to\",\"type\":\"Person\"},{\"name\":\"contents\",\"type\":\"string\"}]},\"primaryType\":\"Mail\",\"message\":{\"from\":{\"name\":\"Cow\",\"wallet\":\"0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826\"},\"to\":{\"name\":\"Bob\",\"wallet\":\"0xbBbBBBBbbBBBbbbBbbBbbbbBBbBbbbbBbBbbBBbB\"},\"contents\":\"Hello, Bob!\"}}",
+      "hash": "0xbe609aee343fb3c4b28e1df9e632fca64fcfaede20f02e86244efddf30957bd2",
+      "signature": "0x5b9ee7ebad3acd6ca243732900203a8a9e59b871345cb9b229a1936e11f5ad8967c46a0d05027ccd880bcc49e18877a53b8e4813558a1fd165ebb875c4a447c21c"
+    },
+    {
+      "name": "erc2612_permit_max",
+      "typed_data": "{\"domain\":{\"name\":\"USD Coin\",\"version\":\"2\",\"chainId\":1776,\"verifyingContract\":\"0xa00C59fF5a080D2b954d0c75e46E22a0c371235a\"},\"types\":{\"EIP712Domain\":[{\"name\":\"name\",\"type\":\"string\"},{\"name\":\"version\",\"type\":\"string\"},{\"name\":\"chainId\",\"type\":\"uint256\"},{\"name\":\"verifyingContract\",\"type\":\"address\"}],\"Permit\":[{\"name\":\"owner\",\"type\":\"address\"},{\"name\":\"spender\",\"type\":\"address\"},{\"name\":\"value\",\"type\":\"uint256\"},{\"name\":\"nonce\",\"type\":\"uint256\"},{\"name\":\"deadline\",\"type\":\"uint256\"}]},\"primaryType\":\"Permit\",\"message\":{\"owner\":\"0x9858EfFD232B4033E47d90003D41EC34EcaEda94\",\"spender\":\"0x6Fac4D18c912343BF86fa7049364Dd4E424Ab9C0\",\"value\":\"115792089237316195423570985008687907853269984665640564039457584007913129639935\",\"nonce\":\"0\",\"deadline\":\"1893456000\"}}",
+      "hash": "0x13f326db4f15915ed8d2c361a295f02e6c28d6220554b005e5c3c22660ec8b23",
+      "signature": "0x8b2f3a4f49c869f5abccb70d35a619b10ae97cf7ccff769a0d794b08c4c80a6e1fadfe89d8a20a80a44d4295ac34755375f23f5c875a9f3c9d3a26635a6520ea1c"
+    },
+    {
+      "name": "nested_arrays_signed_ints_bytes",
+      "typed_data": "{\"domain\":{\"name\":\"Test\",\"chainId\":\"0x59f\",\"salt\":\"0xabababababababababababababababababababababababababababababababab\"},\"types\":{\"EIP712Domain\":[{\"name\":\"name\",\"type\":\"string\"},{\"name\":\"chainId\",\"type\":\"uint256\"},{\"name\":\"salt\",\"type\":\"bytes32\"}],\"Person\":[{\"name\":\"name\",\"type\":\"string\"},{\"name\":\"wallet\",\"type\":\"address\"},{\"name\":\"age\",\"type\":\"uint16\"}],\"Group\":[{\"name\":\"title\",\"type\":\"string\"},{\"name\":\"members\",\"type\":\"Person[]\"},{\"name\":\"tags\",\"type\":\"bytes32[2]\"},{\"name\":\"open\",\"type\":\"bool\"},{\"name\":\"delta\",\"type\":\"int256\"},{\"name\":\"tiny\",\"type\":\"int8\"},{\"name\":\"small\",\"type\":\"uint8\"},{\"name\":\"data\",\"type\":\"bytes\"},{\"name\":\"code\",\"type\":\"bytes4\"},{\"name\":\"matrix\",\"type\":\"uint256[][]\"}]},\"primaryType\":\"Group\",\"message\":{\"title\":\"Team ✓ <&>\",\"members\":[{\"name\":\"Ann\",\"wallet\":\"0x9858EfFD232B4033E47d90003D41EC34EcaEda94\",\"age\":31},{\"name\":\"Ben\",\"wallet\":\"0x6Fac4D18c912343BF86fa7049364Dd4E424Ab9C0\",\"age\":65535}],\"tags\":[\"0x1111111111111111111111111111111111111111111111111111111111111111\",\"0x2222222222222222222222222222222222222222222222222222222222222222\"],\"open\":true,\"delta\":\"-12345678901234567890\",\"tiny\":-128,\"small\":255,\"data\":\"0xdeadbeef\",\"code\":\"0xa9059cbb\",\"matrix\":[[\"1\",\"0x2\"],[],[\"115792089237316195423570985008687907853269984665640564039457584007913129639935\"]]}}",
+      "hash": "0x74f6a26ba42a8dd4261b40babe8462eae99fa345c26759e9f26595f95aa84bd6",
+      "signature": "0x71f49ea51857ad7d7d8a4fea9c8543f201a3abfbf32e28c87a026de8b52c70252dfbdbf729f774af87738ac88e6df0d36c0fc6a2a0ca70abbfd3eff8cead1f491c"
+    },
+    {
+      "name": "domain_types_derived",
+      "typed_data": "{\"domain\":{\"name\":\"Derived\",\"version\":\"3\",\"chainId\":\"1\"},\"types\":{\"Ping\":[{\"name\":\"n\",\"type\":\"uint64\"}]},\"primaryType\":\"Ping\",\"message\":{\"n\":42}}",
+      "hash": "0xf4f56387010a7b74c438ce9a511972e2ada0e90748324d516e73a2b7f279a22d",
+      "signature": "0x7ccf5b5d33c469a782464fe56b55484b2cb2d4ff7937e7fda70aa324cbaa2508456650d1a8bfcbb2b3d582d0174b0f36ae7a2ee76e1886db130043444b5f8a8a1b"
+    }
+  ]
+}

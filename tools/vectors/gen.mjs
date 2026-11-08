@@ -8,7 +8,9 @@
 import { writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { PrivateKey, MsgSend, MsgExecuteContract, createTransaction } from "@injectivelabs/sdk-ts";
+import { PrivateKey, MsgSend, MsgExecuteContract, createTransaction, getAminoStdSignDoc, getEip712TypedDataV2, sortObjectByKeys, SIGN_AMINO } from "@injectivelabs/sdk-ts";
+import { hashTypedData } from "viem";
+import { mnemonicToAccount } from "viem/accounts";
 import * as TxPb from "@injectivelabs/core-proto-ts-v2/generated/cosmos/tx/v1beta1/tx_pb";
 
 const PHRASE = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
@@ -105,3 +107,132 @@ const file = join(dirname(fileURLToPath(import.meta.url)), "../../crates/injecti
 mkdirSync(dirname(file), { recursive: true });
 writeFileSync(file, JSON.stringify(out, null, 2) + "\n");
 console.log(`wrote ${out.cases.length} cases to ${file}`);
+
+// ---- EIP-712 v2: Cosmos txs signed as typed data by EVM wallets ----
+// sdk-ts builds the typed data, as Injective dapps send it to eth_signTypedData_v4;
+// viem hashes and signs it.
+
+const viemAccount = mnemonicToAccount(PHRASE, { addressIndex: 0 });
+const a2 = keys[2].toBech32();
+
+const v2cases = [
+  {
+    name: "mainnet_send_and_cw20_transfer",
+    msgs: [
+      MsgSend.fromJSON({ srcInjectiveAddress: a0, dstInjectiveAddress: a1, amount: { denom: "inj", amount: "1000000000000000000" } }),
+      exec(CW20, { transfer: { recipient: a1, amount: "5" } }),
+    ],
+    tx: { accountNumber: "12345", sequence: "3", timeoutHeight: "0", chainId: "injective-1", memo: "hello" },
+    fee, evmChainId: 1776,
+  },
+  {
+    name: "mainnet_eth_chain_id_fee_delegation",
+    msgs: [exec(CW20, { send: { contract: ADAPTER, amount: "1000000", msg: "" } })],
+    tx: { accountNumber: "12345", sequence: "4", timeoutHeight: "150000000", chainId: "injective-1", memo: "" },
+    fee: { ...fee, feePayer: a2 }, evmChainId: 1,
+  },
+  {
+    name: "testnet_bank_to_cw20",
+    msgs: [exec(ADAPTER, { redeem_and_transfer: { recipient: a0 } }, [{ denom: `factory/${ADAPTER}/${CW20}`, amount: "7" }])],
+    tx: { accountNumber: "9", sequence: "0", timeoutHeight: "0", chainId: "injective-888", memo: "" },
+    fee, evmChainId: 1439,
+  },
+];
+
+const v2out = {
+  generator: "tools/vectors/gen.mjs: typed data from @injectivelabs/sdk-ts 1.20.62, hashed and signed with viem 2.57.7",
+  phrase: PHRASE,
+  cases: await Promise.all(v2cases.map(async (c) => {
+    const td = getEip712TypedDataV2({ msgs: c.msgs, tx: c.tx, fee: c.fee, evmChainId: c.evmChainId });
+    const forViem = { ...td, domain: { ...td.domain, chainId: BigInt(td.domain.chainId) } };
+    return {
+      name: c.name,
+      typed_data: JSON.stringify(td),
+      hash: hashTypedData(forViem),
+      signature: await viemAccount.signTypedData(forViem),
+      expect: {
+        evm_chain_id: c.evmChainId,
+        chain_id: c.tx.chainId,
+        account_number: Number(c.tx.accountNumber),
+        sequence: Number(c.tx.sequence),
+        timeout_height: Number(c.tx.timeoutHeight),
+        memo: c.tx.memo,
+        fee_payer: c.fee.feePayer ?? null,
+        messages: c.msgs.length,
+      },
+    };
+  })),
+};
+
+const v2file = join(dirname(fileURLToPath(import.meta.url)), "../../crates/injective/tests/vectors/eip712_v2.json");
+writeFileSync(v2file, JSON.stringify(v2out, null, 2) + "\n");
+console.log(`wrote ${v2out.cases.length} cases to ${v2file}`);
+
+// ---- LEGACY_AMINO_JSON: what Ledger's Cosmos app signs ----
+// injective-ts's Ledger Cosmos strategy signs JSON.stringify(sortObjectByKeys(doc)). It
+// always writes timeout_height, which the chain leaves out when 0, so these cases use a
+// non-zero timeout height.
+
+const aminoCases = [
+  {
+    name: "amino_bank_send",
+    build: [{ kind: "bank_send", to: a1, coins: [["inj", "1500000000000000000"]] }],
+    msgs: [MsgSend.fromJSON({ srcInjectiveAddress: a0, dstInjectiveAddress: a1, amount: { denom: "inj", amount: "1500000000000000000" } })],
+    memo: "", timeoutHeight: "150000000", sequence: 0, accountNumber: 12345,
+  },
+  {
+    name: "amino_cw20_transfer_memo",
+    build: [{ kind: "cw20_transfer", cw20: CW20, recipient: a1, amount: "1000000" }],
+    msgs: [exec(CW20, { transfer: { recipient: a1, amount: "1000000" } })],
+    memo: "exchange memo 1234567", timeoutHeight: "150000001", sequence: 3, accountNumber: 12345,
+  },
+  {
+    name: "amino_redeem_then_send",
+    build: [
+      { kind: "bank_to_cw20", cw20: CW20, adapter: ADAPTER, amount: "7", recipient: a0 },
+      { kind: "cw20_transfer", cw20: CW20, recipient: a1, amount: "7" },
+    ],
+    msgs: [
+      exec(ADAPTER, { redeem_and_transfer: { recipient: a0 } }, [{ denom: `factory/${ADAPTER}/${CW20}`, amount: "7" }]),
+      exec(CW20, { transfer: { recipient: a1, amount: "7" } }),
+    ],
+    memo: "", timeoutHeight: "150000002", sequence: 9, accountNumber: 777,
+  },
+];
+
+const aminoOut = {
+  generator: "tools/vectors/gen.mjs with @injectivelabs/sdk-ts 1.20.62",
+  phrase: PHRASE,
+  cases: aminoCases.map((c) => {
+    const doc = getAminoStdSignDoc({
+      memo: c.memo, chainId: "injective-1", accountNumber: c.accountNumber, sequence: c.sequence,
+      timeoutHeight: c.timeoutHeight, gas: "160000", msgs: c.msgs,
+    });
+    const signDoc = JSON.stringify(sortObjectByKeys(doc));
+    const tx = createTransaction({
+      message: c.msgs, memo: c.memo, fee: doc.fee, chainId: "injective-1", signMode: SIGN_AMINO,
+      pubKey: k0.toPublicKey().toBase64(), sequence: c.sequence, accountNumber: c.accountNumber,
+      timeoutHeight: Number(c.timeoutHeight),
+    });
+    const signature = k0.sign(Buffer.from(signDoc));
+    tx.txRaw.signatures = [signature];
+    return {
+      name: c.name,
+      build: c.build,
+      memo: c.memo,
+      timeout_height: Number(c.timeoutHeight),
+      sequence: c.sequence,
+      account_number: c.accountNumber,
+      fee: { amount: doc.fee.amount.map((x) => [x.denom, x.amount]), gas_limit: Number(doc.fee.gas) },
+      sign_doc: signDoc,
+      body_bytes: hex(tx.bodyBytes),
+      auth_info_bytes: hex(tx.authInfoBytes),
+      signature: hex(signature),
+      tx_raw: hex(TxPb.TxRaw.toBinary(tx.txRaw)),
+    };
+  }),
+};
+
+const aminoFile = join(dirname(fileURLToPath(import.meta.url)), "../../crates/injective/tests/vectors/amino.json");
+writeFileSync(aminoFile, JSON.stringify(aminoOut, null, 2) + "\n");
+console.log(`wrote ${aminoOut.cases.length} cases to ${aminoFile}`);
