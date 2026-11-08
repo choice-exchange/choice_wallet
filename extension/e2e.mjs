@@ -309,6 +309,23 @@ try {
   if ((await homeTokens()).length !== 2) throw new Error("hiding didn't hide");
   console.log("token filter: hidden by default, shown and hidden by hand, kept across a reopen");
 
+  // 4c. Add a token by contract, read from the real EVM side (the default JSON-RPC): an
+  // address that isn't a token is refused; LUMA, an ERC20 with no bank denom, joins the list.
+  await p.click("Manage");
+  await p.waitText("Hidden tokens stay in your account.");
+  await p.click("Add a token by contract");
+  await p.fill('input[aria-label="Token contract"]', 0, "0x2222222222222222222222222222222222222222");
+  await p.click("Add");
+  await p.waitText("That address isn't an ERC20 token.", 20000);
+  await p.fill('input[aria-label="Token contract"]', 0, "0xb0d94f200998997cf8175ae7ddf039927a8b3ef4");
+  await p.click("Add");
+  await p.waitText("EVM · 0xb0d9…3ef4", 20000);
+  await p.shot("09d-token-added");
+  await p.click("Back");
+  await p.waitText("LUMA");
+  if (await p.eval(`document.body.innerText.includes("EVM tokens may be missing")`)) throw new Error("the EVM endpoints didn't answer from the browser");
+  console.log("add token: a non-token refused, LUMA (EVM-only) added from the live EVM side");
+
   // 5. Send 1.5 INJ to an EVM address; the review shows the vault's decode.
   const THEM_EVM = "0x9d8A62f656a8d1615C1294fd71e9CFb3E4855A4F";
   await p.click("Send");

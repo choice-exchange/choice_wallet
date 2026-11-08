@@ -11,6 +11,8 @@ import {
   ChainError,
   cosmosTxHash,
   describeToken,
+  EvmRpc,
+  evmDenom,
   explorerTxUrl,
   Lcd,
   fetchPrices,
@@ -37,8 +39,9 @@ export interface SendDeps {
   /** Holds `choice_seen`: when Choice last priced each token (public data, no balances). */
   local: Store;
   session: Store;
-  /** The endpoints the user chose for a network (or the defaults). */
+  /** The endpoints the user chose for a network (or the defaults): LCD and EVM JSON-RPC. */
   endpoints(network: NetworkId): Promise<readonly string[]>;
+  evmEndpoints(network: NetworkId): Promise<readonly string[]>;
   /** Whether to show USD values (the user can turn them off). */
   prices(): Promise<boolean>;
 }
@@ -88,12 +91,37 @@ export function createSender(d: SendDeps) {
   let priceCache: { at: number; list: Promise<PriceList> } | null = null;
   const pairCache = new Map<NetworkId, { at: number; pairs: Promise<Map<string, string>> }>();
 
+  /** The erc20 module's token pairs (bank denom → ERC20 address), cached an hour. Empty
+   *  when the node can't say. */
+  function pairsFor(network: NetworkId, client: Lcd): Promise<Map<string, string>> {
+    const now = Date.now();
+    let pc = pairCache.get(network);
+    if (!pc || now - pc.at > PAIRS_TTL_MS) {
+      const entry = { at: now, pairs: client.tokenPairs() };
+      pairCache.set(network, entry);
+      entry.pairs.catch(() => {
+        if (pairCache.get(network) === entry) pairCache.delete(network);
+      });
+      pc = entry;
+    }
+    return pc.pairs.catch(() => new Map<string, string>());
+  }
+
+  type ChoiceView = {
+    prices: Map<string, string>;
+    onChoice: Set<string>;
+    /** Every address Choice priced within `SEEN_MS`. */
+    seen: Set<string>;
+    /** Choice's price for an address, now. */
+    priceOf(address: string): string | undefined;
+  };
+
   /** Choice's view of these denoms (mainnet only): the price to show, where it has one
    *  now, and whether it priced the token within `SEEN_MS` (for the token filter). Never
    *  an error: with no prices the wallet shows amounts alone. With USD values off, Choice
    *  isn't asked, and only what it said before counts. */
-  async function choiceFor(network: NetworkId, client: Lcd, denoms: Iterable<string>): Promise<{ prices: Map<string, string>; onChoice: Set<string> }> {
-    const out = { prices: new Map<string, string>(), onChoice: new Set<string>() };
+  async function choiceFor(network: NetworkId, client: Lcd, denoms: Iterable<string>): Promise<ChoiceView> {
+    const out: ChoiceView = { prices: new Map(), onChoice: new Set(), seen: new Set(), priceOf: () => undefined };
     if (network !== "mainnet") return out;
     const now = Date.now();
     const ask = await d.prices();
@@ -110,19 +138,7 @@ export function createSender(d: SendDeps) {
         if (priceCache === entry) priceCache = null;
       });
     }
-    let pc = pairCache.get(network);
-    if (!pc || now - pc.at > PAIRS_TTL_MS) {
-      const entry = { at: now, pairs: client.tokenPairs() };
-      pairCache.set(network, entry);
-      entry.pairs.catch(() => {
-        if (pairCache.get(network) === entry) pairCache.delete(network);
-      });
-      pc = entry;
-    }
-    const [list, pairs] = await Promise.all([
-      ask && priceCache ? priceCache.list.catch(() => null) : null,
-      pc.pairs.catch(() => new Map<string, string>()),
-    ]);
+    const [list, pairs] = await Promise.all([ask && priceCache ? priceCache.list.catch(() => null) : null, pairsFor(network, client)]);
     if (list) {
       for (const a of list.prices.keys()) seen[a] = now;
       await d.local.set({ choice_seen: seen });
@@ -134,7 +150,93 @@ export function createSender(d: SendDeps) {
       if (p) out.prices.set(dn, p);
       if (p || seen[a] !== undefined) out.onChoice.add(dn);
     }
+    out.seen = new Set(Object.keys(seen));
+    out.priceOf = (a) => list?.prices.get(a.toLowerCase());
     return out;
+  }
+
+  const evmClients = new Map<string, EvmRpc>();
+  async function evm(network: NetworkId): Promise<EvmRpc> {
+    const urls = await d.evmEndpoints(network);
+    const key = `${network} ${urls.join(" ")}`;
+    let c = evmClients.get(key);
+    if (!c) {
+      c = new EvmRpc(NETWORKS[network], urls, d.fetch);
+      evmClients.set(key, c);
+    }
+    return c;
+  }
+
+  const erc20Cache = new Map<string, Promise<Token | null>>();
+  /** An EVM-only token's description, from its contract (cached; null if not an ERC20). */
+  function erc20Token(network: NetworkId, rpc: EvmRpc, address: string): Promise<Token | null> {
+    const denom = evmDenom(address);
+    const key = `${network} ${denom}`;
+    let t = erc20Cache.get(key);
+    if (!t) {
+      t = rpc.erc20Metadata(address).then((m) => (m ? { denom, ...m, known: false } : null));
+      erc20Cache.set(key, t);
+      t.catch(() => erc20Cache.delete(key));
+    }
+    return t;
+  }
+
+  async function customTokens(network: NetworkId): Promise<string[]> {
+    const { custom_tokens } = (await d.local.get(["custom_tokens"])) as { custom_tokens?: Partial<Record<NetworkId, unknown>> };
+    const list = custom_tokens?.[network];
+    return Array.isArray(list) ? list.filter((a): a is string => typeof a === "string" && /^0x[0-9a-f]{40}$/.test(a)) : [];
+  }
+
+  /** ERC20s with no bank denom that this account holds (or added by hand). Candidates are
+   *  what Choice priced this week and the user's own additions; anything a bank denom
+   *  already covers (an `erc20:` denom or a token pair) is left to the bank list, so no
+   *  token shows twice. */
+  async function evmOnly(network: NetworkId, client: Lcd, account: AccountInfo, bank: readonly Balance[], choice: ChoiceView): Promise<Balance[]> {
+    const custom = await customTokens(network);
+    const candidates = new Set([...choice.seen, ...custom].map((a) => a.toLowerCase()));
+    candidates.delete("0x0000000000000000000000000000000000000000");
+    if (candidates.size === 0) return [];
+    const covered = new Set([...(await pairsFor(network, client)).values()].map((a) => a.toLowerCase()));
+    for (const b of bank) if (b.denom.startsWith("erc20:")) covered.add(b.denom.slice(6).toLowerCase());
+    const tokens = [...candidates].filter((a) => !covered.has(a));
+    if (tokens.length === 0) return [];
+    const rpc = await evm(network);
+    const holder = account.addresses[NETWORKS[network].evm];
+    if (!holder) return [];
+    const amounts = await rpc.erc20Balances(tokens, holder);
+    const out: Balance[] = [];
+    await Promise.all(
+      tokens.map(async (a, i) => {
+        const amount = amounts[i];
+        const mine = custom.includes(a);
+        if (amount === null || amount === undefined || (amount === 0n && !mine)) return;
+        const t = await erc20Token(network, rpc, a);
+        if (!t) return;
+        const p = choice.priceOf(a);
+        const base: Balance = { ...t, amount: amount.toString(), ...(choice.seen.has(a) || p ? { onChoice: true } : {}) };
+        out.push(p ? { ...base, priceUsd: p, usd: usdValue(base.amount, base.decimals, p) } : base);
+      }),
+    );
+    return out;
+  }
+
+  /** What a contract address is, for "add a token": the bank denom that already covers it,
+   *  or the EVM-only token it is. */
+  async function inspectToken(network: NetworkId, address: unknown): Promise<Result<{ denom: string; symbol: string }>> {
+    if (typeof address !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(address.trim())) return fail("invalid_address", "Enter a token contract address (0x…).");
+    const a = address.trim().toLowerCase();
+    if (a === "0x0000000000000000000000000000000000000000") return fail("invalid_address", "That's native INJ, already in your list.");
+    const client = await lcd(network);
+    try {
+      for (const [denom, pair] of await pairsFor(network, client)) {
+        if (pair.toLowerCase() === a) return { ok: true, result: { denom, symbol: (await token(network, client, denom)).symbol } };
+      }
+      const t = await erc20Token(network, await evm(network), a);
+      if (!t) return fail("not_a_token", "That address isn't an ERC20 token.");
+      return { ok: true, result: { denom: t.denom, symbol: t.symbol } };
+    } catch (e) {
+      return chainFailure(e);
+    }
   }
 
   function token(network: NetworkId, client: Lcd, denom: string): Promise<Token> {
@@ -159,7 +261,7 @@ export function createSender(d: SendDeps) {
 
   /** Every balance, sorted: INJ, the wallet's known tokens, then by USD value, then the rest
    *  by symbol. The UI filters. */
-  async function balances(network: NetworkId, account: AccountInfo): Promise<Result<{ network: NetworkId; balances: Balance[] }>> {
+  async function balances(network: NetworkId, account: AccountInfo): Promise<Result<{ network: NetworkId; balances: Balance[]; evmDown?: true }>> {
     const client = await lcd(network);
     try {
       const coins = await client.balances(address(network, account));
@@ -170,8 +272,16 @@ export function createSender(d: SendDeps) {
         const seen = choice.onChoice.has(b.denom) ? { onChoice: true } : {};
         return p ? { ...b, ...seen, priceUsd: p, usd: usdValue(b.amount, b.decimals, p) } : { ...b, ...seen };
       });
+      // EVM-only tokens: a failure here leaves the bank list standing.
+      let evmDown = false;
+      try {
+        out.push(...(await evmOnly(network, client, account, out, choice)));
+      } catch (e) {
+        if (!(e instanceof Unreachable || e instanceof ChainError)) throw e;
+        evmDown = true;
+      }
       out.sort((a, b) => rank(network, a) - rank(network, b) || (b.usd ?? -1) - (a.usd ?? -1) || a.symbol.localeCompare(b.symbol));
-      return { ok: true, result: { network, balances: out } };
+      return { ok: true, result: { network, balances: out, ...(evmDown ? { evmDown: true as const } : {}) } };
     } catch (e) {
       return chainFailure(e);
     }
@@ -209,6 +319,7 @@ export function createSender(d: SendDeps) {
     const client = await lcd(network);
     const max = req.amount === "max";
     if (typeof req.denom !== "string" || !req.denom) return fail("bad_request", "Pick a token.");
+    if (req.denom.startsWith("evm:")) return fail("not_yet", "Sending EVM-only tokens comes next.");
     if (!max && !(typeof req.amount === "string" && /^[0-9]+$/.test(req.amount) && BigInt(req.amount) > 0n)) {
       return fail("invalid_amount", "Enter an amount above zero.");
     }
@@ -330,7 +441,7 @@ export function createSender(d: SendDeps) {
     }
   }
 
-  return { balances, activity, prepare, confirm, status };
+  return { balances, activity, inspectToken, prepare, confirm, status };
 }
 
 function address(network: NetworkId, account: AccountInfo): string {

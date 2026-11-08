@@ -40,6 +40,7 @@ const NATIVE = "0x0000000000000000000000000000000000000000";
 export function priceAddress(denom: string, pairs: ReadonlyMap<string, string>): string | undefined {
   if (denom === "inj") return NATIVE;
   if (denom.startsWith("erc20:")) return denom.slice("erc20:".length).toLowerCase();
+  if (denom.startsWith("evm:")) return denom.slice("evm:".length).toLowerCase();
   return pairs.get(denom)?.toLowerCase();
 }
 

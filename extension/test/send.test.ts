@@ -65,10 +65,30 @@ const indexed = (height: number, from: string, to: string, amount: string) => ({
 const SIGNED = [indexed(100, ME, THEM, "1000000000000000000inj")];
 const RECEIVED = [indexed(120, THEM, ME, `2500000${USDT}`), indexed(90, THEM, ME, `7000000${SCAM}`)];
 
-/** A fake mainnet LCD. `balances` and `account` can be changed per test. */
-function chain(opts: { balances?: Record<string, bigint>; account?: boolean; gasUsed?: string; pricesDown?: boolean } = {}) {
+// EVM-only tokens (no bank denom): one Choice prices, one to add by hand, and a contract
+// that isn't a token. The USDT ERC20 (0x88f7…) is bank-backed through its token pair.
+const LUMA = "0xb0d94f200998997cf8175ae7ddf039927a8b3ef4";
+const ADDED = "0x1111111111111111111111111111111111111111";
+const NOT_A_TOKEN = "0x2222222222222222222222222222222222222222";
+const USDT_ERC20 = "0x88f7f2b685f9692caf8c478f5badf09ee9b1cc13";
+const abiString = (s: string) => {
+  const hex = Buffer.from(s).toString("hex");
+  return `0x${"20".padStart(64, "0")}${(hex.length / 2).toString(16).padStart(64, "0")}${hex.padEnd(64, "0")}`;
+};
+const ERC20: Record<string, { symbol: string; name: string; decimals: number }> = {
+  [LUMA]: { symbol: "LUMA", name: "Luma", decimals: 18 },
+  [ADDED]: { symbol: "TEST", name: "Test token", decimals: 6 },
+  [USDT_ERC20]: { symbol: "USDT", name: "Tether USD", decimals: 6 },
+};
+
+/** A fake mainnet LCD and EVM JSON-RPC. `balances`, `evm` and `account` can be changed per test. */
+function chain(opts: { balances?: Record<string, bigint>; evm?: Record<string, bigint>; account?: boolean; gasUsed?: string; pricesDown?: boolean } = {}) {
   const state = {
     balances: opts.balances ?? { inj: 5n * INJ },
+    evm: opts.evm ?? {},
+    evmDown: false,
+    /** Contracts asked for a balance on the EVM side. */
+    evmBalanceCalls: [] as string[],
     account: opts.account ?? true,
     broadcasts: [] as string[],
     simulations: 0,
@@ -77,10 +97,30 @@ function chain(opts: { balances?: Record<string, bigint>; account?: boolean; gas
     hosts: new Set<string>(),
   };
   const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status });
+  type Rpc = { id: number; method: string; params: { to: string; data: string }[] };
+  const rpc = (r: Rpc) => {
+    if (r.method === "eth_chainId") return { jsonrpc: "2.0", id: r.id, result: "0x6f0" };
+    const { to, data } = r.params[0]!;
+    const t = ERC20[to.toLowerCase()];
+    if (r.method !== "eth_call" || !t) return { jsonrpc: "2.0", id: r.id, error: { code: 3, message: "execution reverted" } };
+    if (data.startsWith("0x70a08231")) {
+      state.evmBalanceCalls.push(to.toLowerCase());
+      assert.equal(data.slice(34).toLowerCase(), ME_EVM.slice(2).toLowerCase());
+      return { jsonrpc: "2.0", id: r.id, result: `0x${(state.evm[to.toLowerCase()] ?? 0n).toString(16)}` };
+    }
+    const result = data === "0x95d89b41" ? abiString(t.symbol) : data === "0x06fdde03" ? abiString(t.name) : `0x${t.decimals.toString(16).padStart(64, "0")}`;
+    return { jsonrpc: "2.0", id: r.id, result };
+  };
   const fetch = async (input: string, init?: RequestInit) => {
     const url = new URL(input);
     state.hosts.add(url.host);
     const p = url.pathname;
+    if (init?.method === "POST" && p === "/") {
+      // EVM JSON-RPC.
+      if (state.evmDown) return new Response("down", { status: 503 });
+      const body = JSON.parse(String(init.body)) as Rpc | Rpc[];
+      return json(200, Array.isArray(body) ? body.map(rpc) : rpc(body));
+    }
     if (p.endsWith("/node_info")) return json(200, { default_node_info: { network: "injective-1" } });
     if (p === `/cosmos/auth/v1beta1/accounts/${ME}`) {
       return state.account
@@ -102,6 +142,7 @@ function chain(opts: { balances?: Record<string, bigint>; account?: boolean; gas
         prices: [
           { address: "0x0000000000000000000000000000000000000000", symbol: "INJ", priceUsd: "8" },
           { address: "0x88f7f2b685f9692caf8c478f5badf09ee9b1cc13", symbol: "USDT", priceUsd: "1" },
+          { address: LUMA, symbol: "LUMA", priceUsd: "0.002" },
         ],
       });
     }
@@ -289,12 +330,20 @@ test("settings: network and endpoints, https only", async () => {
   assert.deepEqual(s.lcd, s.lcdDefault);
   assert.equal(code(await service.handle({ type: "save_settings", network: "mainnet", lcd: ["http://lcd.example"] })), "invalid_endpoint");
   assert.equal(code(await service.handle({ type: "save_settings", network: "devnet", lcd: null })), "bad_request");
-  const saved = ok<{ lcd: Record<string, string[]> }>(await service.handle({ type: "save_settings", network: "mainnet", lcd: ["https://my-node.example/ "] }));
+  assert.equal(code(await service.handle({ type: "save_settings", network: "mainnet", lcd: null, evm: ["http://evm.example"] })), "invalid_endpoint");
+  const saved = ok<{ lcd: Record<string, string[]>; evm: Record<string, string[]>; evmDefault: Record<string, string[]> }>(
+    await service.handle({ type: "save_settings", network: "mainnet", lcd: ["https://my-node.example/ "], evm: ["https://my-evm.example"] }),
+  );
   assert.deepEqual(saved.lcd["mainnet"], ["https://my-node.example"]);
+  assert.deepEqual(saved.evm["mainnet"], ["https://my-evm.example"]);
+  assert.deepEqual(saved.evm["testnet"], saved.evmDefault["testnet"]);
   net.state.hosts.clear();
   ok(await service.handle({ type: "balances" }));
-  // Chain reads go only to the user's endpoint; the one other host is Choice's price list.
-  assert.deepEqual([...net.state.hosts].sort(), ["evm-api.choice.exchange", "my-node.example"]);
+  // Chain reads go only to the user's endpoints; the one other host is Choice's price list.
+  assert.deepEqual([...net.state.hosts].sort(), ["evm-api.choice.exchange", "my-evm.example", "my-node.example"]);
+  // Leaving `evm` out leaves it as it was.
+  const kept = ok<{ evm: Record<string, string[]> }>(await service.handle({ type: "save_settings", network: "mainnet", lcd: ["https://my-node.example"] }));
+  assert.deepEqual(kept.evm["mainnet"], ["https://my-evm.example"]);
   // Testnet: the status says so, and a mainnet node is refused (it serves injective-1).
   ok(await service.handle({ type: "save_settings", network: "testnet", lcd: null }));
   const st = ok<{ network: string }>(await service.handle({ type: "status" }));
@@ -339,7 +388,7 @@ test("a token Choice priced this week stays priced for the filter while Choice i
   const { service, local, session } = await wallet(net);
   ok(await service.handle({ type: "balances" }));
   const seen = local.data.get("choice_seen") as Record<string, number>;
-  assert.deepEqual(Object.keys(seen).sort(), ["0x0000000000000000000000000000000000000000", "0x88f7f2b685f9692caf8c478f5badf09ee9b1cc13"]);
+  assert.deepEqual(Object.keys(seen).sort(), ["0x0000000000000000000000000000000000000000", "0x88f7f2b685f9692caf8c478f5badf09ee9b1cc13", LUMA]);
 
   net.state.pricesDown = true;
   const restarted = ok<B>(await serviceOn(net, local, session).handle({ type: "balances" }));
@@ -413,4 +462,55 @@ test("activity: what it signed and what it received, merged, with how to show ea
   assert.equal(code(await service.handle({ type: "activity", page: "1" })), "bad_request");
   ok(await service.handle({ type: "lock" }));
   assert.equal(code(await service.handle({ type: "activity", page: 1 })), "locked");
+});
+
+test("EVM-only tokens: found through Choice's list or added by hand, never twice", async () => {
+  const net = chain({ balances: { inj: 5n * INJ, [USDT]: 2_500_000n }, evm: { [LUMA]: 3000n * INJ, [USDT_ERC20]: 2_500_000n } });
+  const { service, local } = await wallet(net);
+  type Row = { denom: string; symbol: string; amount: string; onChoice?: boolean; usd?: number };
+  const rows = async () => ok<{ balances: Row[]; evmDown?: true }>(await service.handle({ type: "balances" }));
+  const first = await rows();
+  assert.deepEqual(
+    first.balances.map((b) => [b.denom, b.symbol, b.amount, b.onChoice ?? false, b.usd]),
+    [
+      ["inj", "INJ", (5n * INJ).toString(), true, 40],
+      [USDT, "USDT", "2500000", true, 2.5],
+      [`evm:${LUMA}`, "LUMA", (3000n * INJ).toString(), true, 6],
+    ],
+  );
+  // The USDT ERC20 is the bank denom's own pair: never asked on the EVM side, never twice.
+  assert.deepEqual([...new Set(net.state.evmBalanceCalls)], [LUMA]);
+  assert.equal(first.evmDown, undefined);
+
+  // Added by hand: listed even when empty, and shown though the filter would hide it.
+  const added = ok<{ denom: string; symbol: string; filter: { shown: string[] } }>(
+    await service.handle({ type: "add_token", address: "0x1111111111111111111111111111111111111111" }),
+  );
+  assert.deepEqual([added.denom, added.symbol], [`evm:${ADDED}`, "TEST"]);
+  assert.ok(added.filter.shown.includes(`evm:${ADDED}`));
+  assert.deepEqual(local.data.get("custom_tokens"), { mainnet: [ADDED] });
+  const second = await rows();
+  assert.deepEqual(second.balances.at(-1), { denom: `evm:${ADDED}`, symbol: "TEST", name: "Test token", decimals: 6, known: false, amount: "0" });
+
+  // A contract a bank denom covers: that denom is shown, nothing is added.
+  const backed = ok<{ denom: string; filter: { shown: string[] } }>(await service.handle({ type: "add_token", address: USDT_ERC20 }));
+  assert.equal(backed.denom, USDT);
+  assert.ok(backed.filter.shown.includes(USDT));
+  assert.deepEqual(local.data.get("custom_tokens"), { mainnet: [ADDED] });
+
+  // Refused: not an address, the native coin, and a contract that isn't a token.
+  assert.equal(code(await service.handle({ type: "add_token", address: "0x123" })), "invalid_address");
+  assert.equal(code(await service.handle({ type: "add_token", address: "0x0000000000000000000000000000000000000000" })), "invalid_address");
+  assert.equal(code(await service.handle({ type: "add_token", address: NOT_A_TOKEN })), "not_a_token");
+
+  // The EVM side down: the bank list still comes back, flagged.
+  net.state.evmDown = true;
+  const down = await rows();
+  assert.equal(down.evmDown, true);
+  assert.deepEqual(down.balances.map((b) => b.denom), ["inj", USDT]);
+
+  // EVM-only sends come next: refused plainly, never sent as a bank message.
+  assert.equal(code(await service.handle({ type: "prepare_send", denom: `evm:${LUMA}`, to: ME, amount: "1" })), "not_yet");
+  ok(await service.handle({ type: "lock" }));
+  assert.equal(code(await service.handle({ type: "add_token", address: ADDED })), "locked");
 });

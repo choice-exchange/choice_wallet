@@ -12,6 +12,7 @@ export function SettingsView({ onDone, onLock, tabs }: { onDone: () => void; onL
   const [settings, setSettings] = useState<Settings | null>(null);
   const [net, setNet] = useState<NetworkId>("mainnet");
   const [text, setText] = useState("");
+  const [evmText, setEvmText] = useState("");
   const [prices, setPrices] = useState(true);
 
   useEffect(() => {
@@ -20,20 +21,36 @@ export function SettingsView({ onDone, onLock, tabs }: { onDone: () => void; onL
       setSettings(s);
       setNet(s.network);
       setText(s.lcd[s.network].join("\n"));
+      setEvmText(s.evm[s.network].join("\n"));
       setPrices(s.prices);
     });
   }, []);
 
   const pick = (n: NetworkId) => {
     setNet(n);
-    if (settings) setText(settings.lcd[n].join("\n"));
+    if (settings) {
+      setText(settings.lcd[n].join("\n"));
+      setEvmText(settings.evm[n].join("\n"));
+    }
   };
   async function save(e: FormEvent) {
     e.preventDefault();
     if (!settings) return;
-    const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
-    const isDefault = lines.join("\n") === settings.lcdDefault[net].join("\n");
-    if (await run({ type: "save_settings", network: net, lcd: isDefault ? null : lines, prices })) onDone();
+    const lines = (t: string) => t.split("\n").map((l) => l.trim()).filter(Boolean);
+    const lcd = lines(text);
+    const evm = lines(evmText);
+    const same = (a: string[], b: string[]) => a.join("\n") === b.join("\n");
+    if (
+      await run({
+        type: "save_settings",
+        network: net,
+        lcd: same(lcd, settings.lcdDefault[net]) ? null : lcd,
+        evm: same(evm, settings.evmDefault[net]) ? null : evm,
+        prices,
+      })
+    ) {
+      onDone();
+    }
   }
 
   return (
@@ -63,17 +80,42 @@ export function SettingsView({ onDone, onLock, tabs }: { onDone: () => void; onL
         <div className="eyebrow" style={{ marginTop: 8 }}>
           Endpoints
         </div>
+        <label className="meta" htmlFor="lcd-endpoints">
+          Injective (LCD)
+        </label>
         <textarea
+          id="lcd-endpoints"
           className="textarea"
-          rows={4}
+          rows={3}
           spellCheck={false}
           aria-label="Endpoints"
           value={text}
           onChange={(e) => setText(e.target.value)}
         />
+        <label className="meta" htmlFor="evm-endpoints">
+          EVM (JSON-RPC)
+        </label>
+        <textarea
+          id="evm-endpoints"
+          className="textarea"
+          rows={2}
+          spellCheck={false}
+          aria-label="EVM endpoints"
+          value={evmText}
+          onChange={(e) => setEvmText(e.target.value)}
+        />
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
           <span className="meta">Tried in order, one per line.</span>
-          <button type="button" className="pill" disabled={!settings} onClick={() => settings && setText(settings.lcdDefault[net].join("\n"))}>
+          <button
+            type="button"
+            className="pill"
+            disabled={!settings}
+            onClick={() => {
+              if (!settings) return;
+              setText(settings.lcdDefault[net].join("\n"));
+              setEvmText(settings.evmDefault[net].join("\n"));
+            }}
+          >
             Use the defaults
           </button>
         </div>

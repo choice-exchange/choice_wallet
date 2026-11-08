@@ -56,11 +56,30 @@ export async function describeToken(lcd: Lcd, network: NetworkId, denom: string)
 
 /** `factory/inj1abc…xyz/sub` → something that fits on one line. */
 export function shortDenom(denom: string): string {
+  const evm = evmAddress(denom);
+  if (evm) return `${evm.slice(0, 6)}…${evm.slice(-4)}`;
   if (denom.length <= 20) return denom;
   return `${denom.slice(0, 12)}…${denom.slice(-6)}`;
 }
 
+/** The wallet's own key for an ERC20 that has no bank denom (an EVM-only token):
+ *  `evm:` and the lowercase contract address. Never a bank denom, so it can't be sent
+ *  with a bank message by mistake. */
+export function evmDenom(address: string): string {
+  if (!/^0x[0-9a-fA-F]{40}$/.test(address)) throw new RangeError(`not an address: ${address}`);
+  return `evm:${address.toLowerCase()}`;
+}
+
+/** The contract address behind an `evm:` key, or null for a bank denom. */
+export function evmAddress(denom: string): string | null {
+  return /^evm:0x[0-9a-f]{40}$/.test(denom) ? denom.slice(4) : null;
+}
+
 /** Strip what can disguise text (control, bidi and zero-width characters) and cap the length. */
+export function cleanText(s: string, max: number): string {
+  return clean(s, max);
+}
+
 function clean(s: string, max: number): string {
   const t = s.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, "").trim();
   return t.length > max ? `${t.slice(0, max - 1)}…` : t;

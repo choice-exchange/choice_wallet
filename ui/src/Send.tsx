@@ -5,7 +5,7 @@ import { useEffect, useState, type FormEvent } from "react";
 
 import { useBackend } from "./backend";
 import { CheckIcon, ChevronDownIcon, ClockIcon, CloseIcon, ExternalIcon } from "./icons";
-import { BackBar, Callout, formatUsd, Screen, shortAddress } from "./kit";
+import { BackBar, Callout, formatUsd, Screen, shortAddress, tokenSub } from "./kit";
 import type { Balance, Coin, DecodedMsg, NetworkId, SendReview, Sent, TxState } from "./protocol";
 import { useRequest } from "./request";
 import { TokenMark } from "./TokenMark";
@@ -47,7 +47,7 @@ export function SendForm({
               <TokenMark denom={b.denom} symbol={b.symbol} known={b.known} />
               <span className="name">
                 <span className="symbol">{b.symbol}</span>
-                <span className={b.known ? "sub" : "sub denom"}>{b.known ? b.name : shortDenom(b.denom)}</span>
+                <span className={b.known ? "sub" : "sub denom"}>{tokenSub(b)}</span>
               </span>
               <span className="amount">{formatShort(b.amount, b.decimals)}</span>
             </button>

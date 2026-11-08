@@ -45,6 +45,8 @@ type Endpoints = Partial<Record<NetworkId, string[]>>;
 const DENOM = /^[a-zA-Z][a-zA-Z0-9/:._-]{2,127}$/;
 /** Each of the filter's lists keeps at most this many denoms. */
 const MAX_CHOICES = 500;
+/** Tokens added by hand, per network. */
+const MAX_CUSTOM = 100;
 
 /** A filter from the UI or from storage, checked: null if it isn't one. */
 function tokenFilterFrom(v: unknown): TokenFilter | null {
@@ -79,12 +81,41 @@ export function createService(d: Deps) {
     return endpoints?.[net] ?? [...NETWORKS[net].lcd];
   }
 
+  async function evmEndpoints(net: NetworkId): Promise<string[]> {
+    const { evm_endpoints } = (await d.local.get(["evm_endpoints"])) as { evm_endpoints?: Endpoints };
+    return evm_endpoints?.[net] ?? [...NETWORKS[net].evmRpc];
+  }
+
   async function showPrices(): Promise<boolean> {
     const { prices } = await d.local.get(["prices"]);
     return prices !== false;
   }
 
-  const sender = createSender({ vault: d.vault, fetch: d.fetch, local: d.local, session: d.session, endpoints, prices: showPrices });
+  const sender = createSender({ vault: d.vault, fetch: d.fetch, local: d.local, session: d.session, endpoints, evmEndpoints, prices: showPrices });
+
+  /** Add a token by contract address: an EVM-only token joins the list (kept per network,
+   *  at most `MAX_CUSTOM`), and either way the token is shown even if the filter would
+   *  hide it, since the user asked for it. */
+  async function addToken(address: unknown): Promise<UiResponse<{ denom: string; symbol: string; filter: TokenFilter }>> {
+    const net = await network();
+    const found = await sender.inspectToken(net, address);
+    if (!found.ok) return found;
+    const { denom } = found.result;
+    if (denom.startsWith("evm:")) {
+      const { custom_tokens } = (await d.local.get(["custom_tokens"])) as { custom_tokens?: Partial<Record<NetworkId, string[]>> };
+      const list = Array.isArray(custom_tokens?.[net]) ? custom_tokens[net] : [];
+      const a = denom.slice(4);
+      if (!list.includes(a)) {
+        if (list.length >= MAX_CUSTOM) return err("too_many", `At most ${MAX_CUSTOM} added tokens.`);
+        await d.local.set({ custom_tokens: { ...(custom_tokens ?? {}), [net]: [...list, a] } });
+      }
+    }
+    const f = await tokenFilter(net);
+    const next = { ...f, hidden: f.hidden.filter((x) => x !== denom), shown: f.shown.includes(denom) ? f.shown : [...f.shown, denom] };
+    const saved = await saveTokenFilter(next);
+    if (!saved.ok) return saved;
+    return { ok: true, result: { ...found.result, filter: saved.result } };
+  }
 
   async function tokenFilter(net: NetworkId): Promise<TokenFilter> {
     const { token_filter } = (await d.local.get(["token_filter"])) as { token_filter?: Partial<Record<NetworkId, unknown>> };
@@ -158,26 +189,39 @@ export function createService(d: Deps) {
         network: await network(),
         lcd: { mainnet: await endpoints("mainnet"), testnet: await endpoints("testnet") },
         lcdDefault: { mainnet: [...NETWORKS.mainnet.lcd], testnet: [...NETWORKS.testnet.lcd] },
+        evm: { mainnet: await evmEndpoints("mainnet"), testnet: await evmEndpoints("testnet") },
+        evmDefault: { mainnet: [...NETWORKS.mainnet.evmRpc], testnet: [...NETWORKS.testnet.evmRpc] },
         prices: await showPrices(),
       },
     };
   }
 
-  async function saveSettings(net: unknown, lcd: unknown, prices: unknown): Promise<UiResponse<Settings>> {
+  /** A network's endpoint list after a change: `null` is the defaults; `undefined` leaves it. */
+  function nextEndpoints(all: Endpoints, net: NetworkId, urls: unknown): Endpoints | UiResponse<never> {
+    if (urls === undefined) return all;
+    const next = { ...all };
+    if (urls === null) {
+      delete next[net];
+      return next;
+    }
+    if (!Array.isArray(urls) || !urls.every((u) => typeof u === "string")) return err("bad_request", "Endpoints must be a list.");
+    try {
+      next[net] = [...new Pool(urls as string[], { fetch: d.fetch, identify: async () => {} }).urls];
+    } catch (e) {
+      return err("invalid_endpoint", e instanceof Error ? `${e.message[0]?.toUpperCase()}${e.message.slice(1)}.` : "Invalid endpoint.");
+    }
+    return next;
+  }
+
+  async function saveSettings(net: unknown, lcd: unknown, evm: unknown, prices: unknown): Promise<UiResponse<Settings>> {
     if (!isNetworkId(net)) return err("bad_request", "Unknown network.");
     if (prices !== undefined && typeof prices !== "boolean") return err("bad_request", "prices must be true or false.");
-    const all = ((await d.local.get(["endpoints"])) as { endpoints?: Endpoints }).endpoints ?? {};
-    if (lcd === null) {
-      delete all[net];
-    } else {
-      if (!Array.isArray(lcd) || !lcd.every((u) => typeof u === "string")) return err("bad_request", "Endpoints must be a list.");
-      try {
-        all[net] = [...new Pool(lcd as string[], { fetch: d.fetch, identify: async () => {} }).urls];
-      } catch (e) {
-        return err("invalid_endpoint", e instanceof Error ? `${e.message[0]?.toUpperCase()}${e.message.slice(1)}.` : "Invalid endpoint.");
-      }
-    }
-    await d.local.set({ network: net, endpoints: all, ...(prices === undefined ? {} : { prices }) });
+    const stored = (await d.local.get(["endpoints", "evm_endpoints"])) as { endpoints?: Endpoints; evm_endpoints?: Endpoints };
+    const lcdAll = nextEndpoints(stored.endpoints ?? {}, net, lcd);
+    if ("ok" in lcdAll) return lcdAll as UiResponse<never>;
+    const evmAll = nextEndpoints(stored.evm_endpoints ?? {}, net, evm);
+    if ("ok" in evmAll) return evmAll as UiResponse<never>;
+    await d.local.set({ network: net, endpoints: lcdAll, evm_endpoints: evmAll, ...(prices === undefined ? {} : { prices }) });
     return settings();
   }
 
@@ -211,9 +255,14 @@ export function createService(d: Deps) {
       case "settings":
         return settings();
       case "save_settings":
-        return saveSettings(r.network, r.lcd, r.prices);
+        return saveSettings(r.network, r.lcd, r.evm, r.prices);
       case "save_token_filter":
         return saveTokenFilter(r.filter);
+      case "add_token": {
+        const a = await active();
+        if ("ok" in a) return a;
+        return addToken(r.address);
+      }
       case "balances":
       case "activity":
       case "prepare_send":

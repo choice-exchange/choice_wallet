@@ -8,7 +8,7 @@ import { ActivityView } from "./Activity";
 import mark from "./assets/choice-mark.svg";
 import { useBackend } from "./backend";
 import { ActivityIcon, CheckIcon, ChevronRightIcon, CopyIcon, EyeOffIcon, LockIcon, ReceiveIcon, SendIcon, SettingsIcon, WalletIcon } from "./icons";
-import { BackBar, Callout, formatUsd, Screen, Segmented, shortAddress } from "./kit";
+import { BackBar, Callout, formatUsd, Screen, Segmented, shortAddress, tokenSub } from "./kit";
 import type { Balance, SendReview, Sent, Status, TokenFilter } from "./protocol";
 import { QrCode } from "./QrCode";
 import { useRequest } from "./request";
@@ -58,6 +58,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
   const [balances, setBalances] = useState<Balance[] | null>(null);
   const [filter, setFilter] = useState<TokenFilter>(DEFAULT_FILTER);
   const [prices, setPrices] = useState(true);
+  const [evmDown, setEvmDown] = useState(false);
   const [refresh, setRefresh] = useState(0);
   const { run, error, setError } = useRequest();
 
@@ -72,6 +73,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
         setBalances(r.balances);
         setFilter(r.filter);
         setPrices(r.prices);
+        setEvmDown(r.evmDown === true);
       }
     });
     return () => {
@@ -106,6 +108,20 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
         }
       });
   };
+  /** Add a token by contract; null when it worked, else what went wrong. */
+  const addToken = async (contract: string): Promise<string | null> => {
+    await saving.current;
+    const r = await backend.send({ type: "add_token", address: contract });
+    if (!r.ok) return r.error.message;
+    setFilter(r.result.filter);
+    const b = await backend.send({ type: "balances" });
+    if (b.ok) {
+      setBalances(b.result.balances);
+      setFilter(b.result.filter);
+      setEvmDown(b.result.evmDown === true);
+    }
+    return null;
+  };
   const account = status.accounts[0];
   const address = account?.addresses[COSMOS] ?? "";
   const sorted = balances ? applyFilter(balances, filter, NETWORKS[status.network].feeDenom) : null;
@@ -122,13 +138,15 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
           network={status.network}
           prices={prices}
           onChange={changeFilter}
+          onAdd={addToken}
           onBack={() => setView({ name: "home" })}
         />
       );
     case "send":
       return (
         <SendForm
-          balances={sorted?.shown ?? []}
+          // EVM-only tokens send through the EVM side, which comes next.
+          balances={(sorted?.shown ?? []).filter((b) => !b.denom.startsWith("evm:"))}
           denom={view.denom}
           onReview={(review, entered, denom) => setView({ name: "review", review, entered, denom })}
           onBack={home}
@@ -227,11 +245,16 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
           ) : (
             <div className="token-list">
               {sorted.shown.map((b) => (
-                <button key={b.denom} className="token" title={b.denom} onClick={() => setView({ name: "send", denom: b.denom })}>
+                <button
+                  key={b.denom}
+                  className="token"
+                  title={b.denom}
+                  onClick={() => setView(b.denom.startsWith("evm:") ? { name: "send" } : { name: "send", denom: b.denom })}
+                >
                   <TokenMark denom={b.denom} symbol={b.symbol} known={b.known} />
                   <span className="name">
                     <span className="symbol">{b.symbol}</span>
-                    <span className={b.known ? "sub" : "sub denom"}>{b.known ? b.name : shortDenom(b.denom)}</span>
+                    <span className={b.known ? "sub" : "sub denom"}>{tokenSub(b)}</span>
                   </span>
                   <span className="value">
                     <span className="amount">{formatShort(b.amount, b.decimals)}</span>
@@ -248,6 +271,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
               )}
             </div>
           )}
+          {evmDown && <p className="meta warn">EVM tokens may be missing: no EVM endpoint answered.</p>}
           <p className="footnote">{totalUsd === undefined ? "Pre-alpha. Not for real funds." : "Prices from Choice. Pre-alpha. Not for real funds."}</p>
         </Screen>
       );

@@ -307,7 +307,11 @@ button.token:hover { background: rgba(255, 255, 255, 0.03); }
 .link:hover { color: var(--gold); }
 .hidden-row { display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 8px; margin: 2px -8px 0; border: 0; border-radius: var(--radius-panel); background: transparent; color: var(--dim); font-size: 13px; font-weight: 500; }
 .hidden-row:hover { background: rgba(255, 255, 255, 0.03); color: var(--muted); }
-.hidden-row svg:last-child { margin-left: auto; }
+.hidden-row svg:last-child:not(:first-child) { margin-left: auto; }
+.add-token { display: flex; flex-direction: column; gap: 10px; }
+.add-token-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.add-token-actions .btn { height: 44px; }
+.meta.warn { color: var(--warning); }
 
 .flag.red { color: var(--negative); background: rgba(251, 113, 133, 0.1); }
 

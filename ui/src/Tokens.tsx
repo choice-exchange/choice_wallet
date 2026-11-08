@@ -1,10 +1,11 @@
 // Tokens: the filter that keeps junk off the lists, and a show/hide switch per token.
 // Changes apply at once.
 
-import { formatShort, NETWORKS, shortDenom } from "@choice-wallet/chain";
+import { formatShort, NETWORKS } from "@choice-wallet/chain";
+import { useState, type FormEvent } from "react";
 
-import { EyeIcon, EyeOffIcon } from "./icons";
-import { BackBar, formatUsd, Screen, Segmented, Switch } from "./kit";
+import { EyeIcon, EyeOffIcon, PlusIcon } from "./icons";
+import { BackBar, formatUsd, Screen, Segmented, Switch, tokenSub } from "./kit";
 import type { Balance, NetworkId, TokenFilter } from "./protocol";
 import { applyFilter, flip, type HiddenWhy } from "./tokenFilter";
 import { TokenMark } from "./TokenMark";
@@ -17,6 +18,7 @@ export function TokensView({
   network,
   prices,
   onChange,
+  onAdd,
   onBack,
 }: {
   balances: Balance[];
@@ -24,6 +26,8 @@ export function TokensView({
   network: NetworkId;
   prices: boolean;
   onChange: (f: TokenFilter) => void;
+  /** Add a token by contract: null when it worked, else what went wrong. */
+  onAdd: (contract: string) => Promise<string | null>;
   onBack: () => void;
 }) {
   const fee = NETWORKS[network].feeDenom;
@@ -42,7 +46,7 @@ export function TokensView({
           {b.symbol}
           {why && <span className={why === "unlisted" ? "flag" : "flag quiet"}>{WHY[why]}</span>}
         </span>
-        <span className={b.known ? "sub" : "sub denom"}>{b.known ? b.name : shortDenom(b.denom)}</span>
+        <span className={b.known ? "sub" : "sub denom"}>{tokenSub(b)}</span>
       </span>
       <span className="value">
         <span className="amount">{formatShort(b.amount, b.decimals)}</span>
@@ -84,7 +88,60 @@ export function TokensView({
           <div className="token-list">{hidden.map((h) => row(h.balance, h.why))}</div>
         </>
       )}
+      <AddToken onAdd={onAdd} />
       <p className="footnote">Hidden tokens stay in your account.</p>
     </Screen>
+  );
+}
+
+/** Add a token by its contract address: for an ERC20 the wallet doesn't find by itself. */
+function AddToken({ onAdd }: { onAdd: (contract: string) => Promise<string | null> }) {
+  const [open, setOpen] = useState(false);
+  const [contract, setContract] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  if (!open) {
+    return (
+      <button className="hidden-row" onClick={() => setOpen(true)}>
+        <PlusIcon size={16} />
+        Add a token by contract
+      </button>
+    );
+  }
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    const problem = await onAdd(contract.trim());
+    setBusy(false);
+    if (problem) {
+      setError(problem);
+    } else {
+      setContract("");
+      setOpen(false);
+    }
+  }
+  return (
+    <form className="well add-token" onSubmit={(e) => void submit(e)}>
+      <div className="eyebrow">Add a token</div>
+      <input
+        className="input mono"
+        placeholder="0x… token contract"
+        aria-label="Token contract"
+        spellCheck={false}
+        autoFocus
+        value={contract}
+        onChange={(e) => setContract(e.target.value)}
+      />
+      {error && <p className="error">{error}</p>}
+      <div className="add-token-actions">
+        <button type="button" className="btn btn-quiet" onClick={() => setOpen(false)}>
+          Cancel
+        </button>
+        <button className="btn btn-gold" disabled={busy || !contract.trim()}>
+          {busy ? "Checking…" : "Add"}
+        </button>
+      </div>
+    </form>
   );
 }

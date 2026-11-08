@@ -25,11 +25,15 @@ export type UiRequest =
   | { type: "unlock"; password: string }
   | { type: "lock" }
   | { type: "settings" }
-  /** Switch to `network`, with these LCD endpoints for it (`null`: the defaults). */
-  | { type: "save_settings"; network: NetworkId; lcd: string[] | null; prices?: boolean }
+  /** Switch to `network`, with these LCD and EVM endpoints for it (`null`: the defaults;
+   *  left out: unchanged). */
+  | { type: "save_settings"; network: NetworkId; lcd: string[] | null; evm?: string[] | null; prices?: boolean }
   | { type: "balances" }
   /** Which tokens the current network's lists show (see `TokenFilter`). */
   | { type: "save_token_filter"; filter: TokenFilter }
+  /** Add a token by its contract address (0x…): an ERC20 with no bank denom joins the
+   *  list; one a bank denom covers is just shown. */
+  | { type: "add_token"; address: string }
   /** One page (from 1) of the account's activity, from the node's tx index. */
   | { type: "activity"; page: number }
   /** `amount` in base units, or "max" (the fee token: everything but the fee). */
@@ -167,6 +171,9 @@ export type Settings = {
   lcd: Record<NetworkId, string[]>;
   /** The wallet's defaults per network. */
   lcdDefault: Record<NetworkId, string[]>;
+  /** EVM JSON-RPC endpoints in use per network, and the defaults. */
+  evm: Record<NetworkId, string[]>;
+  evmDefault: Record<NetworkId, string[]>;
   /** Show USD values (Choice's price index). */
   prices: boolean;
 };
@@ -182,8 +189,11 @@ export type Replies = {
   lock: Status;
   settings: Settings;
   save_settings: Settings;
-  /** Every balance; the UI applies `filter`. `prices` is the USD values setting. */
-  balances: { network: NetworkId; balances: Balance[]; filter: TokenFilter; prices: boolean };
+  /** Every balance; the UI applies `filter`. `prices` is the USD values setting. EVM-only
+   *  tokens (denom `evm:0x…`) are in the list; `evmDown` says the EVM endpoints didn't
+   *  answer, so they may be missing. */
+  balances: { network: NetworkId; balances: Balance[]; filter: TokenFilter; prices: boolean; evmDown?: true };
+  add_token: { denom: string; symbol: string; filter: TokenFilter };
   save_token_filter: TokenFilter;
   activity: ActivityPage;
   prepare_send: SendReview;
