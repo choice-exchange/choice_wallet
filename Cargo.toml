@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/evm", "crates/injective"]
+members = ["crates/core", "crates/cosmos", "crates/evm", "crates/injective"]
 # Dev tools have their own lockfiles, so their dependencies never enter the wallet's.
 exclude = ["tools/protogen"]
 
@@ -13,6 +13,7 @@ repository = "https://github.com/choice-exchange/choice_wallet"
 
 [workspace.dependencies]
 choice-wallet-core = { path = "crates/core" }
+choice-wallet-cosmos = { path = "crates/cosmos" }
 choice-wallet-evm = { path = "crates/evm" }
 choice-wallet-injective = { path = "crates/injective" }
 
@@ -26,7 +27,7 @@ chacha20poly1305 = { version = "0.11.0", default-features = false, features = ["
 getrandom = "0.4.3"
 k256 = { version = "0.14.0", default-features = false, features = ["ecdsa", "std"] }
 prost = { version = "0.14.4", default-features = false, features = ["std", "derive"] }
-# JSON inside transactions: CosmWasm messages now, amino JSON and EIP-712 next.
+# JSON inside transactions: CosmWasm messages, amino JSON, EIP-712.
 serde = { version = "1.0.229", default-features = false, features = ["std", "derive"] }
 serde_json = { version = "1.0.154", default-features = false, features = ["std", "raw_value"] }
 sha2 = { version = "0.11.1", default-features = false }

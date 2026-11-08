@@ -1,10 +1,10 @@
-//! Dev tool for `choice-wallet-injective`'s protobuf types.
+//! Dev tool for `choice-wallet-cosmos`'s protobuf types.
 //!
 //! - `protogen vendor NAME@VERSION=DIR ...` copies the import closure of [`ROOTS`] from the
-//!   given include directories (searched in order) into `crates/injective/proto`, and writes
+//!   given include directories (searched in order) into `crates/cosmos/proto`, and writes
 //!   `proto/SOURCES.md` with each file's origin and SHA-256.
 //! - `protogen gen` compiles the vendored files (and nothing else) into
-//!   `crates/injective/src/proto`. The output is committed; wallet builds never run this.
+//!   `crates/cosmos/src/proto`. The output is committed; wallet builds never run this.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -22,14 +22,12 @@ const ROOTS: &[&str] = &[
     "cosmos/feegrant/v1beta1/feegrant.proto",
     "cosmos/feegrant/v1beta1/tx.proto",
     "cosmos/distribution/v1beta1/tx.proto",
+    "cosmos/crypto/secp256k1/keys.proto",
     "cosmwasm/wasm/v1/tx.proto",
-    "injective/crypto/v1beta1/ethsecp256k1/keys.proto",
-    "injective/tokenfactory/v1beta1/tx.proto",
-    "injective/types/v1beta1/tx_ext.proto",
 ];
 
 fn crate_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../crates/injective")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../crates/cosmos")
 }
 
 fn main() {

@@ -2,8 +2,8 @@
 //! to `signAmino`.
 //!
 //! The chain rebuilds the amino JSON from the protobuf transaction (cosmos-sdk `x/tx`
-//! aminojson) and checks the signature against keccak256 of it, so the bytes here follow
-//! that encoder exactly:
+//! aminojson) and checks the signature against it, so the bytes here follow that encoder
+//! exactly:
 //!
 //! - Object keys sorted at every level; fields with zero values left out unless the proto
 //!   marks them `dont_omitempty` (`account_number`, `sequence`, `chain_id`, `memo`, `fee`,
@@ -18,15 +18,15 @@
 //! [`from_tx`] for the wallet's own transactions (built with
 //! [`crate::builder::amino_request`]), and [`decode_sign_doc`] for a dapp's StdSignDoc.
 
-use choice_wallet_core::{EthAddress, PrivateKey, PublicKey};
+use choice_wallet_core::{PrivateKey, PublicKey};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use crate::Error;
-use crate::chain::Network;
+use crate::chain::Chain;
 use crate::cosmwasm;
 use crate::direct::{self, Decoded, Request};
-use crate::msg::{Coin, JsonCoin, Msg};
+use crate::msg::{Coin, JsonCoin, Msg, coins_from_json};
 use crate::proto::cosmos::tx::signing::v1beta1::SignMode;
 
 /// The fee of an amino transaction.
@@ -45,6 +45,7 @@ pub struct AminoFee {
 pub struct AminoTx {
     sign_bytes: Vec<u8>,
     signer: [u8; 33],
+    chain: Chain,
     tx: Option<Decoded>,
     /// The chain ID.
     pub chain_id: String,
@@ -68,17 +69,17 @@ impl AminoTx {
         &self.sign_bytes
     }
 
-    /// Sign with a software key: keccak256 of [`Self::sign_bytes`], 64 bytes `r || s`.
+    /// Sign with a software key, as the chain's key type signs: 64 bytes `r || s`.
     pub fn sign(&self, key: &PrivateKey) -> Result<[u8; 64], Error> {
         if key.public_key().compressed() != self.signer {
             return Err(Error::KeyMismatch);
         }
-        Ok(key.sign_keccak256(&self.sign_bytes))
+        Ok(self.chain.sign(key, &self.sign_bytes))
     }
 
     /// Check a signature a hardware wallet returned against the signer key and these bytes.
     pub fn verify(&self, signature: &[u8; 64]) -> bool {
-        PublicKey::from_sec1_bytes(&self.signer).is_ok_and(|pk| pk.verify_keccak256(&self.sign_bytes, signature))
+        PublicKey::from_sec1_bytes(&self.signer).is_ok_and(|pk| self.chain.verify(&pk, &self.sign_bytes, signature))
     }
 
     /// `TxRaw` ready to broadcast, for a transaction built with [`from_tx`]. `None` for a
@@ -90,8 +91,8 @@ impl AminoTx {
 
 /// Check one of the wallet's own LEGACY_AMINO_JSON transactions and derive its amino JSON.
 /// Every message must be a type we can render; anything else is refused.
-pub fn from_tx(request: Request, network: &Network, signer: &PublicKey) -> Result<AminoTx, Error> {
-    let d = direct::decode_with_mode(request, network.chain_id, signer, SignMode::LegacyAminoJson)?;
+pub fn from_tx(request: Request, chain: &Chain, signer: &PublicKey) -> Result<AminoTx, Error> {
+    let d = direct::decode_with_mode(request, chain, signer, SignMode::LegacyAminoJson)?;
     let msgs = d.messages().iter().map(render_msg).collect::<Result<Vec<_>, _>>()?;
     let fee = d.fee();
     let mut fee_json = Map::new();
@@ -116,6 +117,7 @@ pub fn from_tx(request: Request, network: &Network, signer: &PublicKey) -> Resul
     Ok(AminoTx {
         sign_bytes: canonical(&Value::Object(doc))?.into_bytes(),
         signer: *d.signer_key(),
+        chain: *chain,
         chain_id: d.chain_id().into(),
         account_number: d.account_number(),
         sequence: d.sequence(),
@@ -181,20 +183,20 @@ struct MsgExecuteContractValue {
     sender: String,
 }
 
-/// Check a dapp's `signAmino` StdSignDoc (JSON) for `network`, signed by `signer`.
+/// Check a dapp's `signAmino` StdSignDoc (JSON) for `chain`, signed by `signer`.
 ///
 /// What gets signed is the canonical form of this document. If the dapp then broadcasts a
 /// transaction whose amino JSON differs, the chain rejects the signature.
-pub fn decode_sign_doc(json: &str, network: &Network, signer: &PublicKey) -> Result<AminoTx, Error> {
+pub fn decode_sign_doc(json: &str, chain: &Chain, signer: &PublicKey) -> Result<AminoTx, Error> {
     let value: Value = serde_json::from_str(json).map_err(|e| Error::Amino(e.to_string()))?;
     let doc: StdSignDoc = serde_json::from_value(value.clone()).map_err(|e| Error::Amino(e.to_string()))?;
-    if doc.chain_id != network.chain_id {
+    if doc.chain_id != chain.chain_id {
         return Err(Error::WrongChain {
-            expected: network.chain_id.into(),
+            expected: chain.chain_id.into(),
             got: doc.chain_id,
         });
     }
-    let signer_addr = signer.eth_address().to_inj();
+    let signer_addr = chain.address(signer);
     if doc.msgs.is_empty() {
         return Err(Error::NoMessages);
     }
@@ -214,11 +216,12 @@ pub fn decode_sign_doc(json: &str, network: &Network, signer: &PublicKey) -> Res
         return Err(Error::FeePayer);
     }
     if let Some(g) = &doc.fee.granter {
-        EthAddress::parse_bech32(g, "inj").map_err(|_| Error::Address(g.clone()))?;
+        chain.check_address(g)?;
     }
     Ok(AminoTx {
         sign_bytes: canonical(&value)?.into_bytes(),
         signer: signer.compressed(),
+        chain: *chain,
         tx: None,
         chain_id: doc.chain_id,
         account_number: parse_u64(&doc.account_number)?,
@@ -311,7 +314,7 @@ fn coins_json(c: &[Coin]) -> Value {
 }
 
 fn coins(c: Vec<JsonCoin>) -> Result<Vec<Coin>, Error> {
-    c.into_iter().map(JsonCoin::into_coin).collect()
+    coins_from_json(c)
 }
 
 fn parse_u64(s: &str) -> Result<u64, Error> {

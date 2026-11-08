@@ -1,9 +1,12 @@
 //! Messages decoded from a transaction body.
 
 use prost::Name;
+use serde::Deserialize;
+use serde_json::value::RawValue;
 
 use crate::Error;
 use crate::canonical::decode_exact;
+use crate::chain::Chain;
 use crate::cosmwasm::{self, ContractCall};
 use crate::proto::cosmos::bank::v1beta1::{self as bank, MsgSend};
 use crate::proto::cosmos::base::v1beta1::Coin as ProtoCoin;
@@ -11,11 +14,12 @@ use crate::proto::cosmos::{
     authz::v1beta1 as authz, distribution::v1beta1 as distribution, feegrant::v1beta1 as feegrant,
 };
 use crate::proto::cosmwasm::wasm::v1::{self as wasm, MsgExecuteContract};
-use crate::proto::injective::tokenfactory::v1beta1 as tokenfactory;
 use crate::wkt::Any;
 
-/// A bank coin with a valid denom and a canonical positive amount.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+/// A bank coin with a valid denom and a canonical positive amount. In JSON it reads
+/// `{"denom": …, "amount": …}`, with the same checks.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+#[serde(try_from = "JsonCoin")]
 pub struct Coin {
     denom: String,
     amount: String,
@@ -58,18 +62,39 @@ impl Coin {
     }
 }
 
-/// A coin as it appears in JSON sign paths (`{"denom": …, "amount": …}`, either order).
-#[derive(serde::Deserialize)]
+/// A coin as it appears in JSON sign paths (`{"denom": …, "amount": …}`, either order),
+/// before its checks.
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct JsonCoin {
     denom: String,
     amount: String,
 }
 
-impl JsonCoin {
-    pub(crate) fn into_coin(self) -> Result<Coin, Error> {
-        Coin::new(&self.denom, &self.amount)
+/// Check coins read from JSON.
+pub(crate) fn coins_from_json(coins: Vec<JsonCoin>) -> Result<Vec<Coin>, Error> {
+    coins.into_iter().map(Coin::try_from).collect()
+}
+
+impl TryFrom<JsonCoin> for Coin {
+    type Error = Error;
+
+    fn try_from(c: JsonCoin) -> Result<Self, Error> {
+        Coin::new(&c.denom, &c.amount)
     }
+}
+
+/// The tokenfactory module's `MsgChangeAdmin`, written here from the wire format (Injective's
+/// module is BUSL-licensed, so its `.proto` isn't vendored). Each chain's module has its own
+/// package name, given by [`Chain::tokenfactory`].
+#[derive(Clone, PartialEq, prost::Message)]
+struct TokenfactoryMsgChangeAdmin {
+    #[prost(string, tag = "1")]
+    sender: String,
+    #[prost(string, tag = "2")]
+    denom: String,
+    #[prost(string, tag = "3")]
+    new_admin: String,
 }
 
 /// Decode a list of coins, refusing invalid ones.
@@ -141,16 +166,16 @@ pub enum Allowance {
 pub enum Msg {
     /// `cosmos.bank.v1beta1.MsgSend`.
     BankSend {
-        /// Sender, `inj1…`.
+        /// Sender.
         from: String,
-        /// Recipient, `inj1…`.
+        /// Recipient.
         to: String,
         /// Coins sent.
         amount: Vec<Coin>,
     },
     /// `cosmwasm.wasm.v1.MsgExecuteContract`.
     ExecuteContract {
-        /// Sender, `inj1…`.
+        /// Sender.
         sender: String,
         /// Contract called.
         contract: String,
@@ -221,8 +246,10 @@ pub enum Msg {
         /// Validator the rewards come from.
         validator: String,
     },
-    /// `injective.tokenfactory.v1beta1.MsgChangeAdmin`: give away a denom's admin rights.
+    /// The tokenfactory module's `MsgChangeAdmin`: give away a denom's admin rights.
     TokenfactoryChangeAdmin {
+        /// Its type URL, e.g. `/injective.tokenfactory.v1beta1.MsgChangeAdmin`.
+        type_url: String,
         /// The signer, the current admin.
         sender: String,
         /// The denom.
@@ -266,13 +293,13 @@ pub enum Msg {
 const MAX_EXEC_DEPTH: usize = 2;
 
 impl Msg {
-    /// Decode a packed message. Known types, and every `Any` inside them, must round-trip
-    /// byte for byte.
-    pub(crate) fn decode(any: &Any) -> Result<Self, Error> {
-        Self::decode_at(any, 0)
+    /// Decode a packed message from a transaction on `chain`. Known types, and every `Any`
+    /// inside them, must round-trip byte for byte.
+    pub fn decode(any: &Any, chain: &Chain) -> Result<Self, Error> {
+        Self::decode_at(any, chain, 0)
     }
 
-    fn decode_at(any: &Any, depth: usize) -> Result<Self, Error> {
+    fn decode_at(any: &Any, chain: &Chain, depth: usize) -> Result<Self, Error> {
         let t = any.type_url.as_str();
         let v = any.value.as_slice();
         let msg = if t == MsgSend::type_url() {
@@ -314,7 +341,7 @@ impl Msg {
             let msgs = m
                 .msgs
                 .iter()
-                .map(|a| Self::decode_at(a, depth + 1))
+                .map(|a| Self::decode_at(a, chain, depth + 1))
                 .collect::<Result<Vec<_>, _>>()?;
             Self::AuthzExec {
                 grantee: m.grantee,
@@ -353,9 +380,13 @@ impl Msg {
                 delegator: m.delegator_address,
                 validator: m.validator_address,
             }
-        } else if t == tokenfactory::MsgChangeAdmin::type_url() {
-            let m: tokenfactory::MsgChangeAdmin = decode_exact(v, "MsgChangeAdmin")?;
+        } else if chain
+            .tokenfactory
+            .is_some_and(|pkg| t.strip_prefix('/').and_then(|r| r.strip_prefix(pkg)) == Some(".MsgChangeAdmin"))
+        {
+            let m: TokenfactoryMsgChangeAdmin = decode_exact(v, "MsgChangeAdmin")?;
             Self::TokenfactoryChangeAdmin {
+                type_url: t.into(),
                 sender: m.sender,
                 denom: m.denom,
                 new_admin: m.new_admin,
@@ -394,10 +425,11 @@ impl Msg {
             Self::FeeRevoke { .. } => "/cosmos.feegrant.v1beta1.MsgRevokeAllowance",
             Self::SetWithdrawAddress { .. } => "/cosmos.distribution.v1beta1.MsgSetWithdrawAddress",
             Self::WithdrawRewards { .. } => "/cosmos.distribution.v1beta1.MsgWithdrawDelegatorReward",
-            Self::TokenfactoryChangeAdmin { .. } => "/injective.tokenfactory.v1beta1.MsgChangeAdmin",
             Self::WasmUpdateAdmin { .. } => "/cosmwasm.wasm.v1.MsgUpdateAdmin",
             Self::WasmClearAdmin { .. } => "/cosmwasm.wasm.v1.MsgClearAdmin",
-            Self::Unknown { type_url, .. } | Self::UnknownJson { type_url, .. } => type_url,
+            Self::TokenfactoryChangeAdmin { type_url, .. }
+            | Self::Unknown { type_url, .. }
+            | Self::UnknownJson { type_url, .. } => type_url,
         }
     }
 
@@ -418,6 +450,74 @@ impl Msg {
             Self::SetWithdrawAddress { delegator, .. } | Self::WithdrawRewards { delegator, .. } => Some(delegator),
             Self::Unknown { .. } | Self::UnknownJson { .. } => None,
         }
+    }
+}
+
+#[derive(Deserialize)]
+struct TypeOnly {
+    #[serde(rename = "@type")]
+    type_url: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MsgSendJson {
+    #[serde(rename = "@type")]
+    _type_url: String,
+    from_address: String,
+    to_address: String,
+    amount: Vec<JsonCoin>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MsgExecuteContractJson<'a> {
+    #[serde(rename = "@type")]
+    _type_url: String,
+    sender: String,
+    contract: String,
+    #[serde(borrow)]
+    msg: &'a RawValue,
+    #[serde(default)]
+    funds: Vec<JsonCoin>,
+}
+
+impl Msg {
+    /// Decode one message in protobuf JSON (`{"@type": …, …}`), as EIP-712 typed data
+    /// carries them. Known types with unexpected fields are kept raw, because a field we
+    /// don't know could change what the message does.
+    pub fn from_proto_json(text: &str) -> Result<Self, Error> {
+        let TypeOnly { type_url } =
+            serde_json::from_str(text).map_err(|_| Error::Json("message without @type".into()))?;
+        let unknown = || Self::UnknownJson {
+            type_url: type_url.clone(),
+            json: text.to_owned(),
+        };
+        let msg = match type_url.as_str() {
+            "/cosmos.bank.v1beta1.MsgSend" => match serde_json::from_str::<MsgSendJson>(text) {
+                Ok(m) => Self::BankSend {
+                    from: m.from_address,
+                    to: m.to_address,
+                    amount: coins_from_json(m.amount)?,
+                },
+                Err(_) => unknown(),
+            },
+            "/cosmwasm.wasm.v1.MsgExecuteContract" => match serde_json::from_str::<MsgExecuteContractJson>(text) {
+                Ok(m) => {
+                    let json = m.msg.get().to_owned();
+                    Self::ExecuteContract {
+                        call: cosmwasm::parse(json.as_bytes())?,
+                        sender: m.sender,
+                        contract: m.contract,
+                        funds: coins_from_json(m.funds)?,
+                        json,
+                    }
+                }
+                Err(_) => unknown(),
+            },
+            _ => unknown(),
+        };
+        Ok(msg)
     }
 }
 

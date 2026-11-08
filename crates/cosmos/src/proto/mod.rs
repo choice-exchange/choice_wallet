@@ -21,6 +21,9 @@ pub mod cosmos {
                 include!("cosmos.crypto.multisig.v1beta1.rs");
             }
         }
+        pub mod secp256k1 {
+            include!("cosmos.crypto.secp256k1.rs");
+        }
     }
     pub mod distribution {
         pub mod v1beta1 {
@@ -50,25 +53,6 @@ pub mod cosmwasm {
     pub mod wasm {
         pub mod v1 {
             include!("cosmwasm.wasm.v1.rs");
-        }
-    }
-}
-pub mod injective {
-    pub mod crypto {
-        pub mod v1beta1 {
-            pub mod ethsecp256k1 {
-                include!("injective.crypto.v1beta1.ethsecp256k1.rs");
-            }
-        }
-    }
-    pub mod tokenfactory {
-        pub mod v1beta1 {
-            include!("injective.tokenfactory.v1beta1.rs");
-        }
-    }
-    pub mod types {
-        pub mod v1beta1 {
-            include!("injective.types.v1beta1.rs");
         }
     }
 }

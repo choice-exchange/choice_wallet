@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-/// Everything that can go wrong decoding, checking, building or signing an Injective
+/// Everything that can go wrong decoding, checking, building or signing a Cosmos
 /// transaction. No variant carries secret material.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum Error {
@@ -29,7 +29,7 @@ pub enum Error {
     /// The signer public key in the request isn't this account's.
     #[error("the signer key is not this account's key")]
     WrongSigner,
-    /// The signer public key isn't an Injective ethsecp256k1 key.
+    /// The signer public key isn't the chain's key type.
     #[error("unsupported public key type {0}")]
     PubKeyType(String),
     /// The sign mode doesn't match this sign path.
@@ -56,7 +56,7 @@ pub enum Error {
     /// Not a valid Cosmos SDK denom.
     #[error("invalid denom {0:?}")]
     Denom(String),
-    /// Not a valid `inj1…` address.
+    /// Not a valid address on this chain.
     #[error("invalid address {0:?}")]
     Address(String),
     /// A CosmWasm message that isn't UTF-8 JSON.
@@ -68,7 +68,10 @@ pub enum Error {
     /// An amino JSON sign doc that isn't shaped as the chain would render it.
     #[error("invalid amino JSON: {0}")]
     Amino(String),
-    /// Typed data claims to be an Injective transaction but isn't shaped like one.
-    #[error("not a valid Injective EIP-712 transaction: {0}")]
+    /// A message in a JSON sign path that isn't shaped like one.
+    #[error("invalid message JSON: {0}")]
+    Json(String),
+    /// Typed data claims to be a Cosmos transaction but isn't shaped like one.
+    #[error("not a valid EIP-712 Cosmos transaction: {0}")]
     Eip712(String),
 }

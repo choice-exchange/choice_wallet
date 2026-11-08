@@ -58,8 +58,9 @@ mobile app (phase 2) ── uniffi ──▶ same Rust core
 
 | Crate | Job | Status |
 | --- | --- | --- |
-| `choice-wallet-core` | Mnemonic, HD derivation, secp256k1 keys, addresses, encrypted keystore | Built, 29 tests |
-| `choice-wallet-injective` | Injective protobuf (vendored .proto, prost 0.14), sign paths, tx building, precompile decoding | Direct, amino JSON and EIP-712 v2 paths; bank / CW20 / adapter builders. On the Direct path, also authz grants, execs (decoded recursively) and revokes, fee grants, the rewards withdraw address, tokenfactory and contract admin changes. Byte-identical to injective-ts 1.20.62 (and viem for EIP-712). The JSON paths still show those as raw; precompile decoding next |
+| `choice-wallet-core` | Mnemonic, HD derivation, secp256k1 keys, addresses, encrypted keystore | Built, 30 tests |
+| `choice-wallet-cosmos` | Cosmos SDK protobuf (vendored .proto, prost 0.14), the Direct and amino JSON sign paths, message decoding, builders. Works for any chain described by a profile (chain ID, bech32 prefix, key type, tokenfactory package) | Direct and amino JSON paths; bank and CW20 builders. On the Direct path, also authz grants, execs (decoded recursively) and revokes, fee grants, the rewards withdraw address, tokenfactory and contract admin changes. The JSON paths still show those as raw. Only ethsecp256k1 keys so far; standard secp256k1 (SHA-256, RIPEMD-160 addresses) comes with the first such chain |
+| `choice-wallet-injective` | Injective's profiles, CW20 adapter conversions, EIP-712 v2 decoding, precompile decoding | Mainnet and testnet profiles, adapter builders, EIP-712 v2. Together with the cosmos crate, byte-identical to injective-ts 1.20.62 (and viem for EIP-712). Precompile decoding next |
 | `choice-wallet-evm` | EVM tx types 0-2, EIP-712, ABI decoding. Signing on our k256 0.14 | EIP-1559 encode and sign, native and ERC20 transfers, strict EIP-712 typed data. Byte-identical to viem 2.57.7. Dapp transaction requests next |
 | `choice-wallet-policy` | Risk rules over decoded requests | Planned |
 | `choice-wallet-wasm` | wasm-bindgen surface for the extension | Planned |
@@ -68,7 +69,7 @@ Not used:
 - `injective-std` and `cosmos-sdk-proto`: both still on prost 0.13, and `injective-std` also pulls in cosmwasm-std.
 - The C `secp256k1` crate: it needs a C toolchain for WASM.
 - `alloy-consensus`: even without default features it pulls about 120 crates, including second copies of sha2 and sha3. Dapps send EVM requests as JSON, so the wallet only ever encodes transactions. A 60-line RLP writer, checked byte for byte against viem, does that. `alloy-dyn-abi` may come in later for ABI decoding.
-- injective-core's `.proto` files: injective-core is BUSL-1.1. The two Injective messages we need (the ethsecp256k1 `PubKey` and `ExtensionOptionsWeb3Tx`) are written for this repo from the wire format, and the cross-implementation vectors confirm they match.
+- injective-core's `.proto` files: injective-core is BUSL-1.1. Injective's ethsecp256k1 `PubKey` has the same wire format as cosmos-sdk's secp256k1 `PubKey`, and the tokenfactory `MsgChangeAdmin` is written for this repo from the wire format. The cross-implementation vectors confirm both.
 
 ### Keys at rest
 

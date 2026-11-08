@@ -3,14 +3,14 @@
 
 use choice_wallet_core::address::parse_injective;
 use choice_wallet_core::hd::{derive, injective_path};
-use choice_wallet_core::{EthAddress, Mnemonic, PrivateKey};
-use choice_wallet_injective::Error;
-use choice_wallet_injective::amino::{self, AminoTx};
-use choice_wallet_injective::builder::{self, Fee, TxOptions};
+use choice_wallet_core::{Mnemonic, PrivateKey};
+use choice_wallet_cosmos::amino::{self, AminoTx};
+use choice_wallet_cosmos::builder::{self, Fee, TxOptions};
+use choice_wallet_cosmos::cosmwasm::ContractCall;
+use choice_wallet_cosmos::msg::{Coin, Msg};
+use choice_wallet_cosmos::wkt::Any;
 use choice_wallet_injective::chain::{MAINNET, TESTNET};
-use choice_wallet_injective::cosmwasm::ContractCall;
-use choice_wallet_injective::msg::{Coin, Msg};
-use choice_wallet_injective::wkt::Any;
+use choice_wallet_injective::{Error, adapter};
 use serde_json::Value;
 
 fn vectors() -> Value {
@@ -26,8 +26,8 @@ fn s(v: &Value) -> &str {
     v.as_str().unwrap()
 }
 
-fn addr(v: &Value) -> EthAddress {
-    parse_injective(s(v)).unwrap()
+fn addr(v: &Value) -> String {
+    parse_injective(s(v)).unwrap().to_inj()
 }
 
 fn coins(v: &Value) -> Vec<Coin> {
@@ -39,11 +39,15 @@ fn coins(v: &Value) -> Vec<Coin> {
 }
 
 fn msg(b: &Value) -> Any {
-    let from = key(0).public_key().eth_address();
+    let from = MAINNET.cosmos.address(&key(0).public_key());
+    let chain = &MAINNET.cosmos;
     match s(&b["kind"]) {
-        "bank_send" => builder::bank_send(&from, &addr(&b["to"]), &coins(&b["coins"])),
-        "cw20_transfer" => builder::cw20_transfer(&from, &addr(&b["cw20"]), &addr(&b["recipient"]), s(&b["amount"])),
-        "bank_to_cw20" => builder::bank_to_cw20(
+        "bank_send" => builder::bank_send(chain, &from, &addr(&b["to"]), &coins(&b["coins"])),
+        "cw20_transfer" => {
+            builder::cw20_transfer(chain, &from, &addr(&b["cw20"]), &addr(&b["recipient"]), s(&b["amount"]))
+        }
+        "bank_to_cw20" => adapter::bank_to_cw20(
+            &MAINNET,
             &from,
             &addr(&b["adapter"]),
             &addr(&b["cw20"]),
@@ -71,7 +75,7 @@ fn options(c: &Value) -> TxOptions {
 
 fn own_tx(c: &Value) -> AminoTx {
     let msgs = c["build"].as_array().unwrap().iter().map(msg).collect();
-    let req = builder::amino_request(&MAINNET, &key(0).public_key(), msgs, &options(c)).unwrap();
+    let req = builder::amino_request(&MAINNET.cosmos, &key(0).public_key(), msgs, &options(c)).unwrap();
     assert_eq!(hex::encode(&req.body_bytes), s(&c["body_bytes"]), "{} body", c["name"]);
     assert_eq!(
         hex::encode(&req.auth_info_bytes),
@@ -79,7 +83,7 @@ fn own_tx(c: &Value) -> AminoTx {
         "{} auth info",
         c["name"]
     );
-    amino::from_tx(req, &MAINNET, &key(0).public_key()).unwrap()
+    amino::from_tx(req, &MAINNET.cosmos, &key(0).public_key()).unwrap()
 }
 
 #[test]
@@ -105,7 +109,7 @@ fn dapp_sign_docs_match_injective_ts() {
     let k = key(0);
     for c in vectors()["cases"].as_array().unwrap() {
         let name = &c["name"];
-        let tx = amino::decode_sign_doc(s(&c["sign_doc"]), &MAINNET, &k.public_key()).unwrap();
+        let tx = amino::decode_sign_doc(s(&c["sign_doc"]), &MAINNET.cosmos, &k.public_key()).unwrap();
         assert_eq!(
             std::str::from_utf8(tx.sign_bytes()).unwrap(),
             s(&c["sign_doc"]),
@@ -125,7 +129,7 @@ fn dapp_sign_docs_match_injective_ts() {
         );
     }
     let redeem = vectors()["cases"][2].clone();
-    let tx = amino::decode_sign_doc(s(&redeem["sign_doc"]), &MAINNET, &k.public_key()).unwrap();
+    let tx = amino::decode_sign_doc(s(&redeem["sign_doc"]), &MAINNET.cosmos, &k.public_key()).unwrap();
     assert!(matches!(
         &tx.messages[0],
         Msg::ExecuteContract {
@@ -149,9 +153,9 @@ fn zero_timeout_is_left_out_and_memo_is_go_escaped() {
     c["timeout_height"] = 0.into();
     c["memo"] = "a <b> & c".into();
     let msgs = c["build"].as_array().unwrap().iter().map(msg).collect();
-    let req = builder::amino_request(&MAINNET, &key(0).public_key(), msgs, &options(&c)).unwrap();
+    let req = builder::amino_request(&MAINNET.cosmos, &key(0).public_key(), msgs, &options(&c)).unwrap();
     let doc = String::from_utf8(
-        amino::from_tx(req, &MAINNET, &key(0).public_key())
+        amino::from_tx(req, &MAINNET.cosmos, &key(0).public_key())
             .unwrap()
             .sign_bytes()
             .to_vec(),
@@ -166,7 +170,7 @@ fn doc() -> Value {
 }
 
 fn decode(v: &Value) -> Result<AminoTx, Error> {
-    amino::decode_sign_doc(&v.to_string(), &MAINNET, &key(0).public_key())
+    amino::decode_sign_doc(&v.to_string(), &MAINNET.cosmos, &key(0).public_key())
 }
 
 #[test]
@@ -175,7 +179,7 @@ fn refuses_bad_sign_docs() {
     v["chain_id"] = "injective-888".into();
     assert!(matches!(decode(&v), Err(Error::WrongChain { .. })));
     assert!(matches!(
-        amino::decode_sign_doc(&doc().to_string(), &TESTNET, &key(0).public_key()),
+        amino::decode_sign_doc(&doc().to_string(), &TESTNET.cosmos, &key(0).public_key()),
         Err(Error::WrongChain { .. })
     ));
 
@@ -223,9 +227,9 @@ fn own_tx_with_unrenderable_message_is_refused() {
         value: vec![0x08, 0x01],
     };
     let c = vectors()["cases"][0].clone();
-    let req = builder::amino_request(&MAINNET, &key(0).public_key(), vec![unknown], &options(&c)).unwrap();
+    let req = builder::amino_request(&MAINNET.cosmos, &key(0).public_key(), vec![unknown], &options(&c)).unwrap();
     assert!(matches!(
-        amino::from_tx(req, &MAINNET, &key(0).public_key()),
+        amino::from_tx(req, &MAINNET.cosmos, &key(0).public_key()),
         Err(Error::Amino(_))
     ));
 }
@@ -241,14 +245,14 @@ fn only_the_signer_key_can_sign() {
 fn direct_decoder_refuses_amino_mode_and_vice_versa() {
     let c = vectors()["cases"][0].clone();
     let msgs = c["build"].as_array().unwrap().iter().map(msg).collect::<Vec<_>>();
-    let amino_req = builder::amino_request(&MAINNET, &key(0).public_key(), msgs.clone(), &options(&c)).unwrap();
+    let amino_req = builder::amino_request(&MAINNET.cosmos, &key(0).public_key(), msgs.clone(), &options(&c)).unwrap();
     assert_eq!(
-        choice_wallet_injective::direct::decode(amino_req, "injective-1", &key(0).public_key()).unwrap_err(),
+        choice_wallet_cosmos::direct::decode(amino_req, &MAINNET.cosmos, &key(0).public_key()).unwrap_err(),
         Error::SignMode
     );
-    let direct_req = builder::direct_request(&MAINNET, &key(0).public_key(), msgs, &options(&c)).unwrap();
+    let direct_req = builder::direct_request(&MAINNET.cosmos, &key(0).public_key(), msgs, &options(&c)).unwrap();
     assert_eq!(
-        amino::from_tx(direct_req, &MAINNET, &key(0).public_key()).unwrap_err(),
+        amino::from_tx(direct_req, &MAINNET.cosmos, &key(0).public_key()).unwrap_err(),
         Error::SignMode
     );
 }

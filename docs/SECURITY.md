@@ -22,7 +22,7 @@ We build and audit Choice Wallet in house, in the open. This file covers what we
 
 ## Rules for vault code
 
-The vault is `choice-wallet-core`, `choice-wallet-injective` and, later, the EVM, policy and WASM crates.
+The vault is `choice-wallet-core`, `choice-wallet-cosmos`, `choice-wallet-injective`, `choice-wallet-evm` and, later, the policy and WASM crates.
 
 - `#![forbid(unsafe_code)]` in every vault crate.
 - Secrets are zeroized on drop (`Zeroizing`, `ZeroizeOnDrop`). `Debug` on secret types prints `<redacted>`.
@@ -57,8 +57,8 @@ Adding a vault dependency needs a written reason in the PR and a second reviewer
 
 Protobuf types:
 
-- The `.proto` files are vendored from the releases mainnet runs: InjectiveLabs/cosmos-sdk v0.50.14-inj.11 and InjectiveLabs/wasmd v0.53.3-inj.3, plus gogoproto and cosmos-proto. `crates/injective/proto/SOURCES.md` lists each file's source, license and SHA-256.
-- injective-core is BUSL-1.1, so its files are not vendored. The two Injective messages we need are written for this repo from the wire format, in `tools/protogen/compat/`.
+- The `.proto` files are vendored from the releases mainnet runs: InjectiveLabs/cosmos-sdk v0.50.14-inj.11 and InjectiveLabs/wasmd v0.53.3-inj.3, plus gogoproto and cosmos-proto. `crates/cosmos/proto/SOURCES.md` lists each file's source, license and SHA-256.
+- injective-core is BUSL-1.1, so none of its files are vendored. Injective's ethsecp256k1 `PubKey` has the same wire format as cosmos-sdk's secp256k1 `PubKey` (`bytes key = 1`), so the vendored type is used under Injective's type URL. The tokenfactory `MsgChangeAdmin` (three string fields) is written in `crates/cosmos/src/msg.rs` from the wire format. The cross-implementation vectors confirm both.
 - `tools/protogen` (its own workspace and lockfile, pure Rust, no `protoc`) generates the prost code, which is committed. Wallet builds never run it or fetch anything.
 
 ### JavaScript in extension pages

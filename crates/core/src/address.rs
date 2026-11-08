@@ -80,23 +80,8 @@ impl EthAddress {
     /// Parse a bech32 address and require the given prefix. Only classic
     /// bech32 checksums are accepted (not bech32m), as Cosmos chains use.
     pub fn parse_bech32(s: &str, expected_hrp: &str) -> Result<Self, Error> {
-        let checked = CheckedHrpstring::new::<Bech32>(s).map_err(|_| Error::InvalidAddress)?;
-        if checked.hrp().to_lowercase() != expected_hrp {
-            return Err(Error::InvalidAddress);
-        }
-        let mut bytes = [0u8; 20];
-        let mut n = 0;
-        for b in checked.byte_iter() {
-            if n == 20 {
-                return Err(Error::InvalidAddress);
-            }
-            bytes[n] = b;
-            n += 1;
-        }
-        if n != 20 {
-            return Err(Error::InvalidAddress);
-        }
-        Ok(Self(bytes))
+        let bytes = decode_bech32(s, expected_hrp)?;
+        Ok(Self(bytes.try_into().map_err(|_| Error::InvalidAddress)?))
     }
 
     /// The `inj1…` form.
@@ -104,6 +89,30 @@ impl EthAddress {
         self.to_bech32(INJ_HRP)
             .expect("inj is a valid prefix and 20 bytes always encode")
     }
+}
+
+/// Longest address payload we accept: 32 bytes (contract and module accounts on standard
+/// Cosmos SDK chains).
+const MAX_ADDRESS_BYTES: usize = 32;
+
+/// Decode a bech32 address of any length up to 32 bytes and require the given prefix.
+/// Only classic bech32 checksums are accepted (not bech32m), as Cosmos chains use.
+pub fn decode_bech32(s: &str, expected_hrp: &str) -> Result<Vec<u8>, Error> {
+    let checked = CheckedHrpstring::new::<Bech32>(s).map_err(|_| Error::InvalidAddress)?;
+    if checked.hrp().to_lowercase() != expected_hrp {
+        return Err(Error::InvalidAddress);
+    }
+    let mut bytes = Vec::with_capacity(MAX_ADDRESS_BYTES);
+    for b in checked.byte_iter() {
+        if bytes.len() == MAX_ADDRESS_BYTES {
+            return Err(Error::InvalidAddress);
+        }
+        bytes.push(b);
+    }
+    if bytes.is_empty() {
+        return Err(Error::InvalidAddress);
+    }
+    Ok(bytes)
 }
 
 /// Parse an Injective address the user pasted, in either `0x…` or `inj1…`
@@ -177,5 +186,18 @@ mod tests {
         let last = typo.len() - 1;
         typo[last] = if typo[last] == b'q' { b'p' } else { b'q' };
         assert!(parse_injective(core::str::from_utf8(&typo).unwrap()).is_err());
+    }
+
+    #[test]
+    fn bech32_of_other_lengths() {
+        let hrp = Hrp::parse("osmo").unwrap();
+        let contract = bech32::encode::<Bech32>(hrp, &[9; 32]).unwrap();
+        assert_eq!(decode_bech32(&contract, "osmo").unwrap(), [9; 32]);
+        // A 20-byte address type can't hold it.
+        assert!(EthAddress::parse_bech32(&contract, "osmo").is_err());
+        let too_long = bech32::encode::<Bech32>(hrp, &[9; 33]).unwrap();
+        assert!(decode_bech32(&too_long, "osmo").is_err());
+        let empty = bech32::encode::<Bech32>(hrp, &[]).unwrap();
+        assert!(decode_bech32(&empty, "osmo").is_err());
     }
 }

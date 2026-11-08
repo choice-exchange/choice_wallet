@@ -12,6 +12,7 @@ Copied by `tools/protogen vendor`. Do not edit these files; re-vendor instead.
 | `cosmos/bank/v1beta1/tx.proto` | InjectiveLabs/cosmos-sdk@v0.50.14-inj.11 (Apache-2.0) | `c40967719b1ab77ee658403704ceab70d24928d99e128319f28a00703648fbf0` |
 | `cosmos/base/v1beta1/coin.proto` | InjectiveLabs/cosmos-sdk@v0.50.14-inj.11 (Apache-2.0) | `408b074f81f3dafb440cd61921bf244eab2ff20cb1f2a9f247265d031481c9ec` |
 | `cosmos/crypto/multisig/v1beta1/multisig.proto` | InjectiveLabs/cosmos-sdk@v0.50.14-inj.11 (Apache-2.0) | `3fba497349c0e4f5eb80f8104087f364f6c55206403b604a711341845b9419b6` |
+| `cosmos/crypto/secp256k1/keys.proto` | InjectiveLabs/cosmos-sdk@v0.50.14-inj.11 (Apache-2.0) | `d69386568e35c2c20cf367307489f9e50a2710a71552c531a20aee8d9371ba62` |
 | `cosmos/distribution/v1beta1/distribution.proto` | InjectiveLabs/cosmos-sdk@v0.50.14-inj.11 (Apache-2.0) | `7701e2385266eee9504b41b2fc3d19895c89e0948a5734299bb3b63f48cc996e` |
 | `cosmos/distribution/v1beta1/tx.proto` | InjectiveLabs/cosmos-sdk@v0.50.14-inj.11 (Apache-2.0) | `64c87e7e81186e319aa70a38fbb1d454eeed8edc9327f298d4ed124e8e774f70` |
 | `cosmos/feegrant/v1beta1/feegrant.proto` | InjectiveLabs/cosmos-sdk@v0.50.14-inj.11 (Apache-2.0) | `437e6c1e3ab45d2491017fa123e2ba48d07fe7366a3a7497dbad89ea8492e00e` |
@@ -23,6 +24,3 @@ Copied by `tools/protogen vendor`. Do not edit these files; re-vendor instead.
 | `cosmwasm/wasm/v1/tx.proto` | InjectiveLabs/wasmd@v0.53.3-inj.3 (Apache-2.0) | `01b6edaec8e5715ca08bdb8e8cdccfacb573c65593c7cdfcff71476753affaa9` |
 | `cosmwasm/wasm/v1/types.proto` | InjectiveLabs/wasmd@v0.53.3-inj.3 (Apache-2.0) | `ed619b896cd13c25c9d6ed4f53115cc266a0d4a8da95b90c7543404ff6b4d16f` |
 | `gogoproto/gogo.proto` | cosmos/gogoproto@v1.7.0 (BSD-3-Clause) | `a2bef0fb7e233ff2f442da08b3764be6ce59cc3f2df05cd1c9a44dbb5b55c18f` |
-| `injective/crypto/v1beta1/ethsecp256k1/keys.proto` | choice-wallet compat (tools/protogen/compat, Apache-2.0) | `aea47e22955d292c2bf93ab398c71f88d0cba18c6e289d55c8ba540cc249587b` |
-| `injective/tokenfactory/v1beta1/tx.proto` | choice-wallet compat (tools/protogen/compat, Apache-2.0) | `963670bb10420b998d64bcffeab8ffb444357e373c82f1a58afdf05cfee929b7` |
-| `injective/types/v1beta1/tx_ext.proto` | choice-wallet compat (tools/protogen/compat, Apache-2.0) | `c00337fa20539837d88125a0de4bdcac245492957be610d6cb6753b735b7ce68` |

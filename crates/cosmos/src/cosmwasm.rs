@@ -1,9 +1,10 @@
 //! The CosmWasm contract messages the wallet builds and recognises.
 //!
 //! - CW20 `transfer` and `send`.
-//! - The CW20 adapter's `redeem_and_transfer`. Sending a CW20 to the adapter (`send` with an
-//!   empty `msg`) mints the bank denom `factory/{adapter}/{cw20}` to the sender; redeeming
-//!   burns that denom and returns the CW20.
+//! - The CW20 adapter's `redeem_and_transfer` (the adapter runs on Injective). Sending a
+//!   CW20 to the adapter (`send` with an empty `msg`) mints the bank denom
+//!   `factory/{adapter}/{cw20}` to the sender; redeeming burns that denom and returns the
+//!   CW20.
 //!
 //! Recognition is by message shape only. Whether the contract really is a CW20 or the
 //! adapter is for the caller to check against its token list.
@@ -62,7 +63,7 @@ enum Known {
 }
 
 /// Parse a `MsgExecuteContract.msg`. The bytes must be UTF-8 JSON, as wasmd requires.
-pub(crate) fn parse(msg: &[u8]) -> Result<ContractCall, Error> {
+pub fn parse(msg: &[u8]) -> Result<ContractCall, Error> {
     serde_json::from_slice::<serde_json::Value>(msg).map_err(|_| Error::ContractJson)?;
     let call = match serde_json::from_slice::<Known>(msg) {
         Ok(Known::Transfer { recipient, amount }) if is_canonical_amount(&amount) => {
@@ -77,14 +78,16 @@ pub(crate) fn parse(msg: &[u8]) -> Result<ContractCall, Error> {
     Ok(call)
 }
 
-pub(crate) fn transfer(recipient: &str, amount: &str) -> Vec<u8> {
+/// CW20 `{"transfer": {"recipient", "amount"}}`.
+pub fn transfer(recipient: &str, amount: &str) -> Vec<u8> {
     to_json(&Known::Transfer {
         recipient: recipient.into(),
         amount: amount.into(),
     })
 }
 
-pub(crate) fn send(contract: &str, amount: &str, msg: &str) -> Vec<u8> {
+/// CW20 `{"send": {"contract", "amount", "msg"}}`.
+pub fn send(contract: &str, amount: &str, msg: &str) -> Vec<u8> {
     to_json(&Known::Send {
         contract: contract.into(),
         amount: amount.into(),
@@ -92,7 +95,8 @@ pub(crate) fn send(contract: &str, amount: &str, msg: &str) -> Vec<u8> {
     })
 }
 
-pub(crate) fn redeem_and_transfer(recipient: &str) -> Vec<u8> {
+/// CW20 adapter `{"redeem_and_transfer": {"recipient"}}`.
+pub fn redeem_and_transfer(recipient: &str) -> Vec<u8> {
     to_json(&Known::RedeemAndTransfer {
         recipient: Some(recipient.into()),
     })

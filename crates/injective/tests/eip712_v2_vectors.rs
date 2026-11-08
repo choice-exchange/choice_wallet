@@ -3,12 +3,12 @@
 
 use choice_wallet_core::hd::{derive, injective_path};
 use choice_wallet_core::{EthAddress, Mnemonic, PrivateKey};
+use choice_wallet_cosmos::cosmwasm::ContractCall;
+use choice_wallet_cosmos::msg::Msg;
 use choice_wallet_evm::eip712::TypedData;
 use choice_wallet_injective::Error;
 use choice_wallet_injective::chain::{MAINNET, Network, TESTNET};
-use choice_wallet_injective::cosmwasm::ContractCall;
 use choice_wallet_injective::eip712::{Web3Tx, decode_v2};
-use choice_wallet_injective::msg::Msg;
 use serde_json::Value;
 
 fn vectors() -> Value {

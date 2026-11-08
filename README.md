@@ -10,7 +10,8 @@ An open-source, self-custody wallet. Injective first (Cosmos side and Injective 
 | Path | What |
 | --- | --- |
 | `crates/core` | Mnemonic, HD derivation, secp256k1 keys, addresses, encrypted keystore |
-| `crates/injective` | Injective sign paths (Direct, amino JSON, EIP-712 v2), bank sends, CW20 transfers and CW20 ⇄ bank conversions |
+| `crates/cosmos` | Cosmos SDK sign paths (Direct, amino JSON), message decoding (sends, contract calls, grants, admin changes) and builders, for any chain given its profile |
+| `crates/injective` | Injective networks, CW20 ⇄ bank conversions through the CW20 adapter, EIP-712 v2 decoding |
 | `crates/evm` | EIP-1559 transactions (native INJ and ERC20 transfers), EIP-712 typed data |
 | `tools/protogen` | Dev only: vendors `.proto` files and regenerates the committed prost code |
 | `tools/vectors` | Dev only: generates test vectors with injective-ts and viem |

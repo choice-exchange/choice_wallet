@@ -13,6 +13,7 @@
 //! as generic typed data.
 
 use choice_wallet_core::EthAddress;
+use choice_wallet_cosmos::msg::{Coin, Msg};
 use choice_wallet_evm::eip712::TypedData;
 use serde::Deserialize;
 use serde_json::Value;
@@ -20,8 +21,6 @@ use serde_json::value::RawValue;
 
 use crate::Error;
 use crate::chain::Network;
-use crate::cosmwasm;
-use crate::msg::{Coin, JsonCoin, Msg};
 
 /// The domain's `verifyingContract` for v2.
 const VERIFYING_CONTRACT: &str = "0xCcCCccccCCCCcCCCCCCcCcCccCcCCCcCcccccccC";
@@ -72,39 +71,10 @@ struct Context {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ContextFee {
-    amount: Option<Vec<JsonCoin>>,
+    amount: Option<Vec<Coin>>,
     gas: u64,
     #[serde(default)]
     payer: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct TypeOnly {
-    #[serde(rename = "@type")]
-    type_url: String,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct MsgSendJson {
-    #[serde(rename = "@type")]
-    _type_url: String,
-    from_address: String,
-    to_address: String,
-    amount: Vec<JsonCoin>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct MsgExecuteContractJson<'a> {
-    #[serde(rename = "@type")]
-    _type_url: String,
-    sender: String,
-    contract: String,
-    #[serde(borrow)]
-    msg: &'a RawValue,
-    #[serde(default)]
-    funds: Vec<JsonCoin>,
 }
 
 /// Decode typed data as an Injective EIP-712 v2 transaction on `network`, signed by
@@ -168,9 +138,10 @@ pub fn decode_v2(td: &TypedData, network: &Network, signer: &EthAddress) -> Resu
                 .then(|| u64::from_be_bytes(b[24..].try_into().unwrap()))
         })
         .ok_or_else(|| Error::Eip712("missing chainId".into()))?;
+    let chain = &network.cosmos;
     if !network.eip712_chain_ids.contains(&evm_chain_id) {
         return Err(Error::WrongChain {
-            expected: network.chain_id.into(),
+            expected: chain.chain_id.into(),
             got: format!("EVM chain {evm_chain_id}"),
         });
     }
@@ -183,9 +154,9 @@ pub fn decode_v2(td: &TypedData, network: &Network, signer: &EthAddress) -> Resu
         return fail("missing context or msgs");
     };
     let ctx: Context = serde_json::from_str(context).map_err(|e| Error::Eip712(format!("context: {e}")))?;
-    if ctx.chain_id != network.chain_id {
+    if ctx.chain_id != chain.chain_id {
         return Err(Error::WrongChain {
-            expected: network.chain_id.into(),
+            expected: chain.chain_id.into(),
             got: ctx.chain_id,
         });
     }
@@ -196,9 +167,9 @@ pub fn decode_v2(td: &TypedData, network: &Network, signer: &EthAddress) -> Resu
     }
     let messages = raw_msgs
         .into_iter()
-        .map(decode_json_msg)
+        .map(|m| Msg::from_proto_json(m.get()))
         .collect::<Result<Vec<_>, _>>()?;
-    let signer_addr = signer.to_inj();
+    let signer_addr = chain.address_of(signer);
     for m in &messages {
         if let Some(s) = m.signer()
             && s != signer_addr
@@ -209,7 +180,7 @@ pub fn decode_v2(td: &TypedData, network: &Network, signer: &EthAddress) -> Resu
 
     let payer = match ctx.fee.payer {
         Some(p) if p != signer_addr => {
-            EthAddress::parse_bech32(&p, "inj").map_err(|_| Error::Address(p.clone()))?;
+            chain.check_address(&p)?;
             Some(p)
         }
         _ => None,
@@ -222,50 +193,10 @@ pub fn decode_v2(td: &TypedData, network: &Network, signer: &EthAddress) -> Resu
         timeout_height: ctx.timeout_height,
         memo: ctx.memo,
         fee: Web3Fee {
-            amount: coins(ctx.fee.amount.unwrap_or_default())?,
+            amount: ctx.fee.amount.unwrap_or_default(),
             gas_limit: ctx.fee.gas,
             payer,
         },
         messages,
     }))
-}
-
-fn coins(c: Vec<JsonCoin>) -> Result<Vec<Coin>, Error> {
-    c.into_iter().map(JsonCoin::into_coin).collect()
-}
-
-/// One message in protobuf JSON. Known types with unexpected fields are kept raw, because
-/// a field we don't know could change what the message does.
-fn decode_json_msg(raw: &RawValue) -> Result<Msg, Error> {
-    let text = raw.get();
-    let TypeOnly { type_url } =
-        serde_json::from_str(text).map_err(|_| Error::Eip712("message without @type".into()))?;
-    let unknown = || Msg::UnknownJson {
-        type_url: type_url.clone(),
-        json: text.to_owned(),
-    };
-    match type_url.as_str() {
-        "/cosmos.bank.v1beta1.MsgSend" => match serde_json::from_str::<MsgSendJson>(text) {
-            Ok(m) => Ok(Msg::BankSend {
-                from: m.from_address,
-                to: m.to_address,
-                amount: coins(m.amount)?,
-            }),
-            Err(_) => Ok(unknown()),
-        },
-        "/cosmwasm.wasm.v1.MsgExecuteContract" => match serde_json::from_str::<MsgExecuteContractJson>(text) {
-            Ok(m) => {
-                let json = m.msg.get().to_owned();
-                Ok(Msg::ExecuteContract {
-                    call: cosmwasm::parse(json.as_bytes())?,
-                    sender: m.sender,
-                    contract: m.contract,
-                    funds: coins(m.funds)?,
-                    json,
-                })
-            }
-            Err(_) => Ok(unknown()),
-        },
-        _ => Ok(unknown()),
-    }
 }

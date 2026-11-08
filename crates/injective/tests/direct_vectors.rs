@@ -3,15 +3,15 @@
 
 use choice_wallet_core::address::parse_injective;
 use choice_wallet_core::hd::{derive, injective_path};
-use choice_wallet_core::{EthAddress, Mnemonic, PrivateKey};
-use choice_wallet_injective::Error;
-use choice_wallet_injective::builder::{self, Fee, TxOptions};
+use choice_wallet_core::{Mnemonic, PrivateKey};
+use choice_wallet_cosmos::builder::{self, Fee, TxOptions};
+use choice_wallet_cosmos::cosmwasm::ContractCall;
+use choice_wallet_cosmos::direct::{self, Request};
+use choice_wallet_cosmos::msg::{Coin, Msg};
+use choice_wallet_cosmos::proto::cosmos::tx::v1beta1::{AuthInfo, TxBody};
+use choice_wallet_cosmos::wkt::Any;
 use choice_wallet_injective::chain::MAINNET;
-use choice_wallet_injective::cosmwasm::ContractCall;
-use choice_wallet_injective::direct::{self, Request};
-use choice_wallet_injective::msg::{Coin, Msg};
-use choice_wallet_injective::proto::cosmos::tx::v1beta1::{AuthInfo, TxBody};
-use choice_wallet_injective::wkt::Any;
+use choice_wallet_injective::{Error, adapter};
 use prost::Message;
 use serde_json::Value;
 
@@ -32,8 +32,8 @@ fn s(v: &Value) -> &str {
     v.as_str().unwrap()
 }
 
-fn addr(v: &Value) -> EthAddress {
-    parse_injective(s(v)).unwrap()
+fn addr(v: &Value) -> String {
+    parse_injective(s(v)).unwrap().to_inj()
 }
 
 fn coins(v: &Value) -> Vec<Coin> {
@@ -54,13 +54,23 @@ fn request(c: &Value) -> Request {
 }
 
 fn build(c: &Value) -> Request {
-    let from = key(0).public_key().eth_address();
+    let from = MAINNET.cosmos.address(&key(0).public_key());
+    let chain = &MAINNET.cosmos;
     let b = &c["build"];
     let msg = match s(&b["kind"]) {
-        "bank_send" => builder::bank_send(&from, &addr(&b["to"]), &coins(&b["coins"])),
-        "cw20_transfer" => builder::cw20_transfer(&from, &addr(&b["cw20"]), &addr(&b["recipient"]), s(&b["amount"])),
-        "cw20_to_bank" => builder::cw20_to_bank(&from, &addr(&b["cw20"]), &addr(&b["adapter"]), s(&b["amount"])),
-        "bank_to_cw20" => builder::bank_to_cw20(
+        "bank_send" => builder::bank_send(chain, &from, &addr(&b["to"]), &coins(&b["coins"])),
+        "cw20_transfer" => {
+            builder::cw20_transfer(chain, &from, &addr(&b["cw20"]), &addr(&b["recipient"]), s(&b["amount"]))
+        }
+        "cw20_to_bank" => adapter::cw20_to_bank(
+            &MAINNET,
+            &from,
+            &addr(&b["cw20"]),
+            &addr(&b["adapter"]),
+            s(&b["amount"]),
+        ),
+        "bank_to_cw20" => adapter::bank_to_cw20(
+            &MAINNET,
             &from,
             &addr(&b["adapter"]),
             &addr(&b["cw20"]),
@@ -81,7 +91,7 @@ fn build(c: &Value) -> Request {
         memo: s(&c["memo"]).into(),
         timeout_height: c["timeout_height"].as_u64().unwrap(),
     };
-    builder::direct_request(&MAINNET, &key(0).public_key(), vec![msg], &opts).unwrap()
+    builder::direct_request(&MAINNET.cosmos, &key(0).public_key(), vec![msg], &opts).unwrap()
 }
 
 #[test]
@@ -117,7 +127,7 @@ fn decode_and_sign_match_injective_ts() {
     let k = key(0);
     for c in vectors()["cases"].as_array().unwrap() {
         let name = &c["name"];
-        let d = direct::decode(request(c), "injective-1", &k.public_key()).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let d = direct::decode(request(c), &MAINNET.cosmos, &k.public_key()).unwrap_or_else(|e| panic!("{name}: {e}"));
         assert_eq!(hex::encode(d.sign_doc_bytes()), s(&c["sign_doc"]), "{name} sign doc");
         assert_eq!(d.memo(), s(&c["memo"]));
         assert_eq!(d.sequence(), c["sequence"].as_u64().unwrap());
@@ -140,7 +150,7 @@ fn decoded_messages_are_recognised() {
             .iter()
             .find(|c| c["name"] == name)
             .unwrap();
-        direct::decode(request(c), "injective-1", &k.public_key())
+        direct::decode(request(c), &MAINNET.cosmos, &k.public_key())
             .unwrap()
             .messages()
             .to_vec()
@@ -193,7 +203,7 @@ fn first_case() -> Value {
 }
 
 fn decode_err(req: Request) -> Error {
-    direct::decode(req, "injective-1", &key(0).public_key()).unwrap_err()
+    direct::decode(req, &MAINNET.cosmos, &key(0).public_key()).unwrap_err()
 }
 
 fn with_body(f: impl FnOnce(&mut TxBody)) -> Request {
@@ -221,7 +231,7 @@ fn refuses_wrong_chain() {
 
 #[test]
 fn refuses_another_accounts_key() {
-    let err = direct::decode(request(&first_case()), "injective-1", &key(1).public_key()).unwrap_err();
+    let err = direct::decode(request(&first_case()), &MAINNET.cosmos, &key(1).public_key()).unwrap_err();
     // The bank send names account 0 as sender, which isn't account 1.
     assert!(matches!(err, Error::ForeignSigner(_)));
 }
@@ -285,7 +295,7 @@ fn refuses_second_signer_and_fee_payer() {
 
 #[test]
 fn refuses_other_sign_modes() {
-    use choice_wallet_injective::proto::cosmos::tx::v1beta1::mode_info::Sum;
+    use choice_wallet_cosmos::proto::cosmos::tx::v1beta1::mode_info::Sum;
     let req = with_auth(|a| {
         if let Some(Sum::Single(s)) = a.signer_infos[0].mode_info.as_mut().unwrap().sum.as_mut() {
             s.mode = 127; // LEGACY_AMINO_JSON
@@ -309,7 +319,7 @@ fn unknown_messages_are_kept_raw() {
         value: vec![0x08, 0x01],
     };
     let req = with_body(|b| b.messages.push(unknown.clone()));
-    let d = direct::decode(req, "injective-1", &key(0).public_key()).unwrap();
+    let d = direct::decode(req, &MAINNET.cosmos, &key(0).public_key()).unwrap();
     assert_eq!(
         d.messages()[1],
         Msg::Unknown {
@@ -321,23 +331,32 @@ fn unknown_messages_are_kept_raw() {
 
 #[test]
 fn only_the_signers_key_can_sign() {
-    let d = direct::decode(request(&first_case()), "injective-1", &key(0).public_key()).unwrap();
+    let d = direct::decode(request(&first_case()), &MAINNET.cosmos, &key(0).public_key()).unwrap();
     assert_eq!(direct::sign(&d, &key(1)).unwrap_err(), Error::KeyMismatch);
 }
 
 #[test]
 fn builder_refuses_bad_input() {
-    let a = key(0).public_key().eth_address();
+    let chain = &MAINNET.cosmos;
+    let a = chain.address(&key(0).public_key());
     let inj = Coin::new("inj", "1").unwrap();
-    assert!(matches!(builder::bank_send(&a, &a, &[]), Err(Error::Amount(_))));
+    assert!(matches!(builder::bank_send(chain, &a, &a, &[]), Err(Error::Amount(_))));
     assert!(matches!(
-        builder::bank_send(&a, &a, &[inj.clone(), inj]),
+        builder::bank_send(chain, &a, &a, &[inj.clone(), inj.clone()]),
         Err(Error::Denom(_))
     ));
     for bad in ["0", "01", "1.5", ""] {
         assert!(
-            matches!(builder::cw20_transfer(&a, &a, &a, bad), Err(Error::Amount(_))),
+            matches!(builder::cw20_transfer(chain, &a, &a, &a, bad), Err(Error::Amount(_))),
             "{bad:?}"
+        );
+    }
+    // Addresses must be canonical bech32 on this chain.
+    let hex = key(0).public_key().eth_address().to_checksum_hex();
+    for bad in [a.to_uppercase(), hex, a.replacen("inj", "cosmos", 1), String::new()] {
+        assert_eq!(
+            builder::bank_send(chain, &a, &bad, std::slice::from_ref(&inj)).unwrap_err(),
+            Error::Address(bad.clone())
         );
     }
 }

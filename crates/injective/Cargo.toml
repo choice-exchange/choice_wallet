@@ -1,6 +1,6 @@
 [package]
 name = "choice-wallet-injective"
-description = "Injective transactions for Choice Wallet: protobuf types, the Direct sign path, sends and CW20 conversions"
+description = "Injective for Choice Wallet: network profiles, CW20 adapter conversions and EIP-712 v2 decoding, on top of choice-wallet-cosmos"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,11 +9,11 @@ repository.workspace = true
 
 [dependencies]
 choice-wallet-core.workspace = true
+choice-wallet-cosmos.workspace = true
 choice-wallet-evm.workspace = true
-prost.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-thiserror.workspace = true
 
 [dev-dependencies]
 hex.workspace = true
+prost.workspace = true

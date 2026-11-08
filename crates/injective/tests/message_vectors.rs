@@ -4,15 +4,15 @@
 
 use choice_wallet_core::hd::{derive, injective_path};
 use choice_wallet_core::{Mnemonic, PrivateKey};
+use choice_wallet_cosmos::builder::{self, Fee, TxOptions};
+use choice_wallet_cosmos::direct::{self, Request};
+use choice_wallet_cosmos::msg::{Allowance, Authorization, Coin, Msg};
+use choice_wallet_cosmos::proto::cosmos::authz::v1beta1::{GenericAuthorization, Grant, MsgExec, MsgGrant};
+use choice_wallet_cosmos::proto::cosmos::bank::v1beta1::MsgSend;
+use choice_wallet_cosmos::proto::cosmos::base::v1beta1::Coin as ProtoCoin;
+use choice_wallet_cosmos::wkt::Any;
 use choice_wallet_injective::Error;
-use choice_wallet_injective::builder::{self, Fee, TxOptions};
 use choice_wallet_injective::chain::MAINNET;
-use choice_wallet_injective::direct::{self, Request};
-use choice_wallet_injective::msg::{Allowance, Authorization, Coin, Msg};
-use choice_wallet_injective::proto::cosmos::authz::v1beta1::{GenericAuthorization, Grant, MsgExec, MsgGrant};
-use choice_wallet_injective::proto::cosmos::bank::v1beta1::MsgSend;
-use choice_wallet_injective::proto::cosmos::base::v1beta1::Coin as ProtoCoin;
-use choice_wallet_injective::wkt::Any;
 use prost::{Message, Name};
 use serde_json::Value;
 
@@ -49,8 +49,8 @@ fn opts() -> TxOptions {
 
 /// Decode `msgs` as the body of a Direct transaction signed by account 0.
 fn decode(msgs: Vec<Any>) -> Result<Vec<Msg>, Error> {
-    let req = builder::direct_request(&MAINNET, &key(0).public_key(), msgs, &opts()).unwrap();
-    Ok(direct::decode(req, "injective-1", &key(0).public_key())?
+    let req = builder::direct_request(&MAINNET.cosmos, &key(0).public_key(), msgs, &opts()).unwrap();
+    Ok(direct::decode(req, &MAINNET.cosmos, &key(0).public_key())?
         .messages()
         .to_vec())
 }
@@ -155,6 +155,7 @@ fn every_message_decodes_exactly() {
         (
             "tokenfactory_change_admin",
             Msg::TokenfactoryChangeAdmin {
+                type_url: "/injective.tokenfactory.v1beta1.MsgChangeAdmin".into(),
                 sender: a0.clone(),
                 denom: format!("factory/{a0}/test"),
                 new_admin: a1.clone(),
@@ -207,7 +208,7 @@ fn full_transaction_with_exec_and_grant() {
         chain_id: "injective-1".into(),
         account_number: 12345,
     };
-    let d = direct::decode(req, "injective-1", &key(0).public_key()).unwrap();
+    let d = direct::decode(req, &MAINNET.cosmos, &key(0).public_key()).unwrap();
     assert!(matches!(&d.messages()[0], Msg::AuthzExec { msgs, .. } if matches!(msgs[0], Msg::BankSend { .. })));
     assert!(matches!(
         &d.messages()[1],

@@ -7,23 +7,25 @@
 //! - `TxBody` and `AuthInfo` round-trip byte for byte, and so does every message type we
 //!   know. Unknown message types are kept raw for the approval screen.
 //! - The chain ID matches the connected chain.
-//! - Exactly one signer, using this account's ethsecp256k1 key in SIGN_MODE_DIRECT.
+//! - Exactly one signer, using this account's key, of the chain's key type, in
+//!   SIGN_MODE_DIRECT.
 //! - Every message we can read names this account as its signer.
 //! - A fee is present, paid by the signer (a fee granter is allowed). No tip, no extension
 //!   options.
 //!
-//! Injective accounts sign keccak256 of the SignDoc bytes: a 64-byte `r || s` signature
-//! with low S.
+//! The signature is a 64-byte `r || s` with low S, over the SignDoc bytes hashed as the
+//! chain's key type requires (keccak256 for ethsecp256k1).
 
 use choice_wallet_core::{PrivateKey, PublicKey};
-use prost::{Message, Name};
+use prost::Message;
 
 use crate::Error;
 use crate::canonical::decode_exact;
+use crate::chain::Chain;
 use crate::msg::{Coin, Msg, coins_from_proto};
+use crate::proto::cosmos::crypto::secp256k1::PubKey;
 use crate::proto::cosmos::tx::signing::v1beta1::SignMode;
 use crate::proto::cosmos::tx::v1beta1::{AuthInfo, SignDoc, TxBody, TxRaw, mode_info};
-use crate::proto::injective::crypto::v1beta1::ethsecp256k1::PubKey;
 
 /// A SIGN_MODE_DIRECT request: the parts of a SignDoc, as a dapp sends them.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,6 +57,7 @@ pub struct Fee {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Decoded {
     request: Request,
+    chain: Chain,
     signer: [u8; 33],
     messages: Vec<Msg>,
     memo: String,
@@ -113,27 +116,27 @@ pub struct Signed {
     pub tx_raw: Vec<u8>,
 }
 
-/// Check a request for `chain_id`, to be signed by `signer`.
-pub fn decode(request: Request, chain_id: &str, signer: &PublicKey) -> Result<Decoded, Error> {
-    decode_with_mode(request, chain_id, signer, SignMode::Direct)
+/// Check a request for `chain`, to be signed by `signer`.
+pub fn decode(request: Request, chain: &Chain, signer: &PublicKey) -> Result<Decoded, Error> {
+    decode_with_mode(request, chain, signer, SignMode::Direct)
 }
 
 /// The checks of [`decode`], for a transaction whose signer info declares `mode`. The
 /// amino JSON path uses this with LEGACY_AMINO_JSON.
 pub(crate) fn decode_with_mode(
     request: Request,
-    chain_id: &str,
+    chain: &Chain,
     signer: &PublicKey,
     mode: SignMode,
 ) -> Result<Decoded, Error> {
-    if request.chain_id != chain_id {
+    if request.chain_id != chain.chain_id {
         return Err(Error::WrongChain {
-            expected: chain_id.into(),
+            expected: chain.chain_id.into(),
             got: request.chain_id,
         });
     }
     let signer_key = signer.compressed();
-    let signer_addr = signer.eth_address().to_inj();
+    let signer_addr = chain.address(signer);
 
     let body: TxBody = decode_exact(&request.body_bytes, "TxBody")?;
     if !body.extension_options.is_empty() || !body.non_critical_extension_options.is_empty() {
@@ -142,7 +145,11 @@ pub(crate) fn decode_with_mode(
     if body.messages.is_empty() {
         return Err(Error::NoMessages);
     }
-    let messages = body.messages.iter().map(Msg::decode).collect::<Result<Vec<_>, _>>()?;
+    let messages = body
+        .messages
+        .iter()
+        .map(|m| Msg::decode(m, chain))
+        .collect::<Result<Vec<_>, _>>()?;
     for m in &messages {
         if let Some(s) = m.signer()
             && s != signer_addr
@@ -160,7 +167,7 @@ pub(crate) fn decode_with_mode(
         return Err(Error::SignerCount);
     };
     let pk_any = info.public_key.as_ref().ok_or(Error::WrongSigner)?;
-    if pk_any.type_url != PubKey::type_url() {
+    if pk_any.type_url != chain.pub_key_type_url() {
         return Err(Error::PubKeyType(pk_any.type_url.clone()));
     }
     let pk: PubKey = decode_exact(&pk_any.value, "PubKey")?;
@@ -185,6 +192,7 @@ pub(crate) fn decode_with_mode(
     Ok(Decoded {
         sequence: info.sequence,
         request,
+        chain: *chain,
         signer: signer_key,
         messages,
         memo: body.memo,
@@ -198,7 +206,7 @@ pub fn sign(decoded: &Decoded, key: &PrivateKey) -> Result<Signed, Error> {
     if key.public_key().compressed() != decoded.signer {
         return Err(Error::KeyMismatch);
     }
-    let signature = key.sign_keccak256(&decoded.sign_doc_bytes());
+    let signature = decoded.chain.sign(key, &decoded.sign_doc_bytes());
     Ok(Signed {
         signature,
         tx_raw: decoded.tx_raw(&signature),
