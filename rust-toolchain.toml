@@ -1,0 +1,5 @@
+[toolchain]
+# Pinned for reproducible builds. Bump deliberately, in its own PR.
+channel = "1.99.1"
+targets = ["wasm32-unknown-unknown"]
+components = ["rustfmt", "clippy"]
