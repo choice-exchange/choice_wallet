@@ -210,6 +210,8 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
       if (tab === "settings") {
         return (
           <SettingsView
+            status={status}
+            onStatus={(s) => onStatus(s)}
             tabs={tabs}
             onLock={onLock}
             onDone={() => {

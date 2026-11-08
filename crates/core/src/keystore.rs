@@ -115,6 +115,12 @@ fn derive_key(password: &[u8], salt: &[u8], params: KdfParams) -> Result<Zeroizi
 
 /// Encrypt `secret` under `password`.
 pub fn seal(secret: &Secret, password: &[u8], params: KdfParams) -> Result<Vec<u8>, Error> {
+    seal_keyed(secret, password, params).map(|(blob, _)| blob)
+}
+
+/// [`seal`], also returning the [`UnlockKey`] it derived, so a host that seals (a new
+/// password, say) needn't run the key derivation again to unlock.
+pub fn seal_keyed(secret: &Secret, password: &[u8], params: KdfParams) -> Result<(Vec<u8>, UnlockKey), Error> {
     if password.len() < MIN_PASSWORD_LEN {
         return Err(Error::Keystore("password too short"));
     }
@@ -157,7 +163,7 @@ pub fn seal(secret: &Secret, password: &[u8], params: KdfParams) -> Result<Vec<u
     let mut out = Vec::with_capacity(HEADER_LEN + ciphertext.len());
     out.extend_from_slice(&header);
     out.extend_from_slice(&ciphertext);
-    Ok(out)
+    Ok((out, UnlockKey(key)))
 }
 
 /// The key a keystore is encrypted under, derived from its password. Holding it opens the
@@ -289,6 +295,13 @@ mod tests {
             panic!("wrong kind")
         };
         assert_eq!(back.public_key(), key.public_key());
+    }
+
+    #[test]
+    fn seal_keyed_returns_the_key_that_opens_it() {
+        let (blob, key) = seal_keyed(&Secret::Mnemonic(Mnemonic::parse(ABANDON).unwrap()), PASSWORD, FAST).unwrap();
+        assert_eq!(key.as_bytes(), unlock(&blob, PASSWORD).unwrap().as_bytes());
+        assert!(matches!(open_with_key(&blob, &key).unwrap(), Secret::Mnemonic(_)));
     }
 
     #[test]

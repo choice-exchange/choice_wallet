@@ -20,6 +20,8 @@
 //! | `unlock` | `keystore`, `password` | `unlock_key` |
 //! | `accounts` | `keystore`, `unlock_key`, `accounts` | each account's public key and addresses |
 //! | `addresses` | `address` (an account's `inj1…` or `0x…`) | the same account's address on every chain, e.g. to watch it |
+//! | `reveal` | `keystore`, `password`, `account` (optional) | `phrase`, or `private_key` (the keystore's own, or the account's) |
+//! | `change_password` | `keystore`, `password`, `new_password` | the new `keystore` and its `unlock_key` |
 //! | `build_cosmos` | chain, signer, messages, fee, … | a sign request, and `simulate_tx` for a gas estimate |
 //! | `build_evm` | chain, from, to, amount, token, fees | a sign request |
 //! | `decode` | `request`, `context` (optional) | `display`, `risk`, `digest` |
@@ -76,6 +78,23 @@ struct Envelope<'a> {
 
 fn params<T: DeserializeOwned>(raw: Option<&RawValue>) -> Result<T, VaultError> {
     serde_json::from_str(raw.map_or("{}", RawValue::get)).map_err(|e| VaultError::bad(e.to_string()))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Reveal {
+    keystore: String,
+    password: Zeroizing<String>,
+    #[serde(default)]
+    account: Option<Account>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ChangePassword {
+    keystore: String,
+    password: Zeroizing<String>,
+    new_password: Zeroizing<String>,
 }
 
 #[derive(Deserialize)]
@@ -181,6 +200,19 @@ fn call(request: &str) -> Result<Value, VaultError> {
                 .collect::<Result<serde_json::Map<String, Value>, VaultError>>()
                 .map_err(|_| VaultError::bad(format!("{:?} isn't an Injective account address", address.trim())))?;
             Ok(json!({ "addresses": list }))
+        }
+        "reveal" => {
+            let Reveal { keystore, password, account } = params(p)?;
+            keys::reveal(&keystore, &password, account)
+        }
+        "change_password" => {
+            let ChangePassword {
+                keystore,
+                password,
+                new_password,
+            } = params(p)?;
+            let (blob, key) = keys::change_password(&keystore, &password, &new_password)?;
+            Ok(json!({ "keystore": hexutil::encode(&blob), "unlock_key": hexutil::encode(key.as_bytes()) }))
         }
         "build_cosmos" => build::cosmos(params(p)?),
         "build_evm" => Ok(json!({ "request": build::evm(params(p)?)? })),

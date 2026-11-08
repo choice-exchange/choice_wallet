@@ -5,10 +5,30 @@ import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { useBackend } from "./backend";
 import { GlobeIcon, LockIcon } from "./icons";
 import { Screen, Segmented } from "./kit";
-import type { Connection, NetworkId, Settings } from "./protocol";
+import type { Connection, NetworkId, Settings, Status } from "./protocol";
 import { useRequest } from "./request";
+import { ChangePasswordView, RemoveWalletView, RevealView, type SecurityView } from "./Security";
 
-export function SettingsView({ onDone, onLock, tabs }: { onDone: () => void; onLock: () => void; tabs: ReactNode }) {
+const LOCK_AFTER: readonly (readonly ["5" | "15" | "60" | "240", string])[] = [
+  ["5", "5 min"],
+  ["15", "15 min"],
+  ["60", "1 hour"],
+  ["240", "4 hours"],
+];
+
+export function SettingsView({
+  status,
+  onStatus,
+  onDone,
+  onLock,
+  tabs,
+}: {
+  status: Status;
+  onStatus: (s: Status) => void;
+  onDone: () => void;
+  onLock: () => void;
+  tabs: ReactNode;
+}) {
   const { run, error, busy } = useRequest();
   const [settings, setSettings] = useState<Settings | null>(null);
   const [net, setNet] = useState<NetworkId>("mainnet");
@@ -16,6 +36,8 @@ export function SettingsView({ onDone, onLock, tabs }: { onDone: () => void; onL
   const [evmText, setEvmText] = useState("");
   const [indexText, setIndexText] = useState("");
   const [prices, setPrices] = useState(true);
+  const [lockAfter, setLockAfter] = useState("15");
+  const [security, setSecurity] = useState<SecurityView | null>(null);
   const backend = useBackend();
   const [sites, setSites] = useState<Connection[]>([]);
 
@@ -32,6 +54,7 @@ export function SettingsView({ onDone, onLock, tabs }: { onDone: () => void; onL
       setEvmText(s.evm[s.network].join("\n"));
       setIndexText(s.evmIndex[s.network].join("\n"));
       setPrices(s.prices);
+      setLockAfter(String(s.autoLock));
     });
   }, []);
 
@@ -59,11 +82,27 @@ export function SettingsView({ onDone, onLock, tabs }: { onDone: () => void; onL
         evm: same(evm, settings.evmDefault[net]) ? null : evm,
         evmIndex: same(evmIndex, settings.evmIndexDefault[net]) ? null : evmIndex,
         prices,
+        autoLock: Number(lockAfter),
       })
     ) {
       onDone();
     }
   }
+
+  const account = status.accounts[status.active];
+  if (security === "phrase" || security === "key") return <RevealView what={security} status={status} onBack={() => setSecurity(null)} />;
+  if (security === "password") {
+    return (
+      <ChangePasswordView
+        onDone={(s) => {
+          onStatus(s);
+          setSecurity(null);
+        }}
+        onBack={() => setSecurity(null)}
+      />
+    );
+  }
+  if (security === "remove") return <RemoveWalletView status={status} onRemoved={onStatus} onBack={() => setSecurity(null)} />;
 
   return (
     <form onSubmit={(e) => void save(e)} style={{ height: "100%" }}>
@@ -186,9 +225,27 @@ export function SettingsView({ onDone, onLock, tabs }: { onDone: () => void; onL
         <div className="eyebrow" style={{ marginTop: 8 }}>
           Security
         </div>
+        <Segmented label="Lock after" options={LOCK_AFTER} value={lockAfter as (typeof LOCK_AFTER)[number][0]} onChange={setLockAfter} />
+        <span className="meta">Locks after this long without use.</span>
         <button type="button" className="btn" onClick={onLock}>
           <LockIcon /> Lock now
         </button>
+        <div className="well rows">
+          <button type="button" className="row link-row" onClick={() => setSecurity("phrase")}>
+            {status.kind === "mnemonic" ? "Show recovery phrase" : "Show private key"}
+          </button>
+          {status.kind === "mnemonic" && account?.account.derivation === "default" && (
+            <button type="button" className="row link-row" onClick={() => setSecurity("key")}>
+              Export {account.name}&apos;s key
+            </button>
+          )}
+          <button type="button" className="row link-row" onClick={() => setSecurity("password")}>
+            Change password
+          </button>
+          <button type="button" className="row link-row danger" onClick={() => setSecurity("remove")}>
+            Remove wallet
+          </button>
+        </div>
         <p className="footnote">Choice Wallet 0.1.0. Pre-alpha. Not for real funds.</p>
       </Screen>
     </form>

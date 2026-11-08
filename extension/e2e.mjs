@@ -633,6 +633,43 @@ try {
   if ((await pill()) !== addrs[0]) throw new Error("switching back didn't show account 1");
   console.log("accounts: a second from the phrase (= the vault's derivation), renamed, an address watched (can't send), back to the first");
 
+  // 10. Security: the phrase behind the password; a new password (the old one stops
+  // working); then the wallet removed, back to the welcome screen.
+  await p.click("Settings");
+  await p.waitText("Tried in order, one per line.");
+  await p.click("Show recovery phrase");
+  await p.fill('input[aria-label="Password"]', 0, "wrong password!");
+  await p.click("Show");
+  await p.waitText("Wrong password.");
+  await p.fill('input[aria-label="Password"]', 0, "correct horse battery staple");
+  await p.click("Show");
+  await p.waitText(words[11]);
+  const revealed = await p.eval(`[...document.querySelectorAll(".words li")].map((li) => li.textContent).join(" ")`);
+  if (revealed !== words.join(" ")) throw new Error("the phrase shown isn't the wallet's");
+  await p.click("Done");
+  await p.click("Change password");
+  await p.fill('input[aria-label="Password"]', 0, "correct horse battery staple");
+  await p.fill('input[aria-label="New password"]', 0, "a brand new passphrase");
+  await p.fill('input[aria-label="Repeat the new password"]', 0, "a brand new passphrase");
+  await p.shot("22-change-password");
+  await p.click("Change password");
+  await p.waitText("Tried in order, one per line.");
+  await p.click("Lock now");
+  await p.waitText("Unlock");
+  await p.fill("input[type=password]", 0, "correct horse battery staple");
+  await p.click("Unlock");
+  await p.waitText("Wrong password.");
+  await p.fill("input[type=password]", 0, "a brand new passphrase");
+  await p.click("Unlock");
+  await p.waitText("Manage", 15000);
+  await p.click("Settings");
+  await p.click("Remove wallet");
+  await p.fill('input[aria-label="Password"]', 0, "a brand new passphrase");
+  await p.shot("23-remove-wallet");
+  await p.click("Remove wallet");
+  await p.waitText("Create a new wallet");
+  console.log("security: phrase shown after the password, password changed (old refused), wallet removed");
+
   // 7. A web page can't talk to the service worker: there is no externally_connectable, so
   // chrome.runtime isn't even exposed to it.
   const { targetId: webId } = await send("Target.createTarget", { url: "data:text/html,<p>web page</p>" });

@@ -59,6 +59,29 @@ pub(crate) fn key(keystore_hex: &str, unlock_key_hex: &str, account: Account) ->
     let blob = hex(keystore_hex, "keystore")?;
     let unlock_bytes = Zeroizing::new(hex(unlock_key_hex, "unlock_key")?);
     let secret = keystore::open_with_key(&blob, &UnlockKey::from_bytes(&unlock_bytes)?)?;
+    account_key(secret, account)
+}
+
+/// What the user asked to see, after their password: the keystore's recovery phrase (or its
+/// one imported key), or one account's private key. Never with the unlock key alone, so a
+/// host that holds it while unlocked can't show the secret without asking.
+pub(crate) fn reveal(keystore_hex: &str, password: &str, account: Option<Account>) -> Result<Value, VaultError> {
+    let secret = keystore::open(&hex(keystore_hex, "keystore")?, password.as_bytes())?;
+    Ok(match (secret, account) {
+        (Secret::Mnemonic(m), None) => serde_json::json!({ "phrase": m.phrase().as_str() }),
+        (Secret::PrivateKey(k), None) => serde_json::json!({ "private_key": k.export_hex().as_str() }),
+        (secret, Some(a)) => serde_json::json!({ "private_key": account_key(secret, a)?.export_hex().as_str() }),
+    })
+}
+
+/// The keystore's secret sealed under a new password (fresh salt and nonce, default
+/// parameters), and the key that now unlocks it.
+pub(crate) fn change_password(keystore_hex: &str, password: &str, new_password: &str) -> Result<(Vec<u8>, UnlockKey), VaultError> {
+    let secret = keystore::open(&hex(keystore_hex, "keystore")?, password.as_bytes())?;
+    Ok(keystore::seal_keyed(&secret, new_password.as_bytes(), KdfParams::DEFAULT)?)
+}
+
+fn account_key(secret: Secret, account: Account) -> Result<PrivateKey, VaultError> {
     let index_ok = |i: u32| {
         if i <= MAX_INDEX {
             Ok(i)

@@ -44,6 +44,12 @@ impl PrivateKey {
         Zeroizing::new(self.0.to_bytes().into())
     }
 
+    /// The key as 64 hex characters, the form other wallets import. Only for showing the
+    /// user, when they ask to export it after entering their password.
+    pub fn export_hex(&self) -> Zeroizing<String> {
+        Zeroizing::new(hexutil::encode(&self.to_bytes()[..]))
+    }
+
     /// The matching public key.
     pub fn public_key(&self) -> PublicKey {
         PublicKey(*self.0.verifying_key())

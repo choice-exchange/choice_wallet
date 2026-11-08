@@ -36,10 +36,16 @@ export type UiRequest =
   | { type: "switch_account"; index: number }
   | { type: "rename_account"; index: number; name: string }
   | { type: "remove_account"; index: number }
+  /** Security, each behind the password: show the recovery phrase (or the wallet's one
+   *  imported key), or account `index`'s private key; a new password; take the wallet off
+   *  this device. */
+  | { type: "reveal_secret"; password: string; index?: number }
+  | { type: "change_password"; password: string; new_password: string }
+  | { type: "remove_wallet"; password: string }
   | { type: "settings" }
   /** Switch to `network`, with these LCD, EVM and Blockscout endpoints for it (`null`: the
    *  defaults; left out: unchanged; an empty Blockscout list turns it off). */
-  | { type: "save_settings"; network: NetworkId; lcd: string[] | null; evm?: string[] | null; evmIndex?: string[] | null; prices?: boolean }
+  | { type: "save_settings"; network: NetworkId; lcd: string[] | null; evm?: string[] | null; evmIndex?: string[] | null; prices?: boolean; autoLock?: number }
   | { type: "balances" }
   /** Which tokens the current network's lists show (see `TokenFilter`). */
   | { type: "save_token_filter"; filter: TokenFilter }
@@ -235,6 +241,8 @@ export type Settings = {
   evmIndexDefault: Record<NetworkId, string[]>;
   /** Show USD values (Choice's price index). */
   prices: boolean;
+  /** Minutes without activity before the wallet locks: 5, 15, 60 or 240. */
+  autoLock: number;
 };
 
 export type TxState = { state: "pending" | "success" | "failed"; log?: string };
@@ -278,6 +286,9 @@ export type Replies = {
   switch_account: Status;
   rename_account: Status;
   remove_account: Status;
+  reveal_secret: { phrase?: string; private_key?: string };
+  change_password: Status;
+  remove_wallet: Status;
   settings: Settings;
   save_settings: Settings;
   /** Every balance; the UI applies `filter`. `prices` is the USD values setting. EVM-only

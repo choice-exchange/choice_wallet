@@ -40,8 +40,15 @@ export interface Deps {
   notify(): void;
 }
 
-/** Minutes without activity before the wallet locks itself. */
+/** Minutes without activity before the wallet locks itself, unless the user picks another
+ *  of `LOCK_CHOICES` in Settings. */
 export const AUTO_LOCK_MINUTES = 15;
+const LOCK_CHOICES = [5, 15, 60, 240];
+/** Local storage that belongs to the wallet, not the device: removing the wallet clears it.
+ *  Endpoints, the network and other settings stay. */
+const WALLET_KEYS = ["keystore", "kind", "accounts", "active_account", "connections", "custom_tokens", "token_filter"];
+/** The shortest password, as the keystore takes it. */
+const MIN_PASSWORD = 8;
 
 const err = (code: string, message: string): UiResponse<never> => ({ ok: false, error: { code, message } });
 
@@ -116,6 +123,16 @@ export function createService(d: Deps) {
     return evm_index?.[net] ?? [...NETWORKS[net].evmIndex];
   }
 
+  /** Minutes to stay unlocked without activity. */
+  async function lockAfter(): Promise<number> {
+    const { auto_lock } = await d.local.get(["auto_lock"]);
+    return typeof auto_lock === "number" && LOCK_CHOICES.includes(auto_lock) ? auto_lock : AUTO_LOCK_MINUTES;
+  }
+  /** Activity: start the auto-lock timer again. */
+  async function touch(): Promise<void> {
+    d.scheduleLock(await lockAfter());
+  }
+
   async function showPrices(): Promise<boolean> {
     const { prices } = await d.local.get(["prices"]);
     return prices !== false;
@@ -135,7 +152,7 @@ export function createService(d: Deps) {
       const key = await unlockKey();
       const account = ks.accounts?.[ks.active];
       if (!ks.keystore || key === undefined || !account || isWatch(account)) return null;
-      d.scheduleLock(AUTO_LOCK_MINUTES);
+      await touch();
       return { account, keystore: ks.keystore, key };
     },
     openWindow: d.openWindow,
@@ -208,7 +225,7 @@ export function createService(d: Deps) {
     const stored = (await keystore()).accounts;
     await d.session.set({ unlock_key: key });
     if (stored?.[0]?.public_key !== first.public_key) await d.local.set({ accounts: [{ ...first, name: "Account 1" }], active_account: 0 });
-    d.scheduleLock(AUTO_LOCK_MINUTES);
+    await touch();
     d.notify();
     return { ok: true, result: await status() };
   }
@@ -235,7 +252,7 @@ export function createService(d: Deps) {
       accounts: [{ derivation: "default", index }],
     });
     if (!r.ok) return r;
-    d.scheduleLock(AUTO_LOCK_MINUTES);
+    await touch();
     return saveAccounts([...ks.accounts, { ...r.result.accounts[0]!, name: `Account ${index + 1}` }], ks.accounts.length);
   }
 
@@ -251,7 +268,7 @@ export function createService(d: Deps) {
     const already = ks.accounts.findIndex((a) => a.addresses[NETWORKS.mainnet.cosmos] === cosmos);
     if (already >= 0) return err("exists", `That's already in your list, as ${ks.accounts[already]!.name}.`);
     const n = ks.accounts.filter(isWatch).length + 1;
-    d.scheduleLock(AUTO_LOCK_MINUTES);
+    await touch();
     return saveAccounts([...ks.accounts, { account: { derivation: "watch" }, public_key: "", addresses: r.result.addresses, name: `Watching ${n}` }], ks.accounts.length);
   }
 
@@ -260,7 +277,7 @@ export function createService(d: Deps) {
     if (!ks.keystore || (await unlockKey()) === undefined || !ks.accounts) return err("locked", "Unlock the wallet first.");
     const i = op.index;
     if (typeof i !== "number" || !Number.isInteger(i) || i < 0 || i >= ks.accounts.length) return err("bad_request", "No such account.");
-    d.scheduleLock(AUTO_LOCK_MINUTES);
+    await touch();
     if (op.type === "switch") return saveAccounts(ks.accounts, i);
     if (op.type === "rename") {
       const name = typeof op.name === "string" ? cleanText(op.name.replace(/\s+/g, " "), MAX_NAME) : "";
@@ -290,6 +307,55 @@ export function createService(d: Deps) {
     return opened(ks.keystore, ks.kind, r.result.unlock_key);
   }
 
+  /** What the user asked to see, after their password: the recovery phrase (or the wallet's
+   *  one imported key), or account `index`'s private key. Nothing is kept. */
+  async function revealSecret(password: unknown, index: unknown): Promise<UiResponse<{ phrase?: string; private_key?: string }>> {
+    const ks = await keystore();
+    if (!ks.keystore || (await unlockKey()) === undefined || !ks.accounts) return err("locked", "Unlock the wallet first.");
+    if (typeof password !== "string" || !password) return err("bad_request", "Enter your password.");
+    let account: AccountInfo["account"] | undefined;
+    if (index !== undefined) {
+      const a = typeof index === "number" ? ks.accounts[index] : undefined;
+      if (!a) return err("bad_request", "No such account.");
+      if (isWatch(a)) return err("watch_only", "A watch-only account has no key.");
+      account = a.account;
+    }
+    await touch();
+    const r = await d.vault<{ phrase?: string; private_key?: string }>("reveal", { keystore: ks.keystore, password, ...(account ? { account } : {}) });
+    if (!r.ok && r.error.code === "wrong_password") return err("wrong_password", "Wrong password.");
+    return r;
+  }
+
+  /** The keystore sealed under a new password; the wallet stays unlocked with its new key. */
+  async function changePassword(password: unknown, next: unknown): Promise<UiResponse<Status>> {
+    const ks = await keystore();
+    if (!ks.keystore || (await unlockKey()) === undefined) return err("locked", "Unlock the wallet first.");
+    if (typeof password !== "string" || typeof next !== "string") return err("bad_request", "Enter both passwords.");
+    if ([...next].length < MIN_PASSWORD) return err("weak_password", `Use at least ${MIN_PASSWORD} characters.`);
+    if (next === password) return err("same_password", "That's the password it has now.");
+    const r = await d.vault<{ keystore: string; unlock_key: string }>("change_password", { keystore: ks.keystore, password, new_password: next });
+    if (!r.ok) return r.error.code === "wrong_password" ? err("wrong_password", "Wrong password.") : r;
+    await d.local.set({ keystore: r.result.keystore });
+    await d.session.set({ unlock_key: r.result.unlock_key });
+    await touch();
+    return { ok: true, result: await status() };
+  }
+
+  /** Take the wallet off this device, after its password. Only the recovery phrase (or the
+   *  key) brings it back. Settings such as endpoints stay. */
+  async function removeWallet(password: unknown): Promise<UiResponse<Status>> {
+    const ks = await keystore();
+    if (!ks.keystore) return err("no_wallet", "There is no wallet on this device.");
+    if (typeof password !== "string" || !password) return err("bad_request", "Enter your password.");
+    const r = await d.vault("unlock", { keystore: ks.keystore, password });
+    if (!r.ok) return r.error.code === "wrong_password" ? err("wrong_password", "Wrong password.") : r;
+    await d.session.remove(["unlock_key", "pending_send"]);
+    await d.local.remove(WALLET_KEYS);
+    d.cancelLock();
+    d.notify();
+    return { ok: true, result: await status() };
+  }
+
   async function lock(): Promise<UiResponse<Status>> {
     await d.session.remove(["unlock_key", "pending_send"]);
     d.cancelLock();
@@ -309,6 +375,7 @@ export function createService(d: Deps) {
         evmIndex: { mainnet: await evmIndexEndpoints("mainnet"), testnet: await evmIndexEndpoints("testnet") },
         evmIndexDefault: { mainnet: [...NETWORKS.mainnet.evmIndex], testnet: [...NETWORKS.testnet.evmIndex] },
         prices: await showPrices(),
+        autoLock: await lockAfter(),
       },
     };
   }
@@ -335,9 +402,10 @@ export function createService(d: Deps) {
     return next;
   }
 
-  async function saveSettings(net: unknown, lcd: unknown, evm: unknown, evmIndex: unknown, prices: unknown): Promise<UiResponse<Settings>> {
+  async function saveSettings(net: unknown, lcd: unknown, evm: unknown, evmIndex: unknown, prices: unknown, autoLock: unknown): Promise<UiResponse<Settings>> {
     if (!isNetworkId(net)) return err("bad_request", "Unknown network.");
     if (prices !== undefined && typeof prices !== "boolean") return err("bad_request", "prices must be true or false.");
+    if (autoLock !== undefined && !(typeof autoLock === "number" && LOCK_CHOICES.includes(autoLock))) return err("bad_request", `autoLock must be one of ${LOCK_CHOICES.join(", ")}.`);
     const stored = (await d.local.get(["endpoints", "evm_endpoints", "evm_index"])) as { endpoints?: Endpoints; evm_endpoints?: Endpoints; evm_index?: Endpoints };
     const lcdAll = nextEndpoints(stored.endpoints ?? {}, net, lcd);
     if ("ok" in lcdAll) return lcdAll as UiResponse<never>;
@@ -346,7 +414,15 @@ export function createService(d: Deps) {
     const indexAll = nextEndpoints(stored.evm_index ?? {}, net, evmIndex, true);
     if ("ok" in indexAll) return indexAll as UiResponse<never>;
     const before = await network();
-    await d.local.set({ network: net, endpoints: lcdAll, evm_endpoints: evmAll, evm_index: indexAll, ...(prices === undefined ? {} : { prices }) });
+    await d.local.set({
+      network: net,
+      endpoints: lcdAll,
+      evm_endpoints: evmAll,
+      evm_index: indexAll,
+      ...(prices === undefined ? {} : { prices }),
+      ...(autoLock === undefined ? {} : { auto_lock: autoLock }),
+    });
+    if (autoLock !== undefined && (await unlockKey()) !== undefined) await touch();
     if (net !== before) d.notify();
     return settings();
   }
@@ -357,7 +433,7 @@ export function createService(d: Deps) {
     const key = await unlockKey();
     const account = ks.accounts?.[ks.active];
     if (!ks.keystore || key === undefined || !account) return err("locked", "Unlock the wallet first.");
-    d.scheduleLock(AUTO_LOCK_MINUTES);
+    await touch();
     return { account, net: await network(), keystore: ks.keystore, key };
   }
 
@@ -367,7 +443,7 @@ export function createService(d: Deps) {
     switch (r?.type) {
       case "status": {
         const s = await status();
-        if (s.unlocked) d.scheduleLock(AUTO_LOCK_MINUTES);
+        if (s.unlocked) await touch();
         return { ok: true, result: s };
       }
       case "generate":
@@ -388,10 +464,16 @@ export function createService(d: Deps) {
         return changeAccounts({ type: "rename", index: r.index, name: r.name });
       case "remove_account":
         return changeAccounts({ type: "remove", index: r.index });
+      case "reveal_secret":
+        return revealSecret(r.password, r.index);
+      case "change_password":
+        return changePassword(r.password, r.new_password);
+      case "remove_wallet":
+        return removeWallet(r.password);
       case "settings":
         return settings();
       case "save_settings":
-        return saveSettings(r.network, r.lcd, r.evm, r.evmIndex, r.prices);
+        return saveSettings(r.network, r.lcd, r.evm, r.evmIndex, r.prices, r.autoLock);
       case "save_token_filter":
         return saveTokenFilter(r.filter);
       case "add_token": {

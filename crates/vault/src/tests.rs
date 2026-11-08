@@ -93,6 +93,44 @@ fn coins(v: &Value) -> Value {
 }
 
 #[test]
+fn reveal_needs_the_password_and_shows_the_phrase_or_a_key() {
+    let phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    let pw = "correct horse battery staple";
+    let ks = ok("create_keystore", json!({ "secret": { "mnemonic": phrase }, "password": pw }))["keystore"].clone();
+    assert_eq!(ok("reveal", json!({ "keystore": ks, "password": pw }))["phrase"], phrase);
+    // The second account's key, the one other wallets derive at m/44'/60'/0'/0/1 (the
+    // published test phrase's second MetaMask account, 0x6Fac…b9C0).
+    let second = ok("reveal", json!({ "keystore": ks, "password": pw, "account": { "derivation": "default", "index": 1 } }));
+    let key = second["private_key"].as_str().unwrap();
+    assert_eq!(key.len(), 64);
+    let back = ok("create_keystore", json!({ "secret": { "private_key": key }, "password": pw }))["keystore"].clone();
+    let uk = ok("unlock", json!({ "keystore": back, "password": pw }))["unlock_key"].clone();
+    let a = ok("accounts", json!({ "keystore": back, "unlock_key": uk, "accounts": [{ "derivation": "imported" }] }));
+    assert_eq!(a["accounts"][0]["addresses"]["eip155:1776"], "0x6Fac4D18c912343BF86fa7049364Dd4E424Ab9C0");
+    // An imported-key keystore shows its key; a wrong password shows nothing.
+    assert_eq!(ok("reveal", json!({ "keystore": back, "password": pw }))["private_key"], key);
+    assert_eq!(code("reveal", json!({ "keystore": ks, "password": "not the password" })), "wrong_password");
+    // The unlock key alone isn't enough: the method takes no such field.
+    let uk0 = ok("unlock", json!({ "keystore": ks, "password": pw }))["unlock_key"].clone();
+    assert_eq!(code("reveal", json!({ "keystore": ks, "unlock_key": uk0 })), "bad_request");
+}
+
+#[test]
+fn change_password_reseals_and_returns_the_new_unlock_key() {
+    let pw = "correct horse battery staple";
+    let ks = ok("create_keystore", json!({ "secret": { "private_key": "46".repeat(32) }, "password": pw }))["keystore"].clone();
+    let changed = ok("change_password", json!({ "keystore": ks, "password": pw, "new_password": "a whole new password" }));
+    let new_ks = changed["keystore"].clone();
+    assert_ne!(new_ks, ks);
+    assert_eq!(code("unlock", json!({ "keystore": new_ks, "password": pw })), "wrong_password");
+    let uk = ok("unlock", json!({ "keystore": new_ks, "password": "a whole new password" }))["unlock_key"].clone();
+    assert_eq!(uk, changed["unlock_key"]);
+    assert_eq!(ok("reveal", json!({ "keystore": new_ks, "password": "a whole new password" }))["private_key"], "46".repeat(32));
+    assert_eq!(code("change_password", json!({ "keystore": ks, "password": "wrong one", "new_password": "a whole new password" })), "wrong_password");
+    assert_eq!(code("change_password", json!({ "keystore": ks, "password": pw, "new_password": "short" })), "keystore");
+}
+
+#[test]
 fn addresses_of_an_account_on_every_chain() {
     // The BIP-39 test phrase's first account, given either way.
     let want = json!({

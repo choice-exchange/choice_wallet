@@ -499,3 +499,8 @@ details.raw summary {
 .account-mark.tone-3 { background: rgba(244, 114, 182, 0.14); color: #f9a8d4; }
 .account-row[aria-current="true"] .value { color: var(--gold); }
 .account-row .input { height: 36px; }
+
+/* ── Security ── */
+.link-row { border: 0; background: transparent; color: var(--text); font: inherit; font-size: 14px; line-height: 20px; padding: 2px 0; justify-content: flex-start; text-align: left; cursor: pointer; }
+.link-row:hover { color: var(--gold); }
+.link-row.danger { color: var(--negative); }
