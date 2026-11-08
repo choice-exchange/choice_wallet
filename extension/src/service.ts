@@ -1,14 +1,16 @@
 // The service worker's logic, without `chrome.*`, so it runs under test. It is the
 // extension's host: it answers the UI's requests (`@choice-wallet/ui/protocol`).
 //
-// - The encrypted keystore, the public account list and the settings live in local storage.
+// - The encrypted keystore, the public account list (names, addresses, which one is in
+//   use) and the settings live in local storage. Accounts come from the keystore's
+//   recovery phrase by index, or are addresses to watch, with no key at all.
 // - While unlocked, the unlock key (Argon2id output, opens only this keystore) lives in
 //   session storage, which Chrome keeps in memory and clears on browser restart or
 //   extension update. Locking deletes it, and any send waiting for approval.
 // - The vault is stateless: every call that needs a key gets the keystore and unlock key
 //   from here. UI pages never see either.
 
-import { cw20Address, evmAddress, isNetworkId, NETWORKS, Pool, type Fetch, type NetworkId } from "@choice-wallet/chain";
+import { cleanText, cw20Address, evmAddress, isNetworkId, NETWORKS, Pool, type Fetch, type NetworkId } from "@choice-wallet/chain";
 import type { AccountInfo, NewSecret, Result, Settings, Status, TokenFilter, UiRequest } from "@choice-wallet/ui/protocol";
 import { DEFAULT_FILTER } from "@choice-wallet/ui/token-filter";
 
@@ -52,6 +54,12 @@ const DENOM = /^[a-zA-Z][a-zA-Z0-9/:._-]{2,127}$/;
 const MAX_CHOICES = 500;
 /** Tokens added by hand, per network. */
 const MAX_CUSTOM = 100;
+/** Accounts in the list, derived and watched together. */
+const MAX_ACCOUNTS = 50;
+/** Characters in an account's name. */
+const MAX_NAME = 24;
+
+const isWatch = (a: AccountInfo) => a.account.derivation === "watch";
 
 /** A filter from the UI or from storage, checked: null if it isn't one. */
 function tokenFilterFrom(v: unknown): TokenFilter | null {
@@ -67,8 +75,19 @@ function tokenFilterFrom(v: unknown): TokenFilter | null {
 }
 
 export function createService(d: Deps) {
-  async function keystore(): Promise<{ keystore?: string; kind?: Status["kind"]; accounts?: AccountInfo[] }> {
-    return (await d.local.get(["keystore", "kind", "accounts"])) as never;
+  async function keystore(): Promise<{ keystore?: string; kind?: Status["kind"]; accounts?: AccountInfo[]; active: number }> {
+    const got = (await d.local.get(["keystore", "kind", "accounts", "active_account"])) as {
+      keystore?: string;
+      kind?: Status["kind"];
+      accounts?: AccountInfo[];
+      active_account?: unknown;
+    };
+    // Lists from before accounts had names read as "Account 1", "Account 2", ….
+    const accounts = got.accounts?.map((a, i) => ({ ...a, name: typeof a.name === "string" && a.name ? a.name : `Account ${i + 1}` }));
+    const n = accounts?.length ?? 0;
+    const i = got.active_account;
+    const active = typeof i === "number" && Number.isInteger(i) && i >= 0 && i < n ? i : 0;
+    return { ...(got.keystore ? { keystore: got.keystore } : {}), ...(got.kind ? { kind: got.kind } : {}), ...(accounts ? { accounts } : {}), active };
   }
 
   async function unlockKey(): Promise<string | undefined> {
@@ -111,10 +130,11 @@ export function createService(d: Deps) {
     network,
     setNetwork: (n) => d.local.set({ network: n }),
     async unlocked() {
+      // Sites see the account in use, and none while it is watch-only: it can't sign.
       const ks = await keystore();
       const key = await unlockKey();
-      const account = ks.accounts?.[0];
-      if (!ks.keystore || key === undefined || !account) return null;
+      const account = ks.accounts?.[ks.active];
+      if (!ks.keystore || key === undefined || !account || isWatch(account)) return null;
       d.scheduleLock(AUTO_LOCK_MINUTES);
       return { account, keystore: ks.keystore, key };
     },
@@ -169,23 +189,87 @@ export function createService(d: Deps) {
       kind: ks.kind ?? null,
       network: await network(),
       accounts: unlocked ? (ks.accounts ?? []) : [],
+      active: unlocked ? ks.active : 0,
     };
   }
 
-  /** Remember the unlock key and the account list, and start the auto-lock timer. */
+  /** Remember the unlock key, and start the auto-lock timer. The account list stays as the
+   *  user left it, unless it doesn't start with this keystore's own first account (a new
+   *  wallet, or a list from another keystore): then it starts over with that one. */
   async function opened(keystoreHex: string, kind: NonNullable<Status["kind"]>, key: string): Promise<UiResponse<Status>> {
     const account = kind === "mnemonic" ? { derivation: "default", index: 0 } : { derivation: "imported" };
-    const r = await d.vault<{ accounts: AccountInfo[] }>("accounts", {
+    const r = await d.vault<{ accounts: Omit<AccountInfo, "name">[] }>("accounts", {
       keystore: keystoreHex,
       unlock_key: key,
       accounts: [account],
     });
     if (!r.ok) return r;
+    const first = r.result.accounts[0]!;
+    const stored = (await keystore()).accounts;
     await d.session.set({ unlock_key: key });
-    await d.local.set({ accounts: r.result.accounts });
+    if (stored?.[0]?.public_key !== first.public_key) await d.local.set({ accounts: [{ ...first, name: "Account 1" }], active_account: 0 });
     d.scheduleLock(AUTO_LOCK_MINUTES);
     d.notify();
     return { ok: true, result: await status() };
+  }
+
+  /** The list after a change, saved; sites hear about it. */
+  async function saveAccounts(accounts: AccountInfo[], active: number): Promise<UiResponse<Status>> {
+    await d.local.set({ accounts, active_account: active });
+    d.notify();
+    return { ok: true, result: await status() };
+  }
+
+  /** The next account from the recovery phrase, in use from now. */
+  async function addAccount(): Promise<UiResponse<Status>> {
+    const ks = await keystore();
+    const key = await unlockKey();
+    if (!ks.keystore || key === undefined || !ks.accounts) return err("locked", "Unlock the wallet first.");
+    if (ks.kind !== "mnemonic") return err("no_phrase", "This wallet is one imported key. It has no other accounts.");
+    if (ks.accounts.length >= MAX_ACCOUNTS) return err("too_many", `The list holds at most ${MAX_ACCOUNTS} accounts.`);
+    const used = ks.accounts.flatMap((a) => (a.account.derivation === "default" ? [a.account.index] : []));
+    const index = Math.max(-1, ...used) + 1;
+    const r = await d.vault<{ accounts: Omit<AccountInfo, "name">[] }>("accounts", {
+      keystore: ks.keystore,
+      unlock_key: key,
+      accounts: [{ derivation: "default", index }],
+    });
+    if (!r.ok) return r;
+    d.scheduleLock(AUTO_LOCK_MINUTES);
+    return saveAccounts([...ks.accounts, { ...r.result.accounts[0]!, name: `Account ${index + 1}` }], ks.accounts.length);
+  }
+
+  /** An address to follow: balances and activity, never a signature. */
+  async function addWatch(address: unknown): Promise<UiResponse<Status>> {
+    const ks = await keystore();
+    if (!ks.keystore || (await unlockKey()) === undefined || !ks.accounts) return err("locked", "Unlock the wallet first.");
+    if (typeof address !== "string" || address.length > 100) return err("invalid_address", "Enter an inj1… or 0x… address.");
+    if (ks.accounts.length >= MAX_ACCOUNTS) return err("too_many", `The list holds at most ${MAX_ACCOUNTS} accounts.`);
+    const r = await d.vault<{ addresses: Record<string, string> }>("addresses", { address });
+    if (!r.ok) return err("invalid_address", "That isn't an Injective account address.");
+    const cosmos = r.result.addresses[NETWORKS.mainnet.cosmos];
+    const already = ks.accounts.findIndex((a) => a.addresses[NETWORKS.mainnet.cosmos] === cosmos);
+    if (already >= 0) return err("exists", `That's already in your list, as ${ks.accounts[already]!.name}.`);
+    const n = ks.accounts.filter(isWatch).length + 1;
+    d.scheduleLock(AUTO_LOCK_MINUTES);
+    return saveAccounts([...ks.accounts, { account: { derivation: "watch" }, public_key: "", addresses: r.result.addresses, name: `Watching ${n}` }], ks.accounts.length);
+  }
+
+  async function changeAccounts(op: { type: "switch" | "rename" | "remove"; index: unknown; name?: unknown }): Promise<UiResponse<Status>> {
+    const ks = await keystore();
+    if (!ks.keystore || (await unlockKey()) === undefined || !ks.accounts) return err("locked", "Unlock the wallet first.");
+    const i = op.index;
+    if (typeof i !== "number" || !Number.isInteger(i) || i < 0 || i >= ks.accounts.length) return err("bad_request", "No such account.");
+    d.scheduleLock(AUTO_LOCK_MINUTES);
+    if (op.type === "switch") return saveAccounts(ks.accounts, i);
+    if (op.type === "rename") {
+      const name = typeof op.name === "string" ? cleanText(op.name.replace(/\s+/g, " "), MAX_NAME) : "";
+      if (!name) return err("bad_request", "Give the account a name.");
+      return saveAccounts(ks.accounts.map((a, j) => (j === i ? { ...a, name } : a)), ks.active);
+    }
+    if (i === 0) return err("bad_request", "The first account is the keystore's own. It stays.");
+    const active = ks.active === i ? 0 : ks.active > i ? ks.active - 1 : ks.active;
+    return saveAccounts(ks.accounts.filter((_, j) => j !== i), active);
   }
 
   async function create(secret: NewSecret, password: string): Promise<UiResponse<Status>> {
@@ -267,11 +351,11 @@ export function createService(d: Deps) {
     return settings();
   }
 
-  /** The first account and the network, for requests that need an unlocked wallet. */
+  /** The account in use and the network, for requests that need an unlocked wallet. */
   async function active(): Promise<{ account: AccountInfo; net: NetworkId; keystore: string; key: string } | UiResponse<never>> {
     const ks = await keystore();
     const key = await unlockKey();
-    const account = ks.accounts?.[0];
+    const account = ks.accounts?.[ks.active];
     if (!ks.keystore || key === undefined || !account) return err("locked", "Unlock the wallet first.");
     d.scheduleLock(AUTO_LOCK_MINUTES);
     return { account, net: await network(), keystore: ks.keystore, key };
@@ -294,6 +378,16 @@ export function createService(d: Deps) {
         return unlock(r.password);
       case "lock":
         return lock();
+      case "add_account":
+        return addAccount();
+      case "add_watch":
+        return addWatch(r.address);
+      case "switch_account":
+        return changeAccounts({ type: "switch", index: r.index });
+      case "rename_account":
+        return changeAccounts({ type: "rename", index: r.index, name: r.name });
+      case "remove_account":
+        return changeAccounts({ type: "remove", index: r.index });
       case "settings":
         return settings();
       case "save_settings":
@@ -313,6 +407,9 @@ export function createService(d: Deps) {
       case "tx_status": {
         const a = await active();
         if ("ok" in a) return a;
+        if ((r.type === "prepare_send" || r.type === "prepare_convert") && isWatch(a.account)) {
+          return err("watch_only", "This account is watch-only. Switch to one that can sign.");
+        }
         if (r.type === "balances") {
           const b = await sender.balances(a.net, a.account);
           if (!b.ok) return b;

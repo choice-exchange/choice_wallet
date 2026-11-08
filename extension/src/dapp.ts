@@ -276,10 +276,12 @@ export function createDapps(h: DappHost) {
     const list = Array.isArray(params) ? params : [];
     const me = async () => (await h.unlocked())?.account.addresses[net.evm] ?? "";
     const mine = async (a: unknown) => typeof a === "string" && (await isConnected(origin)) && a.toLowerCase() === (await evmAccountsAny()).toLowerCase();
-    // The account's address, from storage, for checks made while locked.
+    // The account in use's address, from storage, for checks made while locked. A
+    // watch-only account has nothing to sign with, so it matches nothing.
     async function evmAccountsAny(): Promise<string> {
-      const { accounts } = (await h.local.get(["accounts"])) as { accounts?: AccountInfo[] };
-      return accounts?.[0]?.addresses[net.evm] ?? "";
+      const { accounts, active_account } = (await h.local.get(["accounts", "active_account"])) as { accounts?: AccountInfo[]; active_account?: number };
+      const a = accounts?.[typeof active_account === "number" ? active_account : 0] ?? accounts?.[0];
+      return a && a.account.derivation !== "watch" ? (a.addresses[net.evm] ?? "") : "";
     }
 
     if (method === "eth_sendTransaction") {
@@ -352,7 +354,7 @@ export function createDapps(h: DappHost) {
       const evmAddr = a.addresses[net.evm] ?? "";
       return {
         result: {
-          name: "Account 1",
+          name: a.name,
           algo: "ethsecp256k1",
           pubKey: a.public_key,
           address: evmAddr.slice(2).toLowerCase(),

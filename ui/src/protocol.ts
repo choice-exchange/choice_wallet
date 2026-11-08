@@ -8,10 +8,14 @@ export type Result<T> = { ok: true; result: T } | { ok: false; error: HostError 
 
 /** An account as the vault's `accounts` lists it. */
 export type AccountInfo = {
-  account: { derivation: "default" | "ledger_live"; index: number } | { derivation: "imported" };
+  /** How the vault finds its key; "watch" has none (an address to follow, never to sign). */
+  account: { derivation: "default" | "ledger_live"; index: number } | { derivation: "imported" } | { derivation: "watch" };
+  /** Empty for a watch-only account. */
   public_key: string;
   /** Address per CAIP-2 chain ID. */
   addresses: Record<string, string>;
+  /** The user's name for it ("Account 2" until renamed). */
+  name: string;
 };
 
 export type NewSecret = { mnemonic: string } | { private_key: string };
@@ -24,6 +28,14 @@ export type UiRequest =
   | { type: "create"; secret: NewSecret; password: string }
   | { type: "unlock"; password: string }
   | { type: "lock" }
+  /** Accounts: the next one from the recovery phrase; an address to watch (no key, can't
+   *  sign); which one the wallet and connected sites use; a name; drop one from the list
+   *  (the first can't go: it is the keystore's own). Each answers with the new status. */
+  | { type: "add_account" }
+  | { type: "add_watch"; address: string }
+  | { type: "switch_account"; index: number }
+  | { type: "rename_account"; index: number; name: string }
+  | { type: "remove_account"; index: number }
   | { type: "settings" }
   /** Switch to `network`, with these LCD, EVM and Blockscout endpoints for it (`null`: the
    *  defaults; left out: unchanged; an empty Blockscout list turns it off). */
@@ -63,6 +75,8 @@ export type Status = {
   network: NetworkId;
   /** Only while unlocked. */
   accounts: AccountInfo[];
+  /** Which of `accounts` is in use. */
+  active: number;
 };
 
 /** How a token is shown. Symbols of tokens not on the wallet's list (`known: false`) are
@@ -259,6 +273,11 @@ export type Replies = {
   create: Status;
   unlock: Status;
   lock: Status;
+  add_account: Status;
+  add_watch: Status;
+  switch_account: Status;
+  rename_account: Status;
+  remove_account: Status;
   settings: Settings;
   save_settings: Settings;
   /** Every balance; the UI applies `filter`. `prices` is the USD values setting. EVM-only

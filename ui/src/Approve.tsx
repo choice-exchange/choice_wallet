@@ -76,7 +76,10 @@ export function ApproveView({ id }: { id: string }) {
     };
   }, [id, done]);
 
-  const unlocked = status?.unlocked === true;
+  // The account in use answers; a watch-only one can't, so it reads like a locked wallet.
+  const signer = status?.accounts[status.active];
+  const watchOnly = signer?.account.derivation === "watch";
+  const unlocked = status?.unlocked === true && !watchOnly;
   useEffect(() => {
     if (req?.kind !== "sign" || !unlocked || review || problem) return;
     void backend.send({ type: "dapp_review", id }).then((r) => (r.ok ? setReview(r.result) : setProblem(r.error.message)));
@@ -112,7 +115,7 @@ export function ApproveView({ id }: { id: string }) {
   if (!req) return <Screen>{null}</Screen>;
 
   const net = NETWORKS[req.network];
-  const account = status?.accounts[0];
+  const account = signer;
   const site = req.origin.replace(/^https:\/\//, "");
   const risk = review?.risk;
   const blocked = risk?.level === "blocked";
@@ -153,7 +156,11 @@ export function ApproveView({ id }: { id: string }) {
       {!unlocked ? (
         <div className="surface-hero locked-note">
           <LockIcon size={22} />
-          <p className="lead">Choice Wallet is locked. Unlock it from its toolbar button, then come back to this window.</p>
+          <p className="lead">
+            {watchOnly
+              ? `${signer?.name} is watch-only. Switch to an account that can sign, then come back to this window.`
+              : "Choice Wallet is locked. Unlock it from its toolbar button, then come back to this window."}
+          </p>
         </div>
       ) : req.kind === "connect" ? (
         <div className="surface-hero">
@@ -163,7 +170,7 @@ export function ApproveView({ id }: { id: string }) {
             <li>Ask you to approve transactions and signatures, here, one at a time</li>
           </ul>
           <hr className="divider" style={{ margin: "14px 0 12px" }} />
-          <div className="eyebrow">Account 1</div>
+          <div className="eyebrow">{account?.name}</div>
           <code className="mono address" style={{ display: "block", marginTop: 6 }}>
             {account?.addresses[net.cosmos]}
           </code>

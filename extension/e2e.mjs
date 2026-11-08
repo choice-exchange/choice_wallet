@@ -594,6 +594,45 @@ try {
   if (JSON.stringify((await answer()).ok) !== "[]") throw new Error("a disconnected site still sees the account");
   console.log("site: found by EIP-6963, connect rejected then approved, personal_sign = the vault's signature, disconnected");
 
+  // 9. Accounts: a second one from the phrase (the same address the vault derives in Node),
+  // renamed; an address to watch, which can't send; then back to the first.
+  const pill = () => p.eval(`document.querySelector("[aria-label='Copy address']").title`);
+  await p.click("Wallet");
+  await p.waitText("Manage", 15000);
+  await p.click("Account: Account 1. Switch accounts");
+  await p.waitText("New accounts come from your recovery phrase.");
+  await p.click("Add an account");
+  await p.waitText("Account 2");
+  const second = v("accounts", { keystore, unlock_key, accounts: [{ derivation: "default", index: 1 }] }).accounts[0].addresses["cosmos:injective-1"];
+  for (let t = 0; t < 5000 && (await pill()) !== second; t += 100) await sleep(100);
+  if ((await pill()) !== second) throw new Error(`account 2 shows ${await pill()}, the vault derives ${second}`);
+  await p.click("Account: Account 2. Switch accounts");
+  // Names save when the field loses focus; headless Chrome only sends focus events to a
+  // page that emulates having it.
+  await send("Emulation.setFocusEmulationEnabled", { enabled: true }, p.sessionId);
+  await p.click("Edit");
+  await p.eval(`document.querySelector('input[aria-label="Name of Account 2"]').focus()`);
+  await p.fill('input[aria-label="Name of Account 2"]', 0, "Trading");
+  await p.eval(`document.querySelector('input[aria-label="Name of Account 2"]').blur()`);
+  await sleep(300);
+  await p.click("Done");
+  await p.waitText("Trading");
+  await p.click("Watch an address");
+  await p.fill('input[aria-label="Address to watch"]', 0, SENT_TO);
+  await p.click("Watch");
+  await p.waitText("Watch-only");
+  if ((await pill()) !== SENT_TO) throw new Error("the watched address isn't the one in use");
+  if (!(await p.eval(`[...document.querySelectorAll("button.action")].find((b) => b.textContent.includes("Send")).disabled`))) throw new Error("a watch-only account can send");
+  await p.shot("20-watch-only");
+  await p.click("Account: Watching 1. Switch accounts");
+  await p.waitText("Trading");
+  await p.shot("21-accounts");
+  await p.eval(`document.querySelectorAll(".account-row")[0].click()`);
+  await p.waitText("Manage", 15000);
+  for (let t = 0; t < 5000 && (await pill()) !== addrs[0]; t += 100) await sleep(100);
+  if ((await pill()) !== addrs[0]) throw new Error("switching back didn't show account 1");
+  console.log("accounts: a second from the phrase (= the vault's derivation), renamed, an address watched (can't send), back to the first");
+
   // 7. A web page can't talk to the service worker: there is no externally_connectable, so
   // chrome.runtime isn't even exposed to it.
   const { targetId: webId } = await send("Target.createTarget", { url: "data:text/html,<p>web page</p>" });

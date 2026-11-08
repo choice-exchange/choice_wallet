@@ -19,6 +19,7 @@
 //! | `create_keystore` | `secret` (`{"mnemonic": …}` or `{"private_key": …}`), `password` | `keystore`, `kind` |
 //! | `unlock` | `keystore`, `password` | `unlock_key` |
 //! | `accounts` | `keystore`, `unlock_key`, `accounts` | each account's public key and addresses |
+//! | `addresses` | `address` (an account's `inj1…` or `0x…`) | the same account's address on every chain, e.g. to watch it |
 //! | `build_cosmos` | chain, signer, messages, fee, … | a sign request, and `simulate_tx` for a gas estimate |
 //! | `build_evm` | chain, from, to, amount, token, fees | a sign request |
 //! | `decode` | `request`, `context` (optional) | `display`, `risk`, `digest` |
@@ -75,6 +76,12 @@ struct Envelope<'a> {
 
 fn params<T: DeserializeOwned>(raw: Option<&RawValue>) -> Result<T, VaultError> {
     serde_json::from_str(raw.map_or("{}", RawValue::get)).map_err(|e| VaultError::bad(e.to_string()))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Addresses {
+    address: String,
 }
 
 #[derive(Deserialize)]
@@ -163,6 +170,17 @@ fn call(request: &str) -> Result<Value, VaultError> {
                 .map(|a| Ok(keys::info(a, &keys::key(&keystore, &unlock_key, a)?.public_key())))
                 .collect::<Result<Vec<_>, VaultError>>()?;
             Ok(json!({ "accounts": list }))
+        }
+        "addresses" => {
+            // One account on every chain: an address that some chain can't read (a 32-byte
+            // contract, another chain's prefix) isn't an account the wallet can follow.
+            let Addresses { address } = params(p)?;
+            let list = chains::CHAINS
+                .iter()
+                .map(|c| Ok((c.id.to_owned(), Value::String(c.parse_address(&address)?))))
+                .collect::<Result<serde_json::Map<String, Value>, VaultError>>()
+                .map_err(|_| VaultError::bad(format!("{:?} isn't an Injective account address", address.trim())))?;
+            Ok(json!({ "addresses": list }))
         }
         "build_cosmos" => build::cosmos(params(p)?),
         "build_evm" => Ok(json!({ "request": build::evm(params(p)?)? })),

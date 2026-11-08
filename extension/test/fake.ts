@@ -147,6 +147,10 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
     blockscout: [] as { hash: string; blockNumber: number }[] | "down",
     /** Blockscout queries asked. */
     blockscoutCalls: [] as string[],
+    /** Accounts whose bank balances were asked. */
+    balanceAsked: [] as string[],
+    /** Requests no route answered (501). */
+    unhandled: [] as string[],
   };
   const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status });
   type Rpc = { id: number; method: string; params: { to: string; data: string }[] };
@@ -174,8 +178,9 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
     if (r.method !== "eth_call" || !t) return { jsonrpc: "2.0", id: r.id, error: { code: 3, message: "execution reverted" } };
     if (data.startsWith("0x70a08231")) {
       state.evmBalanceCalls.push(to.toLowerCase());
-      assert.equal(data.slice(34).toLowerCase(), ME_EVM.slice(2).toLowerCase());
-      return { jsonrpc: "2.0", id: r.id, result: `0x${(state.evm[to.toLowerCase()] ?? 0n).toString(16)}` };
+      // ME holds `evm`; any other account, none.
+      const mine = data.slice(34).toLowerCase() === ME_EVM.slice(2).toLowerCase();
+      return { jsonrpc: "2.0", id: r.id, result: `0x${(mine ? (state.evm[to.toLowerCase()] ?? 0n) : 0n).toString(16)}` };
     }
     const result = data === "0x95d89b41" ? abiString(t.symbol) : data === "0x06fdde03" ? abiString(t.name) : `0x${t.decimals.toString(16).padStart(64, "0")}`;
     return { jsonrpc: "2.0", id: r.id, result };
@@ -196,8 +201,12 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
         ? json(200, { account: { "@type": "/injective.types.v1beta1.EthAccount", base_account: { address: ME, pub_key: null, account_number: "1680321", sequence: "2" } } })
         : json(404, { code: 5, message: `account ${ME} not found`, details: [] });
     }
-    if (p === `/cosmos/bank/v1beta1/spendable_balances/${ME}`) {
-      return json(200, { balances: Object.entries(state.balances).map(([denom, a]) => ({ denom, amount: a.toString() })), pagination: { next_key: null } });
+    if (p.startsWith("/cosmos/bank/v1beta1/spendable_balances/")) {
+      // ME holds `balances`; any other account, nothing.
+      const who = p.split("/").pop()!;
+      state.balanceAsked.push(who);
+      const list = who === ME ? Object.entries(state.balances).map(([denom, a]) => ({ denom, amount: a.toString() })) : [];
+      return json(200, { balances: list, pagination: { next_key: null } });
     }
     if (p === "/injective/txfees/v1beta1/cur_eip_base_fee") return json(200, { base_fee: { base_fee: "160000000.000000000000000000" } });
     if (p === "/injective/erc20/v1beta1/all_token_pairs") {
@@ -218,8 +227,8 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
       if (q.token_info) return json(200, { data: { ...t, total_supply: "1000000000000000000000000000" } });
       if (q.balance) {
         state.cw20Calls.push(smart[1]!);
-        assert.equal(q.balance.address, ME);
-        return json(200, { data: { balance: (state.cw20[smart[1]!] ?? 0n).toString() } });
+        // ME holds `cw20`; any other account, none.
+        return json(200, { data: { balance: (q.balance.address === ME ? (state.cw20[smart[1]!] ?? 0n) : 0n).toString() } });
       }
       return json(500, { code: 2, message: "unknown variant", details: [] });
     }
@@ -289,6 +298,7 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
         ? json(200, { tx_response: { txhash: hash, height: "190861703", code: 0, raw_log: "" } })
         : json(404, { code: 5, message: `tx not found: ${hash}`, details: [] });
     }
+    state.unhandled.push(`${init?.method ?? "GET"} ${url.host}${p}`);
     return json(501, { code: 12, message: "Not Implemented", details: [] });
   };
   return { state, fetch };

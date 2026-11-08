@@ -93,6 +93,35 @@ fn coins(v: &Value) -> Value {
 }
 
 #[test]
+fn addresses_of_an_account_on_every_chain() {
+    // The BIP-39 test phrase's first account, given either way.
+    let want = json!({
+        "cosmos:injective-1": "inj1npvwllfr9dqr8erajqqr6s0vxnk2ak55re90dz",
+        "eip155:1776": "0x9858EfFD232B4033E47d90003D41EC34EcaEda94",
+        "cosmos:injective-888": "inj1npvwllfr9dqr8erajqqr6s0vxnk2ak55re90dz",
+        "eip155:1439": "0x9858EfFD232B4033E47d90003D41EC34EcaEda94",
+    });
+    for a in [
+        "inj1npvwllfr9dqr8erajqqr6s0vxnk2ak55re90dz",
+        " 0x9858effd232b4033e47d90003d41ec34ecaeda94 ",
+        "0x9858EfFD232B4033E47d90003D41EC34EcaEda94",
+    ] {
+        assert_eq!(ok("addresses", json!({ "address": a }))["addresses"], want, "{a}");
+    }
+    // 32 bytes (a contract's length), another chain's prefix, a bad bech32 checksum, a bad
+    // EIP-55 checksum (one letter's case flipped), junk.
+    for a in [
+        "inj1qqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs23v9ccrydpk8qarc0sax6t9f",
+        "cosmos1npvwllfr9dqr8erajqqr6s0vxnk2ak55fsjtl6",
+        "inj1npvwllfr9dqr8erajqqr6s0vxnk2ak55re90dy",
+        "0x9858efFD232B4033E47d90003D41EC34EcaEda94",
+        "hello",
+    ] {
+        assert_eq!(code("addresses", json!({ "address": a })), "bad_request", "{a}");
+    }
+}
+
+#[test]
 fn basics() {
     assert_eq!(ok("version", json!({}))["protocol"], 1);
     let chains = ok("chains", Value::Null);

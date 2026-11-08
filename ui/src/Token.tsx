@@ -27,12 +27,15 @@ export function TokenView({
   feeDenom,
   onSend,
   onConvert,
+  canSign = true,
   onBack,
 }: {
   token: Balance;
   feeDenom: string;
   onSend: () => void;
   onConvert: () => void;
+  /** False for a watch-only account: nothing to send or convert with. */
+  canSign?: boolean;
   onBack: () => void;
 }) {
   const backend = useBackend();
@@ -43,6 +46,7 @@ export function TokenView({
     <Screen
       top={<BackBar title={token.symbol} onBack={onBack} />}
       foot={
+        canSign && (
         <>
           <button className="btn btn-gold" onClick={onSend}>
             <SendIcon /> Send
@@ -53,6 +57,7 @@ export function TokenView({
             </button>
           )}
         </>
+        )
       }
     >
       <div className="surface-hero token-hero">

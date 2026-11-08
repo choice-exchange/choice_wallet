@@ -4,10 +4,11 @@
 import { formatShort, NETWORKS, shortDenom } from "@choice-wallet/chain";
 import { useEffect, useRef, useState } from "react";
 
+import { AccountsView, isWatch } from "./Accounts";
 import { ActivityView } from "./Activity";
 import mark from "./assets/choice-mark.svg";
 import { useBackend } from "./backend";
-import { ActivityIcon, CheckIcon, ChevronRightIcon, CopyIcon, EyeOffIcon, LockIcon, ReceiveIcon, SendIcon, SettingsIcon, WalletIcon } from "./icons";
+import { ActivityIcon, CheckIcon, ChevronDownIcon, ChevronRightIcon, CopyIcon, EyeOffIcon, LockIcon, ReceiveIcon, SendIcon, SettingsIcon, WalletIcon } from "./icons";
 import { BackBar, Callout, formatUsd, Screen, Segmented, shortAddress, tokenSub } from "./kit";
 import type { Balance, SendReview, Sent, Status, TokenFilter } from "./protocol";
 import { QrCode } from "./QrCode";
@@ -24,6 +25,7 @@ type Tab = "wallet" | "activity" | "settings";
 /** A flow opened over the tabs; "home" is the tabs themselves. */
 type View =
   | { name: "home" }
+  | { name: "accounts" }
   | { name: "receive" }
   | { name: "token"; denom: string }
   | { name: "send"; denom?: string }
@@ -54,7 +56,7 @@ function TabBar({ tab, onTab }: { tab: Tab; onTab: (t: Tab) => void }) {
   );
 }
 
-export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: () => void; onStatus: () => void }) {
+export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: () => void; onStatus: (s?: Status) => void }) {
   const backend = useBackend();
   const [tab, setTab] = useState<Tab>("wallet");
   const [view, setView] = useState<View>({ name: "home" });
@@ -67,6 +69,12 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
 
   // The last filter save, so a refresh never reads the filter before it lands.
   const saving = useRef<Promise<unknown>>(Promise.resolve());
+
+  const account = status.accounts[status.active] ?? status.accounts[0];
+  const address = account?.addresses[COSMOS] ?? "";
+  const watch = isWatch(account);
+  // Another account: its balances, never the last one's while they load.
+  useEffect(() => setBalances(null), [address]);
 
   useEffect(() => {
     if (view.name !== "home" || tab !== "wallet") return;
@@ -82,7 +90,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
     return () => {
       live = false;
     };
-  }, [view.name, tab, refresh, status.network]);
+  }, [view.name, tab, refresh, status.network, address]);
 
   const home = () => {
     setRefresh((n) => n + 1);
@@ -125,12 +133,12 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
     }
     return null;
   };
-  const account = status.accounts[0];
-  const address = account?.addresses[COSMOS] ?? "";
   const sorted = balances ? applyFilter(balances, filter, NETWORKS[status.network].feeDenom) : null;
   const totalUsd = sorted?.totalUsd;
 
   switch (view.name) {
+    case "accounts":
+      return <AccountsView status={status} onStatus={(s) => onStatus(s)} onBack={home} />;
     case "receive":
       return <Receive addresses={account?.addresses ?? {}} onBack={home} />;
     case "tokens":
@@ -152,6 +160,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
         <TokenView
           token={t}
           feeDenom={NETWORKS[status.network].feeDenom}
+          canSign={!watch}
           onSend={() => setView({ name: "send", denom: t.denom })}
           onConvert={() => setView({ name: "convert", denom: t.denom })}
           onBack={home}
@@ -197,7 +206,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
     case "sent":
       return <SentView sent={view.sent} onDone={home} converting={view.converting} />;
     case "home": {
-      if (tab === "activity") return <ActivityView network={status.network} tabs={tabs} />;
+      if (tab === "activity") return <ActivityView key={address} network={status.network} tabs={tabs} />;
       if (tab === "settings") {
         return (
           <SettingsView
@@ -219,7 +228,10 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
               <span className="brand">
                 <img src={mark} alt="" />
               </span>
-              <span className="title">Account 1</span>
+              <button className="title account-switch" aria-label={`Account: ${account?.name ?? ""}. Switch accounts`} onClick={() => setView({ name: "accounts" })}>
+                <span className="account-name">{account?.name}</span>
+                <ChevronDownIcon size={16} />
+              </button>
               <button className="pill" onClick={() => setTab("settings")} aria-label={`Network: ${status.network}`}>
                 <span className={status.network === "testnet" ? "dot testnet" : "dot"} />
                 {status.network === "testnet" ? "Testnet" : "Mainnet"}
@@ -232,7 +244,10 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
         >
           <div className="plate-warm">
             {/* The USD total when Choice can price something here; otherwise the INJ balance. */}
-            <div className="eyebrow">{totalUsd === undefined ? "INJ balance" : "Total"}</div>
+            <div className="eyebrow">
+              {totalUsd === undefined ? "INJ balance" : "Total"}
+              {watch && <span className="flag quiet">Watch-only</span>}
+            </div>
             {balances === null ? (
               <div className="skeleton" style={{ width: 140, height: 36, margin: "6px 0 4px" }} />
             ) : totalUsd === undefined ? (
@@ -252,7 +267,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
             )}
             <CopyPill address={address} />
             <div className="actions" style={{ marginTop: 14 }}>
-              <button className="action" disabled={!sorted?.shown.length} onClick={() => setView({ name: "send" })}>
+              <button className="action" disabled={watch || !sorted?.shown.length} onClick={() => setView({ name: "send" })}>
                 <SendIcon /> Send
               </button>
               <button className="action plain" onClick={() => setView({ name: "receive" })}>

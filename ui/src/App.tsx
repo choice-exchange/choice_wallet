@@ -146,7 +146,7 @@ export function App() {
         <Wallet
           status={view.status}
           onLock={() => void run({ type: "lock" }, show)}
-          onStatus={() => void run({ type: "status" }, show)}
+          onStatus={(s?: Status) => (s ? show(s) : void run({ type: "status" }, show))}
         />
       );
   }
