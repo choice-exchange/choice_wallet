@@ -16,6 +16,7 @@ An open-source, self-custody wallet. Injective first (Cosmos side and Injective 
 | `crates/policy` | Risk rules: grades every decoded request (grants, allowances, permits, precompile calls, sign-in messages, balances, lookalike addresses) |
 | `crates/vault` | The vault protocol: one JSON entry point (`handle`) for every host: keystores, accounts, building sends, decode → approve → sign |
 | `crates/wasm` | The vault compiled to WASM for the extension |
+| `extension` | The Chrome extension (GPL-3.0): service worker hosting the vault, popup. See [extension/README.md](extension/README.md) |
 | `tools/protogen` | Dev only: vendors `.proto` files and regenerates the committed prost code |
 | `tools/vectors` | Dev only: generates test vectors with injective-ts and viem |
 

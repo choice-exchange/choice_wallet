@@ -1,0 +1,75 @@
+:root {
+  --bg: #0e1116;
+  --panel: #161b22;
+  --line: #2a313c;
+  --text: #e6e9ef;
+  --muted: #9aa4b2;
+  --accent: #4f8cff;
+  --danger: #ff6b6b;
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f7f8fa;
+    --panel: #ffffff;
+    --line: #dfe3ea;
+    --text: #12161c;
+    --muted: #5b6573;
+    --accent: #2563eb;
+    --danger: #c62828;
+    color-scheme: light;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  width: 360px;
+  min-height: 520px;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+main { padding: 20px; }
+h1 { font-size: 18px; margin: 0 0 6px; }
+.muted { color: var(--muted); margin: 0 0 16px; }
+.stack { display: flex; flex-direction: column; gap: 10px; }
+.row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+button {
+  font: inherit;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+}
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.small { padding: 4px 10px; font-size: 12px; }
+button:disabled { opacity: 0.5; cursor: default; }
+input, textarea {
+  font: inherit;
+  width: 100%;
+  padding: 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+}
+label { display: flex; flex-direction: column; gap: 4px; color: var(--muted); }
+.words {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 6px 10px;
+  margin: 0 0 6px;
+  padding: 12px 12px 12px 30px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-family: ui-monospace, monospace;
+}
+.card { display: grid; gap: 6px; padding: 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+.card .label { color: var(--muted); font-size: 12px; }
+.card code { word-break: break-all; font-size: 12px; }
+.card button { justify-self: start; }
+.error { color: var(--danger); }
+.footnote { color: var(--muted); font-size: 11px; margin-top: 24px; }

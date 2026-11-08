@@ -3,3 +3,6 @@ tools/protogen/target/
 node_modules/
 *.keystore
 .env
+/extension/dist/
+/extension/dist-test/
+/extension/build/

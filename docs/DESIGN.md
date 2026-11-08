@@ -267,9 +267,9 @@ The wallet is free. If fees are added later, these rules hold:
 
 | Need | Choice | Version surveyed 2026-11-08 |
 | --- | --- | --- |
-| Extension framework | WXT (Plasmo hasn't shipped since May 2025) | 0.21.5 |
-| Build / UI | Vite, React, TypeScript | 8.3, 19.3, 7.0 |
-| Package manager | pnpm, pinned through `packageManager`, `minimumReleaseAge` set, install scripts off | 12.18 |
+| Build | esbuild, with a 60-line build script (`extension/build.mjs`). WXT was the first pick, but it pulls 128 npm packages into the build, and build tools can tamper with what they produce; esbuild is 2. Decided 2026-11-08 | 0.28.2 |
+| UI | React, TypeScript (type checks only) | 19.3.1, 7.0.2 |
+| Package manager | npm with a lockfile, install scripts off, exact versions, and `before` set two weeks back (`extension/.npmrc`); twelve packages in all, three of them shipped | npm 11 |
 | WASM glue | `wasm-bindgen-cli` pinned to the crate's exact version (0.2.130), plus a pinned binaryen | |
 | Ledger | Device Management Kit + Cosmos and Ethereum signer kits + WebHID transport | DMK 1.11 |
 | Mobile dapp connections (phase 2) | Reown WalletKit | 1.6 |
@@ -282,7 +282,7 @@ injective-ts (1.20.x), ethers and viem are used only to generate test vectors. T
 
 | Phase | Scope |
 | --- | --- |
-| 0. Core and trust model | Rust core, Cosmos and Injective crates, EVM crate, vault protocol and WASM build (done). Precompile decoding. Risk rules. Extension security model as a written spec with tests. EIP-6963 `rdns` fixed and the injective-ts wallet PR opened. Test vectors from injective-ts 1.20.x and alloy. Real-dapp tx corpus. uniffi targets built in CI |
+| 0. Core and trust model | Rust core, Cosmos and Injective crates, EVM crate, risk rules, vault protocol and WASM build (done). Extension skeleton: the service worker hosting the vault, create / import / unlock / lock in the popup, checked in Chromium (done). Extension security model as a written spec with tests. EIP-6963 `rdns` fixed and the injective-ts wallet PR opened. Test vectors from injective-ts 1.20.x and alloy. Real-dapp tx corpus. uniffi targets built in CI |
 | 1. Extension beta (Injective) | Create or import a seed, Ledger (DMK), send and receive, one balance list (bank + ERC20 + CW20), dapp signing, simulation, approvals screen, inventory engine, rescue address with a scoped fee grant, Choice apps integrated. In-house audit, Chrome Web Store public beta |
 | 2. Depth and mobile | Rescue Mode, Trezor and Keystone, NFTs, staking, swap. iOS and Android with Reown WalletKit |
 | 3. Multichain | Ethereum, Base, Arbitrum, BSC; Cosmos Hub, Osmosis, Noble (per-chain proto sets); then Solana and Bitcoin. Vault accounts, light client |
