@@ -215,6 +215,7 @@ export function createService(d: Deps) {
       case "save_token_filter":
         return saveTokenFilter(r.filter);
       case "balances":
+      case "activity":
       case "prepare_send":
       case "confirm_send":
       case "tx_status": {
@@ -224,6 +225,11 @@ export function createService(d: Deps) {
           const b = await sender.balances(a.net, a.account);
           if (!b.ok) return b;
           return { ok: true, result: { ...b.result, filter: await tokenFilter(a.net), prices: await showPrices() } };
+        }
+        if (r.type === "activity") {
+          const page = await sender.activity(a.net, a.account, r.page);
+          if (!page.ok) return page;
+          return { ok: true, result: { ...page.result, filter: await tokenFilter(a.net) } };
         }
         if (r.type === "prepare_send") return sender.prepare(a.net, a.account, r);
         if (r.type === "confirm_send") return sender.confirm(a.keystore, a.key, r);

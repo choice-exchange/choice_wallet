@@ -14,7 +14,9 @@ import {
   explorerTxUrl,
   Lcd,
   fetchPrices,
+  mergeActivity,
   NETWORKS,
+  summarize,
   priceAddress,
   shortDenom,
   Unreachable,
@@ -25,7 +27,7 @@ import {
   type PriceList,
   type Token,
 } from "@choice-wallet/chain";
-import type { AccountInfo, Balance, Result, Risk, SendReview, Sent, TxState } from "@choice-wallet/ui/protocol";
+import type { AccountInfo, ActivityPage, Balance, Result, Risk, SendReview, Sent, TxState } from "@choice-wallet/ui/protocol";
 
 import type { Store } from "./service";
 
@@ -56,6 +58,9 @@ interface Pending {
   confirm: string | null;
   blocked: boolean;
 }
+
+/** Index entries per query per page (the node's `limit`). */
+const ACTIVITY_PAGE = 50;
 
 /** Gas assumed for the simulation's own fee. */
 const SIMULATION_GAS = 200_000n;
@@ -167,6 +172,33 @@ export function createSender(d: SendDeps) {
       });
       out.sort((a, b) => rank(network, a) - rank(network, b) || (b.usd ?? -1) - (a.usd ?? -1) || a.symbol.localeCompare(b.symbol));
       return { ok: true, result: { network, balances: out } };
+    } catch (e) {
+      return chainFailure(e);
+    }
+  }
+
+  /** A page of activity: what this account signed, and what it received, merged. */
+  async function activity(network: NetworkId, account: AccountInfo, page: unknown): Promise<Result<Omit<ActivityPage, "filter">>> {
+    if (typeof page !== "number" || !Number.isInteger(page) || page < 1 || page > 1000) return fail("bad_request", "Not a page number.");
+    const client = await lcd(network);
+    const me = address(network, account);
+    try {
+      const pages = await Promise.all(
+        [`message.sender='${me}'`, `coin_received.receiver='${me}'`].map((q) => client.searchTxs(q, page, ACTIVITY_PAGE)),
+      );
+      const lists = pages.map((p) => p.txs.map((tx) => summarize(tx, me)));
+      // A list that goes on past its last item: below the highest of those last items, a
+      // next page could still hold rows newer than what's shown.
+      const open = lists.filter((l, i) => !pages[i]!.done && l.length > 0);
+      const lows = open.map((l) => l.reduce((m, a) => (BigInt(a.height) < m ? BigInt(a.height) : m), BigInt(l[0]!.height)));
+      const cutoff = lows.length > 0 ? lows.reduce((a, b) => (a > b ? a : b)).toString() : null;
+      const items = mergeActivity(lists);
+      const denoms = new Set(items.flatMap((a) => [...a.changes, ...a.fee].map((c) => c.denom)));
+      const choice = await choiceFor(network, client, denoms);
+      const tokens = Object.fromEntries(
+        await Promise.all([...denoms].map(async (dn) => [dn, { ...(await token(network, client, dn)), ...(choice.onChoice.has(dn) ? { onChoice: true } : {}) }] as const)),
+      );
+      return { ok: true, result: { network, items, tokens, more: pages.some((p) => !p.done), cutoff } };
     } catch (e) {
       return chainFailure(e);
     }
@@ -298,7 +330,7 @@ export function createSender(d: SendDeps) {
     }
   }
 
-  return { balances, prepare, confirm, status };
+  return { balances, activity, prepare, confirm, status };
 }
 
 function address(network: NetworkId, account: AccountInfo): string {

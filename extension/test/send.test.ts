@@ -42,6 +42,29 @@ function memory(): Store & { data: Map<string, unknown> } {
   };
 }
 
+// Indexed transactions, shaped like mainnet's: a send ME signed, a receive, and junk.
+const THEM = "inj1nk9x9ajk4rgkzhqjjn7hr6w0k0jg2kj0knl55v";
+const FEE_COLLECTOR = "inj17xpfvakm2amg962yls6f84z3kell8c5l6s5ye9";
+const attrs = (o: Record<string, string>) => Object.entries(o).map(([key, value]) => ({ key, value, index: true }));
+const moved = (from: string, to: string, amount: string) => [
+  { type: "coin_spent", attributes: attrs({ spender: from, amount }) },
+  { type: "coin_received", attributes: attrs({ receiver: to, amount }) },
+  { type: "transfer", attributes: attrs({ recipient: to, sender: from, amount }) },
+];
+const indexed = (height: number, from: string, to: string, amount: string) => ({
+  txhash: height.toString(16).padStart(64, "0"),
+  height: String(height),
+  timestamp: "2026-11-09T08:00:00Z",
+  code: 0,
+  tx: {
+    body: { messages: [{ "@type": "/cosmos.bank.v1beta1.MsgSend", from_address: from, to_address: to, amount: [] }] },
+    auth_info: { fee: { amount: [{ denom: "inj", amount: "17216480000000" }], gas_limit: "107603" } },
+  },
+  events: [...moved(from, FEE_COLLECTOR, "17216480000000inj"), { type: "tx", attributes: attrs({ fee: "17216480000000inj", fee_payer: from }) }, ...moved(from, to, amount)],
+});
+const SIGNED = [indexed(100, ME, THEM, "1000000000000000000inj")];
+const RECEIVED = [indexed(120, THEM, ME, `2500000${USDT}`), indexed(90, THEM, ME, `7000000${SCAM}`)];
+
 /** A fake mainnet LCD. `balances` and `account` can be changed per test. */
 function chain(opts: { balances?: Record<string, bigint>; account?: boolean; gasUsed?: string; pricesDown?: boolean } = {}) {
   const state = {
@@ -97,6 +120,16 @@ function chain(opts: { balances?: Record<string, bigint>; account?: boolean; gas
       state.broadcasts.push(tx_bytes);
       const hash = createHash("sha256").update(Buffer.from(tx_bytes, "base64")).digest("hex").toUpperCase();
       return json(200, { tx_response: { txhash: hash, code: 0, raw_log: "" } });
+    }
+    if (p === "/cosmos/tx/v1beta1/txs") {
+      // The tx index: what ME signed, and what it received.
+      const q = url.searchParams.get("query") ?? "";
+      if (url.searchParams.get("page") !== "1") {
+        return json(500, { code: 13, message: "failed to search for txs: page should be within [1, 1] range, given 2", details: [] });
+      }
+      // The signed list goes on for pages; the received one fits in this page.
+      if (q === `message.sender='${ME}'`) return json(200, { tx_responses: SIGNED, total: "120" });
+      return json(200, { tx_responses: q === `coin_received.receiver='${ME}'` ? RECEIVED : [], total: "2" });
     }
     if (p.startsWith("/cosmos/tx/v1beta1/txs/")) {
       const hash = p.split("/").pop()!;
@@ -346,4 +379,38 @@ test("token filter: kept per network, and checked", async () => {
   local.data.set("token_filter", { mainnet: { all: 1 } });
   ok(await service.handle({ type: "save_settings", network: "mainnet", lcd: null }));
   assert.deepEqual(ok<B>(await service.handle({ type: "balances" })).filter, { all: false, hideSmall: false, shown: [], hidden: [] });
+});
+
+test("activity: what it signed and what it received, merged, with how to show each token", async () => {
+  const { service } = await wallet();
+  type Page = {
+    items: { height: string; kind: string; counterparty?: string; signed: boolean; changes: { denom: string; amount: string }[]; fee: unknown[] }[];
+    tokens: Record<string, { symbol: string; known: boolean; onChoice?: boolean }>;
+    more: boolean;
+    cutoff: string | null;
+    filter: unknown;
+  };
+  const first = ok<Page>(await service.handle({ type: "activity", page: 1 }));
+  assert.deepEqual(
+    first.items.map((a) => [a.height, a.kind, a.counterparty, a.signed]),
+    [["120", "receive", THEM, false], ["100", "send", THEM, true], ["90", "receive", THEM, false]],
+  );
+  assert.deepEqual(first.items[1]!.changes, [{ denom: "inj", amount: "-1000000000000000000" }]);
+  assert.equal(first.items[1]!.fee.length, 1);
+  // Show down to 100: below that, the signed list's next page could still hold newer rows.
+  assert.equal(first.cutoff, "100");
+  assert.equal(first.more, true);
+  assert.deepEqual(
+    Object.entries(first.tokens).map(([d, t]) => [d, t.symbol, t.known, t.onChoice ?? false]).sort(),
+    [[SCAM, "USDT", false, false], ["inj", "INJ", true, true], [USDT, "USDT", true, true]].sort(),
+  );
+  assert.deepEqual(first.filter, { all: false, hideSmall: false, shown: [], hidden: [] });
+  // Past the end: nothing more, nothing held back.
+  const second = ok<Page>(await service.handle({ type: "activity", page: 2 }));
+  assert.deepEqual([second.items.length, second.more, second.cutoff], [0, false, null]);
+
+  assert.equal(code(await service.handle({ type: "activity", page: 0 })), "bad_request");
+  assert.equal(code(await service.handle({ type: "activity", page: "1" })), "bad_request");
+  ok(await service.handle({ type: "lock" }));
+  assert.equal(code(await service.handle({ type: "activity", page: 1 })), "locked");
 });

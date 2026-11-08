@@ -32,6 +32,25 @@ export interface TxStatus {
   log: string;
 }
 
+export interface TxEvent {
+  type: string;
+  attributes: { key: string; value: string }[];
+}
+
+/** A transaction from the node's tx index, with what's needed to describe it. */
+export interface IndexedTx {
+  hash: string;
+  height: bigint;
+  /** ISO 8601, from the block. */
+  time: string;
+  /** 0 on success. */
+  code: number;
+  /** As the node renders them: each has an "@type". */
+  messages: Record<string, unknown>[];
+  fee: Coin[];
+  events: TxEvent[];
+}
+
 export interface Broadcast {
   hash: string;
   /** Another endpoint may already have relayed it (a retry after a timeout): watch the
@@ -198,6 +217,32 @@ export class Lcd {
     return result as Broadcast;
   }
 
+  /** Transactions matching a CometBFT event query, newest first. `page` counts from 1; past
+   *  the last page is an empty list. `done` says no later page holds more: `total` and
+   *  `limit` count the same index entries, and a transaction matching more than once (two
+   *  messages from one sender) comes back once, so a page can hold fewer than `limit`.
+   *  Each node indexes its own window of history (seen 2026-11-09: the sentry refuses a
+   *  query that reaches below its pruned height), so a node that can't serve the page is
+   *  skipped. Load-balanced endpoints can answer pages from different nodes: callers drop
+   *  repeats by hash. */
+  async searchTxs(query: string, page: number, limit: number): Promise<{ txs: IndexedTx[]; done: boolean }> {
+    const q = `query=${encodeURIComponent(query)}&page=${page}&limit=${limit}&order_by=ORDER_BY_DESC`;
+    return (await this.pool.run(async (base) => {
+      const { status, body } = await this.pool.json(`${base}/cosmos/tx/v1beta1/txs?${q}`);
+      if (status === 200 && isObject(body) && Array.isArray(body["tx_responses"])) {
+        const txs = body["tx_responses"].map(indexedTx);
+        const total = typeof body["total"] === "string" && /^[0-9]+$/.test(body["total"]) ? Number(body["total"]) : null;
+        return { txs, done: txs.length === 0 || (total !== null && total <= page * limit) };
+      }
+      const message = isObject(body) && typeof body["message"] === "string" ? body["message"] : "";
+      if (/page should be within/.test(message)) return { txs: [], done: true };
+      if (isObject(body) && typeof body["code"] === "number" && message && !/not available|lowest height|pruned/i.test(message)) {
+        throw new ChainError(body["code"], cleanMessage(message));
+      }
+      throw new Down(`tx search: HTTP ${status}${message ? ` (${message.slice(0, 80)})` : ""}`);
+    })) as { txs: IndexedTx[]; done: boolean };
+  }
+
   /** A transaction's result, or null while it isn't in a block (or never made it). */
   async tx(hash: string): Promise<TxStatus | null> {
     let body: unknown;
@@ -220,6 +265,39 @@ function coin(c: unknown): Coin {
     throw new Down("malformed coin");
   }
   return { denom: c["denom"], amount: c["amount"] };
+}
+
+function indexedTx(r: unknown): IndexedTx {
+  const tx = isObject(r) && isObject(r["tx"]) ? r["tx"] : {};
+  const body = isObject(tx["body"]) ? tx["body"] : {};
+  const fee = isObject(tx["auth_info"]) && isObject(tx["auth_info"]["fee"]) ? tx["auth_info"]["fee"]["amount"] : undefined;
+  if (
+    !isObject(r) ||
+    typeof r["txhash"] !== "string" ||
+    !/^[0-9A-Fa-f]{64}$/.test(r["txhash"]) ||
+    typeof r["timestamp"] !== "string" ||
+    !Array.isArray(body["messages"]) ||
+    !Array.isArray(r["events"])
+  ) {
+    throw new Down("malformed tx");
+  }
+  const events: TxEvent[] = [];
+  for (const e of r["events"]) {
+    if (!isObject(e) || typeof e["type"] !== "string" || !Array.isArray(e["attributes"])) throw new Down("malformed event");
+    events.push({
+      type: e["type"],
+      attributes: e["attributes"].filter(isObject).map((a) => ({ key: String(a["key"] ?? ""), value: String(a["value"] ?? "") })),
+    });
+  }
+  return {
+    hash: r["txhash"].toUpperCase(),
+    height: toBigInt(String(r["height"])),
+    time: r["timestamp"],
+    code: Number(r["code"] ?? 0),
+    messages: body["messages"].filter(isObject),
+    fee: Array.isArray(fee) ? fee.map(coin) : [],
+    events,
+  };
 }
 
 /** Drop the node's source locations and gas trailer from an error message. */

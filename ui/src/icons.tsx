@@ -62,6 +62,56 @@ export const BackIcon = (p: P) => (
     <path d="m15 18-6-6 6-6" />
   </Icon>
 );
+export const WalletIcon = (p: P) => (
+  <Icon {...p}>
+    <path d="M19 8.5V7a2 2 0 0 0-2-2H5.5A2.5 2.5 0 0 0 3 7.5v9A2.5 2.5 0 0 0 5.5 19H19a2 2 0 0 0 2-2v-6.5a2 2 0 0 0-2-2H5.5" />
+    <path d="M16.5 14h.01" />
+  </Icon>
+);
+export const ActivityIcon = (p: P) => (
+  <Icon {...p}>
+    <path d="M3 12h3.5l2.5-6.5 5 13 2.5-6.5H21" />
+  </Icon>
+);
+export const SwapIcon = (p: P) => (
+  <Icon {...p}>
+    <path d="M7 4 4 7l3 3M4 7h12.5M17 20l3-3-3-3M20 17H7.5" />
+  </Icon>
+);
+export const CodeIcon = (p: P) => (
+  <Icon {...p}>
+    <path d="m8.5 8-4 4 4 4M15.5 8l4 4-4 4" />
+  </Icon>
+);
+export const StakeIcon = (p: P) => (
+  <Icon {...p}>
+    <path d="m12 4 8 4-8 4-8-4 8-4ZM4 12l8 4 8-4M4 16l8 4 8-4" />
+  </Icon>
+);
+export const GiftIcon = (p: P) => (
+  <Icon {...p}>
+    <rect x="4" y="9" width="16" height="11" rx="2" />
+    <path d="M12 9v11M4 13h16M12 9c-1.5-3-5-3.5-5-1s5 1 5 1Zm0 0c1.5-3 5-3.5 5-1s-5 1-5 1Z" />
+  </Icon>
+);
+export const GlobeIcon = (p: P) => (
+  <Icon {...p}>
+    <circle cx="12" cy="12" r="8.5" />
+    <path d="M3.5 12h17M12 3.5c2.5 2.5 3.5 5.5 3.5 8.5s-1 6-3.5 8.5c-2.5-2.5-3.5-5.5-3.5-8.5s1-6 3.5-8.5Z" />
+  </Icon>
+);
+export const ChartIcon = (p: P) => (
+  <Icon {...p}>
+    <path d="M7 4v3M7 15v5M17 4v5M17 17v3" />
+    <rect x="5" y="7" width="4" height="8" rx="1" />
+    <rect x="15" y="9" width="4" height="8" rx="1" />
+  </Icon>
+);
+export const RefreshIcon = (p: P) => (
+  <Icon {...p}>
+    <path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3M19.5 4.5v4h-4" />
+  </Icon>
+);
 export const ChevronRightIcon = (p: P) => (
   <Icon {...p}>
     <path d="m9 6 6 6-6 6" />

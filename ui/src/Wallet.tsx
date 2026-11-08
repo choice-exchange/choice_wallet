@@ -1,11 +1,13 @@
-// The unlocked wallet: home (balance and tokens), receive, send, tokens and settings.
+// The unlocked wallet: three tabs (Wallet, Activity, Settings), and the flows that open
+// over them full screen (receive, send, tokens).
 
 import { formatShort, NETWORKS, shortDenom } from "@choice-wallet/chain";
 import { useEffect, useRef, useState } from "react";
 
+import { ActivityView } from "./Activity";
 import mark from "./assets/choice-mark.svg";
 import { useBackend } from "./backend";
-import { CheckIcon, ChevronRightIcon, CopyIcon, EyeOffIcon, LockIcon, ReceiveIcon, SendIcon, SettingsIcon } from "./icons";
+import { ActivityIcon, CheckIcon, ChevronRightIcon, CopyIcon, EyeOffIcon, LockIcon, ReceiveIcon, SendIcon, SettingsIcon, WalletIcon } from "./icons";
 import { BackBar, Callout, formatUsd, Screen, Segmented, shortAddress } from "./kit";
 import type { Balance, SendReview, Sent, Status, TokenFilter } from "./protocol";
 import { QrCode } from "./QrCode";
@@ -16,20 +18,42 @@ import { applyFilter, DEFAULT_FILTER } from "./tokenFilter";
 import { TokenMark } from "./TokenMark";
 import { TokensView } from "./Tokens";
 
+type Tab = "wallet" | "activity" | "settings";
+
+/** A flow opened over the tabs; "home" is the tabs themselves. */
 type View =
   | { name: "home" }
   | { name: "receive" }
   | { name: "send"; denom?: string }
   | { name: "review"; review: SendReview; entered: string; denom: string }
   | { name: "sent"; sent: Sent }
-  | { name: "tokens" }
-  | { name: "settings" };
+  | { name: "tokens" };
 
 const COSMOS = "cosmos:injective-1";
 const EVM = "eip155:1776";
 
+const TABS: readonly (readonly [Tab, string, typeof WalletIcon])[] = [
+  ["wallet", "Wallet", WalletIcon],
+  ["activity", "Activity", ActivityIcon],
+  ["settings", "Settings", SettingsIcon],
+];
+
+function TabBar({ tab, onTab }: { tab: Tab; onTab: (t: Tab) => void }) {
+  return (
+    <nav className="tabbar" aria-label="Sections">
+      {TABS.map(([t, label, Icon]) => (
+        <button key={t} type="button" aria-current={t === tab ? "page" : undefined} onClick={() => onTab(t)}>
+          <Icon size={20} />
+          <span>{label}</span>
+        </button>
+      ))}
+    </nav>
+  );
+}
+
 export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: () => void; onStatus: () => void }) {
   const backend = useBackend();
+  const [tab, setTab] = useState<Tab>("wallet");
   const [view, setView] = useState<View>({ name: "home" });
   const [balances, setBalances] = useState<Balance[] | null>(null);
   const [filter, setFilter] = useState<TokenFilter>(DEFAULT_FILTER);
@@ -41,7 +65,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
   const saving = useRef<Promise<unknown>>(Promise.resolve());
 
   useEffect(() => {
-    if (view.name !== "home") return;
+    if (view.name !== "home" || tab !== "wallet") return;
     let live = true;
     void saving.current.then(() => run({ type: "balances" })).then((r) => {
       if (live && r) {
@@ -53,12 +77,22 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
     return () => {
       live = false;
     };
-  }, [view.name, refresh, status.network]);
+  }, [view.name, tab, refresh, status.network]);
 
   const home = () => {
     setRefresh((n) => n + 1);
+    setTab("wallet");
     setView({ name: "home" });
   };
+  const tabs = (
+    <TabBar
+      tab={tab}
+      onTab={(t) => {
+        if (t === "wallet" && tab !== "wallet") setRefresh((n) => n + 1);
+        setTab(t);
+      }}
+    />
+  );
   /** Apply a filter change now; put it back if the host refuses it. */
   const changeFilter = (next: TokenFilter) => {
     const before = filter;
@@ -112,32 +146,33 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
       );
     case "sent":
       return <SentView sent={view.sent} onDone={home} />;
-    case "settings":
-      return (
-        <SettingsView
-          onLock={onLock}
-          onDone={() => {
-            onStatus();
-            home();
-          }}
-        />
-      );
     case "home": {
+      if (tab === "activity") return <ActivityView network={status.network} tabs={tabs} />;
+      if (tab === "settings") {
+        return (
+          <SettingsView
+            tabs={tabs}
+            onLock={onLock}
+            onDone={() => {
+              onStatus();
+              home();
+            }}
+          />
+        );
+      }
       const inj = balances?.find((b) => b.denom === "inj");
       return (
         <Screen
+          tabs={tabs}
           top={
             <>
               <span className="brand">
                 <img src={mark} alt="" />
               </span>
               <span className="title">Account 1</span>
-              <button className="pill" onClick={() => setView({ name: "settings" })} aria-label={`Network: ${status.network}`}>
+              <button className="pill" onClick={() => setTab("settings")} aria-label={`Network: ${status.network}`}>
                 <span className={status.network === "testnet" ? "dot testnet" : "dot"} />
                 {status.network === "testnet" ? "Testnet" : "Mainnet"}
-              </button>
-              <button className="icon-btn" aria-label="Settings" onClick={() => setView({ name: "settings" })}>
-                <SettingsIcon />
               </button>
               <button className="icon-btn" aria-label="Lock" onClick={onLock}>
                 <LockIcon />

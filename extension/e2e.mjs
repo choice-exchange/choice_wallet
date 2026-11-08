@@ -28,6 +28,27 @@ const USDT = "peggy0xdAC17F958D2ee523a2206206994597C13D831ec7";
 const SCAM = "factory/inj1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqe2hm49/usdt";
 const broadcasts = [];
 const sha = (b64) => createHash("sha256").update(Buffer.from(b64, "base64")).digest("hex").toUpperCase();
+// Indexed transactions for Activity, shaped like mainnet's (bank events and the fee payer).
+const FRIEND = "inj1nk9x9ajk4rgkzhqjjn7hr6w0k0jg2kj0knl55v";
+const SENT_TO = "inj1nk9x9ajk4rgkzhqjjn7hr6w0k0jg2kj0knl55v"; // the EIP-155 example key's address, the e2e's recipient
+const FEE_COLLECTOR = "inj17xpfvakm2amg962yls6f84z3kell8c5l6s5ye9";
+const attrs = (o) => Object.entries(o).map(([key, value]) => ({ key, value, index: true }));
+const moved = (from, to, amount) => [
+  { type: "coin_spent", attributes: attrs({ spender: from, amount }) },
+  { type: "coin_received", attributes: attrs({ receiver: to, amount }) },
+  { type: "transfer", attributes: attrs({ recipient: to, sender: from, amount }) },
+];
+const indexed = (hash, height, time, from, to, amount) => ({
+  txhash: hash,
+  height: String(height),
+  timestamp: time.toISOString(),
+  code: 0,
+  tx: {
+    body: { messages: [{ "@type": "/cosmos.bank.v1beta1.MsgSend", from_address: from, to_address: to, amount: [] }] },
+    auth_info: { fee: { amount: [{ denom: "inj", amount: "17216480000000" }], gas_limit: "107603" } },
+  },
+  events: [...moved(from, FEE_COLLECTOR, "17216480000000inj"), { type: "tx", attributes: attrs({ fee: "17216480000000inj", fee_payer: from }) }, ...moved(from, to, amount)],
+});
 const lcd = createServer((req, res) => {
   const reply = (status, body) => {
     res.writeHead(status, { "content-type": "application/json", "access-control-allow-origin": "*", "access-control-allow-headers": "content-type" });
@@ -60,6 +81,17 @@ const lcd = createServer((req, res) => {
       const { tx_bytes } = JSON.parse(body);
       broadcasts.push(tx_bytes);
       return reply(200, { tx_response: { txhash: sha(tx_bytes), code: 0, raw_log: "" } });
+    }
+    if (p === "/cosmos/tx/v1beta1/txs" && req.method === "GET") {
+      // The tx index: a receive and a junk airdrop, and the send once it's broadcast.
+      const q = url.searchParams.get("query") ?? "";
+      const me = /'([a-z0-9]+)'$/.exec(q)?.[1] ?? "";
+      if (url.searchParams.get("page") !== "1") return reply(500, { code: 13, message: "failed to search for txs: page should be within [1, 1] range, given 2" });
+      const now = Date.now();
+      const list = q.startsWith("message.sender=")
+        ? broadcasts.map((b) => indexed(sha(b), 900, new Date(now - 60_000), me, SENT_TO, "1500000000000000000inj"))
+        : [indexed("A".repeat(64), 800, new Date(now - 3_600_000), FRIEND, me, `2500000${USDT}`), indexed("B".repeat(64), 700, new Date(now - 26 * 3_600_000), FRIEND, me, `7000000${SCAM}`)];
+      return reply(200, { tx_responses: list, total: String(list.length) });
     }
     if (p.startsWith("/cosmos/tx/v1beta1/txs/")) {
       return broadcasts.some((b) => sha(b) === tail)
@@ -323,6 +355,28 @@ try {
   await p.click("Cancel");
   await p.waitText("Balance 5 INJ");
   if (broadcasts.length !== 1) throw new Error("cancel broadcast something");
+
+  // 6b. The tabs: Activity shows the send and the receive; the junk airdrop is hidden.
+  await p.click("Back");
+  await p.waitText("Account 1");
+  await p.click("Activity");
+  await p.waitText("1 from hidden tokens", 15000);
+  const rows = () => p.eval(`[...document.querySelectorAll(".activity")].map((r) => r.innerText.replace(/\\s+/g, " "))`);
+  const shownRows = await rows();
+  console.log("activity", shownRows);
+  if (shownRows.length !== 2 || !shownRows[0].startsWith("Sent") || !shownRows[0].includes("-1.5 INJ") || !shownRows[1].startsWith("Received") || !shownRows[1].includes("+2.5 USDT")) {
+    throw new Error("unexpected activity");
+  }
+  if ((await p.eval(`document.querySelector(".activity").title`)) !== sha(broadcasts[0])) throw new Error("the sent row isn't the broadcast tx");
+  await p.shot("15-activity");
+  await p.click("1 from hidden tokens");
+  if ((await rows()).length !== 3) throw new Error("the hidden row didn't open");
+  await p.click("Settings");
+  await p.waitText("Tried in order, one per line.");
+  await p.shot("16-settings-tab");
+  await p.click("Wallet");
+  await p.waitText("1 hidden token");
+  console.log("tabs: Activity (send, receive, junk hidden), Settings, back to Wallet");
 
   // 7. A web page can't talk to the service worker: there is no externally_connectable, so
   // chrome.runtime isn't even exposed to it.

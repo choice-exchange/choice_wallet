@@ -30,6 +30,8 @@ export type UiRequest =
   | { type: "balances" }
   /** Which tokens the current network's lists show (see `TokenFilter`). */
   | { type: "save_token_filter"; filter: TokenFilter }
+  /** One page (from 1) of the account's activity, from the node's tx index. */
+  | { type: "activity"; page: number }
   /** `amount` in base units, or "max" (the fee token: everything but the fee). */
   | { type: "prepare_send"; denom: string; to: string; amount: string }
   /** Sign and broadcast the prepared send whose review showed `digest`. `confirm` is the
@@ -115,6 +117,50 @@ export type SendReview = {
 
 export type Sent = { hash: string; explorer: string };
 
+export type ActivityKind =
+  | "send"
+  | "receive"
+  | "swap"
+  | "contract"
+  | "evm"
+  | "orderbook"
+  | "ibc"
+  | "stake"
+  | "unstake"
+  | "redelegate"
+  | "rewards"
+  | "other";
+
+/** One transaction as it touched this account (choice-wallet-chain `summarize`). */
+export type ActivityItem = {
+  hash: string;
+  height: string;
+  time: string;
+  ok: boolean;
+  kind: ActivityKind;
+  /** The message's own name, for kind "other". */
+  label?: string;
+  counterparty?: string;
+  /** This account paid the fee. */
+  signed: boolean;
+  /** Net change per denom, signed base units, fee left out. */
+  changes: Coin[];
+  fee: Coin[];
+};
+
+export type ActivityPage = {
+  network: NetworkId;
+  items: ActivityItem[];
+  /** How to show each denom in `items`. */
+  tokens: Record<string, TokenInfo & { onChoice?: boolean }>;
+  /** Another page may hold more. */
+  more: boolean;
+  /** Items below this height may still be missing newer neighbours from the next page: show
+   *  down to here. Null when nothing is left to load. */
+  cutoff: string | null;
+  filter: TokenFilter;
+};
+
 export type Settings = {
   network: NetworkId;
   /** LCD endpoints in use per network, tried in order. */
@@ -139,6 +185,7 @@ export type Replies = {
   /** Every balance; the UI applies `filter`. `prices` is the USD values setting. */
   balances: { network: NetworkId; balances: Balance[]; filter: TokenFilter; prices: boolean };
   save_token_filter: TokenFilter;
+  activity: ActivityPage;
   prepare_send: SendReview;
   confirm_send: Sent;
   tx_status: TxState;

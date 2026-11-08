@@ -1,13 +1,13 @@
-// Settings: the network, its endpoints, and locking.
+// Settings (a tab): the network, its endpoints, USD values, and locking.
 
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 
 import { LockIcon } from "./icons";
-import { BackBar, Screen, Segmented } from "./kit";
+import { Screen, Segmented } from "./kit";
 import type { NetworkId, Settings } from "./protocol";
 import { useRequest } from "./request";
 
-export function SettingsView({ onDone, onLock }: { onDone: () => void; onLock: () => void }) {
+export function SettingsView({ onDone, onLock, tabs }: { onDone: () => void; onLock: () => void; tabs: ReactNode }) {
   const { run, error, busy } = useRequest();
   const [settings, setSettings] = useState<Settings | null>(null);
   const [net, setNet] = useState<NetworkId>("mainnet");
@@ -39,7 +39,8 @@ export function SettingsView({ onDone, onLock }: { onDone: () => void; onLock: (
   return (
     <form onSubmit={(e) => void save(e)} style={{ height: "100%" }}>
       <Screen
-        top={<BackBar title="Settings" onBack={onDone} />}
+        top={<span className="title">Settings</span>}
+        tabs={tabs}
         foot={
           <>
             {error && <p className="error">{error}</p>}
