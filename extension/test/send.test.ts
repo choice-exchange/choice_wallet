@@ -89,6 +89,8 @@ function chain(opts: { balances?: Record<string, bigint>; evm?: Record<string, b
     evmDown: false,
     /** Contracts asked for a balance on the EVM side. */
     evmBalanceCalls: [] as string[],
+    /** Raw EVM transactions broadcast. */
+    evmSent: [] as string[],
     account: opts.account ?? true,
     broadcasts: [] as string[],
     simulations: 0,
@@ -99,7 +101,23 @@ function chain(opts: { balances?: Record<string, bigint>; evm?: Record<string, b
   const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status });
   type Rpc = { id: number; method: string; params: { to: string; data: string }[] };
   const rpc = (r: Rpc) => {
-    if (r.method === "eth_chainId") return { jsonrpc: "2.0", id: r.id, result: "0x6f0" };
+    const answer = (result: unknown) => ({ jsonrpc: "2.0", id: r.id, result });
+    if (r.method === "eth_chainId") return answer("0x6f0");
+    if (r.method === "eth_getTransactionCount") return answer("0x3");
+    if (r.method === "eth_getBlockByNumber") return answer({ number: "0xb6137d8", baseFeePerGas: "0x9896800" });
+    if (r.method === "eth_maxPriorityFeePerGas") return answer("0x0");
+    if (r.method === "eth_getBalance") return answer(`0x${(state.balances["inj"] ?? 0n).toString(16)}`);
+    if (r.method === "eth_estimateGas") {
+      const tx = r.params[0] as unknown as { from: string; to: string; data: string };
+      assert.equal(tx.from.toLowerCase(), ME_EVM.toLowerCase());
+      assert.ok(tx.data.startsWith("0xa9059cbb"), "an ERC20 transfer");
+      return answer("0xb5f0"); // 46,576
+    }
+    if (r.method === "eth_sendRawTransaction") {
+      state.evmSent.push(r.params[0] as unknown as string);
+      return answer(`0x${"ab".repeat(32)}`);
+    }
+    if (r.method === "eth_getTransactionReceipt") return answer(state.evmSent.length ? { status: "0x1" } : null);
     const { to, data } = r.params[0]!;
     const t = ERC20[to.toLowerCase()];
     if (r.method !== "eth_call" || !t) return { jsonrpc: "2.0", id: r.id, error: { code: 3, message: "execution reverted" } };
@@ -509,8 +527,54 @@ test("EVM-only tokens: found through Choice's list or added by hand, never twice
   assert.equal(down.evmDown, true);
   assert.deepEqual(down.balances.map((b) => b.denom), ["inj", USDT]);
 
-  // EVM-only sends come next: refused plainly, never sent as a bank message.
-  assert.equal(code(await service.handle({ type: "prepare_send", denom: `evm:${LUMA}`, to: ME, amount: "1" })), "not_yet");
   ok(await service.handle({ type: "lock" }));
   assert.equal(code(await service.handle({ type: "add_token", address: ADDED })), "locked");
+});
+
+test("an EVM-only token's send: an ERC20 transfer the vault decodes and signs, fee in INJ", async () => {
+  const net = chain({ evm: { [LUMA]: 3000n * INJ } });
+  const { service } = await wallet(net);
+  type EvmReview = {
+    digest: string;
+    display: { kind: string; to: string; nonce: string; gas_limit: string; max_fee_per_gas: string; max_priority_fee_per_gas: string; max_gas_cost: string; call: { type: string; to: string; amount: string } };
+    risk: { level: string };
+    tokens: Record<string, { symbol: string }>;
+    checkedBy: string;
+  };
+  const amount = (100n * INJ).toString();
+  const review = ok<EvmReview>(await service.handle({ type: "prepare_send", denom: `evm:${LUMA}`, to: THEM_EVM, amount }));
+  assert.equal(review.display.kind, "evm_transaction");
+  assert.equal(review.display.to.toLowerCase(), LUMA);
+  assert.deepEqual(review.display.call, { type: "erc20_transfer", to: THEM_EVM, amount });
+  // 46,576 gas estimated, times 1.2; the base fee (160000000) and no tip: Injective charges
+  // gas limit × max fee, so no headroom is added.
+  assert.equal(review.display.gas_limit, "55892");
+  assert.equal(review.display.max_fee_per_gas, "160000000");
+  assert.equal(review.display.max_priority_fee_per_gas, "0");
+  assert.equal(review.display.max_gas_cost, (55892n * 160000000n).toString());
+  assert.equal(review.display.nonce, "3");
+  assert.equal(review.tokens[`evm:${LUMA}`]?.symbol, "LUMA");
+  assert.equal(review.tokens["inj"]?.symbol, "INJ");
+  assert.equal(review.checkedBy, "sentry.evm-rpc.injective.network");
+  assert.notEqual(review.risk.level, "blocked");
+
+  // An inj1 recipient is the same account: the transfer goes to its 0x form.
+  const viaBech32 = ok<EvmReview>(await service.handle({ type: "prepare_send", denom: `evm:${LUMA}`, to: await bech32Of(THEM_KEY), amount }));
+  assert.equal(viaBech32.display.call.to, THEM_EVM);
+  const sent = ok<{ hash: string; explorer: string }>(await service.handle({ type: "confirm_send", digest: viaBech32.digest }));
+  assert.match(sent.hash, /^0x[0-9a-f]{64}$/);
+  assert.equal(sent.explorer, `https://blockscout.injective.network/tx/${sent.hash}`);
+  assert.equal(net.state.evmSent.length, 1);
+  const transfer = `a9059cbb${THEM_EVM.slice(2).toLowerCase().padStart(64, "0")}${(100n * INJ).toString(16).padStart(64, "0")}`;
+  assert.ok(net.state.evmSent[0]!.startsWith("0x02") && net.state.evmSent[0]!.includes(transfer), "a type-2 tx carrying exactly the reviewed transfer");
+  assert.deepEqual(ok(await service.handle({ type: "tx_status", hash: sent.hash })), { state: "success" });
+  // The approval was single-use.
+  assert.equal(code(await service.handle({ type: "confirm_send", digest: viaBech32.digest })), "not_approved");
+
+  // Refused before anything is signed: more than held, and no INJ for the fee.
+  assert.equal(code(await service.handle({ type: "prepare_send", denom: `evm:${LUMA}`, to: THEM_EVM, amount: (5000n * INJ).toString() })), "insufficient");
+  assert.equal(code(await service.handle({ type: "prepare_send", denom: `evm:${LUMA}`, to: "0x123", amount })), "invalid_address");
+  net.state.balances = {};
+  assert.equal(code(await service.handle({ type: "prepare_send", denom: `evm:${LUMA}`, to: THEM_EVM, amount })), "insufficient");
+  assert.equal(net.state.evmSent.length, 1);
 });

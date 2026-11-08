@@ -1,12 +1,12 @@
 // Send: the form (with its token picker), the review, and the sent screen.
 
-import { formatShort, formatUnits, parseUnits, shortDenom, usdValue } from "@choice-wallet/chain";
+import { evmAddress, evmDenom, formatShort, formatUnits, NETWORKS, parseUnits, shortDenom, usdValue } from "@choice-wallet/chain";
 import { useEffect, useState, type FormEvent } from "react";
 
 import { useBackend } from "./backend";
 import { CheckIcon, ChevronDownIcon, ClockIcon, CloseIcon, ExternalIcon } from "./icons";
 import { BackBar, Callout, formatUsd, Screen, shortAddress, tokenSub } from "./kit";
-import type { Balance, Coin, DecodedMsg, NetworkId, SendReview, Sent, TxState } from "./protocol";
+import type { Balance, Coin, CosmosDisplay, DecodedMsg, EvmDisplay, NetworkId, SendReview, Sent, TxState } from "./protocol";
 import { useRequest } from "./request";
 import { TokenMark } from "./TokenMark";
 
@@ -144,6 +144,30 @@ function isBankSend(m: DecodedMsg): m is BankSend {
   return m.type === "bank_send" && typeof m["to"] === "string" && Array.isArray(m["amount"]);
 }
 
+/** What the review shows, from either kind of decode: the sends, anything else the
+ *  transaction does, and the fee. For EVM that is gas limit × max fee per gas, which is
+ *  what Injective charges (no refund of unused gas). */
+type Shown = { sends: { coins: Coin[]; to: string }[]; others: string[]; fee: Coin[]; memo: string; evm: boolean };
+
+function shown(display: SendReview["display"], feeDenom: string): Shown {
+  if (display.kind === "evm_transaction") {
+    const d = display as EvmDisplay;
+    const fee = [{ denom: feeDenom, amount: d.max_gas_cost }];
+    const base = { fee, memo: "", evm: true };
+    if (d.call.type === "erc20_transfer") return { ...base, sends: [{ coins: [{ denom: evmDenom(d.to), amount: d.call.amount }], to: d.call.to }], others: [] };
+    if (d.call.type === "transfer") return { ...base, sends: [{ coins: [{ denom: feeDenom, amount: d.value }], to: d.to }], others: [] };
+    return { ...base, sends: [], others: [`Contract call to ${d.to}`] };
+  }
+  const c = display as CosmosDisplay;
+  return {
+    sends: c.messages.filter(isBankSend).map((m) => ({ coins: m.amount, to: m.to })),
+    others: c.messages.filter((m) => !isBankSend(m)).map((m) => m.type),
+    fee: c.fee.amount,
+    memo: c.memo,
+    evm: false,
+  };
+}
+
 /** The approval screen. Everything on it comes from the vault's decode of the transaction
  *  that will be signed, not from what the form asked for. */
 export function Review({
@@ -159,7 +183,8 @@ export function Review({
   onSent: (sent: Sent) => void;
   onCancel: () => void;
 }) {
-  const { display, risk, tokens } = review;
+  const { risk, tokens } = review;
+  const view = shown(review.display, NETWORKS[network].feeDenom);
   const [typed, setTyped] = useState("");
   const { run, error, busy } = useRequest();
   const coin = (c: Coin) => {
@@ -209,11 +234,10 @@ export function Review({
           {f.message}
         </Callout>
       ))}
-      {display.messages.map((m, i) =>
-        isBankSend(m) ? (
+      {view.sends.map((m, i) => (
           <div className="surface-hero" key={i}>
             <div className="eyebrow">You send</div>
-            {m.amount.map((c) => {
+            {m.coins.map((c) => {
               const t = tokens[c.denom];
               const figure = t ? formatUnits(c.amount, t.decimals) : c.amount;
               // The full figure, never rounded; the type steps down as it gets longer.
@@ -227,41 +251,56 @@ export function Review({
                 </div>
               );
             })}
-            {usd(m.amount) && <div className="meta num" style={{ marginTop: 4, marginLeft: 46 }}>{usd(m.amount)}</div>}
+            {usd(m.coins) && <div className="meta num" style={{ marginTop: 4, marginLeft: 46 }}>{usd(m.coins)}</div>}
+            {/* An unlisted token's symbol is whatever its creator chose: show what it really is. */}
+            {m.coins
+              .filter((c) => !tokens[c.denom]?.known)
+              .map((c) => (
+                <div key={c.denom} className="meta mono" style={{ marginTop: 4, marginLeft: 46, wordBreak: "break-all" }}>
+                  {evmAddress(c.denom) ? `EVM token ${evmAddress(c.denom)}` : c.denom}
+                </div>
+              ))}
             <hr className="divider" style={{ margin: "14px 0 12px" }} />
             <div className="eyebrow">To</div>
             <code className="mono recipient" style={{ display: "block", marginTop: 6, fontSize: 14, lineHeight: "21px" }}>
               {m.to}
             </code>
-            {entered.toLowerCase() !== m.to && <div className="meta" style={{ marginTop: 4, wordBreak: "break-all" }}>You entered {entered}</div>}
+            {entered.toLowerCase() !== m.to.toLowerCase() && (
+              <div className="meta" style={{ marginTop: 4, wordBreak: "break-all" }}>
+                You entered {entered}
+              </div>
+            )}
           </div>
-        ) : (
-          <div className="surface" key={i}>
-            <div className="eyebrow">Other message</div>
-            <code className="mono">{m.type}</code>
-          </div>
-        ),
-      )}
+      ))}
+      {view.others.map((o, i) => (
+        <div className="surface" key={`o${i}`}>
+          <div className="eyebrow">Other message</div>
+          <code className="mono">{o}</code>
+        </div>
+      ))}
       <div className="well rows">
         <div className="row">
           <span>Network fee</span>
           <span className="num">
-            {display.fee.amount.map(coin).join(" + ") || "None"}
-            {usd(display.fee.amount) && <span className="meta"> {usd(display.fee.amount)}</span>}
+            {view.fee.map(coin).join(" + ") || "None"}
+            {usd(view.fee) && <span className="meta"> {usd(view.fee)}</span>}
           </span>
         </div>
         <div className="row">
           <span>Network</span>
-          <span>{network === "testnet" ? "Injective testnet" : "Injective"}</span>
+          <span>
+            {network === "testnet" ? "Injective testnet" : "Injective"}
+            {view.evm ? " (EVM)" : ""}
+          </span>
         </div>
-        {display.memo && (
+        {view.memo && (
           <div className="row">
             <span>Memo</span>
-            <span>{display.memo}</span>
+            <span>{view.memo}</span>
           </div>
         )}
         <div className="row">
-          <span>Simulated on</span>
+          <span>{view.evm ? "Estimated on" : "Simulated on"}</span>
           <span>{review.checkedBy}</span>
         </div>
       </div>

@@ -145,6 +145,10 @@ How each kind of Injective token is held and moved (checked against the injectiv
 2. **Review** (UI): shows only the vault's decode: amounts, the recipient in the chain's own form (and what the user typed, if different), the fee, the findings, and the endpoint that simulated it.
 3. **Confirm** (host): removes the prepared request from storage (so a double click can't send twice), signs it only if its digest is the one the review showed, then broadcasts. The UI watches the hash until it lands in a block.
 
+**EVM-only tokens** go out as an ERC20 `transfer` on the EVM side, through the same three steps: the host reads the nonce, base fee, tip and balances (one batch), the vault builds an EIP-1559 transaction, `eth_estimateGas` sizes it, and the vault builds it again with the real gas, decodes and grades it. An `inj1` recipient is the same account as its 0x form, and the review shows the 0x form. The review shows the token's contract when the token isn't on the wallet's list. The signed transaction goes out with `eth_sendRawTransaction` and the UI watches its receipt; the explorer link is Blockscout.
+
+- **Fees.** Injective EVM charges gas limit × max fee per gas, with no refund of unused gas or of the gap to the base fee (measured on testnet 2026-11-09: a transfer that used 52,249 gas paid for its whole 67,924-gas limit at the full max fee). So the review's fee is what gets charged, the max fee is the base fee (at the chain minimum, 160000000) plus the node's tip (0), and the gas margin is 1.2× the estimate rather than Cosmos's 1.3×. A first real send through the extension: 250 of a test ERC20 on testnet, fee 0.0000067 INJ, exactly as shown.
+
 ### Sign paths
 
 | Path | Used by | Canonical check | Status |

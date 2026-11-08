@@ -108,10 +108,27 @@ export type CosmosDisplay = {
   messages: DecodedMsg[];
 };
 
+/** The vault's decode of an EVM transaction: what gets signed. Amounts in base units. */
+export type EvmDisplay = {
+  kind: "evm_transaction";
+  chain: string;
+  from: string;
+  to: string;
+  value: string;
+  nonce: string;
+  gas_limit: string;
+  max_fee_per_gas: string;
+  max_priority_fee_per_gas: string;
+  /** gas_limit × max_fee_per_gas: the most the fee can be. */
+  max_gas_cost: string;
+  data: string;
+  call: { type: "transfer" } | { type: "erc20_transfer"; to: string; amount: string } | { type: "contract"; selector: string | null };
+};
+
 export type SendReview = {
   /** Binds the approval to exactly this transaction. */
   digest: string;
-  display: CosmosDisplay;
+  display: CosmosDisplay | EvmDisplay;
   risk: Risk;
   /** How to show each denom in `display`. */
   tokens: Record<string, TokenInfo>;

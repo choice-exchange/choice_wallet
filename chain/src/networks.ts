@@ -16,6 +16,8 @@ export interface Network {
   feeDenom: string;
   /** Transaction page, `{hash}` replaced. */
   explorerTx: string;
+  /** EVM transaction page (by its 0x hash), `{hash}` replaced. */
+  evmExplorerTx: string;
   /** Default LCD (Cosmos REST) endpoints, tried in order. */
   lcd: readonly string[];
   /** Default EVM JSON-RPC endpoints, tried in order. */
@@ -34,6 +36,7 @@ export const NETWORKS: Readonly<Record<NetworkId, Network>> = {
     evmChainId: 1776,
     feeDenom: "inj",
     explorerTx: "https://injscan.com/transaction/{hash}",
+    evmExplorerTx: "https://blockscout.injective.network/tx/{hash}",
     lcd: [
       "https://sentry.lcd.injective.network",
       "https://injective-rest.publicnode.com",
@@ -50,6 +53,7 @@ export const NETWORKS: Readonly<Record<NetworkId, Network>> = {
     evmChainId: 1439,
     feeDenom: "inj",
     explorerTx: "https://testnet.injscan.com/transaction/{hash}",
+    evmExplorerTx: "https://testnet.blockscout.injective.network/tx/{hash}",
     lcd: ["https://testnet.sentry.lcd.injective.network", "https://injective-testnet-rest.publicnode.com"],
     evmRpc: ["https://k8s.testnet.json-rpc.injective.network", "https://injective-testnet-evm-rpc.publicnode.com"],
   },
@@ -59,9 +63,10 @@ export function isNetworkId(v: unknown): v is NetworkId {
   return v === "mainnet" || v === "testnet";
 }
 
-/** The explorer page for a transaction. */
+/** The explorer page for a transaction: a Cosmos hash on injscan, an EVM (0x) hash on
+ *  Blockscout. */
 export function explorerTxUrl(network: Network, hash: string): string {
-  return network.explorerTx.replace("{hash}", hash);
+  return (hash.startsWith("0x") ? network.evmExplorerTx : network.explorerTx).replace("{hash}", hash);
 }
 
 /** Injective's minimum gas price (txfees `min_gas_price`), used if the chain can't say. */

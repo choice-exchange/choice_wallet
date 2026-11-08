@@ -17,7 +17,7 @@ export {
   type TxStatus,
 } from "./lcd.ts";
 export { explorerTxUrl, isNetworkId, MIN_GAS_PRICE, NETWORKS, type Network, type NetworkId } from "./networks.ts";
-export { ChainError, Down, Pool, Unreachable, type Fetch } from "./pool.ts";
+export { ChainError, Down, isObject, Pool, Unreachable, type Fetch } from "./pool.ts";
 export { CHOICE_PRICES, CLIENT, fetchPrices, priceAddress, usdValue, type PriceList } from "./prices.ts";
 export { cleanText, describeToken, evmAddress, evmDenom, knownToken, shortDenom, type Token } from "./tokens.ts";
 export { ceilDecimal, formatShort, formatUnits, parseUnits, toBigInt } from "./units.ts";

@@ -12,8 +12,12 @@ import {
   cosmosTxHash,
   describeToken,
   EvmRpc,
+  evmAddress,
   evmDenom,
   explorerTxUrl,
+  isObject,
+  MIN_GAS_PRICE,
+  word,
   Lcd,
   fetchPrices,
   mergeActivity,
@@ -29,7 +33,7 @@ import {
   type PriceList,
   type Token,
 } from "@choice-wallet/chain";
-import type { AccountInfo, ActivityPage, Balance, Result, Risk, SendReview, Sent, TxState } from "@choice-wallet/ui/protocol";
+import type { AccountInfo, ActivityPage, Balance, CosmosDisplay, Result, Risk, SendReview, Sent, TxState } from "@choice-wallet/ui/protocol";
 
 import type { Store } from "./service";
 
@@ -60,10 +64,17 @@ interface Pending {
   account: AccountInfo["account"];
   confirm: string | null;
   blocked: boolean;
+  /** An EVM transaction (broadcast with eth_sendRawTransaction), not a Cosmos one. */
+  evm?: boolean;
 }
 
 /** Index entries per query per page (the node's `limit`). */
 const ACTIVITY_PAGE = 50;
+
+/** Gas assumed while estimating an EVM transfer, and the most an estimate is believed
+ *  (an ERC20 transfer uses about 35k to 60k). */
+const EVM_SIMULATION_GAS = 100_000n;
+const EVM_MAX_GAS = 1_000_000n;
 
 /** Gas assumed for the simulation's own fee. */
 const SIMULATION_GAS = 200_000n;
@@ -319,7 +330,7 @@ export function createSender(d: SendDeps) {
     const client = await lcd(network);
     const max = req.amount === "max";
     if (typeof req.denom !== "string" || !req.denom) return fail("bad_request", "Pick a token.");
-    if (req.denom.startsWith("evm:")) return fail("not_yet", "Sending EVM-only tokens comes next.");
+    if (evmAddress(req.denom)) return prepareEvm(network, account, req);
     if (!max && !(typeof req.amount === "string" && /^[0-9]+$/.test(req.amount) && BigInt(req.amount) > 0n)) {
       return fail("invalid_amount", "Enter an amount above zero.");
     }
@@ -373,7 +384,7 @@ export function createSender(d: SendDeps) {
         const t = await token(network, client, c.denom);
         symbols[c.denom] = t.known ? t.symbol : shortDenom(c.denom);
       }
-      const decoded = await d.vault<Pick<SendReview, "digest" | "display" | "risk">>("decode", {
+      const decoded = await d.vault<Pick<SendReview, "digest" | "risk"> & { display: CosmosDisplay }>("decode", {
         request: built.result.request,
         context: { balances: Object.fromEntries(coins.map((c) => [c.denom, c.amount])), symbols },
       });
@@ -406,6 +417,96 @@ export function createSender(d: SendDeps) {
     }
   }
 
+  /** An EVM-only token's send: an ERC20 `transfer` on the EVM side, fee in INJ. Same shape
+   *  as a bank send: build, estimate, build again with the real gas, decode and grade. */
+  async function prepareEvm(network: NetworkId, account: AccountInfo, req: { denom: string; to: string; amount: string }): Promise<Result<SendReview>> {
+    const net = NETWORKS[network];
+    const contract = evmAddress(req.denom)!;
+    const from = account.addresses[net.evm];
+    if (!from) return fail("bad_request", "This account has no EVM address.");
+    const client = await lcd(network);
+    try {
+      const rpc = await evm(network);
+      const t = await erc20Token(network, rpc, contract);
+      if (!t) return fail("not_a_token", "That contract isn't an ERC20 token.");
+      const [nonce, block, tip, native, held] = await rpc.batch([
+        { method: "eth_getTransactionCount", params: [from, "pending"] },
+        { method: "eth_getBlockByNumber", params: ["latest", false] },
+        { method: "eth_maxPriorityFeePerGas", params: [] },
+        { method: "eth_getBalance", params: [from, "latest"] },
+        { method: "eth_call", params: [{ to: contract, data: `0x70a08231${word(from)}` }, "latest"] },
+      ]);
+      const quantity = (v: unknown, what: string): bigint => {
+        if (typeof v !== "string" || !/^0x[0-9a-fA-F]{1,64}$/.test(v)) throw new ChainError(-1, `the node returned no ${what}`);
+        return BigInt(v);
+      };
+      const tokenHeld = quantity(held, "token balance");
+      const injHeld = quantity(native, "balance");
+      const base = isObject(block) ? quantity(block["baseFeePerGas"], "base fee") : MIN_GAS_PRICE;
+      // The chain's own bounds, as for Cosmos fees; a tip above the base fee isn't believed.
+      const baseFee = base < MIN_GAS_PRICE ? MIN_GAS_PRICE : base > MIN_GAS_PRICE * 1000n ? MIN_GAS_PRICE * 1000n : base;
+      const tipped = typeof tip === "string" ? quantity(tip, "tip") : 0n;
+      const priority = tipped > baseFee ? baseFee : tipped;
+      // Injective EVM charges gas limit × max fee per gas, with no refund of unused gas or
+      // of the gap to the base fee (measured on testnet 2026-11-09). So no headroom on the
+      // fee, whose base sits at the chain minimum, and a smaller gas margin than Cosmos's.
+      const maxFee = baseFee + priority;
+      const amount = req.amount === "max" ? tokenHeld : BigInt(req.amount);
+      if (amount <= 0n || amount > tokenHeld) return fail("insufficient", `Not enough ${t.symbol}.`);
+      const build = (gas: bigint) =>
+        d.vault<{ request: { evm_transaction: { tx: { to: string; data: string } } } }>("build_evm", {
+          chain: net.evm,
+          from,
+          to: req.to,
+          token: contract,
+          amount: amount.toString(),
+          nonce: Number(quantity(nonce, "nonce")),
+          gas_limit: Number(gas),
+          max_fee_per_gas: maxFee.toString(),
+          max_priority_fee_per_gas: priority.toString(),
+        });
+      const sim = await build(EVM_SIMULATION_GAS);
+      if (!sim.ok) return sim.error.message.startsWith("invalid address") ? fail("invalid_address", "Check the recipient address.") : sim;
+      const { to, data } = sim.result.request.evm_transaction.tx;
+      const used = quantity(await rpc.call("eth_estimateGas", [{ from, to, data, value: "0x0" }]), "gas estimate");
+      const checkedBy = new URL(rpc.pool.current).host;
+      let gas = (used * 12n) / 10n + 1n;
+      if (gas < 21_000n) gas = 21_000n;
+      if (gas > EVM_MAX_GAS) return fail("chain", "The gas estimate looks wrong. Try another endpoint.");
+      if (gas * maxFee > injHeld) return fail("insufficient", "Not enough INJ for the fee.");
+      const built = await build(gas);
+      if (!built.ok) return built;
+
+      const decoded = await d.vault<Pick<SendReview, "digest" | "display" | "risk">>("decode", {
+        request: built.result.request,
+        context: { balances: { native: injHeld.toString(), [to]: tokenHeld.toString() }, symbols: { [to]: t.known ? t.symbol : shortDenom(req.denom) } },
+      });
+      if (!decoded.ok) return decoded;
+      const { digest, display, risk } = decoded.result;
+      const pending: Pending = {
+        network,
+        digest,
+        request: built.result.request,
+        account: account.account,
+        confirm: risk.confirm ?? null,
+        blocked: risk.level === "blocked",
+        evm: true,
+      };
+      await d.session.set({ pending_send: pending });
+      const choice = await choiceFor(network, client, [net.feeDenom]);
+      const price = choice.priceOf(contract);
+      const fee = await token(network, client, net.feeDenom);
+      const feePrice = choice.prices.get(net.feeDenom);
+      const tokens = {
+        [req.denom]: price ? { ...t, priceUsd: price } : t,
+        [net.feeDenom]: feePrice ? { ...fee, priceUsd: feePrice } : fee,
+      };
+      return { ok: true, result: { digest, display, risk: risk as Risk, tokens, checkedBy } };
+    } catch (e) {
+      return chainFailure(e);
+    }
+  }
+
   async function confirm(keystore: string, unlockKey: string, req: { digest: string; confirm?: string }): Promise<Result<Sent>> {
     const { pending_send } = await d.session.get(["pending_send"]);
     const p = pending_send as Pending | undefined;
@@ -413,7 +514,7 @@ export function createSender(d: SendDeps) {
     if (p.blocked) return fail("blocked", "The wallet won't sign this.");
     if (p.confirm && (req.confirm ?? "").trim() !== p.confirm) return fail("confirm", `Type ${p.confirm} to continue.`);
     await d.session.remove(["pending_send"]);
-    const signed = await d.vault<{ tx_raw: string }>("sign", {
+    const signed = await d.vault<{ tx_raw: string } & { raw: string; hash: string }>("sign", {
       keystore,
       unlock_key: unlockKey,
       account: p.account,
@@ -421,6 +522,16 @@ export function createSender(d: SendDeps) {
       digest: p.digest,
     });
     if (!signed.ok) return signed;
+    if (p.evm) {
+      // The vault hashes what it signed; a node that already has the tx (a retry) is fine.
+      const hash = signed.result.hash.toLowerCase();
+      try {
+        await (await evm(p.network)).call("eth_sendRawTransaction", [signed.result.raw]);
+      } catch (e) {
+        if (!(e instanceof ChainError && /already known|already imported|known transaction/i.test(e.message))) return chainFailure(e);
+      }
+      return { ok: true, result: { hash, explorer: explorerTxUrl(NETWORKS[p.network], hash) } };
+    }
     const hash = await cosmosTxHash(signed.result.tx_raw);
     try {
       await (await lcd(p.network)).broadcast(signed.result.tx_raw, hash);
@@ -431,6 +542,15 @@ export function createSender(d: SendDeps) {
   }
 
   async function status(network: NetworkId, hash: string): Promise<Result<TxState>> {
+    if (typeof hash === "string" && /^0x[0-9a-fA-F]{64}$/.test(hash)) {
+      try {
+        const r = await (await evm(network)).call("eth_getTransactionReceipt", [hash]);
+        if (!isObject(r)) return { ok: true, result: { state: "pending" } };
+        return { ok: true, result: r["status"] === "0x1" ? { state: "success" } : { state: "failed", log: "The transaction reverted." } };
+      } catch (e) {
+        return chainFailure(e);
+      }
+    }
     if (typeof hash !== "string" || !/^[0-9A-Fa-f]{64}$/.test(hash)) return fail("bad_request", "Not a transaction hash.");
     try {
       const tx = await (await lcd(network)).tx(hash);

@@ -145,8 +145,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
     case "send":
       return (
         <SendForm
-          // EVM-only tokens send through the EVM side, which comes next.
-          balances={(sorted?.shown ?? []).filter((b) => !b.denom.startsWith("evm:"))}
+          balances={sorted?.shown ?? []}
           denom={view.denom}
           onReview={(review, entered, denom) => setView({ name: "review", review, entered, denom })}
           onBack={home}
@@ -249,7 +248,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
                   key={b.denom}
                   className="token"
                   title={b.denom}
-                  onClick={() => setView(b.denom.startsWith("evm:") ? { name: "send" } : { name: "send", denom: b.denom })}
+                  onClick={() => setView({ name: "send", denom: b.denom })}
                 >
                   <TokenMark denom={b.denom} symbol={b.symbol} known={b.known} />
                   <span className="name">
