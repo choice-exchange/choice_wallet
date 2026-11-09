@@ -139,7 +139,7 @@ export function ApprovalsView({ canSign, onReview, onBack }: { canSign: boolean;
           </div>
           <div className="token-list">
             {s.cw20.map((a, i) => (
-              <div key={`c${i}`} className="token approval-row">
+              <div key={`c${i}`} className="token approval-row" title={a.token}>
                 <span className="name">
                   <span className="symbol">{symbol(a.token)}</span>
                   <span className="sub">
@@ -150,7 +150,7 @@ export function ApprovalsView({ canSign, onReview, onBack }: { canSign: boolean;
               </div>
             ))}
             {s.erc20.map((a, i) => (
-              <div key={`e${i}`} className="token approval-row">
+              <div key={`e${i}`} className="token approval-row" title={a.token}>
                 <span className="name">
                   <span className={BigInt(a.amount) >= UNLIMITED ? "symbol danger-text" : "symbol"}>{symbol(a.token)}</span>
                   <span className="sub">

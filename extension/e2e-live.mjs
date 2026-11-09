@@ -14,6 +14,8 @@
 // which must include an EVM transaction. With `staking` (recipient ignored), it stakes
 // `amount` INJ with the top validator, unstakes half, cancels that, moves the stake to
 // another validator, claims rewards, and reads Activity back; each step checked on chain.
+// With `approvals` (recipient ignored), a site grants a keyless address three permissions,
+// and the Approvals screen takes them back along with the account's ERC20 allowances.
 // Otherwise it sends `amount` INJ.
 //
 // The phrase is read from the file and typed into the import screen. It is never printed
@@ -40,14 +42,23 @@ const cat = (...p) => Uint8Array.from(p.flatMap((x) => [...x]));
 const bytes = (no, b) => cat(varint((no << 3) | 2), varint(b.length), b);
 const str = (no, s) => bytes(no, enc.encode(s));
 const uint = (no, n) => cat(varint(no << 3), varint(n));
-const any = (t, v) => cat(str(1, t), bytes(2, v));
+// Canonical protobuf leaves an empty field out.
+const any = (t, v) => (v.length ? cat(str(1, t), bytes(2, v)) : str(1, t));
 const hex = (h) => Uint8Array.from(h.match(/../g), (x) => parseInt(x, 16));
-window.__signAndSend = async ({ from, to, amount, pubKey, accountNumber, sequence }) => {
+window.__signAndSend = async ({ from, to, amount, pubKey, accountNumber, sequence, grants }) => {
   try {
-    const coin = cat(str(1, "inj"), str(2, amount));
-    const body = bytes(1, any("/cosmos.bank.v1beta1.MsgSend", cat(str(1, from), str(2, to), bytes(3, coin))));
+    const coin = cat(str(1, "inj"), str(2, amount ?? "0"));
+    // grants: a generic MsgSend grant, a fee allowance with no limit, and the rewards address,
+    // all to \`to\`.
+    const body = grants
+      ? cat(
+          bytes(1, any("/cosmos.authz.v1beta1.MsgGrant", cat(str(1, from), str(2, to), bytes(3, bytes(1, any("/cosmos.authz.v1beta1.GenericAuthorization", str(1, "/cosmos.bank.v1beta1.MsgSend"))))))),
+          bytes(1, any("/cosmos.feegrant.v1beta1.MsgGrantAllowance", cat(str(1, from), str(2, to), bytes(3, any("/cosmos.feegrant.v1beta1.BasicAllowance", new Uint8Array(0)))))),
+          bytes(1, any("/cosmos.distribution.v1beta1.MsgSetWithdrawAddress", cat(str(1, from), str(2, to)))),
+        )
+      : bytes(1, any("/cosmos.bank.v1beta1.MsgSend", cat(str(1, from), str(2, to), bytes(3, coin))));
     const pub = any("/injective.crypto.v1beta1.ethsecp256k1.PubKey", bytes(1, hex(pubKey)));
-    const gas = 150000n;
+    const gas = grants ? 400000n : 150000n;
     const fee = cat(bytes(1, cat(str(1, "inj"), str(2, (gas * 160000000n).toString()))), uint(2, gas));
     const authInfo = cat(bytes(1, cat(bytes(1, pub), bytes(2, bytes(1, uint(1, 1))), uint(3, sequence))), bytes(2, fee));
     const signer = window.choice.getOfflineSigner("injective-888");
@@ -164,6 +175,66 @@ try {
     await sleep(250);
     const { data } = await send("Page.captureScreenshot", { format: "png" }, sessionId);
     writeFileSync(join(out, `${name}.png`), Buffer.from(data, "base64"));
+  };
+
+  /** The test site, served on 127.0.0.1 in a tab, and a way to answer the wallet's approval
+   *  windows (`expect` to see, `button` to press, `typed` into the window's word field). */
+  const startSite = async () => {
+    const server = createServer((req, res) => {
+      res.writeHead(req.url === "/" ? 200 : 204, { "content-type": "text/html" });
+      res.end(req.url === "/" ? SITE_PAGE : "");
+    });
+    await new Promise((r) => server.listen(0, "127.0.0.1", r));
+    const { targetId: siteId } = await send("Target.createTarget", { url: `http://127.0.0.1:${server.address().port}/` });
+    const site = (await send("Target.attachToTarget", { targetId: siteId, flatten: true })).sessionId;
+    await send("Runtime.enable", {}, site);
+    const onSite = async (expr) => {
+      const r = await send("Runtime.evaluate", { expression: expr, awaitPromise: true, returnByValue: true }, site);
+      if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description ?? r.exceptionDetails.text);
+      return r.result.value;
+    };
+    for (let n = 0; !(await onSite("typeof window.__ask === 'function' && window.__wallets.length > 0")); n += 200) {
+      if (n > 10000) throw new Error("the site didn't find the wallet");
+      await sleep(200);
+    }
+    const seen = new Set();
+    const approve = async (expect, button, name, typed) => {
+      let t;
+      for (let n = 0; !t; n += 200) {
+        if (n > 30000) throw new Error(`no approval window for "${expect}"`);
+        t = (await send("Target.getTargets")).targetInfos.find((x) => x.url.includes("popup.html?approve=") && !seen.has(x.targetId));
+        if (!t) await sleep(200);
+      }
+      seen.add(t.targetId);
+      const w = (await send("Target.attachToTarget", { targetId: t.targetId, flatten: true })).sessionId;
+      await send("Runtime.enable", {}, w);
+      await send("Emulation.setFocusEmulationEnabled", { enabled: true }, w);
+      await send("Emulation.setDeviceMetricsOverride", { width: 360, height: 600, deviceScaleFactor: 2, mobile: false }, w);
+      const inW = async (expr) => (await send("Runtime.evaluate", { expression: expr, awaitPromise: true, returnByValue: true }, w)).result.value;
+      for (let n = 0; !(await inW(`document.body.innerText.includes(${JSON.stringify(expect)})`)); n += 200) {
+        if (n > 30000) throw new Error(`approval window never said "${expect}": ${await inW("document.body.innerText")}`);
+        await sleep(200);
+      }
+      const body = await inW("document.body.innerText");
+      if (typed) {
+        await inW(`(() => { const el = document.querySelector("label.field input"); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(el, ${JSON.stringify(typed)}); el.dispatchEvent(new Event("input", { bubbles: true })); })()`);
+      }
+      await sleep(900); // the buttons wake after 800 ms in front
+      const { data } = await send("Page.captureScreenshot", { format: "png" }, w);
+      writeFileSync(join(out, `${name}.png`), Buffer.from(data, "base64"));
+      for (let n = 0; !(await inW(`(() => { const b = [...document.querySelectorAll("button")].find((b) => b.textContent.trim() === ${JSON.stringify(button)} && !b.disabled); if (b) b.click(); return !!b; })()`)); n += 200) {
+        if (n > 10000) throw new Error(`no enabled "${button}" in the approval window: ${await inW("document.body.innerText")}`);
+        await sleep(200);
+      }
+      return body;
+    };
+    const ask = (method, params) => onSite(`window.__ask(${JSON.stringify(method)}, ${JSON.stringify(params ?? [])})`);
+    const reply = async () => {
+      const r = await onSite("window.__r");
+      if (r.code !== undefined) throw new Error(`the site got an error: ${r.code} ${r.message}`);
+      return r.ok;
+    };
+    return { server, onSite, approve, ask, reply };
   };
 
   // 1. Import (no screenshot: the phrase is on screen).
@@ -313,6 +384,104 @@ try {
     if (!rows.some((r) => r.includes(`with ${moniker}`))) throw new Error("Activity doesn't name the validator");
     await shot("live-k8-activity");
     console.log("LIVE STAKING OK");
+  } else if (tokenContract === "approvals") {
+    // 3a. Approvals: a site has the wallet grant a keyless address (20 bytes of 0x44, which
+    // no one holds a key for) a MsgSend grant, a fee allowance and the rewards; the
+    // Approvals screen lists those and the account's real ERC20 allowances; "Revoke all" takes
+    // the Cosmos side back in one transaction and each ERC20 is revoked on its own. The chain
+    // is asked after each step.
+    const KEYLESS = "inj1g3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyfc6zmu";
+    const grantsOf = async () => (await lcd(`/cosmos/authz/v1beta1/grants/granter/${from}`)).grants;
+    const feesOf = async () => (await lcd(`/cosmos/feegrant/v1beta1/issued/${from}`)).allowances;
+    const rewardsTo = async () => (await lcd(`/cosmos/distribution/v1beta1/delegators/${from}/withdraw_address`)).withdraw_address;
+    const { server, onSite, approve, ask, reply } = await startSite();
+    try {
+      await ask("eth_requestAccounts");
+      await approve("wants to connect", "Connect", "live-a1-connect");
+      const [me0x] = await reply();
+      await onSite(`window.choice.enable("injective-888")`);
+      const key = await onSite(`window.choice.getKey("injective-888").then((k) => ({ address: k.bech32Address, pubKey: Array.from(k.pubKey, (b) => b.toString(16).padStart(2, "0")).join("") }))`);
+      const acct = (await lcd(`/cosmos/auth/v1beta1/accounts/${key.address}`)).account;
+      const base = acct.base_account ?? acct;
+      await onSite(`(window.__signAndSend(${JSON.stringify({ from: key.address, to: KEYLESS, grants: true, pubKey: key.pubKey, accountNumber: base.account_number, sequence: base.sequence ?? "0" })}), true)`);
+      const grantReview = await approve("Simulated on", "Sign", "live-a2-grant", "GRANT");
+      if (!grantReview.includes("could send ALL your tokens")) throw new Error(`the grant wasn't shown as red: ${grantReview}`);
+      let sent;
+      for (let n = 0; !(sent = await onSite("window.__sent")); n += 300) {
+        if (n > 30000) throw new Error("the grants never went out");
+        await sleep(300);
+      }
+      if (sent.error) throw new Error(`the grants failed: ${sent.error}`);
+      for (let n = 0; (await grantsOf()).length === 0 || (await rewardsTo()) !== KEYLESS; n += 1000) {
+        if (n > 60000) throw new Error("the grants never landed");
+        await sleep(1000);
+      }
+      console.log("granted", sent.hash, "| grants", (await grantsOf()).length, "| fee allowances", (await feesOf()).length, "| rewards to", await rewardsTo());
+
+      // The Approvals screen, in the popup.
+      const openApprovals = async () => {
+        await click("Settings");
+        await waitText("Approvals and grants");
+        await click("Approvals and grants");
+        for (let n = 0; n < 60000; n += 300) {
+          const t = await text();
+          if (!t.includes("Approvals and grants") && (t.includes("PERMISSIONS") || t.includes("TOKEN ALLOWANCES") || t.includes("Nothing here"))) return t;
+          await sleep(300);
+        }
+        throw new Error(`the Approvals screen didn't load: ${await text()}`);
+      };
+      let t = await openApprovals();
+      for (const w of ["Your staking rewards go to", "Send your tokens", "Pays fees from your INJ"]) if (!t.includes(w)) throw new Error(`Approvals doesn't show "${w}": ${t}`);
+      const erc20Rows = await evalIn(`[...document.querySelectorAll(".approval-row")].filter((r) => r.title.startsWith("evm:")).map((r) => [r.querySelector("button").getAttribute("aria-label"), r.title.slice(4)])`);
+      console.log("approvals screen:", t.split("\n").filter((l) => l.trim()).slice(0, 14).join(" | "));
+      await shot("live-a3-approvals");
+
+      // Revoke all on the Cosmos side.
+      const all = await evalIn(`[...document.querySelectorAll("button")].map((b) => b.textContent.trim()).find((b) => /^Revoke all \\d+$/.test(b))`);
+      await click(all);
+      await waitText("Review revoke", 30000);
+      const rv = await text();
+      if (!rv.includes("Injective testnet")) throw new Error("the review is not for Injective testnet; stopping");
+      for (const w of ["YOU TAKE BACK", "Send your tokens", "Fee allowance", "Staking rewards come to this account again"]) if (!rv.includes(w)) throw new Error(`the revoke review doesn't say "${w}"`);
+      await shot("live-a4-review-revoke");
+      await click("Confirm");
+      const revokeHash = await landed();
+      const { tx: revokeTx } = await cosmosTx(revokeHash);
+      console.log("revoked", revokeHash, revokeTx.tx.body.messages.map((m) => m["@type"].split(".").pop()).join(", "));
+      if ((await grantsOf()).some((g) => g.grantee === KEYLESS)) throw new Error("a grant to the keyless address is still there");
+      if ((await feesOf()).some((g) => g.grantee === KEYLESS)) throw new Error("the fee allowance is still there");
+      if ((await rewardsTo()) !== from) throw new Error("rewards still go elsewhere");
+      await click("Done");
+      await waitText("Manage", 20000);
+
+      // Each ERC20 allowance on its own.
+      const allowanceOf = async (contract, spender) => BigInt(await evmRpc("eth_call", [{ to: contract, data: `0xdd62ed3e${me0x.slice(2).toLowerCase().padStart(64, "0")}${spender.slice(2).toLowerCase().padStart(64, "0")}` }, "latest"]));
+      for (const [label, contract] of erc20Rows) {
+        const [, token, spender] = /^Revoke (.+) allowance for (0x[0-9a-fA-F]{40})$/.exec(label);
+        const before = await allowanceOf(contract, spender);
+        await openApprovals();
+        await evalIn(`document.querySelector('button[aria-label=${JSON.stringify(label)}]').click()`);
+        await waitText("Review revoke", 30000);
+        const er = await text();
+        if (!er.includes("Injective testnet (EVM)") || !er.includes(`${token} allowance`)) throw new Error(`the ERC20 revoke review: ${er}`);
+        await shot("live-a5-review-erc20");
+        await click("Confirm");
+        const h = await landed();
+        await click("Done");
+        await waitText("Manage", 20000);
+        const after = await allowanceOf(contract, spender);
+        console.log("revoked", token, contract, "allowance of", spender, `${before} -> ${after}`, h);
+        if (after !== 0n) throw new Error("the allowance is still there on chain");
+      }
+      // Nothing left: the screen says so, and the chain agrees for every ERC20 it named.
+      t = await openApprovals();
+      await shot("live-a6-after");
+      if (!t.includes("Nothing here")) throw new Error(`something is left: ${t}`);
+      console.log("ERC20 rows revoked:", erc20Rows.length, "| owner", me0x);
+      console.log("LIVE APPROVALS OK");
+    } finally {
+      server.close();
+    }
   } else if (tokenContract === "activity") {
     // 3a. Activity, read back from testnet's own endpoints and Blockscout.
     await click("Activity");
@@ -328,60 +497,8 @@ try {
     console.log("LIVE ACTIVITY OK");
   } else if (tokenContract === "site") {
     // 3s. A site, served here on 127.0.0.1, through the provider and approval windows.
-    const server = createServer((req, res) => {
-      res.writeHead(req.url === "/" ? 200 : 204, { "content-type": "text/html" });
-      res.end(req.url === "/" ? SITE_PAGE : "");
-    });
-    await new Promise((r) => server.listen(0, "127.0.0.1", r));
+    const { server, onSite, approve, ask, reply } = await startSite();
     try {
-      const { targetId: siteId } = await send("Target.createTarget", { url: `http://127.0.0.1:${server.address().port}/` });
-      const site = (await send("Target.attachToTarget", { targetId: siteId, flatten: true })).sessionId;
-      await send("Runtime.enable", {}, site);
-      const onSite = async (expr) => {
-        const r = await send("Runtime.evaluate", { expression: expr, awaitPromise: true, returnByValue: true }, site);
-        if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description ?? r.exceptionDetails.text);
-        return r.result.value;
-      };
-      for (let n = 0; !(await onSite("typeof window.__ask === 'function' && window.__wallets.length > 0")); n += 200) {
-        if (n > 10000) throw new Error("the site didn't find the wallet");
-        await sleep(200);
-      }
-      const seen = new Set();
-      /** Answer the next approval window: wait for `expect`, capture it, press `button`. */
-      const approve = async (expect, button, name) => {
-        let t;
-        for (let n = 0; !t; n += 200) {
-          if (n > 30000) throw new Error(`no approval window for "${expect}"`);
-          t = (await send("Target.getTargets")).targetInfos.find((x) => x.url.includes("popup.html?approve=") && !seen.has(x.targetId));
-          if (!t) await sleep(200);
-        }
-        seen.add(t.targetId);
-        const w = (await send("Target.attachToTarget", { targetId: t.targetId, flatten: true })).sessionId;
-        await send("Runtime.enable", {}, w);
-        await send("Emulation.setFocusEmulationEnabled", { enabled: true }, w);
-        await send("Emulation.setDeviceMetricsOverride", { width: 360, height: 600, deviceScaleFactor: 2, mobile: false }, w);
-        const inW = async (expr) => (await send("Runtime.evaluate", { expression: expr, awaitPromise: true, returnByValue: true }, w)).result.value;
-        for (let n = 0; !(await inW(`document.body.innerText.includes(${JSON.stringify(expect)})`)); n += 200) {
-          if (n > 30000) throw new Error(`approval window never said "${expect}": ${await inW("document.body.innerText")}`);
-          await sleep(200);
-        }
-        const body = await inW("document.body.innerText");
-        await sleep(900); // the buttons wake after 800 ms in front
-        const { data } = await send("Page.captureScreenshot", { format: "png" }, w);
-        writeFileSync(join(out, `${name}.png`), Buffer.from(data, "base64"));
-        for (let n = 0; !(await inW(`(() => { const b = [...document.querySelectorAll("button")].find((b) => b.textContent.trim() === ${JSON.stringify(button)} && !b.disabled); if (b) b.click(); return !!b; })()`)); n += 200) {
-          if (n > 10000) throw new Error(`no enabled "${button}" in the approval window: ${await inW("document.body.innerText")}`);
-          await sleep(200);
-        }
-        return body;
-      };
-      const ask = (method, params) => onSite(`window.__ask(${JSON.stringify(method)}, ${JSON.stringify(params ?? [])})`);
-      const reply = async () => {
-        const r = await onSite("window.__r");
-        if (r.code !== undefined) throw new Error(`the site got an error: ${r.code} ${r.message}`);
-        return r.ok;
-      };
-
       // Connect.
       await ask("eth_requestAccounts");
       await approve("wants to connect", "Connect", "live-s1-connect");
