@@ -297,8 +297,8 @@ export function createWatcher(d: WatchDeps) {
     if (who && a.kind === "receive") parts.push(`from ${who}`);
     else if (who && (a.kind === "send" || a.kind === "ibc")) parts.push(`to ${who}`);
     else if (a.kind === "bridge" && a.bridge) {
-      const to = bridgeLabel(network, a.bridge.domain, a.bridge.mintRecipient).chain;
-      if (to) parts.push(`to ${to}`);
+      const chain = bridgeLabel(network, a.bridge.domain, a.bridge.mintRecipient).chain;
+      if (chain) parts.push(`${a.bridge.incoming ? "from" : "to"} ${chain}`);
     }
     if (ownResult) parts.push(ownResult);
     else if (!a.ok) parts.push("failed");

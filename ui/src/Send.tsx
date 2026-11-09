@@ -8,8 +8,8 @@ import { RecipientPicker } from "./Contacts";
 import { ArrowDownIcon, CheckIcon, ChevronDownIcon, ClockIcon, CloseIcon, ExternalIcon } from "./icons";
 import { BackBar, Callout, formatUsd, Screen, shortAddress, tokenSub } from "./kit";
 import { DeviceStep } from "./Ledger";
-import { BridgeCard } from "./Bridge";
-import type { AccountInfo, Balance, BridgeStatus, BridgeStepInfo, Coin, Contact, DeviceRequest, DeviceSignature, NetworkId, RecipientCheck, SendReview, Sent, SwapStepInfo, TokenInfo, TxState } from "./protocol";
+import { BridgeCard, BridgeInCard, MintCard } from "./Bridge";
+import type { AccountInfo, Balance, BridgeInStatus, BridgeInStepInfo, BridgeStatus, BridgeStepInfo, Coin, EvmDisplay, Contact, DeviceRequest, DeviceSignature, NetworkId, RecipientCheck, SendReview, Sent, SwapStepInfo, TokenInfo, TxState } from "./protocol";
 import { useRequest } from "./request";
 import { permissionName } from "./permissions";
 import { shown, spenderName, type Shown, type StakeLine } from "./review";
@@ -275,9 +275,13 @@ export function Review({
   rewards?: Record<string, string>;
 }) {
   const { risk, tokens } = review;
-  const view = shown(review.display, network, review.swap ?? (review.bridge ? { from: review.bridge.usdc, to: review.bridge.usdc } : undefined));
+  const step = review.swap ?? (review.bridge ? { from: review.bridge.usdc, to: review.bridge.usdc } : review.bridgeIn ? { from: review.bridgeIn.usdc, to: review.bridgeIn.injUsdc } : undefined);
+  const view = shown(review.display, network, step);
+  /** Signed on another chain than Injective (a step of a transfer in). */
+  const source = review.display.kind === "evm_transaction" ? (review.display as EvmDisplay).source : undefined;
   const swapping = view.swaps.length > 0;
-  const bridging = view.bridges.length > 0;
+  const minting = view.mints.length > 0;
+  const bridging = view.bridges.length > 0 || view.bridgesIn.length > 0 || minting;
   const approving = view.approvals.length > 0 && !swapping;
   const converting = view.converts.length > 0 && view.sends.length === 0;
   const staking = view.stakes.length > 0 && view.sends.length === 0 && view.converts.length === 0;
@@ -342,7 +346,9 @@ export function Review({
             {bridging
               ? busy
                 ? "Sending…"
-                : "Confirm and bridge"
+                : minting
+                  ? "Confirm"
+                  : "Confirm and bridge"
               : swapping
               ? busy
                 ? "Swapping…"
@@ -382,8 +388,12 @@ export function Review({
         </Callout>
       ))}
       {review.swap && review.swap.left > 0 && <p className="meta">{review.swap.left === 1 ? "One more step after this." : "Two more steps after this."}</p>}
-      {review.bridge && review.bridge.left > 0 && <p className="meta">Then the transfer itself.</p>}
-      <SwapCards view={view} tokens={tokens} network={network} from={(review.display as { from?: string }).from ?? ""} {...(review.swap ? { step: review.swap } : {})} {...(review.bridge ? { bridge: review.bridge } : {})} usd={usd} />
+      {(review.bridge?.left || review.bridgeIn?.left || source) && (
+        <p className="meta">
+          {[source && `On ${source.name}, its fee paid in ${source.symbol}.`, (review.bridge?.left || review.bridgeIn?.left) && "Then the transfer itself."].filter(Boolean).join(" ")}
+        </p>
+      )}
+      <SwapCards view={view} tokens={tokens} network={network} from={(review.display as { from?: string }).from ?? ""} {...(review.swap ? { step: review.swap } : {})} {...(review.bridge ? { bridge: review.bridge } : {})} {...(review.bridgeIn ? { bridgeIn: review.bridgeIn } : {})} usd={usd} />
       {view.sends.map((m, i) => (
         <div className="surface-hero" key={i}>
           <div className="eyebrow">You send</div>
@@ -541,6 +551,12 @@ export function Review({
             {usd(view.fee) && <span className="meta"> {usd(view.fee)}</span>}
           </span>
         </div>
+        {review.dataFee && source && (
+          <div className="row">
+            <span>Ethereum data fee</span>
+            <span className="num">Up to {coin({ denom: `native:${review.display.chain}`, amount: review.dataFee })}</span>
+          </div>
+        )}
         {view.swaps.map((sw, i) => (
           <div className="row" key={`fee${i}`}>
             <span>Choice fee</span>
@@ -550,8 +566,8 @@ export function Review({
         <div className="row">
           <span>Network</span>
           <span>
-            {network === "testnet" ? "Injective testnet" : "Injective"}
-            {view.evm ? " (EVM)" : ""}
+            {source ? source.name : network === "testnet" ? "Injective testnet" : "Injective"}
+            {view.evm && !source ? " (EVM)" : ""}
           </span>
         </div>
         {view.memo && (
@@ -588,6 +604,7 @@ export function SwapCards({
   from,
   step,
   bridge,
+  bridgeIn,
   usd,
 }: {
   view: Shown;
@@ -597,6 +614,8 @@ export function SwapCards({
   step?: SwapStepInfo;
   /** A bridge transfer's step, as its quote said. */
   bridge?: BridgeStepInfo;
+  /** A transfer in's step, likewise. */
+  bridgeIn?: BridgeInStepInfo;
   usd?: (cs: Coin[]) => string | null;
 }) {
   const coin = (c: Coin) => {
@@ -614,6 +633,12 @@ export function SwapCards({
     <>
       {view.bridges.map((b, i) => (
         <BridgeCard key={`b${i}`} line={b} tokens={tokens} from={from} {...(bridge ? { info: bridge } : {})} />
+      ))}
+      {view.bridgesIn.map((b, i) => (
+        <BridgeInCard key={`i${i}`} line={b} tokens={tokens} {...(bridgeIn ? { info: bridgeIn } : {})} />
+      ))}
+      {view.mints.map((m, i) => (
+        <MintCard key={`m${i}`} line={m} tokens={tokens} from={from} />
       ))}
       {view.swaps.map((sw, i) => {
         return (
@@ -660,7 +685,7 @@ export function SwapCards({
           <Figure coin={{ denom: a.token, amount: a.amount }} t={tokens[a.token]} />
           <p className="meta" style={{ marginTop: 10 }}>
             {a.until ? `Until ${new Date(a.until * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}. ` : ""}
-            {step ? "Exactly this swap's amount." : bridge ? "Exactly this transfer's amount." : ""}
+            {step ? "Exactly this swap's amount." : bridge || bridgeIn ? "Exactly this transfer's amount." : ""}
           </p>
         </div>
       ))}
@@ -682,6 +707,15 @@ const POLL_TRIES = 40;
 /** A bridge transfer takes Circle seconds to minutes; asked every 3 s for 10 minutes. */
 const BRIDGE_POLL_MS = 3000;
 const BRIDGE_TRIES = 200;
+/** A transfer in from a chain Circle waits on Ethereum's finality for takes about 20 minutes:
+ *  asked for 40. */
+const BRIDGE_IN_TRIES = 800;
+
+/** "30 seconds", "2 minutes", "20 minutes". */
+export function about(ms: number): string {
+  if (ms < 90_000) return `${Math.max(1, Math.round(ms / 1000))} seconds`;
+  return `${Math.round(ms / 60_000)} minutes`;
+}
 
 export function SentView({
   sent,
@@ -691,6 +725,9 @@ export function SentView({
   converting = false,
   done,
   bridge,
+  bridgeIn,
+  finishAfterMs = 60_000,
+  onFinish,
 }: {
   sent: Sent;
   onDone: () => void;
@@ -702,10 +739,20 @@ export function SentView({
   done?: string;
   /** A bridge transfer's burn: followed, once in a block, until Circle delivers it. */
   bridge?: { chain: string } | undefined;
+  /** A transfer in's burn, on `sent.chain`: followed until Injective mints it. */
+  bridgeIn?: { chain: string } | undefined;
+  /** How long a confirmed transfer in waits for Choice's bridge service before this account
+   *  is offered to mint it itself (`onFinish`). */
+  finishAfterMs?: number;
+  onFinish?: (() => void) | undefined;
 }) {
   const backend = useBackend();
   const [state, setState] = useState<TxState | { state: "slow" }>({ state: "pending" });
   const [crossing, setCrossing] = useState<BridgeStatus | null>(null);
+  const [arriving, setArriving] = useState<BridgeInStatus | null>(null);
+  /** When the transfer in was first seen confirmed and not yet minted. */
+  const [readyAt, setReadyAt] = useState<number | null>(null);
+  const [, setNow] = useState(0);
 
   useEffect(() => {
     let live = true;
@@ -713,7 +760,7 @@ export function SentView({
     async function tick() {
       if (!live) return;
       try {
-        const r = await backend.send({ type: "tx_status", hash: sent.hash });
+        const r = await backend.send({ type: "tx_status", hash: sent.hash, ...(sent.chain ? { chain: sent.chain } : {}) });
         if (!live) return;
         if (r.ok && r.result.state !== "pending") {
           setState(r.result);
@@ -756,6 +803,34 @@ export function SentView({
     };
   }, [sent.hash, state.state, bridge?.chain]);
 
+  // A transfer in, once its burn is in a block: Circle confirms it, then it is minted on
+  // Injective (by Choice's bridge service, or this account).
+  useEffect(() => {
+    if (!bridgeIn || !sent.chain || state.state !== "success") return;
+    let live = true;
+    let tries = 0;
+    async function tick() {
+      if (!live) return;
+      try {
+        const r = await backend.send({ type: "bridge_in_status", chain: sent.chain!, hash: sent.hash });
+        if (!live) return;
+        if (r.ok) {
+          setArriving(r.result);
+          if (r.result.phase === "ready") setReadyAt((t) => t ?? Date.now());
+          if (r.result.phase === "delivered") return;
+        }
+      } catch {
+        // Keep asking; the next try may get through.
+      }
+      setNow(Date.now());
+      if (++tries < BRIDGE_IN_TRIES) setTimeout(() => void tick(), BRIDGE_POLL_MS);
+    }
+    void tick();
+    return () => {
+      live = false;
+    };
+  }, [sent.hash, sent.chain, state.state, bridgeIn?.chain]);
+
   const s = state.state;
   let title = { pending: converting ? "Converting" : "Sending", slow: "Not confirmed yet", success: done ?? (converting ? "Converted" : "Sent"), failed: "Failed" }[s];
   let lead = {
@@ -777,6 +852,21 @@ export function SentView({
     }[phase];
     icon = phase === "delivered" ? "success" : phase === "stuck" ? "slow" : "pending";
   }
+  // This account may mint it once Choice's bridge service had its chance.
+  const finish = bridgeIn && onFinish && arriving?.phase === "ready" && arriving.selfMint && readyAt !== null && Date.now() - readyAt >= finishAfterMs;
+  if (bridgeIn && s === "success") {
+    const phase = arriving?.phase ?? "pending";
+    title = phase === "delivered" ? "Arrived on Injective" : finish ? "Not minted yet" : "Bridging to Injective";
+    lead = finish
+      ? "Nobody has minted it yet. You can, for a little INJ."
+      : {
+          pending: "Circle is picking it up.",
+          attesting: `Circle is confirming it, usually in ${about(arriving?.etaMs ?? 30_000)}.`,
+          ready: arriving?.selfMint ? "Confirmed. It's being minted on Injective." : "Confirmed. Choice's bridge contract mints it on Injective.",
+          delivered: "It's in your balance on Injective.",
+        }[phase];
+    icon = phase === "delivered" ? "success" : finish ? "slow" : "pending";
+  }
   return (
     <Screen
       foot={
@@ -790,7 +880,11 @@ export function SentView({
               {crossing?.phase === "stuck" ? "Open the bridge site" : "View on explorer"} <ExternalIcon size={16} />
             </button>
           )}
-          {onNext && s === "success" ? (
+          {finish ? (
+            <button className="btn btn-gold" onClick={onFinish}>
+              Finish it here
+            </button>
+          ) : onNext && s === "success" ? (
             <button className="btn btn-gold" onClick={onNext}>
               Next step
             </button>

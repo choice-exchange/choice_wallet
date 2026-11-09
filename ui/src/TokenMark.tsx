@@ -23,7 +23,8 @@ const LOGOS: Record<string, string> = {
 };
 
 export function TokenMark({ denom, symbol, known, small }: { denom: string; symbol: string; known: boolean; small?: boolean }) {
-  const logo = known ? LOGOS[denom] : undefined;
+  // USDC on another chain, in a bridge transfer's review (`usdc:<chain>`).
+  const logo = known ? (LOGOS[denom] ?? (denom.startsWith("usdc:") ? usdc : undefined)) : undefined;
   const cls = small ? "mark sm" : "mark";
   if (logo) {
     return (

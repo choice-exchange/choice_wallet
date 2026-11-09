@@ -12,6 +12,13 @@
 //! and the hook. `TokenMessengerV2` and USDC are pinned per network ([`Cctp`]), as Circle
 //! publishes them (the same `TokenMessengerV2` address on every EVM chain of a network), and
 //! checked on chain 2026-10-16 by `injective-usdc-bridge`'s `verify-chains`.
+//!
+//! USDC comes the other way from the EVM chains in [`Cctp::sources`]: there the wallet signs
+//! only what [`source_call`] reads as a deposit into the signer's own account on Injective.
+//! Circle doesn't deliver on Injective, so a deposit is minted by whoever submits it there
+//! (`receiveMessage`, read by [`receive`]): Choice's bridge service does, and the wallet can
+//! itself. A deposit through Choice's `BridgeReceiver` also buys INJ for gas
+//! ([`Hook::GasDrop`]); only that contract can mint it.
 
 use choice_wallet_core::EthAddress;
 use choice_wallet_evm::U256;
@@ -40,15 +47,43 @@ pub struct Domain {
     pub forwarding: bool,
 }
 
+/// An EVM chain USDC can come from into Injective, as `injective-usdc-bridge` lists it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Source {
+    /// Circle's domain number.
+    pub domain: u32,
+    /// The chain's name.
+    pub name: &'static str,
+    /// EIP-155 chain ID.
+    pub chain_id: u64,
+    /// Native USDC there.
+    pub usdc: &'static str,
+    /// The coin its gas is paid in, and its decimals (Arc's is USDC, at 18).
+    pub native: (&'static str, u8),
+}
+
+impl Source {
+    /// Native USDC there.
+    pub fn usdc(&self) -> EthAddress {
+        pinned(self.usdc)
+    }
+}
+
 /// CCTP on one Injective network.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Cctp {
-    /// `TokenMessengerV2`.
+    /// `TokenMessengerV2`, at this address on every EVM chain of the network.
     pub token_messenger: &'static str,
+    /// `MessageTransmitterV2`, likewise: `receiveMessage` mints on Injective.
+    pub message_transmitter: &'static str,
     /// Native USDC on Injective EVM (bank denom `erc20:` + this address).
     pub usdc: &'static str,
+    /// Choice's `BridgeReceiver` on Injective: it mints deposits that also buy INJ for gas.
+    pub bridge_receiver: Option<&'static str>,
     /// The chains a burn may go to, as `injective-usdc-bridge` lists them.
     pub domains: &'static [Domain],
+    /// The EVM chains USDC may come from.
+    pub sources: &'static [Source],
 }
 
 /// Injective's own domain: a burn can't go there from Injective.
@@ -67,10 +102,65 @@ const fn evm(id: u32, name: &'static str, forwarding: bool) -> Domain {
     }
 }
 
+const fn source(domain: u32, name: &'static str, chain_id: u64, usdc: &'static str, native: &'static str) -> Source {
+    Source {
+        domain,
+        name,
+        chain_id,
+        usdc,
+        native: (native, 18),
+    }
+}
+
 /// CCTP on Injective mainnet.
 pub const MAINNET: Cctp = Cctp {
     token_messenger: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d",
+    message_transmitter: "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",
     usdc: "0xa00C59fF5a080D2b954d0c75e46E22a0c371235a",
+    // Owned by Choice's Safe; deployed and verified on Blockscout 2026-10-16.
+    bridge_receiver: Some("0xcA5A96ECF72B3656eF7cF60BDAA42FCdb218cd4A"),
+    sources: &[
+        source(
+            19,
+            "HyperEVM",
+            999,
+            "0xb88339CB7199b77E23DB6E890353E22632Ba630f",
+            "HYPE",
+        ),
+        source(0, "Ethereum", 1, "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", "ETH"),
+        source(6, "Base", 8453, "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", "ETH"),
+        source(
+            3,
+            "Arbitrum",
+            42161,
+            "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+            "ETH",
+        ),
+        source(2, "OP Mainnet", 10, "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85", "ETH"),
+        source(26, "Arc", 5042, "0x3600000000000000000000000000000000000000", "USDC"),
+        source(7, "Polygon", 137, "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359", "POL"),
+        source(
+            1,
+            "Avalanche",
+            43114,
+            "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",
+            "AVAX",
+        ),
+        source(11, "Linea", 59144, "0x176211869cA2b568f2A7D4EE941E073a821EE1ff", "ETH"),
+        source(10, "Unichain", 130, "0x078D782b760474a361dDA0AF3839290b0EF57AD6", "ETH"),
+        source(13, "Sonic", 146, "0x29219dd400f2Bf60E5a23d13Be72B486D4038894", "S"),
+        source(
+            14,
+            "World Chain",
+            480,
+            "0x79A02482A880bCE3F13e09Da970dC34db4CD24d1",
+            "ETH",
+        ),
+        source(15, "Monad", 143, "0x754704Bc059F8C67012fEd69BC8A327a5aafb603", "MON"),
+        source(16, "Sei", 1329, "0xe15fC38F6D8c56aF07bbCBe3BAf5708A2Bf42392", "SEI"),
+        source(33, "Plasma", 9745, "0x2d661C89D812261039AF9764eceaAee884f5F67F", "XPL"),
+        source(21, "Ink", 57073, "0x2D270e6886d130D724215A266106e6832161EAEd", "ETH"),
+    ],
     domains: &[
         Domain {
             id: 5,
@@ -100,7 +190,32 @@ pub const MAINNET: Cctp = Cctp {
 /// CCTP on Injective testnet (Circle's sandbox).
 pub const TESTNET: Cctp = Cctp {
     token_messenger: "0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA",
+    message_transmitter: "0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275",
     usdc: "0x0C382e685bbeeFE5d3d9C29e29E341fEE8E84C5d",
+    bridge_receiver: None,
+    sources: &[
+        source(
+            0,
+            "Sepolia",
+            11155111,
+            "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
+            "ETH",
+        ),
+        source(
+            6,
+            "Base Sepolia",
+            84532,
+            "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+            "ETH",
+        ),
+        source(
+            3,
+            "Arbitrum Sepolia",
+            421614,
+            "0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d",
+            "ETH",
+        ),
+    ],
     domains: &[
         evm(0, "Sepolia", true),
         evm(6, "Base Sepolia", true),
@@ -127,6 +242,26 @@ impl Cctp {
     pub fn domain(&self, id: u32) -> Option<&'static Domain> {
         self.domains.iter().find(|d| d.id == id)
     }
+
+    /// `MessageTransmitterV2`.
+    pub fn message_transmitter(&self) -> EthAddress {
+        pinned(self.message_transmitter)
+    }
+
+    /// Choice's `BridgeReceiver`, where there is one.
+    pub fn bridge_receiver(&self) -> Option<EthAddress> {
+        self.bridge_receiver.map(pinned)
+    }
+
+    /// The source chain with this EIP-155 chain ID.
+    pub fn source(&self, chain_id: u64) -> Option<&'static Source> {
+        self.sources.iter().find(|s| s.chain_id == chain_id)
+    }
+
+    /// The source chain with this CCTP domain.
+    pub fn source_domain(&self, domain: u32) -> Option<&'static Source> {
+        self.sources.iter().find(|s| s.domain == domain)
+    }
 }
 
 /// `depositForBurn(uint256,uint32,bytes32,address,bytes32,uint256,uint32)`.
@@ -152,9 +287,21 @@ pub enum Hook {
         /// The Solana wallet that owns the recipient USDC account.
         owner: [u8; 32],
     },
+    /// Choice's `BridgeReceiver` on Injective mints it (it must be both `mintRecipient` and
+    /// `destinationCaller`), pays `recipient`, and buys INJ for its gas with at most
+    /// `max_drop_fee` of the USDC: `abi.encode(bytes4 "IUB1", address, uint256)`.
+    GasDrop {
+        /// Who receives the USDC and the INJ.
+        recipient: EthAddress,
+        /// The most USDC the INJ may cost.
+        max_drop_fee: U256,
+    },
     /// Anything else: data for some integrator's contract on the destination.
     Other(Vec<u8>),
 }
+
+/// `BridgeReceiver`'s hook magic.
+pub const GAS_DROP_MAGIC: [u8; 4] = *b"IUB1";
 
 /// A burn, as its calldata says.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -289,7 +436,295 @@ fn read_hook(h: &[u8]) -> Hook {
             owner: h[33..].try_into().expect("32 bytes"),
         };
     }
+    // abi.encode(bytes4, address, uint256): the magic left-aligned, the address right-aligned.
+    if h.len() == 96 && h[..4] == GAS_DROP_MAGIC && h[4..44].iter().all(|&b| b == 0) {
+        return Hook::GasDrop {
+            recipient: EthAddress::from_bytes(h[44..64].try_into().expect("20 bytes")),
+            max_drop_fee: U256::from_be_bytes(h[64..].try_into().expect("32 bytes")),
+        };
+    }
     Hook::Other(h.to_vec())
+}
+
+/// The hook data a burn carries for `hook` (`None` for a plain `depositForBurn`).
+pub fn hook_bytes(hook: &Hook) -> Option<Vec<u8>> {
+    match hook {
+        Hook::None => None,
+        Hook::Forward => Some(FORWARD_HOOK.to_vec()),
+        Hook::ForwardWithAccount { owner } => {
+            let mut h = FORWARD_HOOK[..28].to_vec();
+            h.extend_from_slice(&33u32.to_be_bytes());
+            h.push(1);
+            h.extend_from_slice(owner);
+            Some(h)
+        }
+        Hook::GasDrop {
+            recipient,
+            max_drop_fee,
+        } => {
+            let mut h = vec![0u8; 96];
+            h[..4].copy_from_slice(&GAS_DROP_MAGIC);
+            h[44..64].copy_from_slice(recipient.as_bytes());
+            h[64..].copy_from_slice(&max_drop_fee.to_be_bytes());
+            Some(h)
+        }
+        Hook::Other(h) => Some(h.clone()),
+    }
+}
+
+/// `bytes32` of an EVM address, as CCTP names recipients and callers.
+pub fn word(a: &EthAddress) -> [u8; 32] {
+    let mut w = [0u8; 32];
+    w[12..].copy_from_slice(a.as_bytes());
+    w
+}
+
+/// An EVM address held in a `bytes32`, if its high 12 bytes are zero.
+fn address_in(w: &[u8; 32]) -> Option<EthAddress> {
+    w[..12]
+        .iter()
+        .all(|&b| b == 0)
+        .then(|| EthAddress::from_bytes(w[12..].try_into().expect("20 bytes")))
+}
+
+/// What the wallet signs on a [`Source`] chain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SourceCall {
+    /// `approve(TokenMessengerV2, amount)` on its USDC.
+    Approve {
+        /// The allowance, in USDC base units.
+        amount: U256,
+    },
+    /// A burn that pays the signer on Injective.
+    Deposit(Box<Deposit>),
+}
+
+/// A burn on a source chain into the signer's own account on Injective.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Deposit {
+    /// The burn as its calldata says.
+    pub burn: Burn,
+    /// Who mints it on Injective.
+    pub delivery: Delivery,
+}
+
+/// Who mints a deposit on Injective.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Delivery {
+    /// Anyone: Choice's bridge service does, or the wallet itself.
+    Anyone,
+    /// Choice's `BridgeReceiver`, which also buys INJ for gas with at most this much USDC.
+    GasDrop {
+        /// The most the INJ may cost, in USDC base units.
+        max_drop_fee: U256,
+    },
+}
+
+impl Deposit {
+    /// The least that arrives: the amount less Circle's most and the gas drop's.
+    pub fn least(&self) -> U256 {
+        let drop = match self.delivery {
+            Delivery::Anyone => U256::ZERO,
+            Delivery::GasDrop { max_drop_fee } => max_drop_fee,
+        };
+        self.burn
+            .amount
+            .checked_sub(&self.burn.max_fee)
+            .and_then(|v| v.checked_sub(&drop))
+            .unwrap_or(U256::ZERO)
+    }
+}
+
+/// The most an approval on a source chain may give: under the risk rules' "unlimited" (2^100).
+fn unlimited() -> U256 {
+    let mut b = [0u8; 32];
+    b[19] = 0x10; // 2^100
+    U256::from_be_bytes(b)
+}
+
+/// Read a transaction `from` sends to `to` on `source`: an exact USDC approval for
+/// `TokenMessengerV2`, or a burn of USDC that pays `from` on Injective (minted by anyone, or by
+/// `BridgeReceiver` with a gas drop for `from`), with Circle's most and any drop fee below
+/// the amount. Anything else is refused, with why.
+pub fn source_call(
+    cctp: &Cctp,
+    source: &Source,
+    from: &EthAddress,
+    to: &EthAddress,
+    value: U256,
+    data: &[u8],
+) -> Result<SourceCall, CctpError> {
+    if !value.is_zero() {
+        return Err(CctpError("a bridge transfer sends no coin"));
+    }
+    if *to == source.usdc() {
+        let (selector, args) = data.split_at_checked(4).ok_or(CctpError("not an approval"))?;
+        if selector != choice_wallet_evm::erc20::APPROVE_SELECTOR {
+            return Err(CctpError("on USDC the wallet only approves Circle's bridge"));
+        }
+        let v = abi::decode(&[Ty::Word, Ty::Word], args)
+            .map_err(|_| CctpError("the approval isn't canonically encoded"))?;
+        let (spender, amount) = (v[0].address(), v[1].uint());
+        let (Ok(spender), Ok(amount)) = (spender, amount) else {
+            return Err(CctpError("the approval isn't canonically encoded"));
+        };
+        if spender != cctp.token_messenger() {
+            return Err(CctpError("on USDC the wallet only approves Circle's bridge"));
+        }
+        if amount.is_zero() || amount >= unlimited() {
+            return Err(CctpError("an approval for a bridge transfer is for the exact amount"));
+        }
+        return Ok(SourceCall::Approve { amount });
+    }
+    if *to != cctp.token_messenger() {
+        return Err(CctpError("there the wallet signs only USDC transfers to Injective"));
+    }
+    let burn = read_burn(value, data)?;
+    if burn.domain != INJECTIVE_DOMAIN {
+        return Err(CctpError("the transfer goes somewhere other than Injective"));
+    }
+    if burn.burn_token != source.usdc() {
+        return Err(CctpError("it burns a token other than USDC"));
+    }
+    if burn.min_finality != FAST && burn.min_finality != STANDARD {
+        return Err(CctpError("an unknown finality threshold"));
+    }
+    let me = word(from);
+    let delivery = match (&burn.hook, cctp.bridge_receiver()) {
+        (Hook::None, _) if burn.permissionless() && burn.mint_recipient == me => Delivery::Anyone,
+        (
+            Hook::GasDrop {
+                recipient,
+                max_drop_fee,
+            },
+            Some(receiver),
+        ) if recipient == from
+            && burn.mint_recipient == word(&receiver)
+            && burn.destination_caller == word(&receiver) =>
+        {
+            Delivery::GasDrop {
+                max_drop_fee: *max_drop_fee,
+            }
+        }
+        _ => return Err(CctpError("the transfer doesn't pay this account on Injective")),
+    };
+    let fees = match delivery {
+        Delivery::Anyone => Some(burn.max_fee),
+        Delivery::GasDrop { max_drop_fee } => burn.max_fee.checked_add(&max_drop_fee),
+    };
+    if fees.is_none_or(|f| f >= burn.amount) {
+        return Err(CctpError("its fees could take all of it"));
+    }
+    Ok(SourceCall::Deposit(Box::new(Deposit { burn, delivery })))
+}
+
+/// `receiveMessage(bytes,bytes)`: mints an attested transfer on its destination.
+pub const RECEIVE_MESSAGE: [u8; 4] = 0x57ecfd28u32.to_be_bytes();
+
+/// A transfer being minted on Injective, as its attested message says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Receive {
+    /// Where it was burned.
+    pub source_domain: u32,
+    /// Where it is minted: Injective's for a message Injective accepts.
+    pub destination_domain: u32,
+    /// Circle's nonce: each is minted once.
+    pub nonce: [u8; 32],
+    /// The message's sender on the source, and recipient here: `TokenMessengerV2` for a USDC
+    /// transfer.
+    pub sender: [u8; 32],
+    /// See `sender`.
+    pub recipient: [u8; 32],
+    /// Who may submit it; all zero for anyone.
+    pub destination_caller: [u8; 32],
+    /// The token burned on the source.
+    pub burn_token: [u8; 32],
+    /// Who is paid here.
+    pub mint_recipient: [u8; 32],
+    /// What was burned.
+    pub amount: U256,
+    /// The most Circle may keep.
+    pub max_fee: U256,
+    /// What Circle keeps: the amount less this is minted.
+    pub fee_executed: U256,
+    /// The burn's hook data.
+    pub hook: Hook,
+}
+
+impl Receive {
+    /// Who is paid, as an EVM address (`None` if the `bytes32` can't be one).
+    pub fn paid(&self) -> Option<EthAddress> {
+        address_in(&self.mint_recipient)
+    }
+
+    /// What is minted: the amount less Circle's fee.
+    pub fn minted(&self) -> U256 {
+        self.amount.checked_sub(&self.fee_executed).unwrap_or(U256::ZERO)
+    }
+
+    /// Anyone may submit it.
+    pub fn permissionless(&self) -> bool {
+        self.destination_caller.iter().all(|&b| b == 0)
+    }
+}
+
+/// CCTP V2's message header and burn body: offsets as `MessageV2` and `BurnMessageV2` lay
+/// them out.
+const HEADER: usize = 148;
+const BURN_BODY: usize = 228;
+
+/// Read calldata sent to `to` as `receiveMessage`: `None` if `to` isn't this network's
+/// `MessageTransmitterV2`.
+pub fn receive(cctp: &Cctp, to: &EthAddress, value: U256, data: &[u8]) -> Option<Result<Receive, CctpError>> {
+    (*to == cctp.message_transmitter()).then(|| read_receive(value, data))
+}
+
+fn read_receive(value: U256, data: &[u8]) -> Result<Receive, CctpError> {
+    if !value.is_zero() {
+        return Err(CctpError("a mint sends no INJ"));
+    }
+    let (selector, args) = data
+        .split_at_checked(4)
+        .ok_or(CctpError("too short to name a function"))?;
+    if selector != RECEIVE_MESSAGE {
+        return Err(CctpError("not receiveMessage"));
+    }
+    let bad = |_| CctpError("the mint isn't canonically encoded");
+    let v = abi::decode(&[Ty::Bytes, Ty::Bytes], args).map_err(bad)?;
+    let m = v[0].bytes().map_err(bad)?;
+    if v[1].bytes().map_err(bad)?.is_empty() {
+        return Err(CctpError("the mint has no attestation"));
+    }
+    if m.len() < HEADER + BURN_BODY {
+        return Err(CctpError("the message isn't a USDC transfer"));
+    }
+    let u32_at = |i: usize| u32::from_be_bytes(m[i..i + 4].try_into().expect("4 bytes"));
+    let w = |i: usize| -> [u8; 32] { m[i..i + 32].try_into().expect("32 bytes") };
+    let b = HEADER;
+    Ok(Receive {
+        source_domain: u32_at(4),
+        destination_domain: u32_at(8),
+        nonce: w(12),
+        sender: w(44),
+        recipient: w(76),
+        destination_caller: w(108),
+        burn_token: w(b + 4),
+        mint_recipient: w(b + 36),
+        amount: U256::from_be_bytes(w(b + 68)),
+        max_fee: U256::from_be_bytes(w(b + 132)),
+        fee_executed: U256::from_be_bytes(w(b + 164)),
+        hook: read_hook(&m[b + BURN_BODY..]),
+    })
+}
+
+/// Calldata for `receiveMessage(message, attestation)`.
+pub fn receive_calldata(message: &[u8], attestation: &[u8]) -> Vec<u8> {
+    let mut out = RECEIVE_MESSAGE.to_vec();
+    out.extend_from_slice(&abi::encode(&[
+        Val::Bytes(message.to_vec()),
+        Val::Bytes(attestation.to_vec()),
+    ]));
+    out
 }
 
 /// Calldata for a burn (`depositForBurnWithHook` when the hook is anything but [`Hook::None`]).
@@ -310,19 +745,7 @@ pub fn burn_calldata(b: &Burn) -> Vec<u8> {
         Val::Word(b.max_fee.to_be_bytes()),
         word_u32(b.min_finality),
     ];
-    let hook = match &b.hook {
-        Hook::None => None,
-        Hook::Forward => Some(FORWARD_HOOK.to_vec()),
-        Hook::ForwardWithAccount { owner } => {
-            let mut h = FORWARD_HOOK[..28].to_vec();
-            h.extend_from_slice(&33u32.to_be_bytes());
-            h.push(1);
-            h.extend_from_slice(owner);
-            Some(h)
-        }
-        Hook::Other(h) => Some(h.clone()),
-    };
-    let selector = if let Some(h) = hook {
+    let selector = if let Some(h) = hook_bytes(&b.hook) {
         vals.push(Val::Bytes(h));
         DEPOSIT_FOR_BURN_WITH_HOOK
     } else {
@@ -473,6 +896,268 @@ mod tests {
         setup[32] = 0;
         assert!(matches!(read_hook(&setup), Hook::Other(_)));
         assert!(matches!(read_hook(b"cctp-forward"), Hook::Other(_)));
+    }
+
+    /// Built by `injective-usdc-bridge` 0.2.0 (`buildBurn`): 25 USDC from Base to
+    /// 0x1111…1111 on Injective, fast, max fee 0.003; and the same through `BridgeReceiver`
+    /// with a gas drop of at most 0.5.
+    const APPROVE_ON_BASE: &str = "0x095ea7b300000000000000000000000028b5a0e9c621a5badaa536219b3a228c8168cf5d00000000000000000000000000000000000000000000000000000000017d7840";
+    const FROM_BASE: &str = "0x8e0250ee00000000000000000000000000000000000000000000000000000000017d7840000000000000000000000000000000000000000000000000000000000000001d0000000000000000000000001111111111111111111111111111111111111111000000000000000000000000833589fcd6edb6e08f4c7c32d4f71b54bda0291300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000bb800000000000000000000000000000000000000000000000000000000000003e8";
+    const FROM_BASE_WITH_DROP: &str = "0x779b432d00000000000000000000000000000000000000000000000000000000017d7840000000000000000000000000000000000000000000000000000000000000001d000000000000000000000000ca5a96ecf72b3656ef7cf60bdaa42fcdb218cd4a000000000000000000000000833589fcd6edb6e08f4c7c32d4f71b54bda02913000000000000000000000000ca5a96ecf72b3656ef7cf60bdaa42fcdb218cd4a0000000000000000000000000000000000000000000000000000000000000bb800000000000000000000000000000000000000000000000000000000000003e80000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000006049554231000000000000000000000000000000000000000000000000000000000000000000000000000000001111111111111111111111111111111111111111000000000000000000000000000000000000000000000000000000000007a120";
+
+    fn me() -> EthAddress {
+        EthAddress::parse_hex("0x1111111111111111111111111111111111111111").unwrap()
+    }
+
+    #[test]
+    fn sources_are_named_once_and_parse() {
+        for c in [MAINNET, TESTNET] {
+            let _ = (c.message_transmitter(), c.bridge_receiver());
+            for s in c.sources {
+                let _ = s.usdc();
+                assert_ne!(s.domain, INJECTIVE_DOMAIN);
+                assert_eq!(c.source(s.chain_id), Some(s));
+                assert_eq!(c.source_domain(s.domain), Some(s));
+            }
+        }
+        assert_eq!(MAINNET.source(8453).unwrap().name, "Base");
+        assert_eq!(MAINNET.source(5042).unwrap().native, ("USDC", 18));
+        assert!(MAINNET.source(1776).is_none());
+    }
+
+    #[test]
+    fn reads_deposits_into_the_signers_own_account() {
+        let base = MAINNET.source(8453).unwrap();
+        let (tm, usdc) = (MAINNET.token_messenger(), base.usdc());
+        assert_eq!(
+            source_call(&MAINNET, base, &me(), &usdc, U256::ZERO, &h(APPROVE_ON_BASE)),
+            Ok(SourceCall::Approve {
+                amount: U256::from_u128(25_000_000)
+            })
+        );
+        let Ok(SourceCall::Deposit(d)) = source_call(&MAINNET, base, &me(), &tm, U256::ZERO, &h(FROM_BASE)) else {
+            panic!("a deposit")
+        };
+        assert_eq!(d.delivery, Delivery::Anyone);
+        assert_eq!(d.burn.min_finality, FAST);
+        assert_eq!(d.least(), U256::from_u128(24_997_000));
+        assert_eq!(burn_calldata(&d.burn), h(FROM_BASE));
+
+        let Ok(SourceCall::Deposit(d)) = source_call(&MAINNET, base, &me(), &tm, U256::ZERO, &h(FROM_BASE_WITH_DROP))
+        else {
+            panic!("a deposit")
+        };
+        assert_eq!(
+            d.delivery,
+            Delivery::GasDrop {
+                max_drop_fee: U256::from_u128(500_000)
+            }
+        );
+        assert_eq!(d.least(), U256::from_u128(24_497_000));
+        assert_eq!(burn_calldata(&d.burn), h(FROM_BASE_WITH_DROP));
+    }
+
+    #[test]
+    fn refuses_anything_else_on_a_source_chain() {
+        let base = MAINNET.source(8453).unwrap();
+        let (tm, usdc) = (MAINNET.token_messenger(), base.usdc());
+        let them = EthAddress::parse_hex("0x2222222222222222222222222222222222222222").unwrap();
+        let refused = |from: &EthAddress, to: &EthAddress, value: U256, data: &[u8]| {
+            source_call(&MAINNET, base, from, to, value, data).unwrap_err()
+        };
+        // Someone else's deposit: it pays 0x1111…, not the signer.
+        assert_eq!(
+            refused(&them, &tm, U256::ZERO, &h(FROM_BASE)).0,
+            "the transfer doesn't pay this account on Injective"
+        );
+        assert_eq!(
+            refused(&them, &tm, U256::ZERO, &h(FROM_BASE_WITH_DROP)).0,
+            "the transfer doesn't pay this account on Injective"
+        );
+        // Coin attached; the wrong chain's USDC; a contract that isn't Circle's or USDC.
+        assert!(source_call(&MAINNET, base, &me(), &tm, U256::from_u128(1), &h(FROM_BASE)).is_err());
+        let arbitrum = MAINNET.source(42161).unwrap();
+        assert_eq!(
+            source_call(&MAINNET, arbitrum, &me(), &tm, U256::ZERO, &h(FROM_BASE))
+                .unwrap_err()
+                .0,
+            "it burns a token other than USDC"
+        );
+        assert!(
+            refused(&me(), &them, U256::ZERO, &h(FROM_BASE))
+                .0
+                .contains("only USDC transfers to Injective")
+        );
+        // A transfer of USDC, or an approval for anyone but Circle, or an unlimited one.
+        let transfer = choice_wallet_evm::erc20::transfer_calldata(&them, &U256::from_u128(1));
+        assert!(
+            refused(&me(), &usdc, U256::ZERO, &transfer)
+                .0
+                .contains("only approves Circle's bridge")
+        );
+        let approve_them = choice_wallet_evm::erc20::approve_calldata(&them, &U256::from_u128(1));
+        assert!(
+            refused(&me(), &usdc, U256::ZERO, &approve_them)
+                .0
+                .contains("only approves Circle's bridge")
+        );
+        let unlimited = choice_wallet_evm::erc20::approve_calldata(&tm, &U256::MAX);
+        assert!(refused(&me(), &usdc, U256::ZERO, &unlimited).0.contains("exact amount"));
+        let zero = choice_wallet_evm::erc20::approve_calldata(&tm, &U256::ZERO);
+        assert!(refused(&me(), &usdc, U256::ZERO, &zero).0.contains("exact amount"));
+        // A burn to another chain, or forwarded, or pinned to a caller, or eaten by fees.
+        let plain = burn(&MAINNET, &tm, U256::ZERO, &h(FROM_BASE)).unwrap().unwrap();
+        let try_burn = |b: &Burn| source_call(&MAINNET, base, &me(), &tm, U256::ZERO, &burn_calldata(b));
+        let mut b = plain.clone();
+        b.domain = 6;
+        assert!(try_burn(&b).is_err());
+        let mut b = plain.clone();
+        b.hook = Hook::Forward;
+        assert!(try_burn(&b).is_err());
+        let mut b = plain.clone();
+        b.destination_caller = word(&them);
+        assert!(try_burn(&b).is_err());
+        let mut b = plain.clone();
+        b.max_fee = b.amount;
+        assert_eq!(try_burn(&b).unwrap_err().0, "its fees could take all of it");
+        let mut b = plain.clone();
+        b.min_finality = 500;
+        assert!(try_burn(&b).is_err());
+        // A gas drop through some other contract, or whose fees together take it all.
+        let receiver = MAINNET.bridge_receiver().unwrap();
+        let mut b = plain.clone();
+        b.hook = Hook::GasDrop {
+            recipient: me(),
+            max_drop_fee: U256::from_u128(1),
+        };
+        b.mint_recipient = word(&them);
+        b.destination_caller = word(&them);
+        assert!(try_burn(&b).is_err());
+        b.mint_recipient = word(&receiver);
+        b.destination_caller = word(&receiver);
+        assert!(try_burn(&b).is_ok());
+        b.hook = Hook::GasDrop {
+            recipient: me(),
+            max_drop_fee: U256::from_u128(25_000_000 - 3_000),
+        };
+        assert!(try_burn(&b).is_err());
+        // Testnet has no BridgeReceiver.
+        let sepolia = TESTNET.source(84532).unwrap();
+        let mut b = plain;
+        b.burn_token = sepolia.usdc();
+        assert!(
+            source_call(
+                &TESTNET,
+                sepolia,
+                &me(),
+                &TESTNET.token_messenger(),
+                U256::ZERO,
+                &burn_calldata(&b)
+            )
+            .is_ok()
+        );
+        b.hook = Hook::GasDrop {
+            recipient: me(),
+            max_drop_fee: U256::from_u128(1),
+        };
+        assert!(
+            source_call(
+                &TESTNET,
+                sepolia,
+                &me(),
+                &TESTNET.token_messenger(),
+                U256::ZERO,
+                &burn_calldata(&b)
+            )
+            .is_err()
+        );
+    }
+
+    /// A message as MessageTransmitterV2 lays it out: 25 USDC burned on Base for 0x1111…1111,
+    /// with 0.0025 kept by Circle.
+    fn message() -> Vec<u8> {
+        let base = MAINNET.source(8453).unwrap();
+        let tm = word(&MAINNET.token_messenger());
+        let mut m = Vec::new();
+        m.extend_from_slice(&1u32.to_be_bytes());
+        m.extend_from_slice(&6u32.to_be_bytes());
+        m.extend_from_slice(&29u32.to_be_bytes());
+        m.extend_from_slice(&[3; 32]);
+        m.extend_from_slice(&tm);
+        m.extend_from_slice(&tm);
+        m.extend_from_slice(&[0; 32]);
+        m.extend_from_slice(&FAST.to_be_bytes());
+        m.extend_from_slice(&FAST.to_be_bytes());
+        m.extend_from_slice(&1u32.to_be_bytes());
+        m.extend_from_slice(&word(&base.usdc()));
+        m.extend_from_slice(&word(&me()));
+        m.extend_from_slice(&U256::from_u128(25_000_000).to_be_bytes());
+        m.extend_from_slice(&word(&me()));
+        m.extend_from_slice(&U256::from_u128(3_000).to_be_bytes());
+        m.extend_from_slice(&U256::from_u128(2_500).to_be_bytes());
+        m.extend_from_slice(&[0; 32]);
+        m
+    }
+
+    #[test]
+    fn reads_a_mint_on_injective() {
+        assert_eq!(RECEIVE_MESSAGE, abi::selector("receiveMessage(bytes,bytes)"));
+        let mt = MAINNET.message_transmitter();
+        let data = receive_calldata(&message(), &[7; 65]);
+        let r = receive(&MAINNET, &mt, U256::ZERO, &data).unwrap().unwrap();
+        assert_eq!((r.source_domain, r.destination_domain), (6, 29));
+        assert_eq!(r.nonce, [3; 32]);
+        assert_eq!(r.sender, word(&MAINNET.token_messenger()));
+        assert_eq!(r.burn_token, word(&MAINNET.source(8453).unwrap().usdc()));
+        assert_eq!(r.paid(), Some(me()));
+        assert_eq!(r.minted(), U256::from_u128(24_997_500));
+        assert!(r.permissionless());
+        assert_eq!(r.hook, Hook::None);
+
+        assert!(receive(&MAINNET, &MAINNET.token_messenger(), U256::ZERO, &data).is_none());
+        assert!(matches!(
+            receive(&MAINNET, &mt, U256::from_u128(1), &data),
+            Some(Err(_))
+        ));
+        assert!(matches!(
+            receive(&MAINNET, &mt, U256::ZERO, &receive_calldata(&message(), &[])),
+            Some(Err(_))
+        ));
+        assert!(matches!(
+            receive(
+                &MAINNET,
+                &mt,
+                U256::ZERO,
+                &receive_calldata(&message()[..300], &[7; 65])
+            ),
+            Some(Err(_))
+        ));
+        let mut longer = data.clone();
+        longer.push(0);
+        assert!(matches!(receive(&MAINNET, &mt, U256::ZERO, &longer), Some(Err(_))));
+    }
+
+    #[test]
+    fn gas_drop_hooks_read_and_write() {
+        let hook = Hook::GasDrop {
+            recipient: me(),
+            max_drop_fee: U256::from_u128(500_000),
+        };
+        let bytes = hook_bytes(&hook).unwrap();
+        assert_eq!(bytes.len(), 96);
+        assert_eq!(read_hook(&bytes), hook);
+        // Anything in the padding makes it someone else's hook.
+        let mut odd = bytes.clone();
+        odd[10] = 1;
+        assert!(matches!(read_hook(&odd), Hook::Other(_)));
+        let mut odd = bytes;
+        odd[33] = 1;
+        assert!(matches!(read_hook(&odd), Hook::Other(_)));
+        assert_eq!(U256::from_u128(5).checked_sub(&U256::from_u128(7)), None);
+        assert_eq!(
+            U256::from_u128(1 << 70).checked_sub(&U256::from_u128(1)),
+            Some(U256::from_u128((1 << 70) - 1))
+        );
     }
 
     #[test]

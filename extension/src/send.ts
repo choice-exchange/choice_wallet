@@ -68,7 +68,54 @@ export interface SendDeps {
   riskFacts(network: NetworkId, recipient: string | null): Promise<RiskFacts>;
   /** A transaction the wallet just broadcast, signed by `from` (./watch.ts follows it). */
   onBroadcast?(network: NetworkId, hash: string, from: string): void;
+  /** A deposit's burn just broadcast on the chain it comes from (./bridge.ts follows it). */
+  onDeposit?(network: NetworkId, deposit: DepositSent): Promise<void>;
 }
+
+/** Another EVM chain, where the wallet signs only bridge transfers into Injective (the vault
+ *  refuses anything else there): what sending on it needs. */
+export interface SourceChain {
+  /** The bridge registry's key ("base"). */
+  key: string;
+  name: string;
+  /** CAIP-2 ID, as the vault names it. */
+  caip2: string;
+  chainId: number;
+  /** Its gas coin. */
+  symbol: string;
+  /** Gas is paid in USDC (Arc): the coin and the token are one balance. */
+  gasIsUsdc: boolean;
+  /** An OP Stack chain: besides gas, each transaction pays an Ethereum data fee, which its
+   *  GasPriceOracle bounds. */
+  opStack: boolean;
+  usdc: string;
+  rpcUrls: readonly string[];
+  /** Transaction page, `{hash}` replaced. */
+  explorerTx: string;
+}
+
+/** A deposit's burn, once broadcast. */
+export interface DepositSent {
+  chain: string;
+  hash: string;
+  amount: string;
+  /** The account's 0x address. */
+  account: string;
+}
+
+/** OP Stack's GasPriceOracle predeploy, and `getL1FeeUpperBound(uint256 unsignedTxSize)`. */
+const GAS_PRICE_ORACLE = "0x420000000000000000000000000000000000000F";
+
+/** The most an OP Stack chain's Ethereum data fee can be for a transaction of `bytes` (wei);
+ *  0 elsewhere. */
+export async function dataFeeBound(rpc: EvmRpc, s: Pick<SourceChain, "opStack">, bytes: number): Promise<bigint> {
+  if (!s.opStack) return 0n;
+  return quantity(await rpc.call("eth_call", [{ to: GAS_PRICE_ORACLE, data: `0xf1c7a58b${bytes.toString(16).padStart(64, "0")}` }, "latest"]), "data fee");
+}
+
+/** The wallet keys of a source chain's coin (the review's fee) and of its USDC. */
+export const sourceCoin = (s: Pick<SourceChain, "caip2">) => `native:${s.caip2}`;
+export const sourceUsdc = (s: Pick<SourceChain, "caip2">) => `usdc:${s.caip2}`;
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -97,6 +144,10 @@ interface Pending {
   ledgerKey?: string;
   /** The signer's inj1 address, for following the transaction once it is broadcast. */
   from?: string;
+  /** Signed on another chain, where USDC comes from: broadcast there. */
+  source?: SourceChain;
+  /** A deposit's burn, followed once broadcast. */
+  deposit?: { amount: string; account: string };
 }
 
 /** A Ledger send between its two steps: the vault gave the device its bytes; its signature
@@ -124,6 +175,14 @@ const EVM_SIMULATION_GAS = 100_000n;
 const EVM_MAX_GAS = 1_000_000n;
 /** The most gas a contract call the wallet makes (a swap step) may take. */
 const EVM_MAX_CALL_GAS = 3_000_000n;
+/** The most a bridge step on another chain may take (a burn uses about 100k to 200k). */
+const SOURCE_MAX_GAS = 1_000_000n;
+
+/** A JSON-RPC quantity, or why the node's answer isn't one. */
+function quantity(v: unknown, what: string): bigint {
+  if (typeof v !== "string" || !/^0x[0-9a-fA-F]{1,64}$/.test(v)) throw new ChainError(-1, `the node returned no ${what}`);
+  return BigInt(v);
+}
 
 /** The vault's display of an EVM transaction, as far as `prepareEvmCall`'s checks read it. */
 export type EvmDisplayLike = { kind: string; to: string; value: string; call: Record<string, unknown> };
@@ -263,6 +322,17 @@ export function createSender(d: SendDeps) {
     let c = evmClients.get(key);
     if (!c) {
       c = new EvmRpc(NETWORKS[network], urls, d.fetch);
+      evmClients.set(key, c);
+    }
+    return c;
+  }
+
+  /** A client for a chain USDC comes from, on the bridge registry's public endpoints. */
+  function sourceRpc(s: SourceChain): EvmRpc {
+    const key = `${s.chainId} ${s.rpcUrls.join(" ")}`;
+    let c = evmClients.get(key);
+    if (!c) {
+      c = new EvmRpc({ evmChainId: s.chainId }, s.rpcUrls, d.fetch);
       evmClients.set(key, c);
     }
     return c;
@@ -779,10 +849,6 @@ export function createSender(d: SendDeps) {
         { method: "eth_getBalance", params: [from, "latest"] },
         { method: "eth_call", params: [{ to: contract, data: `0x70a08231${word(from)}` }, "latest"] },
       ]);
-      const quantity = (v: unknown, what: string): bigint => {
-        if (typeof v !== "string" || !/^0x[0-9a-fA-F]{1,64}$/.test(v)) throw new ChainError(-1, `the node returned no ${what}`);
-        return BigInt(v);
-      };
       const tokenHeld = quantity(held, "token balance");
       const injHeld = quantity(native, "balance");
       const base = isObject(block) ? quantity(block["baseFeePerGas"], "base fee") : MIN_GAS_PRICE;
@@ -887,10 +953,6 @@ export function createSender(d: SendDeps) {
         { method: "eth_maxPriorityFeePerGas", params: [] },
         { method: "eth_getBalance", params: [from, "latest"] },
       ]);
-      const quantity = (v: unknown, what: string): bigint => {
-        if (typeof v !== "string" || !/^0x[0-9a-fA-F]{1,64}$/.test(v)) throw new ChainError(-1, `the node returned no ${what}`);
-        return BigInt(v);
-      };
       const injHeld = quantity(native, "balance");
       const base = isObject(block) ? quantity(block["baseFeePerGas"], "base fee") : MIN_GAS_PRICE;
       const baseFee = base < MIN_GAS_PRICE ? MIN_GAS_PRICE : base > MIN_GAS_PRICE * 1000n ? MIN_GAS_PRICE * 1000n : base;
@@ -940,6 +1002,107 @@ export function createSender(d: SendDeps) {
       });
       const tokens = await tokensFor(network, [...spec.tokens, net.feeDenom]);
       return { ok: true, result: { digest, display, risk: risk as Risk, tokens, checkedBy, ...spec.extra } };
+    } catch (e) {
+      return chainFailure(e);
+    }
+  }
+
+  /** One step of a bridge transfer into Injective, on the chain the USDC comes from: the
+   *  vault's own-call spec (`build_evm` on that chain), which it builds, shows and signs only
+   *  as an exact USDC approval for Circle's bridge or a deposit into this account on
+   *  Injective. The fee is that chain's EIP-1559 price (twice the base fee, plus its tip),
+   *  paid in its coin; `burns` is the USDC a burn takes, which on Arc comes out of the same
+   *  balance as the fee. `expect` holds the vault's reading to what the host asked for. */
+  async function prepareSourceCall(
+    network: NetworkId,
+    account: AccountInfo,
+    source: SourceChain,
+    spec: {
+      to: string;
+      amount: bigint;
+      call: unknown;
+      usdcHeld: bigint;
+      burns: bigint;
+      expect: (display: EvmDisplayLike) => string | null;
+      extra?: Partial<SendReview>;
+      deposit?: { amount: string; account: string };
+    },
+  ): Promise<Result<SendReview>> {
+    const net = NETWORKS[network];
+    const from = account.addresses[net.evm];
+    if (!from) return fail("bad_request", "This account has no EVM address.");
+    try {
+      const rpc = sourceRpc(source);
+      const [nonce, block, tip, native] = await Promise.all([
+        rpc.call("eth_getTransactionCount", [from, "pending"]),
+        rpc.call("eth_getBlockByNumber", ["latest", false]),
+        rpc.call("eth_maxPriorityFeePerGas", []).catch(() => "0x0"),
+        rpc.call("eth_getBalance", [from, "latest"]),
+      ]);
+      const held = quantity(native, "balance");
+      const base = isObject(block) ? quantity(block["baseFeePerGas"], "base fee") : 0n;
+      const priority = quantity(tip, "tip");
+      const maxFee = base * 2n + priority;
+      const build = (gas: bigint) =>
+        d.vault<{ request: { evm_transaction: { tx: { to: string; data: string; value: string } } } }>("build_evm", {
+          chain: source.caip2,
+          from,
+          to: spec.to,
+          amount: spec.amount.toString(),
+          call: spec.call,
+          nonce: Number(quantity(nonce, "nonce")),
+          gas_limit: Number(gas),
+          max_fee_per_gas: maxFee.toString(),
+          max_priority_fee_per_gas: priority.toString(),
+        });
+      const sim = await build(SOURCE_MAX_GAS);
+      if (!sim.ok) return sim;
+      const t = sim.result.request.evm_transaction.tx;
+      let used: bigint;
+      try {
+        used = quantity(await rpc.call("eth_estimateGas", [{ from, to: t.to, data: t.data, value: t.value }]), "gas estimate");
+      } catch (e) {
+        if (e instanceof ChainError && /revert|exceeds balance|insufficient/i.test(e.message)) return fail("reverts", `This would fail on ${source.name} now. Check your USDC there and try again.`);
+        throw e;
+      }
+      let gas = (used * 13n) / 10n;
+      if (gas < 50_000n) gas = 50_000n;
+      if (gas > SOURCE_MAX_GAS) return fail("chain", `The gas estimate on ${source.name} looks wrong. Try again later.`);
+      const built = await build(gas);
+      if (!built.ok) return built;
+      // An unsigned EIP-1559 transaction is its calldata and about 120 bytes more.
+      const dataFee = await dataFeeBound(rpc, source, (built.result.request.evm_transaction.tx.data.length - 2) / 2 + 120);
+      const coin = gas * maxFee + dataFee + (source.gasIsUsdc ? spec.burns * 10n ** 12n : 0n);
+      if (coin > held) return fail("gas", `Not enough ${source.symbol} on ${source.name} for the fee.`);
+      const decoded = await d.vault<Pick<SendReview, "digest" | "display" | "risk">>("decode", {
+        request: built.result.request,
+        context: { balances: { native: held.toString(), [source.usdc]: spec.usdcHeld.toString() } },
+      });
+      if (!decoded.ok) return decoded;
+      const { digest, display, risk } = decoded.result;
+      const wrong = spec.expect(display as unknown as EvmDisplayLike);
+      if (wrong) return fail("mismatch", wrong);
+      await d.session.set({
+        pending_send: {
+          network,
+          digest,
+          request: built.result.request,
+          ...signerFields(account),
+          from: account.addresses[net.cosmos] ?? "",
+          confirm: risk.confirm ?? null,
+          blocked: risk.level === "blocked",
+          evm: true,
+          source,
+          ...(spec.deposit ? { deposit: spec.deposit } : {}),
+        } satisfies Pending,
+      });
+      const usdc = sourceUsdc(source);
+      const coinKey = sourceCoin(source);
+      const tokens: Record<string, TokenInfo> = {
+        [usdc]: { denom: usdc, symbol: "USDC", name: `USDC on ${source.name}`, decimals: 6, known: true },
+        [coinKey]: { denom: coinKey, symbol: source.symbol, name: `${source.symbol} on ${source.name}`, decimals: 18, known: true },
+      };
+      return { ok: true, result: { digest, display, risk: risk as Risk, tokens, checkedBy: new URL(rpc.pool.current).host, ...(dataFee > 0n ? { dataFee: dataFee.toString() } : {}), ...spec.extra } };
     } catch (e) {
       return chainFailure(e);
     }
@@ -1000,6 +1163,18 @@ export function createSender(d: SendDeps) {
   }
 
   async function broadcast(p: Pending, signed: { tx_raw: string } & { raw: string; hash: string }): Promise<Result<Sent>> {
+    if (p.source) {
+      // On the chain the USDC comes from. The background watcher follows Injective only; a
+      // deposit's burn is followed by ./bridge.ts instead.
+      const hash = signed.hash.toLowerCase();
+      try {
+        await sourceRpc(p.source).call("eth_sendRawTransaction", [signed.raw]);
+      } catch (e) {
+        if (!(e instanceof ChainError && /already known|already imported|known transaction/i.test(e.message))) return chainFailure(e);
+      }
+      if (p.deposit) await d.onDeposit?.(p.network, { chain: p.source.key, hash, ...p.deposit });
+      return { ok: true, result: { hash, explorer: p.source.explorerTx.replace("{hash}", hash), chain: p.source.key } };
+    }
     if (p.evm) {
       // The vault hashes what it signed; a node that already has the tx (a retry) is fine.
       const hash = signed.hash.toLowerCase();
@@ -1021,10 +1196,11 @@ export function createSender(d: SendDeps) {
     return { ok: true, result: { hash, explorer: explorerTxUrl(NETWORKS[p.network], hash) } };
   }
 
-  async function status(network: NetworkId, hash: string): Promise<Result<TxState>> {
+  /** A transaction's state: on Injective, or on `source` when it was signed there. */
+  async function status(network: NetworkId, hash: string, source?: SourceChain): Promise<Result<TxState>> {
     if (typeof hash === "string" && /^0x[0-9a-fA-F]{64}$/.test(hash)) {
       try {
-        const r = await (await evm(network)).call("eth_getTransactionReceipt", [hash]);
+        const r = await (source ? sourceRpc(source) : await evm(network)).call("eth_getTransactionReceipt", [hash]);
         if (!isObject(r)) return { ok: true, result: { state: "pending" } };
         return { ok: true, result: r["status"] === "0x1" ? { state: "success" } : { state: "failed", log: "The transaction reverted." } };
       } catch (e) {
@@ -1050,6 +1226,8 @@ export function createSender(d: SendDeps) {
     prepareCosmos,
     prepareEvm,
     prepareEvmCall,
+    prepareSourceCall,
+    sourceRpc,
     pairs: async (network: NetworkId) => pairsFor(network, await lcd(network)),
     confirm,
     deviceSigned,

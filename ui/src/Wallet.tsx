@@ -40,8 +40,8 @@ type View =
   | { name: "token"; denom: string }
   | { name: "send"; denom?: string }
   | { name: "convert"; denom: string }
-  | { name: "review"; review: SendReview; entered: string; back: View; validators?: Record<string, string>; rewards?: Record<string, string>; quote?: string; bridgeQuote?: string }
-  | { name: "sent"; sent: Sent; converting: boolean; done?: string; save?: Draft; next?: string; nextBridge?: string; bridge?: { chain: string } }
+  | { name: "review"; review: SendReview; entered: string; back: View; validators?: Record<string, string>; rewards?: Record<string, string>; quote?: string; bridgeQuote?: string; bridgeInQuote?: string }
+  | { name: "sent"; sent: Sent; converting: boolean; done?: string; save?: Draft; next?: string; nextBridge?: string; nextBridgeIn?: string; bridge?: { chain: string }; bridgeIn?: { chain: string } }
   | { name: "bridge" }
   | { name: "staking" }
   | { name: "approvals" }
@@ -268,6 +268,28 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
     setView({ name: "bridge" });
   }
 
+  /** A transfer in's next step (the burn, after its approval landed on that chain). */
+  async function nextBridgeInStep(quote: string) {
+    const r = await backend.send({ type: "prepare_bridge_in", quote });
+    if (r.ok) {
+      setView({ name: "review", review: r.result, entered: "", back: { name: "bridge" }, bridgeInQuote: quote });
+      return;
+    }
+    setBridgeNote(r.error.message);
+    setView({ name: "bridge" });
+  }
+
+  /** Mint a transfer in on Injective from this account, when nobody has. */
+  async function finishBridgeIn(chain: string, hash: string) {
+    const r = await backend.send({ type: "prepare_bridge_receive", chain, hash });
+    if (r.ok) {
+      setView({ name: "review", review: r.result, entered: "", back: { name: "bridge" } });
+      return;
+    }
+    setBridgeNote(r.error.message);
+    setView({ name: "bridge" });
+  }
+
   return <KeptContext.Provider value={kept}>{screen()}</KeptContext.Provider>;
 
   function screen() {
@@ -275,7 +297,16 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
       case "accounts":
         return <AccountsView status={status} onStatus={(s) => onStatus(s)} onBack={home} />;
       case "receive":
-        return <Receive addresses={account?.addresses ?? {}} onBack={home} />;
+        return (
+          <Receive
+            addresses={account?.addresses ?? {}}
+            onBack={home}
+            onBridgeIn={() => {
+              setBridgeDraft((d) => ({ ...d, dir: "in" }));
+              setView({ name: "bridge" });
+            }}
+          />
+        );
       case "tokens":
         return (
           <TokensView
@@ -359,6 +390,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
               const save = sentTo && sentTo.sends.length === 1 && !named ? { address: sentTo.sends[0]!.to, memo: sentTo.memo } : undefined;
               const step = view.review.swap;
               const crossing = view.review.bridge;
+              const arriving = view.review.bridgeIn;
               setView({
                 name: "sent",
                 sent,
@@ -368,6 +400,9 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
                 ...(step && step.left > 0 && view.quote ? { next: view.quote } : {}),
                 ...(crossing?.step === "approve" ? { done: "Approved", ...(view.bridgeQuote ? { nextBridge: view.bridgeQuote } : {}) } : {}),
                 ...(crossing?.step === "burn" ? { bridge: { chain: crossing.chain } } : {}),
+                ...(arriving?.step === "approve" ? { done: "Approved", ...(view.bridgeInQuote ? { nextBridgeIn: view.bridgeInQuote } : {}) } : {}),
+                ...(arriving?.step === "burn" ? { bridgeIn: { chain: arriving.chain } } : {}),
+                ...(arriving?.step === "receive" ? { done: "Minted" } : {}),
                 ...(save ? { save } : {}),
               });
             }}
@@ -380,9 +415,12 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
             sent={view.sent}
             onDone={home}
             onSave={view.save ? () => setView({ name: "contacts", prefill: view.save! }) : undefined}
-            onNext={view.next ? () => void nextSwapStep(view.next!) : view.nextBridge ? () => void nextBridgeStep(view.nextBridge!) : undefined}
+            onNext={view.next ? () => void nextSwapStep(view.next!) : view.nextBridge ? () => void nextBridgeStep(view.nextBridge!) : view.nextBridgeIn ? () => void nextBridgeInStep(view.nextBridgeIn!) : undefined}
             converting={view.converting}
             bridge={view.bridge}
+            bridgeIn={view.bridgeIn}
+            finishAfterMs={status.network === "testnet" ? 0 : 60_000}
+            onFinish={view.bridgeIn && view.sent.chain ? () => void finishBridgeIn(view.sent.chain!, view.sent.hash) : undefined}
             {...(view.done ? { done: view.done } : {})}
           />
         );
@@ -399,8 +437,9 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
             note={bridgeNote}
             onReview={(review, quote) => {
               setBridgeNote(null);
-              setView({ name: "review", review, entered: "", back: { name: "bridge" }, bridgeQuote: quote.id });
+              setView({ name: "review", review, entered: "", back: { name: "bridge" }, ...(quote.dir === "in" ? { bridgeInQuote: quote.id } : { bridgeQuote: quote.id }) });
             }}
+            onFinish={(chain, hash) => void finishBridgeIn(chain, hash)}
             onBack={home}
           />
         );
@@ -683,7 +722,7 @@ function CopyAddress({ address }: { address: string }) {
   );
 }
 
-function Receive({ addresses, onBack }: { addresses: Record<string, string>; onBack: () => void }) {
+function Receive({ addresses, onBack, onBridgeIn }: { addresses: Record<string, string>; onBack: () => void; onBridgeIn: () => void }) {
   const backend = useBackend();
   const [side, setSide] = useState<"cosmos" | "evm">("cosmos");
   const [copied, setCopied] = useState(false);
@@ -732,6 +771,9 @@ function Receive({ addresses, onBack }: { addresses: Record<string, string>; onB
         </div>
       </div>
       <p className="lead">Both addresses are the same account.</p>
+      <button type="button" className="btn btn-quiet" onClick={onBridgeIn}>
+        USDC on another chain? Bring it in
+      </button>
     </Screen>
   );
 }

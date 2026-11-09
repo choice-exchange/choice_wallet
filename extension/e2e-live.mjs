@@ -1214,6 +1214,106 @@ try {
     if (before.inj - after.inj !== amountIn) throw new Error("USDC on Injective moved by another amount");
     if (after.base - before.base < minimum) throw new Error("less arrived on Base Sepolia than the minimum shown");
     console.log("LIVE BRIDGE OK");
+  } else if (tokenContract === "bridge-in") {
+    // 3c. USDC in over Circle's CCTP (its sandbox): `amount` USDC from this account's own
+    // address on Base Sepolia (signed there, its fee in Base Sepolia ETH) into this account on
+    // Injective testnet: the exact approval (if needed), then the burn. Choice's bridge service
+    // doesn't run on testnet, so once Circle confirms it the account mints it itself. Checked
+    // on both chains: USDC on Base Sepolia down by exactly the amount, on Injective up by at
+    // least the minimum shown.
+    const USDC_T = "0x0C382e685bbeeFE5d3d9C29e29E341fEE8E84C5d";
+    const BASE_SEPOLIA_USDC = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
+    const pad = (a) => a.slice(2).toLowerCase().padStart(64, "0");
+    const balanceOf = async (token, who) => BigInt(await evmRpc("eth_call", [{ to: token, data: `0x70a08231${pad(who)}` }, "latest"]));
+    const baseSepolia = async (who) => {
+      const r = await fetch("https://sepolia.base.org", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_call", params: [{ to: BASE_SEPOLIA_USDC, data: `0x70a08231${pad(who)}` }, "latest"] }) });
+      return BigInt((await r.json()).result);
+    };
+    const amountIn = BigInt(Math.round(Number(amount) * 1e6));
+    const { server, approve, ask, reply } = await startSite();
+    let me;
+    try {
+      await ask("eth_requestAccounts");
+      await approve("wants to connect", "Connect", "live-i1-connect");
+      [me] = await reply();
+    } finally {
+      server.close();
+    }
+    const before = { inj: await balanceOf(USDC_T, me), base: await baseSepolia(me) };
+    console.log(`USDC on Base Sepolia ${before.base}; on Injective testnet ${before.inj}`);
+    if (before.base < amountIn) throw new Error("not enough USDC on Base Sepolia to bridge in");
+
+    await waitText("Bridge USDC", 20000);
+    await evalIn(`[...document.querySelectorAll(".token")].find((b) => b.querySelector(".symbol")?.textContent === "Bridge USDC").click()`);
+    await waitText("FROM INJECTIVE", 20000);
+    await click("To Injective");
+    await waitText("TO INJECTIVE", 20000);
+    for (let n = 0; !(await evalIn(`!document.querySelector('[aria-label="Choose where it comes from"]').disabled`)); n += 300) {
+      if (n > 30000) throw new Error(`the chains didn't load: ${await text()}`);
+      await sleep(300);
+    }
+    await click("Choose where it comes from");
+    await waitText("Bridge from");
+    await evalIn(`[...document.querySelectorAll(".token")].find((b) => b.querySelector(".symbol")?.textContent === "Base Sepolia").click()`);
+    await waitText("Balance", 30000);
+    await fill('input[aria-label="Amount of USDC"]', 0, amount);
+    await waitText("Circle's fee", 30000);
+    const lines = (await text()).split("\n");
+    const leastShown = lines[lines.indexOf("Arrives") + 1] ?? "";
+    const minimum = BigInt(Math.round(Number(leastShown.replace(/[^0-9.]/g, "")) * 1e6));
+    console.log("quote:", leastShown, "|", lines[lines.indexOf("Circle's fee") + 1], "|", lines[lines.indexOf("Time") + 1]);
+    await shot("live-i2-quote");
+    await evalIn(`[...document.querySelectorAll("button")].find((b) => b.textContent.startsWith("Review"))?.click()`);
+    console.log("bridging in:");
+    for (let step = 1; ; step++) {
+      for (let n = 0; !/YOU ALLOW|YOU BRIDGE FROM/.test(await text()); n += 300) {
+        if (n > 30000) throw new Error(`no review for step ${step}: ${await text()}`);
+        await sleep(300);
+      }
+      const t = await text();
+      if (!t.includes("On Base Sepolia, its fee paid in ETH.")) throw new Error("the review isn't for Base Sepolia");
+      await shot(`live-i3-step${step}`);
+      const final = t.includes("YOU BRIDGE FROM");
+      console.log(`  step ${step}:`, final ? "the burn" : "approval");
+      await click(final ? "Confirm and bridge" : "Approve");
+      if (final) break;
+      for (let n = 0; !(await text()).includes("It's in a block."); n += 500) {
+        if (n > 90000 || /Failed|Not confirmed yet/.test(await text())) throw new Error(`step ${step} didn't land: ${await text()}`);
+        await sleep(500);
+      }
+      await click("Next step");
+    }
+    const t0 = Date.now();
+    for (let n = 0; !/Not minted yet|Arrived on Injective/.test(await text()); n += 2000) {
+      if (n > 1_200_000 || /Failed|Not confirmed yet/.test(await text())) throw new Error(`not confirmed: ${await text()}`);
+      await sleep(2000);
+    }
+    console.log(`Circle confirmed it ${Math.round((Date.now() - t0) / 1000)} s after the burn`);
+    await shot("live-i4-confirmed");
+    if ((await text()).includes("Finish it here")) {
+      await click("Finish it here");
+      for (let n = 0; !(await text()).includes("YOU RECEIVE"); n += 300) {
+        if (n > 30000) throw new Error(`no review for the mint: ${await text()}`);
+        await sleep(300);
+      }
+      if (!(await text()).includes("Injective testnet (EVM)")) throw new Error("the mint's review isn't for Injective");
+      await shot("live-i5-mint");
+      await click("Confirm");
+      for (let n = 0; !(await text()).includes("It's in a block."); n += 500) {
+        if (n > 90000 || /Failed|Not confirmed yet/.test(await text())) throw new Error(`the mint didn't land: ${await text()}`);
+        await sleep(500);
+      }
+      console.log("minted it from this account");
+    }
+    let after = { inj: await balanceOf(USDC_T, me), base: await baseSepolia(me) };
+    for (let n = 0; after.inj === before.inj && n < 30000; n += 2000) {
+      await sleep(2000);
+      after = { inj: await balanceOf(USDC_T, me), base: await baseSepolia(me) };
+    }
+    console.log(`USDC on Base Sepolia -${before.base - after.base} (asked ${amountIn}); on Injective +${after.inj - before.inj} (at least ${minimum} shown)`);
+    if (before.base - after.base !== amountIn) throw new Error("USDC on Base Sepolia moved by another amount");
+    if (after.inj - before.inj < minimum) throw new Error("less arrived on Injective than the minimum shown");
+    console.log("LIVE BRIDGE IN OK");
   } else if (tokenContract === "activity") {
     // 3a. Activity, read back from testnet's own endpoints and Blockscout.
     await click("Activity");

@@ -344,6 +344,29 @@ test("EVM: a CCTP burn reads as a bridge, to its domain and recipient; a reverte
   assert.notEqual(summarize(evmTx(209, { from: ME_EVM, fromInj: ME, to: ROUTER, input }), ME, view).kind, "bridge");
 });
 
+test("EVM: USDC minted from a burn elsewhere reads as bridged in, whoever submitted it", () => {
+  // receiveMessage(message, attestation): 25 USDC burned on Base (domain 6) for ME_EVM.
+  const w = (hex: string) => hex.replace(/^0x/, "").toLowerCase().padStart(64, "0");
+  const n = (v: number, bytes: number) => v.toString(16).padStart(bytes * 2, "0");
+  const message = n(1, 4) + n(6, 4) + n(29, 4) + "3c".repeat(32) + "0".repeat(64 * 3) + n(1000, 4) + n(1000, 4) + n(1, 4) + w("0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913") + w(ME_EVM) + n(25_000_000, 32) + w(ME_EVM) + "0".repeat(64 * 3);
+  const attestation = "07".repeat(65);
+  const input = `0x57ecfd28${n(64, 32)}${n(64 + 32 + message.length / 2, 32)}${n(message.length / 2, 32)}${message}${n(65, 32)}${attestation}${"0".repeat(62)}`;
+  const usdc = "erc20:0xa00C59fF5a080D2b954d0c75e46E22a0c371235a";
+  const minted = [ev("coin_received", { receiver: ME, amount: `24997500${usdc}` })];
+  const MT = "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64";
+  const relayed = summarize(evmTx(210, { from: THEM_EVM, fromInj: THEM, to: MT, input, events: minted }), ME, view);
+  assert.deepEqual([relayed.kind, relayed.signed], ["bridge", false]);
+  assert.deepEqual(relayed.bridge, { domain: 6, mintRecipient: `0x${w(ME_EVM)}`, incoming: true });
+  assert.deepEqual(relayed.changes, [{ denom: usdc, amount: "24997500" }]);
+  // Minted by this account itself.
+  const own = summarize(evmTx(211, { from: ME_EVM, fromInj: ME, to: MT, input, events: minted }), ME, view);
+  assert.deepEqual([own.kind, own.bridge?.incoming], ["bridge", true]);
+  // Nothing received (someone else's mint, submitted by this account): not a bridge in.
+  assert.notEqual(summarize(evmTx(212, { from: ME_EVM, fromInj: ME, to: MT, input }), ME, view).kind, "bridge");
+  // The same call to another contract is a plain receive.
+  assert.equal(summarize(evmTx(213, { from: THEM_EVM, fromInj: THEM, to: ROUTER, input, events: minted }), ME, view).kind, "receive");
+});
+
 test("EVM: an approval names the spender and the allowance; zero takes it back", () => {
   const max = 2n ** 256n - 1n;
   const t = evmTx(207, { from: ME_EVM, fromInj: ME, to: USDT_ERC20, logs: [approvalLog(USDT_ERC20, ME_EVM, ROUTER, max)] });

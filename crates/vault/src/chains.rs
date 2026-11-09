@@ -5,6 +5,7 @@
 
 use choice_wallet_core::{EthAddress, PublicKey};
 use choice_wallet_cosmos::chain::Chain as CosmosChain;
+use choice_wallet_injective::cctp::Source;
 use choice_wallet_injective::chain::{MAINNET, Network, TESTNET};
 use serde::Serialize;
 
@@ -65,6 +66,20 @@ pub const CHAINS: [Entry; 4] = [
         native: ("INJ", 18),
     },
 ];
+
+/// A chain USDC can come from into Injective, by CAIP-2 ID (`eip155:8453`), and the network
+/// it comes into. It isn't in [`CHAINS`]: the vault signs nothing there but what
+/// `cctp::source_call` reads as an exact USDC approval for Circle's bridge or a deposit into
+/// the signer's own account on Injective, and no other kind of request.
+pub fn source(id: &str) -> Option<(&'static Network, &'static Source)> {
+    let chain_id: u64 = id.strip_prefix("eip155:")?.parse().ok()?;
+    if id != format!("eip155:{chain_id}") {
+        return None;
+    }
+    [&MAINNET, &TESTNET]
+        .into_iter()
+        .find_map(|n| n.cctp.source(chain_id).map(|s| (n, s)))
+}
 
 /// Find a chain by CAIP-2 ID.
 pub fn find(id: &str) -> Result<&'static Entry, VaultError> {
@@ -174,6 +189,29 @@ mod tests {
             assert_eq!(find(c.id).unwrap(), &c);
         }
         assert_eq!(find("eip155:1").unwrap_err().code, UNKNOWN_CHAIN);
+    }
+
+    #[test]
+    fn sources_are_found_by_their_own_id_only() {
+        let (n, s) = source("eip155:8453").unwrap();
+        assert_eq!((n, s.name), (&MAINNET, "Base"));
+        assert_eq!(source("eip155:84532").unwrap().0, &TESTNET);
+        for id in [
+            "eip155:1776",
+            "eip155:08453",
+            "eip155:8453 ",
+            "cosmos:8453",
+            "eip155:",
+            "eip155:99999999",
+        ] {
+            assert!(source(id).is_none(), "{id}");
+        }
+        // No source is a chain the vault signs anything else on.
+        for n in [MAINNET, TESTNET] {
+            for s in n.cctp.sources {
+                assert!(find(&format!("eip155:{}", s.chain_id)).is_err());
+            }
+        }
     }
 
     #[test]

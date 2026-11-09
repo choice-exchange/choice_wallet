@@ -236,9 +236,10 @@ pub fn evm_transaction(req: &TxRequest, network: Option<&Network>, ctx: &Context
         outflows.add("native", tx.value);
     }
     let bridged = network.and_then(|n| cctp::burn(&n.cctp, &tx.to, tx.value, &tx.data));
-    match (&swapped, &bridged, network) {
-        (Some(read), _, Some(n)) => swap::swap(&n.choice, &req.from, tx.value, read, &mut out),
-        (_, Some(read), Some(n)) => {
+    let minted = network.and_then(|n| cctp::receive(&n.cctp, &tx.to, tx.value, &tx.data));
+    match (&swapped, &bridged, &minted, network) {
+        (Some(read), _, _, Some(n)) => swap::swap(&n.choice, &req.from, tx.value, read, &mut out),
+        (_, Some(read), _, Some(n)) => {
             bridge::burn(&n.cctp, &req.from, read, &mut out);
             if let Ok(b) = read
                 && let Some(amount) = bridge::outflow(&n.cctp, b, &req.from)
@@ -246,6 +247,7 @@ pub fn evm_transaction(req: &TxRequest, network: Option<&Network>, ctx: &Context
                 outflows.add(&b.burn_token.to_checksum_hex(), amount);
             }
         }
+        (_, _, Some(read), Some(n)) => bridge::receive(&n.cctp, &req.from, read, &mut out),
         _ => match tx.call_kind() {
             Call::Transfer => recipient(ctx, &to, None, &mut out),
             Call::Erc20Transfer { to: r, amount } => {
@@ -393,7 +395,7 @@ fn contract_call(
     }
 }
 
-fn erc20_allowance(
+pub(crate) fn erc20_allowance(
     ctx: &Context,
     token: &str,
     spender: &str,

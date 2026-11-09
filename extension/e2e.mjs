@@ -1006,6 +1006,25 @@ try {
   usdcHeld = false;
   console.log("bridge: 1 USDC to this account's address on Base; Circle's fee quoted live from the extension; approve exact, then the burn the vault read");
 
+  // 7g. Into Injective: the form, and each chain's balance for this (public test) address,
+  // read live from the bridge registry's public endpoints by the service worker.
+  await p.eval(`[...document.querySelectorAll(".token")].find((b) => b.querySelector(".symbol")?.textContent === "Bridge USDC").click()`);
+  await p.waitText("FROM INJECTIVE");
+  await p.click("To Injective");
+  await p.waitText("TO INJECTIVE");
+  await p.waitText("Also get INJ for gas");
+  await p.waitText("From your address on", 30000);
+  await p.click("Choose where it comes from");
+  await p.waitText("Bridge from");
+  for (const t of ["Base", "Arbitrum", "Ethereum"]) await p.waitText(t);
+  for (let t = 0; t < 300 && (await p.eval(`document.body.innerText.includes("Checking…")`)); t++) await sleep(100);
+  await p.shot("16z-bridge-in-from");
+  await p.eval(`[...document.querySelectorAll(".token")].find((b) => b.querySelector(".symbol")?.textContent === "Base").click()`);
+  await p.waitText("TO INJECTIVE");
+  await p.click("Back");
+  await p.waitText("Manage", 15000);
+  console.log("bridge in: the form opens on Injective's side; every source chain's balance read live from its public endpoint");
+
   await p.click("Settings");
   await settingsLoaded();
   await p.fill("textarea", 1, "https://sentry.evm-rpc.injective.network\nhttps://injective-evm-rpc.publicnode.com");

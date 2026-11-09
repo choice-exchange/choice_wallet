@@ -40,10 +40,11 @@ export interface Network {
     /** Choice's CLMM position manager (CosmWasm): each position is an NFT it issues. */
     clmmManager: string;
   };
-  /** Circle's CCTP V2: native USDC (bank denom `erc20:` + `usdc`) and TokenMessengerV2, which
-   *  burns it to send it to another chain. The vault pins the same addresses
-   *  (`choice_wallet_injective::cctp`), as does injective-usdc-bridge. */
-  cctp: { usdc: string; tokenMessenger: string };
+  /** Circle's CCTP V2: native USDC (bank denom `erc20:` + `usdc`), TokenMessengerV2, which
+   *  burns it to send it to another chain, and MessageTransmitterV2, which mints what comes
+   *  in (or Choice's BridgeReceiver, for a transfer that also buys INJ for gas). The vault
+   *  pins the same addresses (`choice_wallet_injective::cctp`), as does injective-usdc-bridge. */
+  cctp: { usdc: string; tokenMessenger: string; messageTransmitter: string; bridgeReceiver: string | null };
 }
 
 // Checked 2026-11-08: each answers with CORS for an extension origin, and serves the right
@@ -81,7 +82,12 @@ export const NETWORKS: Readonly<Record<NetworkId, Network>> = {
       // "Choice CLMM Manager", code 2041 (checked 2026-11-09).
       clmmManager: "inj1eag2kjzs5ma5sflxvlhaacdxxpvdjg4ny7yg3g",
     },
-    cctp: { usdc: "0xa00C59fF5a080D2b954d0c75e46E22a0c371235a", tokenMessenger: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d" },
+    cctp: {
+      usdc: "0xa00C59fF5a080D2b954d0c75e46E22a0c371235a",
+      tokenMessenger: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d",
+      messageTransmitter: "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",
+      bridgeReceiver: "0xcA5A96ECF72B3656eF7cF60BDAA42FCdb218cd4A",
+    },
   },
   testnet: {
     id: "testnet",
@@ -107,7 +113,12 @@ export const NETWORKS: Readonly<Record<NetworkId, Network>> = {
       // "Choice CLMM Manager", code 39613, as Choice's testnet app uses it (2026-11-09).
       clmmManager: "inj1srtw4f8yzf4dvnmqr02n7qhpt2px0zf0v9lz5e",
     },
-    cctp: { usdc: "0x0C382e685bbeeFE5d3d9C29e29E341fEE8E84C5d", tokenMessenger: "0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA" },
+    cctp: {
+      usdc: "0x0C382e685bbeeFE5d3d9C29e29E341fEE8E84C5d",
+      tokenMessenger: "0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA",
+      messageTransmitter: "0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275",
+      bridgeReceiver: null,
+    },
   },
 };
 

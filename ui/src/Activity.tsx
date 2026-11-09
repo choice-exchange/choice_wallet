@@ -188,11 +188,11 @@ function Row({ a, tokens, validators, dim, onOpen }: { a: ActivityItem; tokens: 
   const Icon = a.ok ? ICON[a.kind] : WarningIcon;
   const incoming = a.ok && a.changes.length > 0 && a.changes.every((c) => !c.amount.startsWith("-"));
   const revoked = a.approval?.amount === "0";
-  const title = a.kind === "other" ? (a.label ?? TITLE.other) : revoked ? "Approval removed" : a.kind === "bridge" && a.bridge?.chain ? `Bridged to ${a.bridge.chain}` : TITLE[a.kind];
+  const title = a.kind === "other" ? (a.label ?? TITLE.other) : revoked ? "Approval removed" : a.kind === "bridge" && a.bridge?.chain ? `Bridged ${a.bridge.incoming ? "from" : "to"} ${a.bridge.chain}` : TITLE[a.kind];
   const preposition = a.kind === "receive" ? "from" : a.kind === "approve" ? "for" : a.kind === "stake" || a.kind === "unstake" ? "with" : "to";
   // A validator by its name when the active set has it (the name is the validator's own).
   const party = a.counterparty === undefined ? "" : (validators[a.counterparty] ?? shortAddress(a.counterparty));
-  const who = a.bridge?.recipient ? ` · to ${shortAddress(a.bridge.recipient)}` : a.counterparty === undefined ? "" : ` · ${preposition} ${party}`;
+  const who = a.bridge?.recipient && !a.bridge.incoming ? ` · to ${shortAddress(a.bridge.recipient)}` : a.counterparty === undefined ? "" : ` · ${preposition} ${party}`;
   const lines = a.changes.slice(0, 2);
   return (
     <button className={dim ? "activity is-hidden" : "activity"} title={a.evmHash ?? a.hash} onClick={onOpen}>

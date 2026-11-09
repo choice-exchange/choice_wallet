@@ -1,5 +1,5 @@
-// Injective EVM JSON-RPC client: what the wallet needs to see EVM-only tokens (ERC20s with
-// no bank denom), and later to send on the EVM side. Same rules as the LCD client: several
+// EVM JSON-RPC client: what the wallet needs to see EVM-only tokens (ERC20s with no bank
+// denom) and send on Injective's EVM side, and to bridge USDC in from another EVM chain. Same rules as the LCD client: several
 // user-settable endpoints, each checked to serve the expected chain (`eth_chainId`)
 // before use, and a JSON-RPC error is the chain's answer while anything else moves on.
 //
@@ -21,11 +21,12 @@ export interface Call {
 }
 
 export class EvmRpc {
-  readonly network: Network;
+  /** The chain every endpoint must serve. */
+  readonly network: Pick<Network, "evmChainId">;
   readonly pool: Pool;
   #id = 1;
 
-  constructor(network: Network, urls: readonly string[], fetch: Fetch, timeoutMs?: number) {
+  constructor(network: Pick<Network, "evmChainId">, urls: readonly string[], fetch: Fetch, timeoutMs?: number) {
     this.network = network;
     this.pool = new Pool(urls, {
       fetch,

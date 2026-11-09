@@ -90,6 +90,21 @@ impl U256 {
         (carry == 0).then_some(Self(out))
     }
 
+    /// `self - other`, or `None` below zero.
+    pub fn checked_sub(&self, other: &Self) -> Option<Self> {
+        let mut out = [0u8; 32];
+        let mut borrow = 0i16;
+        for i in (0..32).rev() {
+            let mut v = i16::from(self.0[i]) - i16::from(other.0[i]) - borrow;
+            borrow = i16::from(v < 0);
+            if v < 0 {
+                v += 256;
+            }
+            out[i] = v as u8;
+        }
+        (borrow == 0).then_some(Self(out))
+    }
+
     /// `a * b`. Two 128-bit numbers always multiply within 256 bits.
     pub fn product(a: u128, b: u128) -> Self {
         let limbs = |v: u128| [v as u64, (v >> 64) as u64]; // little-endian

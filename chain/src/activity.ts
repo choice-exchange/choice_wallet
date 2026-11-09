@@ -57,8 +57,9 @@ export interface Activity {
   /** For kind "approve": who may now spend how much of which token ("0" takes it back). */
   approval?: { denom: string; spender: string; amount: string };
   /** For kind "bridge": USDC burned over Circle's CCTP, to this domain and `mintRecipient`
-   *  (bytes32 hex), as the signed call says. */
-  bridge?: { domain: number; mintRecipient: string };
+   *  (bytes32 hex), as the signed call says; or, `incoming`, minted here from a burn on that
+   *  domain (whoever submitted the mint). */
+  bridge?: { domain: number; mintRecipient: string; incoming?: true };
 }
 
 /** `depositForBurn` and `depositForBurnWithHook` (TokenMessengerV2). */
@@ -71,6 +72,24 @@ function cctpBurn(call: { to: string | null; input: string } | null): { domain: 
   const word = (i: number) => call.input.slice(10 + 64 * i, 10 + 64 * (i + 1));
   const domain = Number.parseInt(word(1), 16);
   return Number.isSafeInteger(domain) ? { domain, mintRecipient: `0x${word(2)}` } : null;
+}
+
+/** `receiveMessage(bytes,bytes)` (MessageTransmitterV2) and BridgeReceiver's `relay(bytes,bytes)`. */
+const CCTP_MINTS = ["0x57ecfd28", "0x564a5158"];
+
+/** A CCTP mint on Injective, read from the call (anyone's): where it was burned, and who it
+ *  pays. Its first argument is the attested message (the source domain at bytes 4 to 8, the
+ *  recipient at 184 to 216). */
+function cctpMint(call: { to: string | null; input: string } | null): { domain: number; mintRecipient: string } | null {
+  const to = call?.to;
+  if (!to || !Object.values(NETWORKS).some((n) => n.cctp.messageTransmitter.toLowerCase() === to || n.cctp.bridgeReceiver?.toLowerCase() === to)) return null;
+  if (!CCTP_MINTS.includes(call.input.slice(0, 10))) return null;
+  const offset = Number.parseInt(call.input.slice(10, 74), 16);
+  if (!Number.isSafeInteger(offset) || offset > 1024) return null;
+  const message = call.input.slice(10 + offset * 2 + 64);
+  if (message.length < 2 * 216) return null;
+  const domain = Number.parseInt(message.slice(8, 16), 16);
+  return Number.isSafeInteger(domain) ? { domain, mintRecipient: `0x${message.slice(368, 432)}` } : null;
 }
 
 /** What `summarize` needs to read EVM transactions for this account. */
@@ -210,6 +229,9 @@ export function summarize(tx: IndexedTx, address: string, evm?: EvmView): Activi
   const kindOf = (kind: ActivityKind, counterparty?: string): Activity => ({ ...base, kind, ...(counterparty ? { counterparty } : {}) });
 
   if (t === EVM_MSG) {
+    // USDC bridged in, minted by whoever submitted it (Choice's bridge service, or this account).
+    const mint = up && !down ? cctpMint(call) : null;
+    if (mint) return { ...kindOf("bridge"), bridge: { ...mint, incoming: true } };
     if (!signed && up && !down) return kindOf("receive", from);
     const burn = signed ? cctpBurn(call) : null;
     if (burn) return { ...kindOf("bridge"), bridge: burn };

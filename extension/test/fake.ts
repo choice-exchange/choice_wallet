@@ -141,6 +141,10 @@ export const abiString = (s: string) => {
 export const USDC_ERC20 = "0xa00c59ff5a080d2b954d0c75e46e22a0c371235a";
 export const USDC = "erc20:0xa00C59fF5a080D2b954d0c75e46E22a0c371235a";
 export const TOKEN_MESSENGER = "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d";
+export const MESSAGE_TRANSMITTER = "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64";
+export const BRIDGE_RECEIVER = "0xcA5A96ECF72B3656eF7cF60BDAA42FCdb218cd4A";
+/** USDC on Base, where the fake's second chain is (mainnet.base.org, chain 8453). */
+export const BASE_USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
 export const ERC20: Record<string, { symbol: string; name: string; decimals: number }> = {
   [LUMA]: { symbol: "LUMA", name: "Luma", decimals: 18 },
   [USDC_ERC20]: { symbol: "USDC", name: "USD Coin", decimals: 6 },
@@ -250,6 +254,43 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
     irisDown: false,
     /** Solana accounts that exist (by base58 address), for the recipient check. */
     solanaAccounts: {} as Record<string, { owner: string }>,
+    /** Base: ME's USDC and ETH there, what TokenMessengerV2 may take, what was broadcast. */
+    base: { usdc: 0n, eth: 10n ** 16n, allowance: 0n, sent: [] as string[], down: false },
+    /** Injective's MessageTransmitterV2: the nonces it has used (minted). */
+    usedNonces: new Set<string>(),
+    /** BridgeReceiver's INJ top-up: wei, its fee in USDC, paused. */
+    gasDrop: { wei: 2n * 10n ** 16n, fee: 500_000n, paused: false },
+  };
+  const word = (n: bigint) => `0x${n.toString(16).padStart(64, "0")}`;
+  const baseRpc = (r: Rpc) => {
+    const answer = (result: unknown) => ({ jsonrpc: "2.0", id: r.id, result });
+    const reverted = { jsonrpc: "2.0", id: r.id, error: { code: 3, message: "execution reverted" } };
+    if (r.method === "eth_chainId") return answer("0x2105");
+    if (r.method === "eth_getTransactionCount") return answer(`0x${state.base.sent.length.toString(16)}`);
+    if (r.method === "eth_getBlockByNumber") return answer({ number: "0x1000", baseFeePerGas: "0x5f5e100" });
+    if (r.method === "eth_maxPriorityFeePerGas") return answer("0xf4240");
+    if (r.method === "eth_getBalance") return answer(r.params[0] as unknown as string === ME_EVM ? `0x${state.base.eth.toString(16)}` : "0x0");
+    if (r.method === "eth_estimateGas") {
+      const tx = r.params[0] as unknown as { from: string; to: string; data: string };
+      assert.equal(tx.from.toLowerCase(), ME_EVM.toLowerCase());
+      if (tx.data.startsWith("0x095ea7b3")) return answer("0xb3b0");
+      if (/^0x(779b432d|8e0250ee)/.test(tx.data)) return BigInt(`0x${tx.data.slice(10, 74)}`) > state.base.allowance ? reverted : answer("0x29810");
+      return reverted;
+    }
+    if (r.method === "eth_sendRawTransaction") {
+      state.base.sent.push(r.params[0] as unknown as string);
+      return answer(`0x${"ba".repeat(31)}${state.base.sent.length.toString(16).padStart(2, "0")}`);
+    }
+    if (r.method === "eth_getTransactionReceipt") return answer(state.base.sent.length ? { status: "0x1" } : null);
+    const { to, data } = r.params[0]!;
+    // OP Stack's GasPriceOracle: the most a transaction's Ethereum data fee can be.
+    if (r.method === "eth_call" && to.toLowerCase() === "0x420000000000000000000000000000000000000f" && data.startsWith("0xf1c7a58b")) return answer(word(4_660_000_000n));
+    if (r.method === "eth_call" && to.toLowerCase() === BASE_USDC.toLowerCase()) {
+      const mine = data.slice(34, 74) === ME_EVM.slice(2).toLowerCase();
+      if (data.startsWith("0x70a08231")) return answer(word(mine ? state.base.usdc : 0n));
+      if (data.startsWith("0xdd62ed3e")) return answer(word(mine && data.slice(98, 138) === TOKEN_MESSENGER.slice(2).toLowerCase() ? state.base.allowance : 0n));
+    }
+    return reverted;
   };
   const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status });
   type Rpc = { id: number; method: string; params: { to: string; data: string }[] };
@@ -264,8 +305,8 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
       const tx = r.params[0] as unknown as { from: string; to: string; data: string };
       assert.ok([ME_EVM, ...state.evmAlso].some((a) => a.toLowerCase() === tx.from.toLowerCase()), `estimate from ${tx.from}`);
       if (tx.data === "0xdeadbeef") return { jsonrpc: "2.0", id: r.id, error: { code: 3, message: "execution reverted" } };
-      // 46,576 for an ERC20 transfer; approvals 46,000; a swap 250,000; 21,000 for a plain send.
-      const est = tx.data.startsWith("0xa9059cbb") ? "0xb5f0" : /^0x(095ea7b3|87517c45)/.test(tx.data) ? "0xb3b0" : /^0x(ddab6e8d|3593564c)/.test(tx.data) ? "0x3d090" : /^0x(779b432d|8e0250ee)/.test(tx.data) ? "0x76530" : "0x5208";
+      // 46,576 for an ERC20 transfer; approvals 46,000; a swap 250,000; a mint 200,000; 21,000 for a plain send.
+      const est = tx.data.startsWith("0xa9059cbb") ? "0xb5f0" : /^0x(095ea7b3|87517c45)/.test(tx.data) ? "0xb3b0" : /^0x(ddab6e8d|3593564c)/.test(tx.data) ? "0x3d090" : /^0x(779b432d|8e0250ee)/.test(tx.data) ? "0x76530" : tx.data.startsWith("0x57ecfd28") ? "0x30d40" : "0x5208";
       return answer(est);
     }
     if (r.method === "eth_blockNumber") return answer("0xb6137d8");
@@ -282,6 +323,14 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
       const a = data.slice(34, 74) === ME_EVM.slice(2).toLowerCase() ? state.permit2[`${token} ${spender}`] : undefined;
       const w = (n: bigint | number) => BigInt(n).toString(16).padStart(64, "0");
       return { jsonrpc: "2.0", id: r.id, result: `0x${w(a?.amount ?? 0n)}${w(a?.expiration ?? 0)}${w(0)}` };
+    }
+    if (r.method === "eth_call" && to.toLowerCase() === MESSAGE_TRANSMITTER.toLowerCase() && data.startsWith("0xfeb61724")) {
+      return answer(word(state.usedNonces.has(`0x${data.slice(10)}`) ? 1n : 0n));
+    }
+    if (r.method === "eth_call" && to.toLowerCase() === BRIDGE_RECEIVER.toLowerCase()) {
+      const g = state.gasDrop;
+      const v = { "0x2806f1c2": g.wei, "0xba3c944e": g.fee, "0xa424e452": g.paused ? 1n : 0n }[data];
+      if (v !== undefined) return answer(word(v));
     }
     const t = ERC20[to.toLowerCase()];
     if (r.method !== "eth_call" || !t) return { jsonrpc: "2.0", id: r.id, error: { code: 3, message: "execution reverted" } };
@@ -305,6 +354,11 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
     const url = new URL(input);
     state.hosts.add(url.host);
     const p = url.pathname;
+    if (init?.method === "POST" && url.host === "mainnet.base.org") {
+      if (state.base.down) return new Response("down", { status: 503 });
+      const body = JSON.parse(String(init.body)) as Rpc | Rpc[];
+      return json(200, Array.isArray(body) ? body.map(baseRpc) : baseRpc(body));
+    }
     if (init?.method === "POST" && p === "/" && url.host !== "solana-rpc.publicnode.com") {
       // EVM JSON-RPC.
       if (state.evmDown) return new Response("down", { status: 503 });
@@ -381,6 +435,13 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
       if (state.irisDown) return new Response("down", { status: 503 });
       // Circle's answers for Injective (domain 29) as of 2026-11-10's shape: standard only
       // from Injective is free; forwarding costs a flat fee per destination.
+      // Into Injective from Base: Fast costs 1 bp; Circle doesn't deliver on Injective.
+      if (p === "/v2/burn/USDC/fees/6/29") {
+        return json(200, [
+          { finalityThreshold: 1000, minimumFee: 1 },
+          { finalityThreshold: 2000, minimumFee: 0 },
+        ]);
+      }
       const fees = /^\/v2\/burn\/USDC\/fees\/29\/(\d+)$/.exec(p);
       if (fees) {
         const setup = url.searchParams.get("includeRecipientSetup") === "true";
@@ -391,7 +452,7 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
           { finalityThreshold: 2000, minimumFee: 0, ...forwardFee },
         ]);
       }
-      if (p === "/v2/messages/29") {
+      if (p === "/v2/messages/29" || p === "/v2/messages/6") {
         const m = state.iris[url.searchParams.get("transactionHash") ?? ""];
         return m ? json(200, { messages: m }) : json(404, { error: "Message not found" });
       }

@@ -282,8 +282,14 @@ pub(crate) enum OwnCall {
     /// A bridge transfer: `TokenMessengerV2` calldata (built by `injective-usdc-bridge`),
     /// sent to it (`to`). Built only when the vault reads it as a USDC burn to a chain it
     /// names, that Circle delivers, to an address that chain can use, with Circle's most
-    /// below the amount. `amount` is "0".
+    /// below the amount. `amount` is "0". On a chain USDC comes from, the burn must instead
+    /// pay the signer on Injective (`cctp::source_call`), and `BridgeApprove` is on that
+    /// chain's USDC.
     Bridge { data: String },
+    /// `MessageTransmitterV2.receiveMessage(message, attestation)` (`to`): mints a transfer
+    /// Circle attested, from a chain the wallet names, of its USDC, to the signer, which
+    /// anyone may submit. `amount` is "0". Both are hex.
+    BridgeReceive { message: String, attestation: String },
 }
 
 fn own_call(
@@ -383,7 +389,7 @@ fn own_call(
             let forwarded = match b.hook {
                 Hook::Forward => true,
                 Hook::ForwardWithAccount { .. } => domain.kind == AddressKind::Solana,
-                Hook::None | Hook::Other(_) => false,
+                Hook::None | Hook::GasDrop { .. } | Hook::Other(_) => false,
             };
             if !forwarded || !domain.forwarding || !b.permissionless() {
                 return refuse("the wallet's transfers are delivered by Circle");
@@ -396,6 +402,36 @@ fn own_call(
             }
             if b.min_finality != cctp::FAST && b.min_finality != cctp::STANDARD {
                 return refuse("an unknown finality threshold");
+            }
+            Ok(Eip1559Tx::contract_call(chain_id, to, U256::ZERO, data))
+        }
+        OwnCall::BridgeReceive { message, attestation } => {
+            use choice_wallet_injective::cctp;
+            let c = &network.cctp;
+            if !amount.is_zero() {
+                return Err(VaultError::bad("a mint sends no INJ"));
+            }
+            let strip = |s: &str| s.strip_prefix("0x").unwrap_or(s).to_owned();
+            let data = cctp::receive_calldata(
+                &hex(&strip(message), "message")?,
+                &hex(&strip(attestation), "attestation")?,
+            );
+            let m = cctp::receive(c, &to, U256::ZERO, &data)
+                .ok_or_else(|| VaultError::bad("that isn't Circle's MessageTransmitterV2 on this network"))?
+                .map_err(|e| VaultError::bad(format!("not a mint the wallet can read: {e}")))?;
+            let refuse = |why: &str| Err(VaultError::bad(format!("refused: {why}")));
+            let Some(source) = c.source_domain(m.source_domain) else {
+                return refuse("it comes from a chain the wallet doesn't name");
+            };
+            let tm = cctp::word(&c.token_messenger());
+            if m.destination_domain != cctp::INJECTIVE_DOMAIN || m.sender != tm || m.recipient != tm {
+                return refuse("it isn't a USDC transfer to Injective");
+            }
+            if m.burn_token != cctp::word(&source.usdc()) {
+                return refuse("it mints a token other than USDC");
+            }
+            if !m.permissionless() || m.paid() != Some(*from) || m.amount.is_zero() {
+                return refuse("it doesn't pay this account");
             }
             Ok(Eip1559Tx::contract_call(chain_id, to, U256::ZERO, data))
         }
@@ -421,6 +457,9 @@ fn own_call(
 }
 
 pub(crate) fn evm(p: EvmParams) -> Result<Value, VaultError> {
+    if let Some((network, source)) = chains::source(&p.chain) {
+        return source_evm(p, network, source);
+    }
     let entry = chains::find(&p.chain)?;
     let chain_id = entry.evm()?;
     let address = |s: &str| -> Result<choice_wallet_core::EthAddress, VaultError> {
@@ -458,6 +497,66 @@ pub(crate) fn evm(p: EvmParams) -> Result<Value, VaultError> {
         (Some(token), None, None) => Eip1559Tx::erc20_transfer(chain_id, address(token)?, &to, amount)?,
         (None, None, None) => Eip1559Tx::native_transfer(chain_id, to, amount)?,
     };
+    with_fees(&mut tx, &p)?;
+    Ok(request(entry.id, &from, &tx))
+}
+
+/// A step of a bridge transfer into Injective, on the chain the USDC comes from: an exact
+/// approval of its USDC for `TokenMessengerV2` (`BridgeApprove`), or the burn (`Bridge`,
+/// calldata from `injective-usdc-bridge`). Built only when `decode` will read it the same
+/// way: a deposit into the signer's own account on Injective.
+fn source_evm(
+    p: EvmParams,
+    network: &'static choice_wallet_injective::chain::Network,
+    source: &'static choice_wallet_injective::cctp::Source,
+) -> Result<Value, VaultError> {
+    let address = |s: &str| {
+        choice_wallet_core::EthAddress::parse_hex(s.trim())
+            .map_err(|_| VaultError::bad(format!("invalid address {s:?}")))
+    };
+    let (from, to) = (address(&p.from)?, address(&p.to)?);
+    let amount = U256::from_dec_str(&p.amount)?;
+    let only = || {
+        VaultError::bad(format!(
+            "on {} the wallet makes only USDC bridge transfers to Injective",
+            source.name
+        ))
+    };
+    if p.token.is_some() || p.revoke.is_some() {
+        return Err(only());
+    }
+    let mut tx = match &p.call {
+        Some(OwnCall::BridgeApprove) => {
+            if to != source.usdc() {
+                return Err(VaultError::bad("a bridge approval is on USDC"));
+            }
+            Eip1559Tx::contract_call(
+                source.chain_id,
+                to,
+                U256::ZERO,
+                choice_wallet_evm::erc20::approve_calldata(&network.cctp.token_messenger(), &amount),
+            )
+        }
+        Some(OwnCall::Bridge { data }) => {
+            if !amount.is_zero() {
+                return Err(VaultError::bad("a bridge transfer sends no coin"));
+            }
+            Eip1559Tx::contract_call(
+                source.chain_id,
+                to,
+                U256::ZERO,
+                hex(data.strip_prefix("0x").unwrap_or(data), "data")?,
+            )
+        }
+        _ => return Err(only()),
+    };
+    with_fees(&mut tx, &p)?;
+    let r = choice_wallet_evm::request::TxRequest { from, tx };
+    crate::request::source_call(network, source, &r).map_err(|e| VaultError::bad(e.message))?;
+    Ok(request(&p.chain, &r.from, &r.tx))
+}
+
+fn with_fees(tx: &mut Eip1559Tx, p: &EvmParams) -> Result<(), VaultError> {
     tx.nonce = p.nonce.0;
     tx.gas_limit = p.gas_limit.0;
     let fee = |s: &str| {
@@ -467,13 +566,18 @@ pub(crate) fn evm(p: EvmParams) -> Result<Value, VaultError> {
     };
     tx.max_fee_per_gas = fee(&p.max_fee_per_gas)?;
     tx.max_priority_fee_per_gas = fee(&p.max_priority_fee_per_gas)?;
+    Ok(())
+}
+
+/// The sign request for `tx`, in the form a dapp's `eth_sendTransaction` takes.
+fn request(chain: &str, from: &choice_wallet_core::EthAddress, tx: &Eip1559Tx) -> Value {
     let q = |n: u128| U256::from_u128(n).to_quantity();
-    Ok(json!({
+    json!({
         "evm_transaction": {
-            "chain": entry.id,
+            "chain": chain,
             "tx": {
                 "type": "0x2",
-                "chainId": q(u128::from(chain_id)),
+                "chainId": q(u128::from(tx.chain_id)),
                 "from": from.to_checksum_hex(),
                 "to": tx.to.to_checksum_hex(),
                 "value": tx.value.to_quantity(),
@@ -484,5 +588,5 @@ pub(crate) fn evm(p: EvmParams) -> Result<Value, VaultError> {
                 "maxPriorityFeePerGas": q(tx.max_priority_fee_per_gas),
             }
         }
-    }))
+    })
 }

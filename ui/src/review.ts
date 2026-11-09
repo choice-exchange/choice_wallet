@@ -54,6 +54,24 @@ export type BridgeLine = {
   caller: string | null;
 };
 
+/** USDC burned on another chain into this account on Injective, as the vault read it. */
+export type BridgeInLine = {
+  coin: Coin;
+  maxFee: Coin;
+  /** Where it comes from. */
+  chain: string;
+  /** This account (0x), which the vault requires. */
+  recipient: string;
+  /** Who mints it on Injective: anyone (Choice's bridge service), or Choice's bridge
+   *  contract, which also buys INJ for gas with at most `dropFee`. */
+  delivery: "anyone" | "gas_drop";
+  dropFee: Coin | null;
+  least: Coin;
+};
+
+/** A transfer Circle attested, minted on Injective (`receiveMessage`). */
+export type MintLine = { coin: Coin; fee: Coin; chain: string | null; recipient: string | null };
+
 /** Coins the signer moves from one of its trading accounts back to its balance. */
 export type MoveLine = { nonce: number; coin: Coin };
 
@@ -66,6 +84,8 @@ export type Shown = {
   moves: MoveLine[];
   swaps: SwapLine[];
   bridges: BridgeLine[];
+  bridgesIn: BridgeInLine[];
+  mints: MintLine[];
   approvals: ApprovalLine[];
   converts: Conversion[];
   stakes: StakeLine[];
@@ -73,7 +93,7 @@ export type Shown = {
   /** One line each for anything else. */
   others: string[];
   /** For EVM: gas limit × max fee per gas, which is what Injective charges (no refund of
-   *  unused gas). */
+   *  unused gas). On another chain, in its coin (`native:<chain>`). */
   fee: Coin[];
   memo: string;
   evm: boolean;
@@ -99,7 +119,9 @@ export function shown(display: SendReview["display"], network: NetworkId, swap?:
   const net = NETWORKS[network];
   if (display.kind === "evm_transaction") {
     const d = display as EvmDisplay;
-    const base = { fee: [{ denom: net.feeDenom, amount: d.max_gas_cost }], memo: "", evm: true, converts: [], stakes: [], revokes: [], swaps: [], bridges: [], approvals: [], nfts: [], moves: [] };
+    // Signed on a chain USDC comes from: its fee is in that chain's coin.
+    const feeDenom = d.source ? `native:${d.chain}` : net.feeDenom;
+    const base = { fee: [{ denom: feeDenom, amount: d.max_gas_cost }], memo: "", evm: true, converts: [], stakes: [], revokes: [], swaps: [], bridges: [], bridgesIn: [], mints: [], approvals: [], nfts: [], moves: [] };
     // An address as a wallet key: INJ, or the swap's own tokens, or an EVM token.
     const key = (a: string, side?: "from" | "to") => {
       if (a.toLowerCase() === NATIVE) return net.feeDenom;
@@ -135,6 +157,22 @@ export function shown(display: SendReview["display"], network: NetworkId, swap?:
         bridges: [{ coin: { denom: usdc, amount: c.amount }, maxFee: { denom: usdc, amount: c.max_fee }, chain: c.chain, recipient: c.recipient, owner: c.account_owner, delivery: c.delivery, caller: c.destination_caller }],
       };
     }
+    if (d.call.type === "bridge_in") {
+      const c = d.call;
+      const usdc = key(c.token, "from");
+      const at = (amount: string) => ({ denom: usdc, amount });
+      return {
+        ...base,
+        sends: [],
+        others: [],
+        bridgesIn: [{ coin: at(c.amount), maxFee: at(c.max_fee), chain: c.chain, recipient: c.recipient, delivery: c.delivery, dropFee: c.max_drop_fee === null ? null : at(c.max_drop_fee), least: at(c.least) }],
+      };
+    }
+    if (d.call.type === "bridge_receive") {
+      const c = d.call;
+      const usdc = key(c.token, "to");
+      return { ...base, sends: [], others: [], mints: [{ coin: { denom: usdc, amount: c.minted }, fee: { denom: usdc, amount: c.fee }, chain: c.chain, recipient: c.recipient }] };
+    }
     if (d.call.type === "approve" && d.call.amount !== "0") {
       return { ...base, sends: [], others: [], approvals: [{ token: key(d.to, "from"), spender: d.call.spender, amount: d.call.amount, via: "token" }] };
     }
@@ -154,7 +192,7 @@ export function shown(display: SendReview["display"], network: NetworkId, swap?:
     return { ...base, sends: [], others: [`Contract call to ${d.to}`] };
   }
   const c = display as CosmosDisplay;
-  const out: Shown = { sends: [], nfts: [], moves: [], swaps: [], bridges: [], approvals: [], converts: [], stakes: [], revokes: [], others: [], fee: c.fee.amount, memo: c.memo, evm: false };
+  const out: Shown = { sends: [], nfts: [], moves: [], swaps: [], bridges: [], bridgesIn: [], mints: [], approvals: [], converts: [], stakes: [], revokes: [], others: [], fee: c.fee.amount, memo: c.memo, evm: false };
   for (const msg of c.messages) {
     const m = msg as Record<string, unknown>;
     const kind = STAKE_KINDS[String(m["type"])];

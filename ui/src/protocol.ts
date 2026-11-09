@@ -121,6 +121,24 @@ export type UiRequest =
   | { type: "prepare_bridge"; quote: string }
   /** Where a bridge transfer is, by its Injective transaction hash. */
   | { type: "bridge_status"; hash: string }
+  /** The chains USDC can come in from (Circle's CCTP), signed with this account's own key
+   *  there. */
+  | { type: "bridge_in_routes" }
+  /** This account's USDC and gas coin on each of those chains (each one's public endpoint
+   *  is asked). */
+  | { type: "bridge_in_balances" }
+  /** Circle's fee for bringing `amount` (base units, or "max") of USDC from `from` (a key of
+   *  `bridge_in_routes`) into this account; `gasDrop` also buys INJ for gas (mainnet). */
+  | { type: "bridge_in_quote"; from: string; amount: string; gasDrop: boolean }
+  /** The next step of a quoted transfer in, for review: the approval or the burn, on the
+   *  chain the USDC is on. */
+  | { type: "prepare_bridge_in"; quote: string }
+  /** Where a transfer in is, by the burn's hash on `chain`. */
+  | { type: "bridge_in_status"; chain: string; hash: string }
+  /** Mint an attested transfer in on Injective from this account (when nobody has). */
+  | { type: "prepare_bridge_receive"; chain: string; hash: string }
+  /** Transfers in this account sent that haven't arrived. */
+  | { type: "bridge_in_pending" }
   /** Convert `amount` (base units, or "max") of a token into its other form (`convertsTo`):
    *  a CW20 into its bank denom through the CW20 adapter, or back. Confirmed like a send. */
   | { type: "prepare_convert"; denom: string; amount: string }
@@ -147,7 +165,8 @@ export type UiRequest =
   | { type: "confirm_send"; digest: string; confirm?: string }
   /** The Ledger's signature for the prepared send `confirm_send` handed to it. */
   | ({ type: "ledger_signed"; digest: string } & DeviceSignature)
-  | { type: "tx_status"; hash: string }
+  /** A transaction's state; `chain` when it was signed on a chain USDC comes from. */
+  | { type: "tx_status"; hash: string; chain?: string }
   /** A site's request waiting in an approval window (see `DappRequest`). */
   | { type: "dapp_request"; id: string }
   /** Prepare and decode a waiting signature request, for its approval screen. */
@@ -261,7 +280,49 @@ export type EvmDisplay = {
     | { type: "approve"; spender: string; amount: string }
     | { type: "permit2_approve"; token: string; spender: string; amount: string; expiration: number }
     | EvmSwapCall
-    | EvmBridgeCall;
+    | EvmBridgeCall
+    | EvmBridgeInCall
+    | EvmBridgeReceiveCall;
+  /** Signed on a chain USDC comes from, not Injective: its name, and its gas coin. */
+  source?: { name: string; symbol: string; decimals: number };
+};
+
+/** On a chain USDC comes from: a burn into this account on Injective (the only kind of
+ *  transfer the vault signs there). */
+export type EvmBridgeInCall = {
+  type: "bridge_in";
+  amount: string;
+  /** USDC on that chain. */
+  token: string;
+  chain: string;
+  /** This account, on Injective. */
+  recipient: string;
+  max_fee: string;
+  finality: number;
+  /** Who mints it on Injective: anyone (Choice's bridge service), or Choice's BridgeReceiver,
+   *  which also buys INJ for gas with at most `max_drop_fee`. */
+  delivery: "anyone" | "gas_drop";
+  max_drop_fee: string | null;
+  /** The least that arrives. */
+  least: string;
+};
+
+/** On Injective: the mint of a transfer Circle attested (`receiveMessage`). */
+export type EvmBridgeReceiveCall = {
+  type: "bridge_receive";
+  domain: number;
+  /** Where it was burned, when the wallet knows the chain. */
+  chain: string | null;
+  to_injective: boolean;
+  /** USDC on Injective. */
+  token: string;
+  known_token: boolean;
+  amount: string;
+  /** What Circle keeps; `minted` arrives. */
+  fee: string;
+  minted: string;
+  recipient: string | null;
+  nonce: string;
 };
 
 /** USDC burned on Injective over Circle's CCTP, as the vault reads its calldata. */
@@ -322,7 +383,80 @@ export type SendReview = {
   /** One step of a bridge transfer: where it goes, as the quote said (the vault's reading in
    *  `display` is held to it). */
   bridge?: BridgeStepInfo;
+  /** One step of a transfer in, likewise. */
+  bridgeIn?: BridgeInStepInfo;
+  /** On an OP Stack chain: the most its Ethereum data fee can be (wei of its coin), which it
+   *  charges besides gas. */
+  dataFee?: string;
 };
+
+export type BridgeInStepInfo = {
+  /** On the chain the USDC is on, then on Injective only if nobody mints it. */
+  step: "approve" | "burn" | "receive";
+  left: number;
+  chain: string;
+  chainKey: string;
+  amount: string;
+  maxFee: string;
+  /** The INJ top-up: its most in USDC, and the INJ (wei) it buys; "0" without one. */
+  gasDropFee: string;
+  gasDropInj: string;
+  minReceived: string;
+  /** USDC's wallet key on that chain (in `tokens`), and on Injective. */
+  usdc: string;
+  injUsdc: string;
+};
+
+/** A chain USDC can come in from. `symbol` is its gas coin; `fast`: Circle attests a burn
+ *  there in seconds rather than after its finality. */
+export type BridgeSource = { key: string; name: string; symbol: string; fast: boolean };
+
+export type BridgeInRoutes = {
+  chains: BridgeSource[];
+  /** This account's 0x address: its own on every EVM chain. */
+  address: string;
+  /** USDC's wallet key on Injective. */
+  usdc: string;
+  /** This account's INJ there (wei): with none, the top-up starts on. */
+  inj: string;
+  /** The network has Choice's INJ top-up. */
+  gasDrop: boolean;
+};
+
+/** This account on one source chain; null where its endpoint didn't answer. */
+export type BridgeInBalance = { chain: string; usdc: string | null; native: string | null };
+
+/** Circle's quote for bringing USDC in. USDC base units; gas in the chain's coin (wei). */
+export type BridgeInQuote = {
+  id: string;
+  chain: string;
+  chainName: string;
+  symbol: string;
+  amount: string;
+  maxFee: string;
+  gasDropFee: string;
+  /** INJ the top-up buys, in wei. */
+  gasDropInj: string;
+  minReceived: string;
+  fast: boolean;
+  /** How long Circle usually takes to confirm it. */
+  etaMs: number;
+  steps: BridgeStep[];
+  /** About what the steps cost there, and what the account has for it. */
+  gasNeed: string;
+  gasHeld: string;
+};
+
+/** Where a transfer in is: Circle hasn't seen it, is confirming it, confirmed it (`ready`:
+ *  waiting to be minted; `selfMint` when this account can mint it), or it arrived. */
+export type BridgeInStatus = {
+  phase: "pending" | "attesting" | "ready" | "delivered";
+  selfMint: boolean;
+  track: string;
+  etaMs: number;
+};
+
+export type BridgeInPending = { chain: string; chainName: string; hash: string; amount: string; at: number };
 
 export type BridgeStep = "approve" | "burn";
 
@@ -451,7 +585,9 @@ export type SwapQuote = {
 /** A token the swap screen offers. */
 export type SwapToken = TokenInfo & { amount?: string };
 
-export type Sent = { hash: string; explorer: string };
+/** A broadcast transaction. `chain` names the bridge registry's chain when it was signed on
+ *  another chain than Injective (a step of a bridge transfer in). */
+export type Sent = { hash: string; explorer: string; chain?: string };
 
 /** A staking action. Amounts are base units of INJ, or "max". `validator` is where the
  *  stake is (for "move", where it leaves; for "claim", absent to claim from every one). */
@@ -558,7 +694,7 @@ export type ActivityItem = {
   approval?: { denom: string; spender: string; amount: string };
   /** For kind "bridge": USDC sent to another chain over Circle's CCTP. `chain` and
    *  `recipient` (a 0x address, or a Solana USDC account) when the wallet knows the domain. */
-  bridge?: { domain: number; mintRecipient: string; chain?: string; recipient?: string };
+  bridge?: { domain: number; mintRecipient: string; incoming?: true; chain?: string; recipient?: string };
 };
 
 export type ActivityPage = {
@@ -678,6 +814,13 @@ export type Replies = {
   bridge_quote: BridgeQuote;
   prepare_bridge: SendReview;
   bridge_status: BridgeStatus;
+  bridge_in_routes: BridgeInRoutes;
+  bridge_in_balances: BridgeInBalance[];
+  bridge_in_quote: BridgeInQuote;
+  prepare_bridge_in: SendReview;
+  bridge_in_status: BridgeInStatus;
+  prepare_bridge_receive: SendReview;
+  bridge_in_pending: BridgeInPending[];
   prepare_convert: SendReview;
   staking: StakingSummary;
   approvals: ApprovalsSummary;
