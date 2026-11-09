@@ -165,5 +165,17 @@ export function createStaking(sender: Sender) {
     }
   }
 
-  return { summary, prepare };
+  /** Names of these validators that are in the active set; none when it can't be read. */
+  async function names(network: NetworkId, addresses: readonly string[]): Promise<Record<string, string>> {
+    if (addresses.length === 0) return {};
+    try {
+      const wanted = new Set(addresses);
+      const set = await activeSet(await sender.lcd(network));
+      return Object.fromEntries(set.filter((v) => wanted.has(v.address) && v.moniker).map((v) => [v.address, v.moniker]));
+    } catch {
+      return {};
+    }
+  }
+
+  return { summary, prepare, names };
 }

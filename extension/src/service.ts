@@ -347,7 +347,8 @@ export function createService(d: Deps) {
         if (r.type === "activity") {
           const page = await sender.activity(a.net, a.account, r.page);
           if (!page.ok) return page;
-          return { ok: true, result: { ...page.result, filter: await tokenFilter(a.net) } };
+          const named = [...new Set(page.result.items.map((i) => i.counterparty ?? "").filter((c) => /^[a-z]+valoper1/.test(c)))];
+          return { ok: true, result: { ...page.result, filter: await tokenFilter(a.net), validators: await staking.names(a.net, named) } };
         }
         if (r.type === "prepare_send") return sender.prepare(a.net, a.account, r);
         if (r.type === "prepare_convert") return sender.prepareConvert(a.net, a.account, r);

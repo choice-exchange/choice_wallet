@@ -40,7 +40,7 @@ const TITLE: Record<ActivityKind, string> = {
   ibc: "Sent to another chain",
   stake: "Staked",
   unstake: "Unstaked",
-  redelegate: "Redelegated",
+  redelegate: "Stake moved",
   rewards: "Rewards claimed",
   other: "Transaction",
 };
@@ -65,6 +65,7 @@ const ICON: Record<ActivityKind, (p: { size?: number }) => ReactNode> = {
 type Tokens = ActivityPage["tokens"];
 
 export function ActivityView({ network, tabs }: { network: NetworkId; tabs: ReactNode }) {
+  const [validators, setValidators] = useState<Record<string, string>>({});
   const backend = useBackend();
   const { run, error, busy } = useRequest();
   const [items, setItems] = useState<ActivityItem[] | null>(null);
@@ -86,6 +87,7 @@ export function ActivityView({ network, tabs }: { network: NetworkId; tabs: Reac
       return all.sort((a, b) => (BigInt(b.height) > BigInt(a.height) ? 1 : BigInt(b.height) < BigInt(a.height) ? -1 : 0));
     });
     setTokens((prev) => ({ ...(p === 1 ? {} : prev), ...r.tokens }));
+    setValidators((prev) => ({ ...prev, ...(r.validators ?? {}) }));
     setFilter(r.filter);
     setPage(p);
     setMore(r.more);
@@ -146,7 +148,7 @@ export function ActivityView({ network, tabs }: { network: NetworkId; tabs: Reac
               <div className="eyebrow">{g.day}</div>
               <div className="activity-list">
                 {g.rows.map((a) => (
-                  <Row key={a.hash} a={a} tokens={tokens} dim={junk(a)} onOpen={() => backend.openLink(explorerTxUrl(NETWORKS[network], a.evmHash ?? a.hash))} />
+                  <Row key={a.hash} a={a} tokens={tokens} validators={validators} dim={junk(a)} onOpen={() => backend.openLink(explorerTxUrl(NETWORKS[network], a.evmHash ?? a.hash))} />
                 ))}
               </div>
             </div>
@@ -171,13 +173,15 @@ export function ActivityView({ network, tabs }: { network: NetworkId; tabs: Reac
   );
 }
 
-function Row({ a, tokens, dim, onOpen }: { a: ActivityItem; tokens: Tokens; dim: boolean; onOpen: () => void }) {
+function Row({ a, tokens, validators, dim, onOpen }: { a: ActivityItem; tokens: Tokens; validators: Record<string, string>; dim: boolean; onOpen: () => void }) {
   const Icon = a.ok ? ICON[a.kind] : WarningIcon;
   const incoming = a.ok && a.changes.length > 0 && a.changes.every((c) => !c.amount.startsWith("-"));
   const revoked = a.approval?.amount === "0";
   const title = a.kind === "other" ? (a.label ?? TITLE.other) : revoked ? "Approval removed" : TITLE[a.kind];
-  const preposition = a.kind === "receive" ? "from" : a.kind === "approve" ? "for" : a.kind === "stake" || a.kind === "unstake" || a.kind === "redelegate" ? "with" : "to";
-  const who = a.counterparty === undefined ? "" : ` · ${preposition} ${shortAddress(a.counterparty)}`;
+  const preposition = a.kind === "receive" ? "from" : a.kind === "approve" ? "for" : a.kind === "stake" || a.kind === "unstake" ? "with" : "to";
+  // A validator by its name when the active set has it (the name is the validator's own).
+  const party = a.counterparty === undefined ? "" : (validators[a.counterparty] ?? shortAddress(a.counterparty));
+  const who = a.counterparty === undefined ? "" : ` · ${preposition} ${party}`;
   const lines = a.changes.slice(0, 2);
   return (
     <button className={dim ? "activity is-hidden" : "activity"} title={a.evmHash ?? a.hash} onClick={onOpen}>

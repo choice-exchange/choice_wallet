@@ -158,6 +158,8 @@ test("staking, rewards, IBC, the orderbook, and anything else by its name", () =
   };
   assert.deepEqual(kind({ "@type": "/cosmos.staking.v1beta1.MsgDelegate", validator_address: val }), ["stake", undefined, val]);
   assert.deepEqual(kind({ "@type": "/cosmos.staking.v1beta1.MsgUndelegate", validator_address: val }), ["unstake", undefined, val]);
+  assert.deepEqual(kind({ "@type": "/cosmos.staking.v1beta1.MsgBeginRedelegate", validator_src_address: val, validator_dst_address: `${val}x` }), ["redelegate", undefined, `${val}x`]);
+  assert.deepEqual(kind({ "@type": "/cosmos.staking.v1beta1.MsgCancelUnbondingDelegation", validator_address: val }), ["stake", undefined, val]);
   assert.deepEqual(kind({ "@type": "/cosmos.distribution.v1beta1.MsgWithdrawDelegatorReward" }), ["rewards", undefined, undefined]);
   assert.deepEqual(kind({ "@type": "/ibc.applications.transfer.v1.MsgTransfer", receiver: "cosmos1abc" }), ["ibc", undefined, "cosmos1abc"]);
   assert.deepEqual(kind({ "@type": "/injective.exchange.v2.MsgCreateSpotLimitOrder" }), ["orderbook", undefined, undefined]);

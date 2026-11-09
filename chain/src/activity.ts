@@ -232,6 +232,8 @@ export function summarize(tx: IndexedTx, address: string, evm?: EvmView): Activi
   if (t === "/ibc.applications.transfer.v1.MsgTransfer") return kindOf("ibc", str("receiver"));
   if (t === "/cosmos.staking.v1beta1.MsgDelegate") return kindOf("stake", str("validator_address"));
   if (t === "/cosmos.staking.v1beta1.MsgUndelegate") return kindOf("unstake", str("validator_address"));
+  // Cancelling an unstaking stakes it again.
+  if (t === "/cosmos.staking.v1beta1.MsgCancelUnbondingDelegation") return kindOf("stake", str("validator_address"));
   if (t === "/cosmos.staking.v1beta1.MsgBeginRedelegate") return kindOf("redelegate", str("validator_dst_address"));
   if (t === "/cosmos.distribution.v1beta1.MsgWithdrawDelegatorReward") return kindOf("rewards");
   if (t.startsWith("/injective.exchange.")) return kindOf("orderbook");

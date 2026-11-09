@@ -628,3 +628,69 @@ fn grants_on_json_paths_get_the_same_treatment() {
         "inj1d7…z8h8 could send ALL your tokens, until 2030-01-01."
     );
 }
+
+/// Test validators (fixed bytes, not real ones).
+const VAL_A: &str = "injvaloper1qyqszqgpqyqszqgpqyqszqgpqyqszqgp0url7q";
+const VAL_B: &str = "injvaloper1qgpqyqszqgpqyqszqgpqyqszqgpqyqsz7c964k";
+
+fn build_staking(messages: Value, sign_mode: &str) -> Result<Value, Value> {
+    call(
+        "build_cosmos",
+        json!({
+            "chain": "cosmos:injective-1",
+            "signer": signer_key(0),
+            "messages": messages,
+            "account_number": "17",
+            "sequence": "3",
+            "fee": { "amount": [{ "denom": "inj", "amount": "20000000000000" }], "gas_limit": "250000" },
+            "sign_mode": sign_mode,
+        }),
+    )
+}
+
+#[test]
+fn own_staking_builds_decodes_and_signs_both_ways() {
+    let inj = |a: &str| json!({ "denom": "inj", "amount": a });
+    let messages = json!([
+        { "type": "delegate", "validator": VAL_A, "amount": inj("5000000000000000000") },
+        { "type": "undelegate", "validator": VAL_A, "amount": inj("1000000000000000000") },
+        { "type": "redelegate", "from": VAL_A, "to": VAL_B, "amount": inj("2") },
+        { "type": "cancel_unbonding", "validator": VAL_B, "amount": inj("7"), "height": "1234" },
+        { "type": "withdraw_rewards", "validator": VAL_A },
+    ]);
+    let me = vectors("direct")["accounts"][0]["inj"].clone();
+    for mode in ["direct", "amino_json"] {
+        let request = build_staking(messages.clone(), mode).unwrap()["request"].clone();
+        let d = ok("decode", json!({ "request": request }));
+        let shown: Vec<(&str, &Value)> = d["display"]["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| (m["type"].as_str().unwrap(), &m["delegator"]))
+            .collect();
+        assert_eq!(
+            shown,
+            [("delegate", &me), ("undelegate", &me), ("redelegate", &me), ("cancel_unbonding", &me), ("withdraw_rewards", &me)],
+            "{mode}"
+        );
+        let m = &d["display"]["messages"];
+        assert_eq!((&m[2]["from_validator"], &m[2]["to_validator"]), (&json!(VAL_A), &json!(VAL_B)), "{mode}");
+        assert_eq!(m[3]["creation_height"], 1234, "{mode}");
+        let rules: Vec<&str> = d["risk"]["findings"].as_array().unwrap().iter().map(|f| f["rule"].as_str().unwrap()).collect();
+        assert_eq!(rules, ["stake", "unstake"], "{mode}");
+        assert_eq!(d["risk"]["level"], "info", "{mode}");
+        let signed = approve_and_sign(&request, account(0));
+        assert!(signed["tx_raw"].as_str().is_some_and(|t| !t.is_empty()), "{mode}: {signed}");
+    }
+
+    // An account address where a validator goes, and a move to the same validator, are refused.
+    let me_str = me.as_str().unwrap();
+    for bad in [
+        json!([{ "type": "delegate", "validator": me_str, "amount": inj("1") }]),
+        json!([{ "type": "redelegate", "from": VAL_A, "to": VAL_A, "amount": inj("1") }]),
+        json!([{ "type": "delegate", "validator": VAL_A, "amount": inj("0") }]),
+        json!([{ "type": "cancel_unbonding", "validator": VAL_A, "amount": inj("1"), "height": "0" }]),
+    ] {
+        assert!(build_staking(bad.clone(), "direct").is_err(), "{bad}");
+    }
+}

@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { STAKE_RESERVE } from "../src/staking";
-import { chain, code, GAS_PRICE, INJ, ME, ok, VAL_A, VAL_B, VAL_JAILED, wallet } from "./fake";
+import { chain, code, GAS_PRICE, INJ, indexed, ME, ok, VAL_A, VAL_B, VAL_JAILED, wallet } from "./fake";
 
 type Review = { digest: string; display: { messages: Record<string, unknown>[]; fee: { amount: { amount: string }[] } }; risk: { level: string; findings: { rule: string }[] } };
 type Summary = {
@@ -130,4 +130,20 @@ test("a watched account can't stake", async () => {
   assert.equal(code(await service.handle({ type: "prepare_stake", action: "stake", validator: VAL_A, amount: "1" })), "watch_only");
   // It can still see what it has staked.
   ok(await service.handle({ type: "staking" }));
+});
+
+test("activity names validators from the active set", async () => {
+  const net = chain();
+  const BONDED_POOL = "inj1fl48vsnmsdzcv85q5d2q4z5ajdha8yu3lj7tt0";
+  const delegate = {
+    ...indexed(130, ME, BONDED_POOL, "1000000000000000000inj"),
+    txhash: "D".repeat(64),
+  };
+  delegate.tx.body.messages = [{ "@type": "/cosmos.staking.v1beta1.MsgDelegate", delegator_address: ME, validator_address: VAL_A, amount: { denom: "inj", amount: "1000000000000000000" } } as never];
+  net.state.signedEvm.push(delegate);
+  const { service } = await wallet(net);
+  const page = ok<{ items: { hash: string; kind: string; counterparty?: string }[]; validators?: Record<string, string> }>(await service.handle({ type: "activity", page: 1 }));
+  const row = page.items.find((i) => i.hash === "D".repeat(64));
+  assert.deepEqual([row?.kind, row?.counterparty], ["stake", VAL_A]);
+  assert.deepEqual(page.validators, { [VAL_A]: "Alpha" });
 });

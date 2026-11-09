@@ -601,6 +601,81 @@ mod tests {
         }
     }
 
+    const INJ: Chain = Chain {
+        chain_id: "injective-1",
+        bech32_prefix: "inj",
+        key: crate::chain::KeyKind::EthSecp256k1 {
+            pub_key_type_url: "/test.PubKey",
+        },
+        tokenfactory: None,
+        amino_names: &[],
+    };
+
+    #[test]
+    fn staking_in_both_json_forms() {
+        let five = || Coin::new("inj", "5").unwrap();
+        let proto = serde_json::json!({
+            "@type": DELEGATE, "delegator_address": "inj1me", "validator_address": "injvaloper1v",
+            "amount": { "denom": "inj", "amount": "5" },
+        });
+        assert_eq!(
+            message(&proto, Form::Proto, &INJ, 0).unwrap(),
+            Msg::Delegate {
+                delegator: "inj1me".into(),
+                validator: "injvaloper1v".into(),
+                amount: five(),
+            }
+        );
+        let amino = |name: &str, value: serde_json::Value| {
+            message(
+                &serde_json::json!({ "type": name, "value": value }),
+                Form::Amino,
+                &INJ,
+                0,
+            )
+        };
+        assert_eq!(
+            amino(
+                "cosmos-sdk/MsgCancelUnbondingDelegation",
+                serde_json::json!({ "delegator_address": "inj1me", "validator_address": "injvaloper1v", "amount": { "amount": "5", "denom": "inj" }, "creation_height": "42" })
+            )
+            .unwrap(),
+            Msg::CancelUnbonding {
+                delegator: "inj1me".into(),
+                validator: "injvaloper1v".into(),
+                amount: five(),
+                creation_height: 42,
+            }
+        );
+        assert_eq!(
+            amino(
+                "cosmos-sdk/MsgTransferDelegation",
+                serde_json::json!({ "delegator_address": "inj1me", "validator_address": "injvaloper1v", "receiver_address": "inj1them", "amount": { "amount": "5", "denom": "inj" } })
+            )
+            .unwrap(),
+            Msg::TransferDelegation {
+                delegator: "inj1me".into(),
+                validator: "injvaloper1v".into(),
+                receiver: "inj1them".into(),
+                amount: five(),
+            }
+        );
+        // A field we don't know keeps it raw; a missing coin is an error, not a zero.
+        let extra = amino(
+            "cosmos-sdk/MsgBeginRedelegate",
+            serde_json::json!({ "delegator_address": "inj1me", "validator_src_address": "a", "validator_dst_address": "b", "amount": { "amount": "5", "denom": "inj" }, "memo": "x" }),
+        );
+        assert!(matches!(extra, Ok(Msg::UnknownJson { .. })), "{extra:?}");
+        assert_eq!(
+            amino(
+                "cosmos-sdk/MsgUndelegate",
+                serde_json::json!({ "delegator_address": "inj1me", "validator_address": "injvaloper1v" })
+            )
+            .unwrap_err(),
+            Error::Amount(String::new())
+        );
+    }
+
     #[test]
     fn int64s() {
         assert_eq!(int64("").unwrap(), 0);

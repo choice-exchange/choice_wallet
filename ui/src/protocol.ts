@@ -268,6 +268,8 @@ export type ActivityItem = {
 };
 
 export type ActivityPage = {
+  /** Names of the validators the rows name, from the active set. */
+  validators?: Record<string, string>;
   network: NetworkId;
   items: ActivityItem[];
   /** How to show each denom in `items`. */

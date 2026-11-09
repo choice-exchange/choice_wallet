@@ -369,6 +369,16 @@ function EvmCall({ d }: { d: Record<string, unknown> }) {
   );
 }
 
+/** Staking messages a site may ask for, by the vault's decoded type. */
+const STAKING_CARD: Record<string, { title: string }> = {
+  delegate: { title: "Stake" },
+  undelegate: { title: "Unstake" },
+  redelegate: { title: "Move stake" },
+  withdraw_rewards: { title: "Claim staking rewards" },
+  cancel_unbonding: { title: "Cancel unstaking" },
+  transfer_delegation: { title: "Give away stake" },
+};
+
 function MessageCard({ m }: { m: Record<string, unknown> }) {
   const type = String(m["type"] ?? "message");
   if (type === "execute_contract") {
@@ -387,6 +397,34 @@ function MessageCard({ m }: { m: Record<string, unknown> }) {
         </code>
         {funds.length > 0 && <div className="meta" style={{ marginTop: 6 }}>Attaches {funds.map((c) => `${c.amount} ${shortDenom(c.denom)}`).join(", ")}</div>}
         <pre className="message-box">{json}</pre>
+      </div>
+    );
+  }
+  const staking = STAKING_CARD[type];
+  if (staking) {
+    const coin = m["amount"] as Coin | undefined;
+    const field = (label: string, key: string) =>
+      typeof m[key] === "string" && (
+        <>
+          <div className="eyebrow" style={{ marginTop: 10 }}>
+            {label}
+          </div>
+          <code className="mono" style={{ display: "block", marginTop: 4, wordBreak: "break-all" }}>
+            {String(m[key])}
+          </code>
+        </>
+      );
+    return (
+      <div className="surface">
+        <div className="eyebrow">{staking.title}</div>
+        {coin && typeof coin.amount === "string" && (
+          <div className="hero" style={{ fontSize: 20, marginTop: 6 }}>
+            {coin.denom === "inj" ? formatUnits(coin.amount, 18) : coin.amount} <span className="unit">{coin.denom === "inj" ? "INJ" : shortDenom(coin.denom)}</span>
+          </div>
+        )}
+        {field(type === "redelegate" ? "From validator" : "Validator", type === "redelegate" ? "from_validator" : "validator")}
+        {type === "redelegate" && field("To validator", "to_validator")}
+        {type === "transfer_delegation" && field("Given to", "receiver")}
       </div>
     );
   }
