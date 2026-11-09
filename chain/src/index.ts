@@ -24,6 +24,7 @@ export { ChainError, Down, isObject, Pool, Unreachable, type Fetch } from "./poo
 export { CHOICE_PRICES, CLIENT, fetchPrices, priceAddress, usdValue, type PriceList } from "./prices.ts";
 export { grantedMsg, type AuthzGrant, type Cw20Allowance, type FeeGrant } from "./grants.ts";
 export { floorDecimal, type Delegation, type Unbonding, type Validator } from "./staking.ts";
+export { checkRoute, DEFAULT_SLIPPAGE_BPS, fetchRoute, MAX_SLIPPAGE_BPS, NATIVE, RouteError, type Route, type RouteLeg, type RouteRequest } from "./swap.ts";
 export {
   adapterCw20,
   adapterDenom,
@@ -35,6 +36,7 @@ export {
   evmDenom,
   isContractAddress,
   knownToken,
+  knownTokens,
   otherForm,
   shortDenom,
   type Token,

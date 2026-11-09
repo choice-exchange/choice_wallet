@@ -98,6 +98,14 @@ export class EvmRpc {
     return results.map((r) => (typeof r === "string" && /^0x[0-9a-fA-F]{1,64}$/.test(r) ? BigInt(r) : null));
   }
 
+  /** What Permit2 lets `spender` take of `owner`'s `token`: the amount and when it ends
+   *  (unix seconds). */
+  async permit2Allowance(permit2: string, owner: string, token: string, spender: string): Promise<{ amount: bigint; expiration: number }> {
+    const r = await this.call("eth_call", [{ to: permit2, data: `0x927da105${word(owner)}${word(token)}${word(spender)}` }, "latest"]);
+    if (typeof r !== "string" || !/^0x[0-9a-fA-F]{192}$/.test(r)) throw new ChainError(-1, "Permit2 gave no allowance");
+    return { amount: BigInt(`0x${r.slice(2, 66)}`), expiration: Number(BigInt(`0x${r.slice(66, 130)}`)) };
+  }
+
   /** An ERC20's symbol, name and decimals, or null if it doesn't answer like one. Symbols
    *  and names are whatever the deployer chose, cleaned like bank metadata. */
   async erc20Metadata(token: string): Promise<{ symbol: string; name: string; decimals: number } | null> {

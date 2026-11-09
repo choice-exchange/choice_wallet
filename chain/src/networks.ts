@@ -28,6 +28,16 @@ export interface Network {
   /** Injective's CW20 adapter: it wraps a CW20 into the bank denom `factory/{adapter}/{cw20}`
    *  and back. The vault holds the same address and builds conversions with its own copy. */
   cw20Adapter: string;
+  /** Choice on the EVM side: its routing API, and the contracts a swap uses. The vault pins
+   *  the same addresses (`choice_wallet_injective::choice`) and checks every swap against
+   *  its own copy; these let the host read allowances and turn away a route early. */
+  choice: {
+    api: string;
+    aggregator: string | null;
+    universalRouter: string;
+    permit2: string;
+    wrappedInj: string;
+  };
 }
 
 // Checked 2026-11-08: each answers with CORS for an extension origin, and serves the right
@@ -35,6 +45,8 @@ export interface Network {
 // CW20 adapters checked 2026-11-09: mainnet's is labelled "Injective CW20 Adapter" and has
 // no admin; testnet's is Injective's "Cw20Adapter" (it has an admin, as testnet contracts do).
 // Blockscout checked 2026-11-09: Injective's instances, CORS open, 300 requests per window.
+// Choice checked 2026-11-09: code at each address on its chain, the aggregator's VERSION()
+// is "1.1.0", and each routing API answered a quote.
 export const NETWORKS: Readonly<Record<NetworkId, Network>> = {
   mainnet: {
     id: "mainnet",
@@ -54,6 +66,13 @@ export const NETWORKS: Readonly<Record<NetworkId, Network>> = {
     evmRpc: ["https://sentry.evm-rpc.injective.network", "https://injective-evm-rpc.publicnode.com"],
     evmIndex: ["https://blockscout.injective.network"],
     cw20Adapter: "inj14ejqjyq8um4p3xfqj74yld5waqljf88f9eneuk",
+    choice: {
+      api: "https://evm-api.choice.exchange",
+      aggregator: "0xa705d0D5f549Af25024038dc575E3074B9Bd37c9",
+      universalRouter: "0xDF242D1937Cfaf2F3f5245CFBd5A8F2012cda856",
+      permit2: "0x000000000022D473030F116dDEE9F6B43aC78BA3",
+      wrappedInj: "0x0000000088827d2d103ee2d9A6b781773AE03FfB",
+    },
   },
   testnet: {
     id: "testnet",
@@ -69,6 +88,14 @@ export const NETWORKS: Readonly<Record<NetworkId, Network>> = {
     evmRpc: ["https://k8s.testnet.json-rpc.injective.network", "https://injective-testnet-evm-rpc.publicnode.com"],
     evmIndex: ["https://testnet.blockscout.injective.network"],
     cw20Adapter: "inj1hdvy6tl89llqy3ze8lv6mz5qh66sx9enn0jxg6",
+    // No aggregator on testnet: only routes on Choice's own pools, through the router.
+    choice: {
+      api: "https://testnet-api-v2.choice.exchange",
+      aggregator: null,
+      universalRouter: "0x6F82761E0103846E4F4588DB5B7A5505A2907B04",
+      permit2: "0x000000000022D473030F116dDEE9F6B43aC78BA3",
+      wrappedInj: "0x0000000088827d2d103ee2d9A6b781773AE03FfB",
+    },
   },
 };
 

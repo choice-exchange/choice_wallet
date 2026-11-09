@@ -36,6 +36,11 @@ const KNOWN: Readonly<Record<NetworkId, Readonly<Record<string, Entry>>>> = {
 };
 
 /** A token on the wallet's list, or null. */
+/** Every token on the wallet's list for a network. */
+export function knownTokens(network: NetworkId): Token[] {
+  return Object.keys(KNOWN[network]).map((d) => knownToken(network, d)!);
+}
+
 export function knownToken(network: NetworkId, denom: string): Token | null {
   const e = KNOWN[network][denom];
   return e ? { denom, symbol: e[0], name: e[1], decimals: e[2], known: true } : null;
