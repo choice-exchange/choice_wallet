@@ -42,7 +42,7 @@ import {
   type PriceList,
   type Token,
 } from "@choice-wallet/chain";
-import type { AccountInfo, ActivityPage, Balance, CosmosDisplay, Result, Risk, SendReview, Sent, TokenInfo, TxState } from "@choice-wallet/ui/protocol";
+import type { AccountInfo, ActivityPage, Balance, CosmosDisplay, DeviceRequest, Result, Risk, SendReview, Sent, TokenInfo, TxState } from "@choice-wallet/ui/protocol";
 
 import { memoFrom, type RiskFacts } from "./contacts";
 import type { Store } from "./service";
@@ -83,7 +83,20 @@ interface Pending {
   blocked: boolean;
   /** An EVM transaction (broadcast with eth_sendRawTransaction), not a Cosmos one. */
   evm?: boolean;
+  /** A Ledger account's public key: the device signs, and the vault checks it against this. */
+  ledgerKey?: string;
 }
+
+/** A Ledger send between its two steps: the vault gave the device its bytes; its signature
+ *  comes back with `ledger_signed`. */
+interface PendingDevice {
+  pending: Pending;
+  device: DeviceRequest;
+}
+
+const isLedger = (a: AccountInfo) => a.account.derivation === "ledger";
+/** Who signs a prepared send, as `confirm` needs it. */
+const signerFields = (a: AccountInfo) => ({ account: a.account, wallet: a.wallet, ...(isLedger(a) ? { ledgerKey: a.public_key } : {}) });
 
 /** Index entries per query per page (the node's `limit`), and Blockscout transfers per page. */
 const ACTIVITY_PAGE = 50;
@@ -614,6 +627,8 @@ export function createSender(d: SendDeps) {
           sequence: acct.sequence.toString(),
           fee: { amount: [{ denom: net.feeDenom, amount: (gas * price).toString() }], gas_limit: gas.toString() },
           memo: spec.memo ?? "",
+          // Ledger's Cosmos app signs amino JSON only.
+          ...(isLedger(account) ? { sign_mode: "amino_json" } : {}),
         });
 
       // Simulate with a provisional fee, then build with the real one.
@@ -659,8 +674,7 @@ export function createSender(d: SendDeps) {
         network,
         digest,
         request: built.result.request,
-        account: account.account,
-        wallet: account.wallet,
+        ...signerFields(account),
         confirm: risk.confirm ?? null,
         blocked: risk.level === "blocked",
       };
@@ -850,7 +864,7 @@ export function createSender(d: SendDeps) {
       const wrong = spec.expect(display as unknown as EvmDisplayLike);
       if (wrong) return fail("mismatch", wrong);
       await d.session.set({
-        pending_send: { network, digest, request: built.result.request, account: account.account, wallet: account.wallet, confirm: risk.confirm ?? null, blocked: risk.level === "blocked", evm: true } satisfies Pending,
+        pending_send: { network, digest, request: built.result.request, ...signerFields(account), confirm: risk.confirm ?? null, blocked: risk.level === "blocked", evm: true } satisfies Pending,
       });
       const tokens = await tokensFor(network, [...spec.tokens, net.feeDenom]);
       return { ok: true, result: { digest, display, risk: risk as Risk, tokens, checkedBy, ...spec.extra } };
@@ -864,7 +878,7 @@ export function createSender(d: SendDeps) {
     unlockKey: string,
     signerOf: (wallet: string) => Promise<{ secret: string; wallet: string } | null>,
     req: { digest: string; confirm?: string },
-  ): Promise<Result<Sent>> {
+  ): Promise<Result<Sent | { device: DeviceRequest }>> {
     const { pending_send } = await d.session.get(["pending_send"]);
     const p = pending_send as Pending | undefined;
     if (!p || p.digest !== req.digest) return fail("not_approved", "This send expired. Review it again.");
@@ -873,6 +887,14 @@ export function createSender(d: SendDeps) {
     await d.session.remove(["pending_send"]);
     const signer = await signerOf(p.wallet);
     if (!signer) return fail("not_approved", "That wallet is gone. Review the send again.");
+    if (p.ledgerKey && p.account.derivation === "ledger") {
+      // The device signs: hand it the vault's bytes, and wait for its signature.
+      const dev = await d.vault<Omit<DeviceRequest, "path">>("device_request", { request: p.request, digest: p.digest });
+      if (!dev.ok) return dev;
+      const device: DeviceRequest = { ...dev.result, path: p.account.path };
+      await d.session.set({ pending_device: { pending: p, device } satisfies PendingDevice });
+      return { ok: true, result: { device } };
+    }
     const signed = await d.vault<{ tx_raw: string } & { raw: string; hash: string }>("sign", {
       ...signer,
       unlock_key: unlockKey,
@@ -881,19 +903,44 @@ export function createSender(d: SendDeps) {
       digest: p.digest,
     });
     if (!signed.ok) return signed;
+    return broadcast(p, signed.result);
+  }
+
+  /** A Ledger's signature for the send `confirm` handed it: checked by the vault against the
+   *  account's key and the request's exact bytes, then broadcast. A rejected or failed
+   *  signature leaves it waiting, so the user can try the device again. */
+  async function deviceSigned(req: { digest: unknown; signature: unknown; format: unknown }): Promise<Result<Sent>> {
+    const { pending_device } = await d.session.get(["pending_device"]);
+    const w = pending_device as PendingDevice | undefined;
+    if (!w || w.pending.digest !== req.digest) return fail("not_approved", "This send expired. Review it again.");
+    if (typeof req.signature !== "string" || (req.format !== "der" && req.format !== "rs")) return fail("bad_request", "Not a signature.");
+    const p = w.pending;
+    const signed = await d.vault<{ tx_raw: string } & { raw: string; hash: string }>("device_sign", {
+      request: p.request,
+      digest: p.digest,
+      public_key: p.ledgerKey,
+      signature: req.signature,
+      format: req.format,
+    });
+    if (!signed.ok) return signed;
+    await d.session.remove(["pending_device"]);
+    return broadcast(p, signed.result);
+  }
+
+  async function broadcast(p: Pending, signed: { tx_raw: string } & { raw: string; hash: string }): Promise<Result<Sent>> {
     if (p.evm) {
       // The vault hashes what it signed; a node that already has the tx (a retry) is fine.
-      const hash = signed.result.hash.toLowerCase();
+      const hash = signed.hash.toLowerCase();
       try {
-        await (await evm(p.network)).call("eth_sendRawTransaction", [signed.result.raw]);
+        await (await evm(p.network)).call("eth_sendRawTransaction", [signed.raw]);
       } catch (e) {
         if (!(e instanceof ChainError && /already known|already imported|known transaction/i.test(e.message))) return chainFailure(e);
       }
       return { ok: true, result: { hash, explorer: explorerTxUrl(NETWORKS[p.network], hash) } };
     }
-    const hash = await cosmosTxHash(signed.result.tx_raw);
+    const hash = await cosmosTxHash(signed.tx_raw);
     try {
-      await (await lcd(p.network)).broadcast(signed.result.tx_raw, hash);
+      await (await lcd(p.network)).broadcast(signed.tx_raw, hash);
     } catch (e) {
       return chainFailure(e);
     }
@@ -931,6 +978,7 @@ export function createSender(d: SendDeps) {
     prepareEvmCall,
     pairs: async (network: NetworkId) => pairsFor(network, await lcd(network)),
     confirm,
+    deviceSigned,
     status,
     lcd,
     evm,

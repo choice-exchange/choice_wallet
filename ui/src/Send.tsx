@@ -7,7 +7,8 @@ import { useBackend } from "./backend";
 import { RecipientPicker } from "./Contacts";
 import { ArrowDownIcon, CheckIcon, ChevronDownIcon, ClockIcon, CloseIcon, ExternalIcon } from "./icons";
 import { BackBar, Callout, formatUsd, Screen, shortAddress, tokenSub } from "./kit";
-import type { AccountInfo, Balance, Coin, Contact, NetworkId, RecipientCheck, SendReview, Sent, SwapStepInfo, TokenInfo, TxState } from "./protocol";
+import { DeviceStep } from "./Ledger";
+import type { AccountInfo, Balance, Coin, Contact, DeviceRequest, DeviceSignature, NetworkId, RecipientCheck, SendReview, Sent, SwapStepInfo, TokenInfo, TxState } from "./protocol";
 import { useRequest } from "./request";
 import { permissionName } from "./permissions";
 import { shown, spenderName, type Shown, type StakeLine } from "./review";
@@ -283,6 +284,7 @@ export function Review({
   const named = (v: string) => validators[v] || shortAddress(v);
   const [typed, setTyped] = useState("");
   const { run, error, busy } = useRequest();
+  const backend = useBackend();
   const coin = (c: Coin) => {
     const t = tokens[c.denom];
     return t ? `${formatUnits(c.amount, t.decimals)} ${t.symbol}` : `${c.amount} ${c.denom}`;
@@ -300,9 +302,19 @@ export function Review({
   const blocked = risk.level === "blocked";
   const needsWord = risk.confirm !== undefined && typed.trim() !== risk.confirm;
 
+  const [device, setDevice] = useState<DeviceRequest | null>(null);
   async function confirm() {
     const sent = await run({ type: "confirm_send", digest: review.digest, ...(risk.confirm ? { confirm: typed.trim() } : {}) });
-    if (sent) onSent(sent);
+    if (!sent) return;
+    if ("device" in sent) setDevice(sent.device);
+    else onSent(sent);
+  }
+  /** The Ledger's signature, checked by the vault, then broadcast. */
+  async function signed(sig: DeviceSignature): Promise<string | null> {
+    const r = await backend.send({ type: "ledger_signed", digest: review.digest, ...sig });
+    if (!r.ok) return r.error.message;
+    onSent(r.result);
+    return null;
   }
 
   return (
@@ -314,6 +326,9 @@ export function Review({
         />
       }
       foot={
+        device ? (
+          <DeviceStep request={device} onSignature={signed} onCancel={() => setDevice(null)} />
+        ) : (
         <>
           {error && <Callout level="red">{error}</Callout>}
           <button
@@ -345,6 +360,7 @@ export function Review({
             Cancel
           </button>
         </>
+        )
       }
     >
       {/* What the risk rules found comes first: it must never sit below the fold. */}

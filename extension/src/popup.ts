@@ -3,6 +3,8 @@
 
 import { mount, type Backend } from "@choice-wallet/ui";
 
+import { createLedger } from "./ledger";
+
 const backend: Backend = {
   send(request) {
     return chrome.runtime.sendMessage(request);
@@ -13,7 +15,18 @@ const backend: Backend = {
   openLink(url) {
     if (url.startsWith("https://")) void chrome.tabs.create({ url });
   },
+  // WebHID reaches a Ledger from the wallet's pages; picking one needs a tab, since the
+  // browser's device chooser closes the popup.
+  ...("hid" in navigator ? { ledger: createLedger() } : {}),
+  openLedgerPage() {
+    void chrome.tabs.create({ url: chrome.runtime.getURL("popup.html?ledger=add") });
+  },
 };
 
-const approve = new URLSearchParams(location.search).get("approve");
-mount(document.getElementById("root"), backend, approve && /^[0-9a-f]{32}$/.test(approve) ? { approve } : {});
+const params = new URLSearchParams(location.search);
+const approve = params.get("approve");
+mount(
+  document.getElementById("root"),
+  backend,
+  approve && /^[0-9a-f]{32}$/.test(approve) ? { approve } : params.get("ledger") === "add" ? { ledger: true } : {},
+);

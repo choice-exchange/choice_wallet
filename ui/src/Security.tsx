@@ -197,7 +197,11 @@ export function RemoveWalletView({ wallet, onRemoved, onBack }: { wallet: Wallet
       title={`Remove ${wallet.name}`}
       lead="This takes the wallet and its accounts off this device. Their funds stay on chain."
       warning={
-        <Callout level="red">{wallet.type === "mnemonic" ? "Only its recovery phrase brings it back. Check you have it first." : "Only its private key brings it back. Check you have it first."}</Callout>
+        wallet.type === "ledger" ? (
+          <Callout level="amber">Its keys stay on the Ledger. Add it again from the Ledger any time.</Callout>
+        ) : (
+          <Callout level="red">{wallet.type === "mnemonic" ? "Only its recovery phrase brings it back. Check you have it first." : "Only its private key brings it back. Check you have it first."}</Callout>
+        )
       }
       action="Remove"
       danger

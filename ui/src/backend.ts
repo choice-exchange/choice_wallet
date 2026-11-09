@@ -5,7 +5,23 @@
 
 import { createContext, useContext } from "react";
 
-import type { Reply, Result, UiRequest } from "./protocol";
+import type { DeviceRequest, DeviceSignature, Reply, Result, UiRequest } from "./protocol";
+
+/** Where a Ledger operation is waiting, for the screen to say what to do. */
+export type LedgerStep = "connect" | "unlock" | "open_app" | "confirm" | "working";
+
+/** A Ledger, on platforms that can reach one. Its keys never leave it: the host asks for
+ *  public keys and signatures, and the vault checks every signature it returns. */
+export interface LedgerHost {
+  /** Ask for the device (the browser's chooser; needs a click, in a tab). */
+  pair(): Promise<void>;
+  /** Public keys for these paths, from the Cosmos app, without showing them. */
+  publicKeys(paths: string[], onStep?: (s: LedgerStep) => void): Promise<{ path: string; public_key: string; address: string }[]>;
+  /** Show the address at `path` on the device, to compare with the screen. */
+  show(path: string, onStep?: (s: LedgerStep) => void): Promise<void>;
+  /** Sign what the vault gave, on the device. */
+  sign(req: DeviceRequest, onStep?: (s: LedgerStep) => void): Promise<DeviceSignature>;
+}
 
 export interface Backend {
   /** Ask the host. Rejects only if the host can't be reached. */
@@ -14,6 +30,11 @@ export interface Backend {
   copy(text: string): Promise<void>;
   /** Open an https link (a block explorer) outside the wallet. */
   openLink(url: string): void;
+  /** A Ledger, where the platform can reach one. */
+  ledger?: LedgerHost;
+  /** Open the wallet's Ledger screen where pairing works (the extension: a tab, since the
+   *  device chooser closes a popup). */
+  openLedgerPage?(): void;
 }
 
 export const BackendContext = createContext<Backend | null>(null);

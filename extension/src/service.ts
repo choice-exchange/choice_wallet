@@ -214,7 +214,7 @@ export function createService(d: Deps) {
   }
 
   async function lock(): Promise<UiResponse<Status>> {
-    await d.session.remove(["unlock_key", "pending_send"]);
+    await d.session.remove(["unlock_key", "pending_send", "pending_device"]);
     d.cancelLock();
     d.notify();
     return { ok: true, result: await status() };
@@ -313,6 +313,8 @@ export function createService(d: Deps) {
         return wallets.addAccount(r.wallet);
       case "add_watch":
         return wallets.addWatch(r.address);
+      case "add_ledger":
+        return wallets.addLedger(r.accounts, r.wallet);
       case "add_wallet":
         return wallets.addWallet(r.secret, r.created === true);
       case "rename_wallet":
@@ -366,6 +368,7 @@ export function createService(d: Deps) {
       case "prepare_revoke":
       case "prepare_revoke_erc20":
       case "confirm_send":
+      case "ledger_signed":
       case "tx_status": {
         const a = await active();
         if ("ok" in a) return a;
@@ -394,6 +397,7 @@ export function createService(d: Deps) {
         if (r.type === "prepare_revoke") return approvals.prepare(a.net, a.account, r.items);
         if (r.type === "prepare_revoke_erc20") return approvals.prepareErc20(a.net, a.account, r.token, r.spender);
         if (r.type === "confirm_send") return sender.confirm(a.key, wallets.signer, r);
+        if (r.type === "ledger_signed") return sender.deviceSigned(r);
         return sender.status(a.net, r.hash);
       }
       case "dapp_request":
@@ -402,6 +406,8 @@ export function createService(d: Deps) {
         return dapps.review(r.id);
       case "dapp_answer":
         return dapps.answer(r.id, r.approve, r.digest, r.confirm);
+      case "dapp_ledger_signed":
+        return dapps.deviceSigned(r.id, r.digest, r.signature, r.format);
       case "connections":
         return dapps.connections();
       case "disconnect":

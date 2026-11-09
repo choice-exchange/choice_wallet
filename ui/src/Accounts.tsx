@@ -10,6 +10,7 @@ import { Backup, Confirm, Import } from "./App";
 import { CheckIcon, CloseIcon, EyeIcon, PlusIcon } from "./icons";
 import { BackBar, Screen, shortAddress } from "./kit";
 import type { AccountInfo, NewSecret, Status, WalletInfo } from "./protocol";
+import { useBackend } from "./backend";
 import { useRequest } from "./request";
 import { RemoveWalletView, RevealView } from "./Security";
 
@@ -176,9 +177,11 @@ function WalletEdit({ wallet, onStatus, onReveal, onRemove }: { wallet: WalletIn
       />
       {error && <span className="error">{error}</span>}
       <div className="add-token-actions">
-        <button type="button" className="pill" onClick={onReveal}>
-          {wallet.type === "mnemonic" ? "Show phrase" : "Show key"}
-        </button>
+        {wallet.type !== "ledger" && (
+          <button type="button" className="pill" onClick={onReveal}>
+            {wallet.type === "mnemonic" ? "Show phrase" : "Show key"}
+          </button>
+        )}
         <button type="button" className="pill danger" onClick={onRemove}>
           Remove
         </button>
@@ -222,6 +225,7 @@ type AddStep = { name: "choose" } | { name: "backup"; phrase: string } | { name:
  *  imported phrase or key, or an address to watch. */
 function AddWalletView({ onDone, onBack }: { onDone: (s: Status) => void; onBack: () => void }) {
   const { run, error, busy, setError } = useRequest();
+  const backend = useBackend();
   const [step, setStep] = useState<AddStep>({ name: "choose" });
   const go = (s: AddStep) => {
     setError(null);
@@ -274,6 +278,11 @@ function AddWalletView({ onDone, onBack }: { onDone: (s: Status) => void; onBack
             <button type="button" className="row link-row" onClick={() => go({ name: "watch" })}>
               Watch an address
             </button>
+            {backend.ledger && backend.openLedgerPage && (
+              <button type="button" className="row link-row" onClick={() => backend.openLedgerPage?.()}>
+                Connect a Ledger
+              </button>
+            )}
           </div>
           <p className="footnote">It opens with the password you use now.</p>
         </Screen>

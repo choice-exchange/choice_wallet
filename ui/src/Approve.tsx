@@ -14,7 +14,8 @@ import { useEffect, useState, type ReactNode } from "react";
 import { useBackend } from "./backend";
 import { ArrowDownIcon, CheckIcon, GlobeIcon, LockIcon } from "./icons";
 import { Callout, Screen, shortAddress } from "./kit";
-import type { Coin, CosmosDisplay, DappRequest, DappReview, NetworkId, Status } from "./protocol";
+import { DeviceStep } from "./Ledger";
+import type { Coin, CosmosDisplay, DappRequest, DappReview, DeviceRequest, DeviceSignature, NetworkId, Status } from "./protocol";
 import { shown } from "./review";
 import { Figure, formName, realName, SwapCards } from "./Send";
 
@@ -57,6 +58,8 @@ export function ApproveView({ id }: { id: string }) {
   const [typed, setTyped] = useState("");
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState<"approved" | "rejected" | null>(null);
+  /** A Ledger account's request, handed to the device after approving. */
+  const [device, setDevice] = useState<DeviceRequest | null>(null);
 
   useEffect(() => {
     if (done) return;
@@ -93,8 +96,22 @@ export function ApproveView({ id }: { id: string }) {
       setProblem(r.error.message);
       return;
     }
+    if ("device" in r.result) {
+      setDevice(r.result.device);
+      return;
+    }
     setDone(approve ? "approved" : "rejected");
     setTimeout(() => window.close(), approve ? 1500 : 400);
+  }
+
+  /** The Ledger's signature: the vault checks it, then the site gets its answer. */
+  async function signed(sig: DeviceSignature): Promise<string | null> {
+    if (!review) return "Nothing to sign.";
+    const r = await backend.send({ type: "dapp_ledger_signed", id, digest: review.digest, ...sig });
+    if (!r.ok) return r.error.message;
+    setDone("approved");
+    setTimeout(() => window.close(), 1500);
+    return null;
   }
 
   if (done || (closed && !req)) {
@@ -135,6 +152,9 @@ export function ApproveView({ id }: { id: string }) {
         </div>
       }
       foot={
+        device ? (
+          <DeviceStep request={device} onSignature={signed} onCancel={() => void answer(false)} />
+        ) : (
         <>
           {problem && <Callout level="red">{problem}</Callout>}
           {ready && !problem && (
@@ -150,6 +170,7 @@ export function ApproveView({ id }: { id: string }) {
             Reject
           </button>
         </>
+        )
       }
     >
       {!req.origin.startsWith("https://") && <Callout level="amber">This page isn&apos;t https. Only for development on this machine.</Callout>}

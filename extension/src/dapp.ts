@@ -22,7 +22,7 @@ import {
   type Coin,
   type NetworkId,
 } from "@choice-wallet/chain";
-import type { AccountInfo, Connection, CosmosDisplay, DappRequest, DappReview, Result, Risk } from "@choice-wallet/ui/protocol";
+import type { AccountInfo, Connection, CosmosDisplay, DappRequest, DappReview, DeviceRequest, Result, Risk } from "@choice-wallet/ui/protocol";
 
 import { displayDenoms, type createSender } from "./send";
 import type { Store } from "./service";
@@ -108,6 +108,8 @@ interface Waiting {
   build?: (account: AccountInfo) => Promise<{ request: unknown; checkedBy?: string; simulation?: DappReview["simulation"] }>;
   /** sign: what to hand the page once signed. */
   finish?: (signed: Record<string, unknown>) => Promise<unknown>;
+  /** sign, on a Ledger: what the device was handed, waiting for its signature. */
+  device?: { request: DeviceRequest; publicKey: string };
   prepared?: Prepared;
 }
 
@@ -361,7 +363,8 @@ export function createDapps(h: DappHost) {
           address: evmAddr.slice(2).toLowerCase(),
           bech32Address: a.addresses[net.cosmos],
           ethereumHexAddress: evmAddr,
-          isNanoLedger: false,
+          // Keplr's flag: a site then asks for amino signatures, which a Ledger can give.
+          isNanoLedger: a.account.derivation === "ledger",
           isKeystone: false,
         },
       };
@@ -374,9 +377,11 @@ export function createDapps(h: DappHost) {
       await (await h.sender.lcd(network)).broadcast(hex, hash);
       return { result: hash };
     }
-    const { accounts } = (await h.local.get(["accounts"])) as { accounts?: AccountInfo[] };
-    const account = accounts?.[0];
-    if (!account || p["signer"] !== account.addresses[net.cosmos]) return no(UNAUTHORIZED, "The signer isn't this wallet's connected account.");
+    // The account in use, as sites see it (not the list's first: another account, or a
+    // Ledger's, signs for itself).
+    const { accounts, active_account } = (await h.local.get(["accounts", "active_account"])) as { accounts?: AccountInfo[]; active_account?: number };
+    const account = accounts?.[typeof active_account === "number" ? active_account : 0] ?? accounts?.[0];
+    if (!account || account.account.derivation === "watch" || p["signer"] !== account.addresses[net.cosmos]) return no(UNAUTHORIZED, "The signer isn't this wallet's connected account.");
     const pubkey = account.public_key;
     const signature = (sig: unknown) => ({ pub_key: { type: "tendermint/PubKeySecp256k1", value: b64(pubkey) }, signature: b64(String(sig)) });
 
@@ -520,6 +525,14 @@ export function createDapps(h: DappHost) {
       const d = await h.vault<{ digest: string; display: DappReview["display"]; risk: Risk }>("decode", { request: built.request, context });
       if (!d.ok) return d;
       const { digest, display, risk } = d.result;
+      // What a Ledger can't sign is said before the user reads the whole request.
+      const kind = (display as { kind?: unknown }).kind;
+      if (u.account.account.derivation === "ledger" && (kind === "cosmos_direct" || kind === "evm_typed_data")) {
+        return fail(
+          "device_unsupported",
+          kind === "cosmos_direct" ? "This account is on a Ledger, which signs amino JSON only. The site must ask for an amino signature." : "A Ledger account can't sign typed data in Choice Wallet yet.",
+        );
+      }
       w.prepared = { request: built.request, digest, confirm: risk.confirm ?? null, blocked: risk.level === "blocked" };
       const tokens = await h.sender.tokensFor(network, reviewDenoms(network, display, built.simulation?.ok ? built.simulation.changes : []));
       return { ok: true, result: { digest, display, risk, tokens, checkedBy: built.checkedBy ?? "", ...(built.simulation ? { simulation: built.simulation } : {}) } };
@@ -542,7 +555,7 @@ export function createDapps(h: DappHost) {
     return { origin, origin_known: known, balances, ...(await h.sender.riskFacts(network, null)) };
   }
 
-  async function answer(id: unknown, approve: unknown, digest: unknown, confirm: unknown): Promise<Result<{ done: true; hash?: string }>> {
+  async function answer(id: unknown, approve: unknown, digest: unknown, confirm: unknown): Promise<Result<{ done: true; hash?: string } | { device: DeviceRequest }>> {
     const w = typeof id === "string" ? waiting.get(id) : undefined;
     if (!w) return fail("not_found", "This request is no longer open.");
     if (approve !== true) {
@@ -560,6 +573,14 @@ export function createDapps(h: DappHost) {
     if (!p || p.digest !== digest) return fail("not_approved", "This request changed. Review it again.");
     if (p.blocked) return fail("blocked", "The wallet won't sign this.");
     if (p.confirm && (typeof confirm === "string" ? confirm.trim() : "") !== p.confirm) return fail("confirm", `Type ${p.confirm} to continue.`);
+    if (u.account.account.derivation === "ledger") {
+      // The device signs: it gets the vault's bytes; the request waits for its signature.
+      const dev = await h.vault<Omit<DeviceRequest, "path">>("device_request", { request: p.request, digest: p.digest });
+      if (!dev.ok) return dev;
+      const request: DeviceRequest = { ...dev.result, path: u.account.account.path };
+      w.device = { request, publicKey: u.account.public_key };
+      return { ok: true, result: { device: request } };
+    }
     // Answered once: from here the request is the page's, whatever happens.
     waiting.delete(w.req.id);
     const signed = await h.vault<Record<string, unknown>>("sign", { secret: u.secret, wallet: u.wallet, unlock_key: u.key, account: u.account.account, request: p.request, digest: p.digest });
@@ -567,8 +588,27 @@ export function createDapps(h: DappHost) {
       w.resolve(no(INTERNAL, signed.error.message));
       return signed;
     }
+    return complete(w, signed.result);
+  }
+
+  /** A Ledger's signature for request `id`: the vault checks it against the account's key
+   *  and the exact bytes before the page gets anything. A bad one leaves the request open. */
+  async function deviceSigned(id: unknown, digest: unknown, signature: unknown, format: unknown): Promise<Result<{ done: true; hash?: string }>> {
+    const w = typeof id === "string" ? waiting.get(id) : undefined;
+    if (!w) return fail("not_found", "This request is no longer open.");
+    const p = w.prepared;
+    if (!p || !w.device || p.digest !== digest) return fail("not_approved", "This request changed. Review it again.");
+    if (typeof signature !== "string" || (format !== "der" && format !== "rs")) return fail("bad_request", "Not a signature.");
+    const signed = await h.vault<Record<string, unknown>>("device_sign", { request: p.request, digest: p.digest, public_key: w.device.publicKey, signature, format });
+    if (!signed.ok) return signed;
+    waiting.delete(w.req.id);
+    return complete(w, signed.result);
+  }
+
+  /** Hand a signed request's result to the page (broadcasting first, for a transaction). */
+  async function complete(w: Waiting, signed: Record<string, unknown>): Promise<Result<{ done: true; hash?: string }>> {
     try {
-      const result = await w.finish!(signed.result);
+      const result = await w.finish!(signed);
       const all = await grants();
       const g = all[w.req.origin];
       if (g) await h.local.set({ connections: { ...all, [w.req.origin]: { ...g, approvals: (g.approvals ?? 0) + 1 } } });
@@ -600,7 +640,7 @@ export function createDapps(h: DappHost) {
     for (const w of [...waiting.values()]) if (w.windowId === windowId) settle(w.req.id, no(USER_REJECTED, "The user closed the request."));
   }
 
-  return { handle, request, review, answer, connections, disconnect, windowClosed };
+  return { handle, request, review, answer, deviceSigned, connections, disconnect, windowClosed };
 }
 
 /** The tokens an approval screen names: what a Cosmos tx moves, what simulation says moves,

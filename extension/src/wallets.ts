@@ -35,6 +35,11 @@ const DISCOVER = 10;
 const WATCH = "watch";
 
 export const isWatch = (a: AccountInfo) => a.account.derivation === "watch";
+export const isLedger = (a: AccountInfo) => a.account.derivation === "ledger";
+/** The paths a Ledger account may use: Injective's coin type, either layout. */
+const LEDGER_PATH = /^m\/44'\/60'\/\d{1,9}'\/0\/\d{1,9}$/;
+/** Ledger accounts added at once. */
+const MAX_LEDGER_ADD = 10;
 
 export interface WalletsHost {
   vault<T>(method: string, params?: unknown): Promise<Result<T>>;
@@ -66,7 +71,7 @@ function next(prefix: string, names: readonly string[]): string {
   const n = Math.max(0, ...names.map((x) => Number(re.exec(x)?.[1] ?? 0)));
   return `${prefix} ${n + 1}`;
 }
-const walletPrefix = (type: Wallet["type"]) => (type === "mnemonic" ? "Recovery phrase" : "Imported key");
+const walletPrefix = (type: Wallet["type"]) => (type === "mnemonic" ? "Recovery phrase" : type === "ledger" ? "Ledger" : "Imported key");
 const cleanName = (name: unknown) => (typeof name === "string" ? cleanText(name.replace(/\s+/g, " "), MAX_NAME) : "");
 
 export function createWallets(h: WalletsHost) {
@@ -253,6 +258,55 @@ export function createWallets(h: WalletsHost) {
     return save({ wallets: [...s.wallets, wallet], accounts, active: kept.length });
   }
 
+  /** Accounts read from a Ledger (their paths and public keys; the vault gives their
+   *  addresses): a new Ledger wallet, or more of `walletId`'s. An account already here is
+   *  skipped; a watched address it turns out to be becomes the account. The device's
+   *  signatures are checked against these keys at every signing. */
+  async function addLedger(keys: unknown, walletId: unknown): Promise<UiResponse<Status>> {
+    const s = await open();
+    if ("ok" in s) return s;
+    if (!Array.isArray(keys) || keys.length === 0 || keys.length > MAX_LEDGER_ADD) return err("bad_request", `Pick 1 to ${MAX_LEDGER_ADD} accounts.`);
+    const found: { path: string; public_key: string; addresses: Record<string, string> }[] = [];
+    for (const k of keys as unknown[]) {
+      const key = k as { path?: unknown; public_key?: unknown } | null;
+      if (typeof key?.path !== "string" || !LEDGER_PATH.test(key.path) || typeof key.public_key !== "string") return err("bad_request", "Not a Ledger account.");
+      const r = await h.vault<{ public_key: string; addresses: Record<string, string> }>("key_addresses", { public_key: key.public_key });
+      if (!r.ok) return r;
+      found.push({ path: key.path, ...r.result });
+    }
+    let w: Wallet | undefined;
+    let wallets = s.wallets;
+    if (walletId !== undefined) {
+      w = s.wallets.find((x) => x.id === walletId && x.type === "ledger");
+      if (!w) return err("bad_request", "No such Ledger.");
+    } else {
+      if (s.wallets.length >= MAX_WALLETS) return err("too_many", `At most ${MAX_WALLETS} wallets.`);
+      w = { id: crypto.randomUUID(), type: "ledger", name: next("Ledger", s.wallets.map((x) => x.name)), secret: "" };
+      wallets = [...s.wallets, w];
+    }
+    const cosmos = NETWORKS.mainnet.cosmos;
+    const accounts = [...s.accounts];
+    let active = s.active;
+    let added = 0;
+    for (const f of found) {
+      const same = accounts.find((a) => !isWatch(a) && a.public_key === f.public_key);
+      if (same) continue;
+      if (accounts.length >= MAX_ACCOUNTS) return err("too_many", `The list holds at most ${MAX_ACCOUNTS} accounts.`);
+      const watched = accounts.findIndex((a) => isWatch(a) && a.addresses[cosmos] === f.addresses[cosmos]);
+      const name = watched >= 0 ? accounts[watched]!.name : next("Account", accounts.map((a) => a.name));
+      const account: AccountInfo = { wallet: w.id, account: { derivation: "ledger", path: f.path }, public_key: f.public_key, addresses: f.addresses, name };
+      if (watched >= 0) accounts[watched] = account;
+      else accounts.push(account);
+      active = accounts.indexOf(account);
+      added++;
+    }
+    if (added === 0) {
+      const same = accounts.find((a) => a.public_key === found[0]!.public_key);
+      return err("exists", found.length === 1 && same ? `That's already here: ${same.name}.` : "Those accounts are already here.");
+    }
+    return save({ wallets, accounts, active });
+  }
+
   /** The next account of a phrase wallet (the one in use, unless named), in use at once. */
   async function addAccount(walletId: unknown): Promise<UiResponse<Status>> {
     const s = await open();
@@ -263,6 +317,7 @@ export function createWallets(h: WalletsHost) {
         ? s.wallets.find((x) => x.id === walletId)
         : (s.wallets.find((x) => x.id === inUse?.wallet && x.type === "mnemonic") ?? s.wallets.find((x) => x.type === "mnemonic"));
     if (!w) return err(typeof walletId === "string" ? "bad_request" : "no_phrase", typeof walletId === "string" ? "No such wallet." : "There's no recovery phrase here to add an account from.");
+    if (w.type === "ledger") return err("ledger", "Add a Ledger's accounts from the Ledger screen.");
     if (w.type !== "mnemonic") return err("no_phrase", "An imported key has just the one account.");
     if (s.accounts.length >= MAX_ACCOUNTS) return err("too_many", `The list holds at most ${MAX_ACCOUNTS} accounts.`);
     const used = s.accounts.flatMap((a) => (a.wallet === w.id && a.account.derivation === "default" ? [a.account.index] : []));
@@ -348,12 +403,14 @@ export function createWallets(h: WalletsHost) {
       const a = typeof index === "number" ? s.accounts[index] : undefined;
       if (!a) return err("bad_request", "No such account.");
       if (isWatch(a)) return err("watch_only", "A watch-only account has no key.");
+      if (isLedger(a)) return err("ledger", "A Ledger's keys never leave it.");
       w = s.wallets.find((x) => x.id === a.wallet);
       account = a.account;
     } else {
       w = typeof walletId === "string" ? s.wallets.find((x) => x.id === walletId) : s.wallets[0];
     }
     if (!w) return err("bad_request", "No such wallet.");
+    if (w.type === "ledger") return err("ledger", "A Ledger's keys never leave it.");
     const r = await h.vault<{ phrase?: string; private_key?: string }>("reveal", { vault: s.vault, password, secret: w.secret, wallet: w.id, ...(account ? { account } : {}) });
     if (!r.ok && r.error.code === "wrong_password") return err("wrong_password", "Wrong password.");
     return r;
@@ -381,7 +438,7 @@ export function createWallets(h: WalletsHost) {
     if (!s.vault) return err("locked", "Unlock the wallet first.");
     const bad = await checkPassword(s.vault, password);
     if (bad) return bad;
-    await h.session.remove(["unlock_key", "pending_send"]);
+    await h.session.remove(["unlock_key", "pending_send", "pending_device"]);
     await h.local.remove([...walletKeys]);
     h.cancelLock();
     h.notify();
@@ -404,5 +461,5 @@ export function createWallets(h: WalletsHost) {
     return w ? { secret: w.secret, wallet: w.id } : null;
   }
 
-  return { stored, status, unlockKey, create, unlock, addWallet, addAccount, addWatch, changeAccount, renameWallet, removeWallet, reveal, changePassword, reset, inUse, signer };
+  return { stored, status, unlockKey, create, unlock, addWallet, addAccount, addLedger, addWatch, changeAccount, renameWallet, removeWallet, reveal, changePassword, reset, inUse, signer };
 }

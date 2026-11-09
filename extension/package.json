@@ -12,6 +12,10 @@
   },
   "dependencies": {
     "@choice-wallet/chain": "0.1.0",
-    "@choice-wallet/ui": "0.1.0"
+    "@choice-wallet/ui": "0.1.0",
+    "@ledgerhq/device-management-kit": "1.11.0",
+    "@ledgerhq/device-signer-kit-cosmos": "1.0.1",
+    "@ledgerhq/device-transport-kit-web-hid": "1.2.4",
+    "rxjs": "7.8.2"
   }
 }

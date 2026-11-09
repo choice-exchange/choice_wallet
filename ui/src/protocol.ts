@@ -7,15 +7,21 @@ export type HostError = { code: string; message: string };
 export type Result<T> = { ok: true; result: T } | { ok: false; error: HostError };
 
 /** An account as the vault's `accounts` lists it. */
-/** A source of keys: a recovery phrase or an imported key, sealed behind the one password.
- *  Accounts belong to one. Watched addresses belong to none (their `wallet` is "watch"). */
-export type WalletInfo = { id: string; type: "mnemonic" | "private_key"; name: string };
+/** A source of keys: a recovery phrase or an imported key, sealed behind the one password,
+ *  or a Ledger (whose keys never leave it; only their public keys are kept). Accounts
+ *  belong to one. Watched addresses belong to none (their `wallet` is "watch"). */
+export type WalletInfo = { id: string; type: "mnemonic" | "private_key" | "ledger"; name: string };
 
 export type AccountInfo = {
   /** The wallet it comes from (`WalletInfo.id`), or "watch". */
   wallet: string;
   /** How the vault finds its key; "watch" has none (an address to follow, never to sign). */
-  account: { derivation: "default" | "ledger_live"; index: number } | { derivation: "imported" } | { derivation: "watch" };
+  account:
+    | { derivation: "default" | "ledger_live"; index: number }
+    | { derivation: "imported" }
+    | { derivation: "watch" }
+    /** On a Ledger, at this BIP-32 path (`m/44'/60'/…`). */
+    | { derivation: "ledger"; path: string };
   /** Empty for a watch-only account. */
   public_key: string;
   /** Address per CAIP-2 chain ID. */
@@ -25,6 +31,14 @@ export type AccountInfo = {
 };
 
 export type NewSecret = { mnemonic: string } | { private_key: string };
+
+/** What a hardware wallet signs, as the vault gave it: the app (Ledger's Cosmos or Ethereum
+ *  app), what kind of thing it is, the exact bytes (hex), and the account's path. */
+export type DeviceRequest = { app: "cosmos" | "ethereum"; kind: "amino" | "transaction" | "message"; payload: string; path: string };
+/** A device's signature, as it wrote it: DER (the Cosmos app) or `r || s` (hex). */
+export type DeviceSignature = { signature: string; format: "der" | "rs" };
+/** A Ledger account found on the device: its path and public key (compressed, hex). */
+export type LedgerKey = { path: string; public_key: string };
 
 export type NetworkId = "mainnet" | "testnet";
 
@@ -41,6 +55,8 @@ export type UiRequest =
    *  (the first can't go: it is the keystore's own). Each answers with the new status. */
   | { type: "add_account"; wallet?: string }
   | { type: "add_watch"; address: string }
+  /** Accounts read from a Ledger: a new Ledger wallet, or more of `wallet`'s. */
+  | { type: "add_ledger"; accounts: LedgerKey[]; wallet?: string }
   /** Another wallet behind the same password: a new phrase (`created`), or an imported phrase
    *  (its accounts with history found and added) or private key. */
   | { type: "add_wallet"; secret: NewSecret; created?: boolean }
@@ -96,6 +112,8 @@ export type UiRequest =
   /** Sign and broadcast the prepared send whose review showed `digest`. `confirm` is the
    *  word the review asked for, if any. */
   | { type: "confirm_send"; digest: string; confirm?: string }
+  /** The Ledger's signature for the prepared send `confirm_send` handed to it. */
+  | ({ type: "ledger_signed"; digest: string } & DeviceSignature)
   | { type: "tx_status"; hash: string }
   /** A site's request waiting in an approval window (see `DappRequest`). */
   | { type: "dapp_request"; id: string }
@@ -104,6 +122,8 @@ export type UiRequest =
   /** Answer a waiting request. Approving a signature names the `digest` its review showed
    *  (and the typed word, if the review asked for one). */
   | { type: "dapp_answer"; id: string; approve: boolean; digest?: string; confirm?: string }
+  /** The Ledger's signature for a site's request that `dapp_answer` handed to it. */
+  | ({ type: "dapp_ledger_signed"; id: string; digest: string } & DeviceSignature)
   /** Sites this wallet is connected to, and cutting one off. */
   | { type: "connections" }
   | { type: "disconnect"; origin: string };
@@ -486,11 +506,15 @@ export type Replies = {
   prepare_revoke: SendReview;
   prepare_revoke_erc20: SendReview;
   prepare_stake: SendReview;
-  confirm_send: Sent;
+  /** Sent, or (for a Ledger account) what the device must sign first. */
+  confirm_send: Sent | { device: DeviceRequest };
+  ledger_signed: Sent;
+  add_ledger: Status;
   tx_status: TxState;
   dapp_request: DappRequest;
   dapp_review: DappReview;
-  dapp_answer: { done: true; hash?: string };
+  dapp_answer: { done: true; hash?: string } | { device: DeviceRequest };
+  dapp_ledger_signed: { done: true; hash?: string };
   connections: Connection[];
   disconnect: Connection[];
 };

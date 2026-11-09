@@ -273,6 +273,8 @@ function send(method, params = {}, sessionId) {
   toChrome.write(JSON.stringify({ id, method, params, sessionId }) + "\0");
   return new Promise((res, rej) => pending.set(id, { res, rej }));
 }
+/** A page's call to a DevTools binding (the fake Ledger's reports). */
+let onBinding = null;
 let buf = "";
 fromChrome.on("data", (chunk) => {
   buf += chunk.toString();
@@ -284,6 +286,7 @@ fromChrome.on("data", (chunk) => {
       const p = pending.get(m.id); pending.delete(m.id);
       m.error ? p.rej(new Error(JSON.stringify(m.error))) : p.res(m.result);
     }
+    if (m.method === "Runtime.bindingCalled") onBinding?.(m);
     if (m.method === "Runtime.exceptionThrown") problems.push("exception: " + JSON.stringify(m.params.exceptionDetails.exception?.description ?? m.params.exceptionDetails.text));
     if (m.method === "Log.entryAdded" && m.params.entry.level === "error") problems.push("log: " + m.params.entry.text);
     if (m.method === "Runtime.consoleAPICalled" && m.params.type === "error") problems.push("console: " + JSON.stringify(m.params.args.map((a) => a.value ?? a.description)));
@@ -811,7 +814,7 @@ try {
   await p.shot("16r-swap-usdt-quote");
   await p.click("Review (3 steps)");
   await p.waitText("Review approval", 30000);
-  for (const t of ["YOU ALLOW", "Permit2", "Exactly this swap's amount.", "2 more steps after this."]) await p.waitText(t);
+  for (const t of ["YOU ALLOW", "Permit2", "Exactly this swap's amount.", "Two more steps after this."]) await p.waitText(t);
   await p.shot("16s-review-approve");
   await p.click("Approve");
   await p.waitText("Next step", 15000);
@@ -955,6 +958,122 @@ try {
   for (let t = 0; t < 5000 && (await pill()) !== addrs[0]; t += 100) await sleep(100);
   if ((await pill()) !== addrs[0]) throw new Error("switching back didn't show account 1");
   console.log("accounts: a second from the phrase (= the vault's derivation), renamed, an address watched (can't send), back to the first");
+
+  // 9b. A Ledger, in software behind a fake WebHID device (fake-ledger.mjs), so Ledger's
+  // kit, its WebHID transport and the vault's signature checks all run for real: accounts
+  // added in the Ledger tab, a send signed in the Cosmos app (amino JSON) and a swap in the
+  // Ethereum app. The device signs with the BIP-39 test phrase, whose S may come back high.
+  let fakeLedger = null;
+  try {
+    fakeLedger = await import("./fake-ledger.mjs");
+  } catch (e) {
+    console.log("ledger: skipped, run npm install in tools/vectors first:", e.message);
+  }
+  if (fakeLedger) {
+    const device = fakeLedger.createFakeLedger({ log: (m) => console.log(m) });
+    onBinding = (m) => {
+      if (m.params.name !== "__ledger") return;
+      const { id, hex } = JSON.parse(m.params.payload);
+      const frames = device.report(hex);
+      // A signature waits while "the user" reads the device, so the screen shows that step.
+      setTimeout(() => void send("Runtime.evaluate", { expression: `window.__ledgerReply(${id}, ${JSON.stringify(frames)})` }, m.sessionId), device.confirming() ? 1500 : 0);
+    };
+    /** An extension page with the fake device in its navigator.hid. */
+    const ledgerPage = async (path) => {
+      const { targetId } = await send("Target.createTarget", { url: "about:blank" });
+      const pg = await pageFor(targetId);
+      await send("Page.enable", {}, pg.sessionId);
+      await send("Page.addScriptToEvaluateOnNewDocument", { source: fakeLedger.PAGE_SCRIPT }, pg.sessionId);
+      await send("Runtime.addBinding", { name: "__ledger" }, pg.sessionId);
+      await send("Page.navigate", { url: `chrome-extension://${extId}/${path}` }, pg.sessionId);
+      return pg;
+    };
+    const first = device.account("m/44'/60'/0'/0/0");
+    const tab = await ledgerPage("popup.html?ledger=add");
+    await tab.waitText("Add a Ledger");
+    await tab.shot("21b-ledger-intro");
+    await tab.click("Connect");
+    await tab.waitText("Pick accounts", 15000);
+    await tab.waitText(first.address.slice(-4), 15000);
+    await tab.click("Show on Ledger");
+    await tab.eval(`document.querySelector('input[aria-label="Account 1"]').click()`);
+    await tab.shot("21c-ledger-pick");
+    await tab.click("Add 1 account");
+    await tab.waitText("Ledger added");
+    await tab.shot("21d-ledger-added");
+    await tab.close();
+
+    const lp = await ledgerPage("popup.html");
+    await lp.waitText("Manage", 15000);
+    const inUse = await lp.eval(`document.querySelector("[aria-label='Copy address']")?.title ?? ""`);
+    if (inUse !== first.address) throw new Error(`the Ledger account isn't in use: ${inUse}`);
+    // A send, signed in the Cosmos app.
+    const before = broadcasts.length;
+    await lp.click("Send");
+    await lp.waitText("Balance 5 INJ");
+    await lp.fill('input[placeholder^="inj1"]', 0, SENT_TO);
+    await lp.click("Choose a token");
+    await lp.waitText("Choose a token");
+    await lp.eval(`document.querySelector(".token-list .token").click()`);
+    await lp.waitText("Balance 5 INJ");
+    await lp.fill("input[inputmode=decimal]", 0, "0.25");
+    await lp.click("Review");
+    await lp.waitText("Review send", 15000);
+    await lp.click("Confirm and send");
+    await lp.waitText("Check it on your Ledger, then approve it there.", 10000);
+    await lp.shot("21d2-ledger-confirm");
+    await lp.waitText("Sent", 20000);
+    await lp.shot("21e-ledger-sent");
+    if (broadcasts.length !== before + 1) throw new Error("the Ledger send wasn't broadcast");
+    const amino = device.signed.at(-1);
+    if (amino?.app !== "cosmos" || !amino.payload.includes(`"to_address":"${SENT_TO}"`) || !amino.payload.includes(`"amount":"250000000000000000"`)) throw new Error(`the Cosmos app signed: ${JSON.stringify(amino)}`);
+    if (!Buffer.from(broadcasts.at(-1), "base64").includes(Buffer.from(first.public_key, "hex"))) throw new Error("the broadcast tx isn't signed by the Ledger's key");
+    await lp.click("Done");
+    await lp.waitText("Manage", 15000);
+    // A swap, signed in the Ethereum app, sent to the mock EVM endpoint.
+    const evmEndpoints = async (urls) => {
+      await lp.click("Settings");
+      for (let t = 0; t < 10000 && !(await lp.eval(`document.querySelector("#lcd-endpoints")?.value.includes(${JSON.stringify(lcdUrl)}) ?? false`)); t += 100) await sleep(100);
+      await lp.fill("textarea", 1, urls);
+      await lp.click("Save");
+      await lp.waitText("Manage", 15000);
+    };
+    await evmEndpoints(lcdUrl);
+    const evmBefore = evmRaw.length;
+    await lp.click("Swap");
+    await lp.waitText("YOU PAY");
+    await lp.click("Choose the token to get");
+    await lp.waitText("Swap to");
+    for (let t = 0; t < 15000 && !(await lp.eval(`!!document.querySelector('.token[title="${USDT}"]')`)); t += 100) await sleep(100);
+    await lp.eval(`document.querySelector('.token[title="${USDT}"]').click()`);
+    await lp.fill('input[aria-label="Amount to pay"]', 0, "0.1");
+    await lp.waitText("At least", 30000);
+    await lp.click("Review swap");
+    await lp.waitText("YOU SWAP", 30000);
+    await lp.click("Confirm swap");
+    await lp.waitText("Ethereum app", 10000);
+    await lp.shot("21e2-ledger-confirm-evm");
+    await lp.waitText("Swapped", 20000);
+    await lp.shot("21f-ledger-swapped");
+    if (evmRaw.length !== evmBefore + 1) throw new Error("the Ledger swap wasn't sent");
+    const evmSigned = device.signed.at(-1);
+    // The signed transaction is the device's unsigned one with v, r and s appended.
+    const fields = evmSigned?.payload.slice(4 + 2 * ((parseInt(evmSigned.payload.slice(2, 4), 16) - 0xf7) > 0 ? parseInt(evmSigned.payload.slice(2, 4), 16) - 0xf7 : 0));
+    if (evmSigned?.app !== "ethereum" || evmSigned.kind !== "transaction" || !evmRaw.at(-1).toLowerCase().includes(fields)) throw new Error("the sent transaction isn't the one the Ethereum app signed");
+    await lp.click("Done");
+    await lp.waitText("Manage", 15000);
+    await evmEndpoints("https://sentry.evm-rpc.injective.network\nhttps://injective-evm-rpc.publicnode.com");
+    await lp.close();
+    console.log(`ledger: account added from the device (${first.address}), a send signed in its Cosmos app and a swap in its Ethereum app, each checked by the vault`);
+    // Back to the phrase's first account for the rest.
+    await p.close();
+    p = await openPopup();
+    await p.waitText("Manage", 15000);
+    await p.eval(`document.querySelector(".account-switch").click()`);
+    await p.waitText("Accounts");
+    await p.eval(`document.querySelectorAll(".account-row")[0].click()`);
+    await p.waitText("Manage", 15000);
+  }
 
   // 10. Security: the phrase behind the password; a new password (the old one stops
   // working); then the wallet removed, back to the welcome screen.

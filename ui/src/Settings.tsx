@@ -253,7 +253,7 @@ export function SettingsView({
           <LockIcon /> Lock now
         </button>
         <div className="well rows">
-          {wallet && (
+          {wallet && wallet.type !== "ledger" && (
             <button type="button" className="row link-row" onClick={() => setSecurity("phrase")}>
               {wallet.type === "mnemonic" ? `Show ${wallet.name}` : `Show ${wallet.name}'s key`}
             </button>
