@@ -16,6 +16,7 @@ use crate::proto::cosmos::{
     authz::v1beta1 as authz, distribution::v1beta1 as distribution, feegrant::v1beta1 as feegrant,
 };
 use crate::proto::cosmwasm::wasm::v1::{self as wasm, MsgExecuteContract};
+use crate::staking;
 use crate::wkt::Any;
 
 /// A bank coin with a valid denom and a canonical positive amount. In JSON it reads
@@ -102,6 +103,11 @@ struct TokenfactoryMsgChangeAdmin {
 /// Decode a list of coins, refusing invalid ones.
 pub(crate) fn coins_from_proto(coins: Vec<ProtoCoin>) -> Result<Vec<Coin>, Error> {
     coins.into_iter().map(Coin::from_proto).collect()
+}
+
+/// The one coin a staking message carries; it must be there and valid.
+fn one_coin(c: Option<ProtoCoin>, field: &'static str) -> Result<Coin, Error> {
+    Coin::from_proto(c.ok_or(Error::Decode(field))?)
 }
 
 /// What an authz grant lets the grantee do.
@@ -254,6 +260,59 @@ pub enum Msg {
         /// Validator the rewards come from.
         validator: String,
     },
+    /// `cosmos.staking.v1beta1.MsgDelegate`: stake with a validator.
+    Delegate {
+        /// The signer.
+        delegator: String,
+        /// The validator (`…valoper1…`).
+        validator: String,
+        /// The coin staked.
+        amount: Coin,
+    },
+    /// `cosmos.staking.v1beta1.MsgUndelegate`: start unstaking; it returns after the
+    /// unbonding period.
+    Undelegate {
+        /// The signer.
+        delegator: String,
+        /// The validator.
+        validator: String,
+        /// The coin unstaked.
+        amount: Coin,
+    },
+    /// `cosmos.staking.v1beta1.MsgBeginRedelegate`: move a stake to another validator.
+    Redelegate {
+        /// The signer.
+        delegator: String,
+        /// The validator the stake leaves.
+        from_validator: String,
+        /// The validator it moves to.
+        to_validator: String,
+        /// The coin moved.
+        amount: Coin,
+    },
+    /// `cosmos.staking.v1beta1.MsgCancelUnbondingDelegation`: stake again what is unbonding.
+    CancelUnbonding {
+        /// The signer.
+        delegator: String,
+        /// The validator.
+        validator: String,
+        /// The coin staked again.
+        amount: Coin,
+        /// The height the unbonding entry started at.
+        creation_height: i64,
+    },
+    /// Injective's `cosmos.staking.v1beta1.MsgTransferDelegation`: give part of a stake to
+    /// another account. High risk when the receiver isn't the signer.
+    TransferDelegation {
+        /// The signer.
+        delegator: String,
+        /// The validator.
+        validator: String,
+        /// Who receives the stake.
+        receiver: String,
+        /// The coin given.
+        amount: Coin,
+    },
     /// The tokenfactory module's `MsgChangeAdmin`: give away a denom's admin rights.
     TokenfactoryChangeAdmin {
         /// Its type URL, e.g. `/injective.tokenfactory.v1beta1.MsgChangeAdmin`.
@@ -393,6 +452,44 @@ impl Msg {
                 delegator: m.delegator_address,
                 validator: m.validator_address,
             }
+        } else if t == staking::MsgDelegate::type_url() {
+            let m: staking::MsgDelegate = decode_exact(v, "MsgDelegate")?;
+            Self::Delegate {
+                delegator: m.delegator_address,
+                validator: m.validator_address,
+                amount: one_coin(m.amount, "MsgDelegate.amount")?,
+            }
+        } else if t == staking::MsgUndelegate::type_url() {
+            let m: staking::MsgUndelegate = decode_exact(v, "MsgUndelegate")?;
+            Self::Undelegate {
+                delegator: m.delegator_address,
+                validator: m.validator_address,
+                amount: one_coin(m.amount, "MsgUndelegate.amount")?,
+            }
+        } else if t == staking::MsgBeginRedelegate::type_url() {
+            let m: staking::MsgBeginRedelegate = decode_exact(v, "MsgBeginRedelegate")?;
+            Self::Redelegate {
+                delegator: m.delegator_address,
+                from_validator: m.validator_src_address,
+                to_validator: m.validator_dst_address,
+                amount: one_coin(m.amount, "MsgBeginRedelegate.amount")?,
+            }
+        } else if t == staking::MsgCancelUnbondingDelegation::type_url() {
+            let m: staking::MsgCancelUnbondingDelegation = decode_exact(v, "MsgCancelUnbondingDelegation")?;
+            Self::CancelUnbonding {
+                delegator: m.delegator_address,
+                validator: m.validator_address,
+                amount: one_coin(m.amount, "MsgCancelUnbondingDelegation.amount")?,
+                creation_height: m.creation_height,
+            }
+        } else if t == staking::MsgTransferDelegation::type_url() {
+            let m: staking::MsgTransferDelegation = decode_exact(v, "MsgTransferDelegation")?;
+            Self::TransferDelegation {
+                delegator: m.delegator_address,
+                validator: m.validator_address,
+                receiver: m.receiver_address,
+                amount: one_coin(m.amount, "MsgTransferDelegation.amount")?,
+            }
         } else if chain
             .tokenfactory
             .is_some_and(|pkg| t.strip_prefix('/').and_then(|r| r.strip_prefix(pkg)) == Some(".MsgChangeAdmin"))
@@ -438,6 +535,11 @@ impl Msg {
             Self::FeeRevoke { .. } => "/cosmos.feegrant.v1beta1.MsgRevokeAllowance",
             Self::SetWithdrawAddress { .. } => "/cosmos.distribution.v1beta1.MsgSetWithdrawAddress",
             Self::WithdrawRewards { .. } => "/cosmos.distribution.v1beta1.MsgWithdrawDelegatorReward",
+            Self::Delegate { .. } => "/cosmos.staking.v1beta1.MsgDelegate",
+            Self::Undelegate { .. } => "/cosmos.staking.v1beta1.MsgUndelegate",
+            Self::Redelegate { .. } => "/cosmos.staking.v1beta1.MsgBeginRedelegate",
+            Self::CancelUnbonding { .. } => "/cosmos.staking.v1beta1.MsgCancelUnbondingDelegation",
+            Self::TransferDelegation { .. } => "/cosmos.staking.v1beta1.MsgTransferDelegation",
             Self::WasmUpdateAdmin { .. } => "/cosmwasm.wasm.v1.MsgUpdateAdmin",
             Self::WasmClearAdmin { .. } => "/cosmwasm.wasm.v1.MsgClearAdmin",
             Self::TokenfactoryChangeAdmin { type_url, .. }
@@ -460,7 +562,13 @@ impl Msg {
             | Self::FeeGrant { granter, .. }
             | Self::FeeRevoke { granter, .. } => Some(granter),
             Self::AuthzExec { grantee, .. } => Some(grantee),
-            Self::SetWithdrawAddress { delegator, .. } | Self::WithdrawRewards { delegator, .. } => Some(delegator),
+            Self::SetWithdrawAddress { delegator, .. }
+            | Self::WithdrawRewards { delegator, .. }
+            | Self::Delegate { delegator, .. }
+            | Self::Undelegate { delegator, .. }
+            | Self::Redelegate { delegator, .. }
+            | Self::CancelUnbonding { delegator, .. }
+            | Self::TransferDelegation { delegator, .. } => Some(delegator),
             Self::Unknown { .. } | Self::UnknownJson { .. } => None,
         }
     }

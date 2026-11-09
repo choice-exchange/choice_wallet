@@ -26,6 +26,7 @@ pub mod msg;
 #[allow(missing_docs, clippy::all, clippy::pedantic, rustdoc::all)]
 #[rustfmt::skip]
 pub mod proto;
+pub mod staking;
 pub mod wkt;
 
 pub use error::Error;

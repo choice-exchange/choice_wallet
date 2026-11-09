@@ -249,6 +249,61 @@ fn render_msg(m: &Msg) -> Result<Value, Error> {
             insert_nonempty(&mut v, "sender", sender);
             Ok(json!({ "type": "wasm/MsgExecuteContract", "value": v }))
         }
+        Msg::Delegate {
+            delegator,
+            validator,
+            amount,
+        }
+        | Msg::Undelegate {
+            delegator,
+            validator,
+            amount,
+        } => {
+            let name = if matches!(m, Msg::Delegate { .. }) {
+                "cosmos-sdk/MsgDelegate"
+            } else {
+                "cosmos-sdk/MsgUndelegate"
+            };
+            let mut v = Map::new();
+            v.insert("amount".into(), coin_json(amount));
+            insert_nonempty(&mut v, "delegator_address", delegator);
+            insert_nonempty(&mut v, "validator_address", validator);
+            Ok(json!({ "type": name, "value": v }))
+        }
+        Msg::Redelegate {
+            delegator,
+            from_validator,
+            to_validator,
+            amount,
+        } => {
+            let mut v = Map::new();
+            v.insert("amount".into(), coin_json(amount));
+            insert_nonempty(&mut v, "delegator_address", delegator);
+            insert_nonempty(&mut v, "validator_dst_address", to_validator);
+            insert_nonempty(&mut v, "validator_src_address", from_validator);
+            Ok(json!({ "type": "cosmos-sdk/MsgBeginRedelegate", "value": v }))
+        }
+        Msg::CancelUnbonding {
+            delegator,
+            validator,
+            amount,
+            creation_height,
+        } => {
+            let mut v = Map::new();
+            v.insert("amount".into(), coin_json(amount));
+            if *creation_height != 0 {
+                v.insert("creation_height".into(), creation_height.to_string().into());
+            }
+            insert_nonempty(&mut v, "delegator_address", delegator);
+            insert_nonempty(&mut v, "validator_address", validator);
+            Ok(json!({ "type": "cosmos-sdk/MsgCancelUnbondingDelegation", "value": v }))
+        }
+        Msg::WithdrawRewards { delegator, validator } => {
+            let mut v = Map::new();
+            insert_nonempty(&mut v, "delegator_address", delegator);
+            insert_nonempty(&mut v, "validator_address", validator);
+            Ok(json!({ "type": "cosmos-sdk/MsgWithdrawDelegationReward", "value": v }))
+        }
         other => Err(Error::Amino(format!("no amino JSON encoding for {}", other.type_url()))),
     }
 }
@@ -265,6 +320,10 @@ fn coins_json(c: &[Coin]) -> Value {
             .map(|c| json!({ "amount": c.amount(), "denom": c.denom() }))
             .collect(),
     )
+}
+
+fn coin_json(c: &Coin) -> Value {
+    json!({ "amount": c.amount(), "denom": c.denom() })
 }
 
 fn coins(c: Vec<JsonCoin>) -> Result<Vec<Coin>, Error> {

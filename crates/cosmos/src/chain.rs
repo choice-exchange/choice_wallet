@@ -67,6 +67,14 @@ impl Chain {
         if ok { Ok(()) } else { Err(Error::Address(s.into())) }
     }
 
+    /// Check that `s` is a validator's operator address on this chain: bech32 with the
+    /// prefix and `valoper` (`injvaloper1…`), lowercase, 20 bytes.
+    pub fn check_validator(&self, s: &str) -> Result<(), Error> {
+        let prefix = format!("{}valoper", self.bech32_prefix);
+        let ok = s.bytes().all(|b| !b.is_ascii_uppercase()) && decode_bech32(s, &prefix).is_ok_and(|b| b.len() == 20);
+        if ok { Ok(()) } else { Err(Error::Address(s.into())) }
+    }
+
     pub(crate) fn pub_key_type_url(&self) -> &'static str {
         match self.key {
             KeyKind::EthSecp256k1 { pub_key_type_url } => pub_key_type_url,
@@ -108,5 +116,21 @@ mod tests {
             assert_eq!(TEST.check_address(&bad), Err(Error::Address(bad.clone())), "{bad}");
         }
         assert_eq!(TEST.caip2(), "cosmos:test-1");
+    }
+
+    #[test]
+    fn validators_have_their_own_prefix() {
+        let account = EthAddress::from_bytes([7; 20]);
+        let v = account.to_bech32("injvaloper").unwrap();
+        assert!(TEST.check_validator(&v).is_ok());
+        let a = TEST.address_of(&account);
+        for bad in [
+            a,
+            v.to_uppercase(),
+            account.to_bech32("osmovaloper").unwrap(),
+            String::new(),
+        ] {
+            assert_eq!(TEST.check_validator(&bad), Err(Error::Address(bad.clone())), "{bad}");
+        }
     }
 }

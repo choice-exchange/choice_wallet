@@ -36,6 +36,20 @@ pub(crate) enum OwnMsg {
         #[serde(default)]
         to: Option<String>,
     },
+    /// Stake `amount` with `validator` (`…valoper1…`).
+    Delegate { validator: String, amount: Coin },
+    /// Start unstaking `amount` from `validator`.
+    Undelegate { validator: String, amount: Coin },
+    /// Move `amount` of the stake with `from` to `to`.
+    Redelegate { from: String, to: String, amount: Coin },
+    /// Stake again `amount` of the unbonding entry with `validator` that started at `height`.
+    CancelUnbonding {
+        validator: String,
+        amount: Coin,
+        height: U64,
+    },
+    /// Claim the rewards of the stake with `validator`.
+    WithdrawRewards { validator: String },
 }
 
 #[derive(Deserialize)]
@@ -114,6 +128,18 @@ pub(crate) fn cosmos(p: CosmosParams) -> Result<Value, VaultError> {
                 };
                 adapter::bank_to_cw20(network()?, &from, adapter()?, &addr(&contract)?, &amount, &to)?
             }
+            OwnMsg::Delegate { validator, amount } => builder::delegate(chain, &from, &validator, &amount)?,
+            OwnMsg::Undelegate { validator, amount } => builder::undelegate(chain, &from, &validator, &amount)?,
+            OwnMsg::Redelegate { from: src, to, amount } => builder::redelegate(chain, &from, &src, &to, &amount)?,
+            OwnMsg::CancelUnbonding {
+                validator,
+                amount,
+                height,
+            } => {
+                let h = i64::try_from(height.0).map_err(|_| VaultError::bad("height"))?;
+                builder::cancel_unbonding(chain, &from, &validator, &amount, h)?
+            }
+            OwnMsg::WithdrawRewards { validator } => builder::withdraw_rewards(chain, &from, &validator)?,
         });
     }
     let opts = TxOptions {

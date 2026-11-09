@@ -16,7 +16,7 @@ use serde_json::{Map, Value};
 use crate::Error;
 use crate::chain::Chain;
 use crate::cosmwasm;
-use crate::msg::{Allowance, Authorization, JsonCoin, Msg, coins_from_json};
+use crate::msg::{Allowance, Authorization, Coin, JsonCoin, Msg, coins_from_json};
 
 /// Which JSON form.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,6 +44,11 @@ const WITHDRAW_ADDRESS: &str = "/cosmos.distribution.v1beta1.MsgSetWithdrawAddre
 const WITHDRAW_REWARD: &str = "/cosmos.distribution.v1beta1.MsgWithdrawDelegatorReward";
 const UPDATE_ADMIN: &str = "/cosmwasm.wasm.v1.MsgUpdateAdmin";
 const CLEAR_ADMIN: &str = "/cosmwasm.wasm.v1.MsgClearAdmin";
+const DELEGATE: &str = "/cosmos.staking.v1beta1.MsgDelegate";
+const UNDELEGATE: &str = "/cosmos.staking.v1beta1.MsgUndelegate";
+const REDELEGATE: &str = "/cosmos.staking.v1beta1.MsgBeginRedelegate";
+const CANCEL_UNBONDING: &str = "/cosmos.staking.v1beta1.MsgCancelUnbondingDelegation";
+const TRANSFER_DELEGATION: &str = "/cosmos.staking.v1beta1.MsgTransferDelegation";
 
 /// Amino names (`option (amino.name)` in the vendored protos) and their type URLs.
 const AMINO_NAMES: &[(&str, &str)] = &[
@@ -63,6 +68,11 @@ const AMINO_NAMES: &[(&str, &str)] = &[
     ("cosmos-sdk/MsgWithdrawDelegationReward", WITHDRAW_REWARD),
     ("wasm/MsgUpdateAdmin", UPDATE_ADMIN),
     ("wasm/MsgClearAdmin", CLEAR_ADMIN),
+    ("cosmos-sdk/MsgDelegate", DELEGATE),
+    ("cosmos-sdk/MsgUndelegate", UNDELEGATE),
+    ("cosmos-sdk/MsgBeginRedelegate", REDELEGATE),
+    ("cosmos-sdk/MsgCancelUnbondingDelegation", CANCEL_UNBONDING),
+    ("cosmos-sdk/MsgTransferDelegation", TRANSFER_DELEGATION),
 ];
 
 /// Split a packed JSON value into its type URL and fields. An amino name we don't know is
@@ -154,6 +164,24 @@ pub(crate) fn timestamp(s: &str) -> Result<i64, Error> {
     Ok(days * 86_400 + h * 3_600 + mi * 60 + sec)
 }
 
+/// A canonical int64 written as a JSON string (`"0"`, `"123"`, `"-5"`); empty reads as 0, as
+/// amino JSON omits zero values.
+fn int64(s: &str) -> Result<i64, Error> {
+    let bad = || Error::Json(format!("not a canonical int64: {s:?}"));
+    if s.is_empty() {
+        return Ok(0);
+    }
+    let digits = s.strip_prefix('-').unwrap_or(s);
+    if digits.is_empty()
+        || !digits.bytes().all(|b| b.is_ascii_digit())
+        || (digits.len() > 1 && digits.starts_with('0'))
+        || s == "-0"
+    {
+        return Err(bad());
+    }
+    s.parse().map_err(|_| bad())
+}
+
 fn expiration(s: Option<String>) -> Result<Option<i64>, Error> {
     s.filter(|s| !s.is_empty()).map(|s| timestamp(&s)).transpose()
 }
@@ -232,6 +260,47 @@ struct WithdrawAddressF {
 struct WithdrawRewardF {
     delegator_address: String,
     validator_address: String,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+struct StakeF {
+    delegator_address: String,
+    validator_address: String,
+    amount: Option<JsonCoin>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+struct RedelegateF {
+    delegator_address: String,
+    validator_src_address: String,
+    validator_dst_address: String,
+    amount: Option<JsonCoin>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+struct CancelUnbondingF {
+    delegator_address: String,
+    validator_address: String,
+    amount: Option<JsonCoin>,
+    /// int64, a string in both JSON forms.
+    creation_height: String,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+struct TransferDelegationF {
+    delegator_address: String,
+    validator_address: String,
+    receiver_address: String,
+    amount: Option<JsonCoin>,
+}
+
+/// A staking message's one coin; leaving it out is an error, not a zero.
+fn one_coin(c: Option<JsonCoin>) -> Result<Coin, Error> {
+    Coin::try_from(c.ok_or_else(|| Error::Amount(String::new()))?)
 }
 
 #[derive(Deserialize, Default)]
@@ -398,6 +467,49 @@ pub(crate) fn message(v: &Value, form: Form, chain: &Chain, depth: usize) -> Res
             },
             None => return unknown(),
         },
+        DELEGATE => match fields::<StakeF>(&f) {
+            Some(m) => Msg::Delegate {
+                delegator: m.delegator_address,
+                validator: m.validator_address,
+                amount: one_coin(m.amount)?,
+            },
+            None => return unknown(),
+        },
+        UNDELEGATE => match fields::<StakeF>(&f) {
+            Some(m) => Msg::Undelegate {
+                delegator: m.delegator_address,
+                validator: m.validator_address,
+                amount: one_coin(m.amount)?,
+            },
+            None => return unknown(),
+        },
+        REDELEGATE => match fields::<RedelegateF>(&f) {
+            Some(m) => Msg::Redelegate {
+                delegator: m.delegator_address,
+                from_validator: m.validator_src_address,
+                to_validator: m.validator_dst_address,
+                amount: one_coin(m.amount)?,
+            },
+            None => return unknown(),
+        },
+        CANCEL_UNBONDING => match fields::<CancelUnbondingF>(&f) {
+            Some(m) => Msg::CancelUnbonding {
+                delegator: m.delegator_address,
+                validator: m.validator_address,
+                amount: one_coin(m.amount)?,
+                creation_height: int64(&m.creation_height)?,
+            },
+            None => return unknown(),
+        },
+        TRANSFER_DELEGATION => match fields::<TransferDelegationF>(&f) {
+            Some(m) => Msg::TransferDelegation {
+                delegator: m.delegator_address,
+                validator: m.validator_address,
+                receiver: m.receiver_address,
+                amount: one_coin(m.amount)?,
+            },
+            None => return unknown(),
+        },
         _ if is_tokenfactory => match fields::<DenomAdminF>(&f) {
             Some(m) => Msg::TokenfactoryChangeAdmin {
                 type_url: t.clone(),
@@ -486,6 +598,17 @@ mod tests {
             "+030-01-01T00:00:00Z",
         ] {
             assert!(timestamp(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn int64s() {
+        assert_eq!(int64("").unwrap(), 0);
+        assert_eq!(int64("0").unwrap(), 0);
+        assert_eq!(int64("123456789").unwrap(), 123_456_789);
+        assert_eq!(int64("-5").unwrap(), -5);
+        for bad in ["-", "-0", "01", "+1", "1.0", " 1", "9223372036854775808"] {
+            assert!(int64(bad).is_err(), "{bad:?}");
         }
     }
 }

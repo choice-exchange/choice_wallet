@@ -18,9 +18,11 @@ use crate::direct::Request;
 use crate::msg::{Coin, is_canonical_amount};
 use crate::proto::cosmos::bank::v1beta1::MsgSend;
 use crate::proto::cosmos::crypto::secp256k1::PubKey;
+use crate::proto::cosmos::distribution::v1beta1::MsgWithdrawDelegatorReward;
 use crate::proto::cosmos::tx::signing::v1beta1::SignMode;
 use crate::proto::cosmos::tx::v1beta1::{AuthInfo, Fee as ProtoFee, ModeInfo, SignerInfo, TxBody, mode_info};
 use crate::proto::cosmwasm::wasm::v1::MsgExecuteContract;
+use crate::staking;
 use crate::wkt::Any;
 
 /// Fee for a transaction the wallet builds.
@@ -82,6 +84,77 @@ pub fn cw20_send(chain: &Chain, from: &str, cw20: &str, to: &str, amount: &str, 
     check_amount(amount)?;
     chain.check_address(to)?;
     execute_contract(chain, from, cw20, cosmwasm::send(to, amount, msg), &[])
+}
+
+/// Stake `amount` with `validator`.
+pub fn delegate(chain: &Chain, delegator: &str, validator: &str, amount: &Coin) -> Result<Any, Error> {
+    chain.check_address(delegator)?;
+    chain.check_validator(validator)?;
+    Ok(Any::pack(&staking::MsgDelegate {
+        delegator_address: delegator.into(),
+        validator_address: validator.into(),
+        amount: Some(amount.to_proto()),
+    }))
+}
+
+/// Start unstaking `amount` from `validator`.
+pub fn undelegate(chain: &Chain, delegator: &str, validator: &str, amount: &Coin) -> Result<Any, Error> {
+    chain.check_address(delegator)?;
+    chain.check_validator(validator)?;
+    Ok(Any::pack(&staking::MsgUndelegate {
+        delegator_address: delegator.into(),
+        validator_address: validator.into(),
+        amount: Some(amount.to_proto()),
+    }))
+}
+
+/// Move `amount` of the stake with `from` to `to`. Moving to the same validator is refused,
+/// as the chain would.
+pub fn redelegate(chain: &Chain, delegator: &str, from: &str, to: &str, amount: &Coin) -> Result<Any, Error> {
+    chain.check_address(delegator)?;
+    chain.check_validator(from)?;
+    chain.check_validator(to)?;
+    if from == to {
+        return Err(Error::Address(to.into()));
+    }
+    Ok(Any::pack(&staking::MsgBeginRedelegate {
+        delegator_address: delegator.into(),
+        validator_src_address: from.into(),
+        validator_dst_address: to.into(),
+        amount: Some(amount.to_proto()),
+    }))
+}
+
+/// Stake again `amount` of the unbonding entry with `validator` that started at
+/// `creation_height`.
+pub fn cancel_unbonding(
+    chain: &Chain,
+    delegator: &str,
+    validator: &str,
+    amount: &Coin,
+    creation_height: i64,
+) -> Result<Any, Error> {
+    chain.check_address(delegator)?;
+    chain.check_validator(validator)?;
+    if creation_height <= 0 {
+        return Err(Error::Decode("creation_height"));
+    }
+    Ok(Any::pack(&staking::MsgCancelUnbondingDelegation {
+        delegator_address: delegator.into(),
+        validator_address: validator.into(),
+        amount: Some(amount.to_proto()),
+        creation_height,
+    }))
+}
+
+/// Claim the rewards of the stake with `validator`.
+pub fn withdraw_rewards(chain: &Chain, delegator: &str, validator: &str) -> Result<Any, Error> {
+    chain.check_address(delegator)?;
+    chain.check_validator(validator)?;
+    Ok(Any::pack(&MsgWithdrawDelegatorReward {
+        delegator_address: delegator.into(),
+        validator_address: validator.into(),
+    }))
 }
 
 /// `MsgExecuteContract` calling `contract` with the JSON `msg`, attaching `funds`.

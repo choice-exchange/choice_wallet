@@ -244,7 +244,39 @@ fn message(m: &Msg, signer: &str, ctx: &Context, mut outflows: Option<&mut Outfl
                 ));
             }
         }
-        Msg::WithdrawRewards { .. } => {}
+        // Staking keeps the coins the signer's: not outflows, so no "most of your balance".
+        Msg::WithdrawRewards { .. } | Msg::Redelegate { .. } | Msg::CancelUnbonding { .. } => {}
+        Msg::Delegate { validator, amount, .. } => out.push(finding(
+            "stake",
+            Level::Info,
+            "Unstaking it later takes the unbonding period.".into(),
+            json!({ "validator": validator, "amount": amount }),
+        )),
+        Msg::Undelegate { validator, amount, .. } => out.push(finding(
+            "unstake",
+            Level::Info,
+            "Starts unstaking; it returns after the unbonding period.".into(),
+            json!({ "validator": validator, "amount": amount }),
+        )),
+        Msg::TransferDelegation {
+            delegator,
+            validator,
+            receiver,
+            amount,
+        } => {
+            if !same(delegator, receiver) {
+                out.push(finding(
+                    "transfer_stake",
+                    Level::Red,
+                    format!(
+                        "Gives {} of your stake to {}.",
+                        ctx.token_name(amount.denom()),
+                        short(receiver)
+                    ),
+                    json!({ "validator": validator, "receiver": receiver, "amount": amount }),
+                ));
+            }
+        }
         Msg::TokenfactoryChangeAdmin {
             sender,
             denom,
@@ -440,6 +472,60 @@ mod tests {
             withdraw_address: ME.into(),
         }]);
         assert_eq!(a.level, Level::Info);
+    }
+
+    #[test]
+    fn staking_keeps_the_coins_yours() {
+        const VAL: &str = "injvaloper1qqqsyqcyq5rqwzqfpg9scrgwpugpzysn4kx8jx";
+        let inj = |a: &str| Coin::new("inj", a).unwrap();
+        // Staking all you hold is normal: no "most of your balance".
+        let ctx = Context {
+            balances: [("inj".to_owned(), "10".to_owned())].into(),
+            ..Context::default()
+        };
+        let all = cosmos(
+            &[Msg::Delegate {
+                delegator: ME.into(),
+                validator: VAL.into(),
+                amount: inj("10"),
+            }],
+            ME,
+            CosmosFee::default(),
+            &ctx,
+        );
+        assert_eq!((all.level, rules(&all)), (Level::Info, vec!["stake"]));
+        let a = grade(&[
+            Msg::Undelegate {
+                delegator: ME.into(),
+                validator: VAL.into(),
+                amount: inj("5"),
+            },
+            Msg::Redelegate {
+                delegator: ME.into(),
+                from_validator: VAL.into(),
+                to_validator: VAL.into(),
+                amount: inj("5"),
+            },
+            Msg::WithdrawRewards {
+                delegator: ME.into(),
+                validator: VAL.into(),
+            },
+        ]);
+        assert_eq!((a.level, rules(&a)), (Level::Info, vec!["unstake"]));
+        // Giving your stake to someone else is red; to yourself, nothing to say.
+        let give = |receiver: &str| {
+            grade(&[Msg::TransferDelegation {
+                delegator: ME.into(),
+                validator: VAL.into(),
+                receiver: receiver.into(),
+                amount: inj("5"),
+            }])
+        };
+        assert_eq!(
+            (give(OTHER).level, rules(&give(OTHER))),
+            (Level::Red, vec!["transfer_stake"])
+        );
+        assert!(rules(&give(ME)).is_empty());
     }
 
     #[test]
