@@ -163,6 +163,13 @@ Settings → Approvals and grants lists what the account lets others do, and tak
 
 "Revoke all" takes back everything on the Cosmos side in one transaction (up to 30 messages); each ERC20 allowance is its own EVM transaction. Revokes go through the same prepare, review and confirm as a send; the review reads them as "You take back". Checked live on testnet on 2026-11-09 (`e2e-live.mjs … approvals`): a site's grant, fee allowance and rewards redirect, and a real unlimited ERC20 allowance, each listed, revoked and checked on chain.
 
+### Address book and exchange memos
+
+- **Contacts.** Settings → Address book keeps saved recipients (name, address, and the memo an exchange needs, if any) in local storage with the rest of the wallet; removing the wallet clears them. The vault's `addresses` checks each address and gives both its forms, so a contact saved as `0x…` matches a send to its `inj1…` form. Send has a Contacts picker (the user's other accounts, then the book) and a memo field for Cosmos sends; after a send to an address the review didn't name, "Save address" opens a new contact with the address and memo filled in.
+- **In the review.** The book and the user's own accounts (those the wallet signs for) go into every review's risk context, dapp requests included: a recipient from it is named ("To your account Savings", "To My exchange from your address book"), and one whose start and end match a saved address but isn't it is amber (address poisoning).
+- **Exchange memos.** An exchange's shared deposit address credits each deposit to a customer by its memo; a deposit without one reaches the exchange but no account. A saved memo has to be on the send: none is red, another is amber. No list of such addresses is published, so before a send the wallet also reads the recipient's latest 20 incoming transactions from the user's LCD (`coin_received.receiver`, about a second, cached ten minutes, skipped after four seconds): if at least 5 and at least half carry a memo, from at least 3 senders, the address takes deposits with a memo, the form says so while the memo is empty, and a send without one is red. On mainnet on 2026-11-09, 13 of 1,342 bank sends over 4,000 blocks had a memo; the two addresses receiving most of them had memos on 19 and 20 of their last 20 deposits and are flagged, while ordinary accounts and the fee collector aren't. An EVM send can't carry a memo, so an EVM-only token's send to such an address is red, and the form says so before the review.
+- **Checked live** on testnet on 2026-11-09 (`e2e-live.mjs … contacts`): a contact saved with a memo, picked in Send, red without the memo and named with it, sent, and the memo read back from the chain.
+
 ### Sending
 
 1. **Prepare** (host): read the account, spendable balances and gas price, and check the amount and fee against the balances. Build with a provisional fee, simulate, build again with the real fee. Decode and grade it with the risk rules like any dapp request. The prepared request waits in session storage under its digest.
@@ -261,8 +268,9 @@ Implemented in `choice-wallet-policy`. `decode` returns them as `risk`: a level,
 | `personal_sign` of a 32-byte hash; a sign-in (EIP-4361) message for another site or another account | Red | `hash_signature`, `sign_in_wrong_site`, `sign_in_wrong_account` |
 | Blocklisted site | Blocked | `site_blocked` |
 | Limited allowance; orderbook orders or external transfers through the exchange precompile; acting for another account through its grant; binary `personal_sign` data; a system address off Injective | Amber | `allowance`, `precompile_call`, `exchange_for_other`, `binary_message`, `system_address`, `bank_precompile` |
-| More than half of a balance leaving (fees included), more than the balance, the amount plus the maximum gas over the balance, a recipient that looks like an address-book entry (address poisoning), a site not used before | Amber | `most_of_balance`, `more_than_balance`, `gas_over_balance`, `lookalike_address`, `site_new` |
-| First interaction with a contract; fee paid through a grant or by a payer; `MsgExec`; revokes; staking (stake and unstake note the unbonding period; staked coins aren't counted as leaving); address-book recipient; sign-in for this site | Info | `new_contract`, `fee_grant_used`, `fee_payer`, `authz_exec`, `authz_revoke`, `fee_revoke`, `allowance_revoke`, `precompile_call`, `stake`, `unstake`, `address_book`, `sign_in` |
+| A send without the memo an exchange needs (saved with the contact, or read from the recipient's deposits); an EVM send to such an address, which can't carry one | Red | `memo_missing`, `memo_unsupported` |
+| More than half of a balance leaving (fees included), more than the balance, the amount plus the maximum gas over the balance, a recipient that looks like an address-book entry (address poisoning), a memo other than the one saved for the contact, a site not used before | Amber | `most_of_balance`, `more_than_balance`, `gas_over_balance`, `lookalike_address`, `memo_differs`, `site_new` |
+| First interaction with a contract; fee paid through a grant or by a payer; `MsgExec`; revokes; staking (stake and unstake note the unbonding period; staked coins aren't counted as leaving); a recipient from the address book or one of the user's accounts; sign-in for this site | Info | `new_contract`, `fee_grant_used`, `fee_payer`, `authz_exec`, `authz_revoke`, `fee_revoke`, `allowance_revoke`, `precompile_call`, `stake`, `unstake`, `address_book`, `sign_in` |
 | EIP-7702 authorizations, chain ID mismatches | Refused by the decoders, never graded | |
 | `eth_sign` | Disabled: never reaches the vault | |
 | `signArbitrary` (ADR-036) of data that parses as a tx | Red, when ADR-036 lands | |
@@ -302,7 +310,7 @@ A red request reads like: "inj1d7…z8h8 could send ALL your tokens, with no end
 - **Full inventory.** The same engine as Rescue Mode drives the normal balance view: CW20s, NFTs (paginated), CLMM positions, farms, subaccount deposits.
 - **Vault accounts (phase 3, research).** Long-term funds held in a contract. Withdrawals over a limit wait 24 to 48 hours, and a guardian key can cancel them. On Injective this is a CosmWasm or EVM contract (Injective EVM has no EIP-7702); on other EVM chains Safe or 7702 delegation.
 - **Swap** through the Choice aggregator, with the fee shown before signing. INJ orderbook trading later.
-- **Address book** and CEX memo warnings.
+- **Address book** and exchange memo warnings (built, see [Address book and exchange memos](#address-book-and-exchange-memos)).
 - **Light-client checks (phase 3).** Verify balances with proofs against a CometBFT light client (`tendermint-light-client-verifier`), so an RPC can't lie about them.
 
 ## Platforms
@@ -348,7 +356,7 @@ injective-ts (1.20.x), ethers and viem are used only to generate test vectors. T
 | --- | --- |
 | 0. Core and trust model | Rust core, Cosmos and Injective crates, EVM crate, risk rules, vault protocol and WASM build (done). Extension skeleton: the service worker hosting the vault, create / import / unlock / lock in the popup, checked in Chromium (done). The UI as its own package behind a host interface, so desktop and mobile reuse it (done). Balances and bank sends in the extension through the chain client, with user-set endpoints (done). Extension security model as a written spec with tests. EIP-6963 `rdns` fixed and the injective-ts wallet PR opened. Test vectors from injective-ts 1.20.x and alloy. Real-dapp tx corpus. uniffi targets built in CI |
 | 1. Extension beta (Injective) | Create or import a seed, Ledger (DMK), send and receive, one balance list (bank + ERC20 + CW20), dapp signing, simulation, approvals screen, inventory engine, rescue address with a scoped fee grant, Choice apps integrated. In-house audit, Chrome Web Store public beta |
-| 2. Depth and mobile | Rescue Mode, Trezor and Keystone, NFTs, swap. iOS and Android with Reown WalletKit. (Staking landed early, 2026-11-09.) |
+| 2. Depth and mobile | Rescue Mode, Trezor and Keystone, NFTs, swap. iOS and Android with Reown WalletKit. (Staking, approvals and the address book landed early, 2026-11-09.) |
 | 3. Multichain | Ethereum, Base, Arbitrum, BSC; Cosmos Hub, Osmosis, Noble (per-chain proto sets); then Solana and Bitcoin. Vault accounts, light client |
 
 ## Licensing
