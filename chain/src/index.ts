@@ -3,6 +3,7 @@
 // Web APIs only (fetch, crypto.subtle), so it runs in a service worker, a web view or Node.
 
 export { balanceChanges, mergeActivity, parseCoins, summarize, type Activity, type ActivityKind, type EvmView } from "./activity.ts";
+export { DEPOSITS_LOOKED_AT, takesMemos } from "./deposits.ts";
 export { bytesToHex, cosmosTxHash, hexToBase64, hexToBytes } from "./encoding.ts";
 export { abiString, EvmRpc, word, type Call } from "./evm.ts";
 export { EvmIndex } from "./evmindex.ts";

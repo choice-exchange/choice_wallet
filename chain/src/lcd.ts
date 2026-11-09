@@ -50,6 +50,7 @@ export interface IndexedTx {
   code: number;
   /** As the node renders them: each has an "@type". */
   messages: Record<string, unknown>[];
+  memo: string;
   fee: Coin[];
   events: TxEvent[];
   /** For an EVM transaction: its 0x hash (null if the node didn't say) and its logs (none
@@ -391,6 +392,13 @@ export class Lcd {
     })) as { txs: IndexedTx[]; done: boolean };
   }
 
+  /** The latest transactions in which `address` received coins, newest first: what
+   *  `takesMemos` reads. */
+  async received(address: string, limit: number): Promise<IndexedTx[]> {
+    if (!/^inj1[02-9ac-hj-np-z]{38,58}$/.test(address)) throw new RangeError(`not an address: ${address}`);
+    return (await this.searchTxs(`coin_received.receiver='${address}'`, 1, limit)).txs;
+  }
+
   /** The indexed transaction behind an EVM hash, or null if this node's index doesn't have
    *  it (a node indexes its own window of history). Reverted transactions emit no
    *  `ethereum_tx` event, so only ones that ran are found this way. */
@@ -448,6 +456,7 @@ function indexedTx(r: unknown): IndexedTx {
     time: r["timestamp"],
     code,
     messages,
+    memo: typeof body["memo"] === "string" ? body["memo"] : "",
     fee: Array.isArray(fee) ? fee.map(coin) : [],
     events,
   };
