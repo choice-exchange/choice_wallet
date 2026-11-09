@@ -1,6 +1,6 @@
 // Send: the form (with its token picker), the review, and the sent screen.
 
-import { cw20Address, evmAddress, formatShort, formatUnits, parseUnits, shortDenom, usdValue } from "@choice-wallet/chain";
+import { cw20Address, evmAddress, formatShort, formatUnits, isSolanaAddress, NETWORKS, parseUnits, shortDenom, usdValue } from "@choice-wallet/chain";
 import { useEffect, useState, type FormEvent } from "react";
 
 import { useBackend } from "./backend";
@@ -16,7 +16,15 @@ import { shown, spenderName, type Shown, type StakeLine } from "./review";
 import { TokenMark } from "./TokenMark";
 
 /** An amount typed into a form: base units (or "max"), or what's wrong with it. */
+/** SOL kept back by Max: the fee, with room for a priority fee. */
+const SOL_FEE_RESERVE = 1_000_000n;
+
 export function parseEntered(amount: string, max: boolean, token: Balance): { parsed: string | null; problem: string | null } {
+  // On Solana, Max is the amount itself (SOL less what the fee may take).
+  if (max && token.chain) {
+    const all = BigInt(token.amount) - (token.denom === "sol" ? SOL_FEE_RESERVE : 0n);
+    return all > 0n ? { parsed: all.toString(), problem: null } : { parsed: null, problem: `Not enough ${token.symbol} to send.` };
+  }
   if (max) return { parsed: "max", problem: null };
   if (!amount.trim()) return { parsed: null, problem: null };
   try {
@@ -90,8 +98,10 @@ export function SendForm({
         contacts={contacts}
         onBack={() => setChoosing(false)}
         onPick={(address, m) => {
-          setTo(address);
-          setMemo(m);
+          // One of the user's accounts, for a Solana token: its Solana address.
+          const own = token?.chain ? accounts.find((a) => Object.values(a.addresses).includes(address))?.addresses[token.chain] : undefined;
+          setTo(own ?? address);
+          setMemo(token?.chain ? "" : m);
           setChoosing(false);
         }}
       />
@@ -127,8 +137,11 @@ export function SendForm({
   }
 
   const { parsed, problem } = parseEntered(amount, max, token);
-  // An EVM-only token moves in an EVM transaction, which has no memo.
-  const evmOnly = evmAddress(token.denom) !== null;
+  // An EVM-only token moves in an EVM transaction, which has no memo; nor does a Solana send
+  // here.
+  const solana = token.chain !== undefined;
+  const evmOnly = evmAddress(token.denom) !== null || solana;
+  const badAddress = solana && to.trim() !== "" && !isSolanaAddress(to.trim());
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -145,7 +158,7 @@ export function SendForm({
         foot={
           <>
             {error && <Callout level="amber">{error}</Callout>}
-            <button className="btn btn-gold" type="submit" disabled={!parsed || !to.trim() || busy}>
+            <button className="btn btn-gold" type="submit" disabled={!parsed || !to.trim() || badAddress || busy}>
               {busy ? "Checking…" : "Review"}
             </button>
           </>
@@ -190,22 +203,24 @@ export function SendForm({
           </div>
           <input
             className="input mono"
-            placeholder="inj1… or 0x…"
+            placeholder={solana ? "Solana address" : "inj1… or 0x…"}
             aria-label="To"
             autoComplete="off"
             spellCheck={false}
             value={to}
             onChange={(e) => setTo(e.target.value)}
           />
+          {badAddress && <span className="error">That isn&apos;t a Solana address.</span>}
           {check?.mine && <span className="meta">Your account {check.mine}</span>}
           {check?.contact && <span className="meta">{check.contact.name}, from your address book</span>}
         </div>
-        {check?.takesMemo && evmOnly && (
+        {check?.takesMemo && evmOnly && !solana && (
           <Callout level="red">This address needs a memo, which an EVM-only token&apos;s send can&apos;t carry.</Callout>
         )}
         {check?.takesMemo && !evmOnly && !check.contact?.memo && !memo.trim() && (
           <Callout level="amber">This looks like an exchange: its deposits carry a memo. Add yours below.</Callout>
         )}
+        {solana && <p className="meta">On {token.chain === NETWORKS.mainnet.solana.caip2 ? "Solana" : "Solana Devnet"}, from this account&apos;s Solana address.</p>}
         {!evmOnly && (
           <label className="field">
             <span className="eyebrow">Memo</span>
@@ -566,7 +581,7 @@ export function Review({
         <div className="row">
           <span>Network</span>
           <span>
-            {source ? source.name : network === "testnet" ? "Injective testnet" : "Injective"}
+            {review.display.kind === "solana_transaction" ? NETWORKS[network].solana.name : source ? source.name : network === "testnet" ? "Injective testnet" : "Injective"}
             {view.evm && !source ? " (EVM)" : ""}
           </span>
         </div>

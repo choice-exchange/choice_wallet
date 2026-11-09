@@ -3,7 +3,7 @@
 
 import { adapterCw20, adapterDenom, cw20Denom, evmDenom, isContractAddress, NETWORKS } from "@choice-wallet/chain";
 
-import type { Coin, CosmosDisplay, EvmDisplay, EvmSwapCall, NetworkId, SendReview, SwapStepInfo } from "./protocol";
+import type { Coin, CosmosDisplay, EvmDisplay, EvmSwapCall, NetworkId, SendReview, SolanaDisplay, SwapStepInfo } from "./protocol";
 
 /** A token turned into its other form by the CW20 adapter, one for one. */
 export type Conversion = { from: Coin; to: Coin; recipient: string };
@@ -117,6 +117,7 @@ export function spenderName(network: NetworkId, a: string): string | null {
  *  transfer's USDC on both sides), so amounts show as the tokens the user picked. */
 export function shown(display: SendReview["display"], network: NetworkId, swap?: Pick<SwapStepInfo, "from" | "to">): Shown {
   const net = NETWORKS[network];
+  if (display.kind === "solana_transaction") return solanaShown(display as SolanaDisplay, net.solana.name);
   if (display.kind === "evm_transaction") {
     const d = display as EvmDisplay;
     // Signed on a chain USDC comes from: its fee is in that chain's coin.
@@ -270,6 +271,69 @@ export function shown(display: SendReview["display"], network: NetworkId, swap?:
       continue;
     }
     out.others.push(String(m["type"] ?? "message"));
+  }
+  return out;
+}
+
+const short = (a: string) => (a.length > 12 ? `${a.slice(0, 4)}…${a.slice(-4)}` : a);
+
+/** A Solana transaction, in the review's terms: SOL and tokens the signer sends (a token to
+ *  the wallet whose account it is, when the vault could tell), approvals, a CCTP burn to
+ *  Injective, and one line for anything else. Compute budget instructions are its fee. */
+function solanaShown(d: SolanaDisplay, cluster: string): Shown {
+  const out: Shown = { sends: [], nfts: [], moves: [], swaps: [], bridges: [], bridgesIn: [], mints: [], approvals: [], converts: [], stakes: [], revokes: [], others: [], fee: [{ denom: "sol", amount: d.fee.total }], memo: "", evm: false };
+  for (const s of d.instructions) {
+    const name = s.program_name ?? short(s.program);
+    switch (s.type) {
+      case "compute_budget":
+        break;
+      case "sol_transfer":
+        if (s.from === d.signer) out.sends.push({ coins: [{ denom: "sol", amount: s.lamports }], to: s.to });
+        else out.others.push(`Moves SOL from ${short(s.from)} to ${short(s.to)}`);
+        break;
+      case "token_transfer":
+        if (s.authority === d.signer && s.mint) out.sends.push({ coins: [{ denom: `spl:${s.mint}`, amount: s.amount }], to: s.destination_owner ?? s.destination });
+        else out.others.push(`Moves tokens to ${short(s.destination_owner ?? s.destination)}`);
+        break;
+      case "create_token_account":
+        if (s.owner !== d.signer) out.others.push(`Opens ${short(s.owner)}'s account for this token, paying its rent`);
+        break;
+      case "token_approve":
+        out.approvals.push({ token: s.mint ? `spl:${s.mint}` : s.source, spender: s.delegate, amount: s.amount, via: "token" });
+        break;
+      case "bridge":
+        if (s.chain === "Injective" && (s.delivery === "anyone" || s.delivery === "gas_drop") && s.recipient) {
+          const usdc = `spl:${s.token}`;
+          const at = (amount: string) => ({ denom: usdc, amount });
+          out.bridgesIn.push({ coin: at(s.amount), maxFee: at(s.max_fee), chain: cluster, recipient: s.recipient, delivery: s.delivery, dropFee: s.max_drop_fee === null ? null : at(s.max_drop_fee), least: at(s.least) });
+        } else {
+          out.others.push(`Bridges USDC to ${s.chain ?? `CCTP domain ${s.domain}`}`);
+        }
+        break;
+      case "bridge_reclaim":
+        out.others.push("Takes back the rent of a finished bridge transfer's record");
+        break;
+      case "memo":
+        out.memo = s.text ?? `0x${s.hex}`;
+        break;
+      case "assign":
+        out.others.push(`Hands ${short(s.account)} to ${s.owner_name ?? short(s.owner)}`);
+        break;
+      case "token_set_authority":
+        out.others.push(`Gives control of ${short(s.account)} to ${s.new_authority ? short(s.new_authority) : "nobody"}`);
+        break;
+      case "token_close":
+        out.others.push(`Closes token account ${short(s.account)}; its SOL goes to ${short(s.destination)}`);
+        break;
+      case "unreadable":
+        out.others.push(`${name}: an instruction the wallet can't read`);
+        break;
+      case "program":
+        out.others.push(`${name}: the wallet can't read what this does`);
+        break;
+      default:
+        out.others.push(`${name}: ${s.type.replaceAll("_", " ")}`);
+    }
   }
   return out;
 }

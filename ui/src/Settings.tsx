@@ -44,6 +44,7 @@ export function SettingsView({
   const [text, setText] = useState("");
   const [evmText, setEvmText] = useState("");
   const [indexText, setIndexText] = useState("");
+  const [solanaText, setSolanaText] = useState("");
   const [prices, setPrices] = useState(true);
   const [lockAfter, setLockAfter] = useState("15");
   const [notify, setNotify] = useState<NotifyMode>("active");
@@ -63,6 +64,7 @@ export function SettingsView({
       setText(s.lcd[s.network].join("\n"));
       setEvmText(s.evm[s.network].join("\n"));
       setIndexText(s.evmIndex[s.network].join("\n"));
+      setSolanaText(s.solana[s.network].join("\n"));
       setPrices(s.prices);
       setLockAfter(String(s.autoLock));
       setNotify(s.notify);
@@ -75,6 +77,7 @@ export function SettingsView({
       setText(settings.lcd[n].join("\n"));
       setEvmText(settings.evm[n].join("\n"));
       setIndexText(settings.evmIndex[n].join("\n"));
+      setSolanaText(settings.solana[n].join("\n"));
     }
   };
   async function save(e: FormEvent) {
@@ -84,6 +87,7 @@ export function SettingsView({
     const lcd = lines(text);
     const evm = lines(evmText);
     const evmIndex = lines(indexText);
+    const solana = lines(solanaText);
     const same = (a: string[], b: string[]) => a.join("\n") === b.join("\n");
     if (
       await run({
@@ -92,6 +96,7 @@ export function SettingsView({
         lcd: same(lcd, settings.lcdDefault[net]) ? null : lcd,
         evm: same(evm, settings.evmDefault[net]) ? null : evm,
         evmIndex: same(evmIndex, settings.evmIndexDefault[net]) ? null : evmIndex,
+        solana: same(solana, settings.solanaDefault[net]) ? null : solana,
         prices,
         autoLock: Number(lockAfter),
         notify,
@@ -182,6 +187,18 @@ export function SettingsView({
           onChange={(e) => setIndexText(e.target.value)}
         />
         <span className="meta">Finds tokens others send you. Empty turns it off.</span>
+        <label className="meta" htmlFor="solana-endpoints">
+          Solana (JSON-RPC)
+        </label>
+        <textarea
+          id="solana-endpoints"
+          className="textarea"
+          rows={1}
+          spellCheck={false}
+          aria-label="Solana endpoints"
+          value={solanaText}
+          onChange={(e) => setSolanaText(e.target.value)}
+        />
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
           <span className="meta">Tried in order, one per line.</span>
           <button
@@ -193,6 +210,7 @@ export function SettingsView({
               setText(settings.lcdDefault[net].join("\n"));
               setEvmText(settings.evmDefault[net].join("\n"));
               setIndexText(settings.evmIndexDefault[net].join("\n"));
+              setSolanaText(settings.solanaDefault[net].join("\n"));
             }}
           >
             Use the defaults

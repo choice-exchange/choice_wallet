@@ -81,7 +81,7 @@ export type UiRequest =
   | { type: "settings" }
   /** Switch to `network`, with these LCD, EVM and Blockscout endpoints for it (`null`: the
    *  defaults; left out: unchanged; an empty Blockscout list turns it off). */
-  | { type: "save_settings"; network: NetworkId; lcd: string[] | null; evm?: string[] | null; evmIndex?: string[] | null; prices?: boolean; autoLock?: number; notify?: NotifyMode }
+  | { type: "save_settings"; network: NetworkId; lcd: string[] | null; evm?: string[] | null; evmIndex?: string[] | null; solana?: string[] | null; prices?: boolean; autoLock?: number; notify?: NotifyMode }
   | { type: "balances" }
   /** What the account in use showed last (balances, staking, the first page of activity),
    *  from disk: drawn at once while the chain is asked again. */
@@ -95,6 +95,8 @@ export type UiRequest =
   | { type: "add_token"; address: string }
   /** One page (from 1) of the account's activity, from the node's tx index. */
   | { type: "activity"; page: number }
+  /** The account's Solana history, newest first; `before` continues after a page. */
+  | { type: "solana_activity"; before?: string }
   /** `amount` in base units, or "max" (the fee token: everything but the fee). `memo` goes
    *  in a Cosmos transaction; an EVM-only token's send can't carry one. */
   | { type: "prepare_send"; denom: string; to: string; amount: string; memo?: string }
@@ -207,6 +209,9 @@ export type TokenInfo = {
   name: string;
   decimals: number;
   known: boolean;
+  /** On a Solana cluster (its CAIP-2 ID): SOL (`sol`) or an SPL token (`spl:<mint>`), held
+   *  by the account's Solana key. Absent for Injective's. */
+  chain?: string;
   /** USD per whole token, from Choice's price index, when it has one (mainnet only). */
   priceUsd?: string;
 };
@@ -250,6 +255,63 @@ export type Coin = { denom: string; amount: string };
 export type DecodedMsg = { type: "bank_send"; from: string; to: string; amount: Coin[] } | { type: string; [k: string]: unknown };
 
 /** The vault's decode of a Cosmos transaction: what gets signed. */
+/** The vault's decode of a Solana transaction. Amounts in base units (lamports, or the
+ *  token's); addresses base58. */
+export type SolanaDisplay = {
+  kind: "solana_transaction";
+  chain: string;
+  signer: string;
+  fee_payer: string;
+  signers: string[];
+  version: "legacy" | "v0";
+  fee: { base: string; priority: string; total: string; unit_limit: number | null; unit_price: string | null };
+  durable_nonce: boolean;
+  lookup_tables: string[];
+  instructions: SolanaStep[];
+};
+
+export type SolanaStep = { program: string; program_name: string | null } & (
+  | { type: "sol_transfer"; from: string; to: string; lamports: string }
+  | { type: "create_account"; from: string; account: string; lamports: string; space: string; owner: string; owner_name: string | null }
+  | { type: "assign"; account: string; owner: string; owner_name: string | null }
+  | { type: "advance_nonce"; nonce: string; authority: string }
+  | { type: "compute_budget"; unit_limit?: number; unit_price?: string }
+  | { type: "token_transfer"; source: string; destination: string; destination_owner: string | null; authority: string; amount: string; mint: string | null; decimals: number | null; usdc: boolean }
+  | { type: "token_approve"; source: string; delegate: string; owner: string; amount: string; mint: string | null; decimals: number | null }
+  | { type: "token_revoke"; source: string; owner: string }
+  | { type: "token_set_authority"; account: string; authority_kind: number; new_authority: string | null; current: string }
+  | { type: "token_close"; account: string; destination: string; owner: string }
+  | { type: "token_burn"; account: string; mint: string; owner: string; amount: string; decimals: number | null }
+  | { type: "token_sync_native"; account: string }
+  | { type: "token_init"; account: string; mint: string; owner: string }
+  | { type: "token_other"; kind: number }
+  | { type: "create_token_account"; payer: string; account: string; owner: string; mint: string; idempotent: boolean }
+  | { type: "memo"; text: string | null; hex: string }
+  | SolanaBridgeStep
+  | { type: "bridge_reclaim"; payee: string; event_account: string }
+  | { type: "unreadable"; reason: string }
+  | { type: "program"; accounts: { address: string; signer: boolean; writable: boolean; table: { address: string; index: number } | null }[]; data: string }
+);
+
+/** A CCTP burn on Solana, as the vault read it. */
+export type SolanaBridgeStep = {
+  type: "bridge";
+  amount: string;
+  token: string;
+  usdc: boolean;
+  domain: number;
+  chain: string | null;
+  /** Who gets it there: a 0x address (for a gas drop, the hook's), null if unusable. */
+  recipient: string | null;
+  max_fee: string;
+  finality: number;
+  delivery: "anyone" | "gas_drop" | "circle" | "caller" | "hook";
+  max_drop_fee: string | null;
+  least: string;
+  owner: string;
+  event_account: string;
+};
+
 export type CosmosDisplay = {
   kind: string;
   chain: string;
@@ -366,7 +428,7 @@ export type EvmSwapCall = {
 export type SendReview = {
   /** Binds the approval to exactly this transaction. */
   digest: string;
-  display: CosmosDisplay | EvmDisplay;
+  display: CosmosDisplay | EvmDisplay | SolanaDisplay;
   risk: Risk;
   /** How to show each denom in `display`. */
   tokens: Record<string, TokenInfo>;
@@ -695,6 +757,9 @@ export type ActivityItem = {
   /** For kind "bridge": USDC sent to another chain over Circle's CCTP. `chain` and
    *  `recipient` (a 0x address, or a Solana USDC account) when the wallet knows the domain. */
   bridge?: { domain: number; mintRecipient: string; incoming?: true; chain?: string; recipient?: string };
+  /** A Solana transaction: its cluster (CAIP-2). The hash is its signature, its explorer
+   *  Solana's. */
+  chain?: string;
 };
 
 export type ActivityPage = {
@@ -726,6 +791,9 @@ export type Settings = {
   /** Blockscout instances per network (empty: off), and the defaults. */
   evmIndex: Record<NetworkId, string[]>;
   evmIndexDefault: Record<NetworkId, string[]>;
+  /** Solana endpoints for each network's cluster, and the defaults. */
+  solana: Record<NetworkId, string[]>;
+  solanaDefault: Record<NetworkId, string[]>;
   /** Show USD values (Choice's price index). */
   prices: boolean;
   /** Minutes without activity before the wallet locks: 5, 15, 60 or 240. */
@@ -796,7 +864,17 @@ export type Replies = {
   /** Every balance; the UI applies `filter`. `prices` is the USD values setting. EVM-only
    *  tokens (denom `evm:0x…`) and CW20s (`cw20:inj1…`) are in the list; `evmDown` says the
    *  EVM endpoints didn't answer, so EVM-only tokens may be missing. */
-  balances: { network: NetworkId; balances: Balance[]; filter: TokenFilter; prices: boolean; evmDown?: true };
+  balances: {
+    network: NetworkId;
+    balances: Balance[];
+    filter: TokenFilter;
+    prices: boolean;
+    evmDown?: true;
+    /** The account's Solana side: its address and holdings (SOL first); `down` when the
+     *  cluster couldn't be asked. Absent for an account with no Solana key. */
+    solana?: { address: string; balances: Balance[]; down?: true };
+  };
+  solana_activity: { items: ActivityItem[]; tokens: Record<string, TokenInfo>; next: string | null };
   snapshot: SnapshotView | null;
   seen: null;
   add_token: { denom: string; symbol: string; filter: TokenFilter };

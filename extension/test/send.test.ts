@@ -153,15 +153,16 @@ test("settings: network and endpoints, https only", async () => {
   assert.equal(code(await service.handle({ type: "save_settings", network: "devnet", lcd: null })), "bad_request");
   assert.equal(code(await service.handle({ type: "save_settings", network: "mainnet", lcd: null, evm: ["http://evm.example"] })), "invalid_endpoint");
   const saved = ok<{ lcd: Record<string, string[]>; evm: Record<string, string[]>; evmDefault: Record<string, string[]> }>(
-    await service.handle({ type: "save_settings", network: "mainnet", lcd: ["https://my-node.example/ "], evm: ["https://my-evm.example"] }),
+    await service.handle({ type: "save_settings", network: "mainnet", lcd: ["https://my-node.example/ "], evm: ["https://my-evm.example"], solana: ["https://my-solana.example"] }),
   );
   assert.deepEqual(saved.lcd["mainnet"], ["https://my-node.example"]);
   assert.deepEqual(saved.evm["mainnet"], ["https://my-evm.example"]);
   assert.deepEqual(saved.evm["testnet"], saved.evmDefault["testnet"]);
   net.state.hosts.clear();
   ok(await service.handle({ type: "balances" }));
-  // Chain reads go only to the user's endpoints; the one other host is Choice's price list.
-  assert.deepEqual([...net.state.hosts].sort(), ["evm-api.choice.exchange", "my-evm.example", "my-node.example"]);
+  // Chain reads go only to the user's endpoints (Solana's too); the one other host is
+  // Choice's price list.
+  assert.deepEqual([...net.state.hosts].sort(), ["evm-api.choice.exchange", "my-evm.example", "my-node.example", "my-solana.example"]);
   // Leaving `evm` out leaves it as it was.
   const kept = ok<{ evm: Record<string, string[]> }>(await service.handle({ type: "save_settings", network: "mainnet", lcd: ["https://my-node.example"] }));
   assert.deepEqual(kept.evm["mainnet"], ["https://my-evm.example"]);

@@ -20,6 +20,10 @@ const LOGOS: Record<string, string> = {
   peggy0xdAC17F958D2ee523a2206206994597C13D831ec7: usdt,
   peggy0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2: weth,
   "ibc/C4CFF46FD6DE35CA4CF4CE031E643C8FDC9BA4B99AE598E9B0ED98FE3A2319F9": atom,
+  // On Solana: Circle's USDC (mainnet and devnet) and Tether's USDT, by mint.
+  "spl:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": usdc,
+  "spl:4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": usdc,
+  "spl:Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB": usdt,
 };
 
 export function TokenMark({ denom, symbol, known, small }: { denom: string; symbol: string; known: boolean; small?: boolean }) {

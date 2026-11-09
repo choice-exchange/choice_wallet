@@ -17,7 +17,7 @@ import { BackBar, Callout, formatUsd, Screen, Segmented, shortAddress, tokenSub 
 import { NftsView, NftView } from "./Nfts";
 import { InventoryScreen } from "./Inventory";
 import { RescueView } from "./Rescue";
-import type { ActivityPage, Balance, Nft, NftCollection, SendReview, Sent, StakingSummary, Status, TokenFilter } from "./protocol";
+import type { ActivityPage, Balance, NetworkId, Nft, NftCollection, Replies, SendReview, Sent, StakingSummary, Status, TokenFilter } from "./protocol";
 import { newDraft, SwapView, type SwapDraft } from "./Swap";
 import { QrCode } from "./QrCode";
 import { useRequest } from "./request";
@@ -96,6 +96,8 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
   const [filter, setFilter] = useState<TokenFilter>(DEFAULT_FILTER);
   const [prices, setPrices] = useState(true);
   const [evmDown, setEvmDown] = useState(false);
+  /** The account's Solana side (its own key): null for an account without one. */
+  const [solana, setSolana] = useState<Replies["balances"]["solana"] | null>(null);
   const [refresh, setRefresh] = useState(0);
   const [staking, setStaking] = useState<StakingSummary | null>(null);
   const [swapDraft, setSwapDraft] = useState<SwapDraft>(() => newDraft(NETWORKS[status.network].feeDenom));
@@ -129,6 +131,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
   // last comes from disk at once, while the chain is asked.
   useEffect(() => {
     setBalances(null);
+    setSolana(null);
     setStaking(null);
     setReadAt(null);
     setSavedActivity(null);
@@ -142,6 +145,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
       const { balances: b, staking: st, activity } = r.result;
       if (b && !answered.current) {
         setBalances(b.value.balances);
+        setSolana(b.value.solana ?? null);
         setFilter(b.value.filter);
         setPrices(b.value.prices);
         setReadAt(b.at);
@@ -185,6 +189,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
     void saving.current.then(() => run({ type: "balances" })).then((r) => {
       if (live && r) {
         setBalances(r.balances);
+        setSolana(r.solana ?? null);
         setFilter(r.filter);
         setPrices(r.prices);
         setEvmDown(r.evmDown === true);
@@ -300,6 +305,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
         return (
           <Receive
             addresses={account?.addresses ?? {}}
+            network={status.network}
             onBack={home}
             onBridgeIn={() => {
               setBridgeDraft((d) => ({ ...d, dir: "in" }));
@@ -337,7 +343,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
       case "send":
         return (
           <SendForm
-            balances={sorted?.shown ?? []}
+            balances={[...(sorted?.shown ?? []), ...(solana?.balances ?? []).filter((b) => BigInt(b.amount) > 0n)]}
             accounts={status.accounts.filter((_, i) => i !== status.active)}
             denom={view.denom}
             onReview={(review, entered, denom) => setView({ name: "review", review, entered, back: { name: "send", denom } })}
@@ -601,6 +607,30 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
                 )}
               </div>
             )}
+            {/* The account's Solana key: shown once it holds something there (Receive has its address). */}
+            {solana && (solana.down || solana.balances.some((b) => BigInt(b.amount) > 0n)) && (
+              <>
+                <div className="section-head">
+                  <span className="eyebrow">{NETWORKS[status.network].solana.name}</span>
+                  <span className="meta mono">{shortAddress(solana.address)}</span>
+                </div>
+                {solana.down && <p className="meta warn">{NETWORKS[status.network].solana.name} didn&apos;t answer. Its balances may be missing.</p>}
+                <div className="token-list">
+                  {solana.balances
+                    .filter((b) => b.denom === "sol" || BigInt(b.amount) > 0n)
+                    .map((b) => (
+                      <button key={b.denom} className="token" title={b.denom} disabled={watch} onClick={() => setView({ name: "send", denom: b.denom })}>
+                        <TokenMark denom={b.denom} symbol={b.symbol} known={b.known} />
+                        <span className="name">
+                          <span className="symbol">{b.symbol}</span>
+                          <span className={b.known ? "sub" : "sub denom"}>{b.known ? `${b.name} on Solana` : tokenSub(b)}</span>
+                        </span>
+                        <HoldingValue amount={formatShort(b.amount, b.decimals)} symbol={b.symbol} usd={b.usd} />
+                      </button>
+                    ))}
+                </div>
+              </>
+            )}
             {/* Staked, unstaking and unclaimed INJ. Nothing staked: the Stake button above. */}
             {staking && stakedAll > 0n && (
               <>
@@ -722,11 +752,13 @@ function CopyAddress({ address }: { address: string }) {
   );
 }
 
-function Receive({ addresses, onBack, onBridgeIn }: { addresses: Record<string, string>; onBack: () => void; onBridgeIn: () => void }) {
+function Receive({ addresses, network, onBack, onBridgeIn }: { addresses: Record<string, string>; network: NetworkId; onBack: () => void; onBridgeIn: () => void }) {
   const backend = useBackend();
-  const [side, setSide] = useState<"cosmos" | "evm">("cosmos");
+  const [side, setSide] = useState<"cosmos" | "evm" | "solana">("cosmos");
   const [copied, setCopied] = useState(false);
-  const address = (side === "cosmos" ? addresses[COSMOS] : addresses[EVM]) ?? "";
+  const cluster = NETWORKS[network].solana;
+  const sol = addresses[cluster.caip2];
+  const address = (side === "cosmos" ? addresses[COSMOS] : side === "evm" ? addresses[EVM] : sol) ?? "";
   return (
     <Screen
       top={<BackBar title="Receive" onBack={onBack} />}
@@ -747,10 +779,7 @@ function Receive({ addresses, onBack, onBridgeIn }: { addresses: Record<string, 
     >
       <Segmented
         label="Address format"
-        options={[
-          ["cosmos", "Injective"],
-          ["evm", "EVM (0x)"],
-        ]}
+        options={[["cosmos", "Injective"], ["evm", "EVM (0x)"], ...(sol ? ([["solana", "Solana"]] as const) : [])]}
         value={side}
         onChange={(v) => {
           setSide(v);
@@ -758,7 +787,7 @@ function Receive({ addresses, onBack, onBridgeIn }: { addresses: Record<string, 
         }}
       />
       <div className="surface-hero">
-        <div className="eyebrow">{side === "cosmos" ? "Injective address" : "EVM address"}</div>
+        <div className="eyebrow">{side === "cosmos" ? "Injective address" : side === "evm" ? "EVM address" : `${cluster.name} address`}</div>
         {address && (
           <div className="qr-frame">
             <QrCode text={address} />
@@ -770,11 +799,10 @@ function Receive({ addresses, onBack, onBridgeIn }: { addresses: Record<string, 
           </code>
         </div>
       </div>
-      <p className="lead">Both addresses are the same account.</p>
+      <p className="lead">{side === "solana" ? "Only Solana tokens here. Same phrase, its own key." : "Both addresses are the same account."}</p>
       <button type="button" className="btn btn-quiet" onClick={onBridgeIn}>
         USDC on another chain? Bring it in
       </button>
     </Screen>
   );
 }
-

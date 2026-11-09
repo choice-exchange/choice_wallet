@@ -24,7 +24,7 @@ import {
   WarningIcon,
 } from "./icons";
 import { Callout, Screen, shortAddress } from "./kit";
-import type { ActivityItem, ActivityKind, ActivityPage, Balance, Coin, NetworkId } from "./protocol";
+import type { ActivityItem, ActivityKind, ActivityPage, Balance, Coin, NetworkId, Replies } from "./protocol";
 import { useRequest } from "./request";
 import { ACTIVITY_FRESH_MS, merge, type ActivityState } from "./activityState";
 import { hiddenWhy } from "./tokenFilter";
@@ -74,11 +74,20 @@ export function ActivityView({ network, tabs, kept, onKeep }: { network: Network
   const { run, error, busy } = useRequest();
   const [st, setSt] = useState<ActivityState | null>(kept ?? null);
   const [showHidden, setShowHidden] = useState(false);
+  /** The account's Solana history (its own key), beside Injective's. */
+  const [sol, setSol] = useState<Replies["solana_activity"] | null>(null);
   const live = useRef(true);
 
   async function load(p: number) {
+    if (p === 1) void loadSolana();
     const r = await run({ type: "activity", page: p });
     if (r && live.current) setSt((prev) => merge(prev, r, p, Date.now()));
+  }
+
+  async function loadSolana(before?: string) {
+    const r = await backend.send({ type: "solana_activity", ...(before ? { before } : {}) });
+    if (!r.ok || !live.current) return;
+    setSol((prev) => (before && prev ? { items: [...prev.items, ...r.result.items], tokens: { ...prev.tokens, ...r.result.tokens }, next: r.result.next } : r.result));
   }
 
   useEffect(() => {
@@ -102,7 +111,7 @@ export function ActivityView({ network, tabs, kept, onKeep }: { network: Network
   }, [kept]);
 
   const items = st?.items ?? null;
-  const tokens = st?.tokens ?? {};
+  const tokens: Tokens = { ...(st?.tokens ?? {}), ...(sol?.tokens ?? {}) };
   const validators = st?.validators ?? {};
   const filter = st?.filter ?? null;
   const page = st?.page ?? 1;
@@ -122,7 +131,9 @@ export function ActivityView({ network, tabs, kept, onKeep }: { network: Network
       const b: Balance = { denom: c.denom, symbol: t?.symbol ?? "", name: t?.name ?? "", decimals: t?.decimals ?? 0, known: t?.known ?? false, amount: "0", ...(t?.onChoice ? { onChoice: true } : {}) };
       return hiddenWhy(b, filter, fee) !== null;
     });
-  const loaded = (items ?? []).filter((a) => cutoff === null || BigInt(a.height) >= BigInt(cutoff));
+  const injective = (items ?? []).filter((a) => cutoff === null || BigInt(a.height) >= BigInt(cutoff));
+  // Solana's rows join by time; heights (slots) aren't Injective's.
+  const loaded = [...injective, ...(sol?.items ?? [])].sort((a, b) => (b.time > a.time ? 1 : b.time < a.time ? -1 : 0));
   const hiddenCount = loaded.filter(junk).length;
   const visible = showHidden ? loaded : loaded.filter((a) => !junk(a));
 
@@ -159,7 +170,14 @@ export function ActivityView({ network, tabs, kept, onKeep }: { network: Network
               <div className="eyebrow">{g.day}</div>
               <div className="activity-list">
                 {g.rows.map((a) => (
-                  <Row key={a.hash} a={a} tokens={tokens} validators={validators} dim={junk(a)} onOpen={() => backend.openLink(explorerTxUrl(NETWORKS[network], a.evmHash ?? a.hash))} />
+                  <Row
+                    key={a.hash}
+                    a={a}
+                    tokens={tokens}
+                    validators={validators}
+                    dim={junk(a)}
+                    onOpen={() => backend.openLink(a.chain ? NETWORKS[network].solana.explorerTx.replace("{hash}", a.hash) : explorerTxUrl(NETWORKS[network], a.evmHash ?? a.hash))}
+                  />
                 ))}
               </div>
             </div>
@@ -174,6 +192,11 @@ export function ActivityView({ network, tabs, kept, onKeep }: { network: Network
           {more && (
             <button className="btn btn-quiet" disabled={busy} onClick={() => void load(page + 1)}>
               {busy ? "Loading…" : "Load more"}
+            </button>
+          )}
+          {sol?.next && (
+            <button className="btn btn-quiet" onClick={() => void loadSolana(sol.next!)}>
+              More from {NETWORKS[network].solana.name}
             </button>
           )}
         </>
@@ -206,6 +229,7 @@ function Row({ a, tokens, validators, dim, onOpen }: { a: ActivityItem; tokens: 
         </span>
         <span className="sub">
           {timeLabel(a.time)}
+          {a.chain ? " · Solana" : ""}
           {who}
         </span>
       </span>

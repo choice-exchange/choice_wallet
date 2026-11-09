@@ -156,6 +156,9 @@ export function createContacts(d: ContactDeps) {
     for (const a of await d.accounts()) {
       const addr = a.addresses[net.cosmos];
       if (addr) address_book.push({ address: addr, name: a.name, ...(isWatch(a) ? {} : { mine: true as const }) });
+      // Its Solana address, a key of its own (from the same phrase).
+      const sol = a.addresses[net.solana.caip2];
+      if (sol) address_book.push({ address: sol, name: a.name, ...(isWatch(a) ? {} : { mine: true as const }) });
     }
     // The rescue address: the user's, even when it isn't an account here.
     const rescue = await d.rescue?.();

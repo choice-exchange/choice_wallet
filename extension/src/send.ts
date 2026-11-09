@@ -48,6 +48,7 @@ import type { AccountInfo, ActivityPage, Balance, CosmosDisplay, DeviceRequest, 
 import { bridgeLabel } from "./bridge";
 import { diskCache } from "./cache";
 import { memoFrom, type RiskFacts } from "./contacts";
+import type { SolanaPending } from "./solana";
 import type { Store } from "./service";
 
 export interface SendDeps {
@@ -70,6 +71,8 @@ export interface SendDeps {
   onBroadcast?(network: NetworkId, hash: string, from: string): void;
   /** A deposit's burn just broadcast on the chain it comes from (./bridge.ts follows it). */
   onDeposit?(network: NetworkId, deposit: DepositSent): Promise<void>;
+  /** Broadcasts a Solana transaction the vault signed (./solana.ts). */
+  solanaBroadcast?(network: NetworkId, p: SolanaPending, signed: { signature: string; index: number }): Promise<Result<Sent>>;
 }
 
 /** Another EVM chain, where the wallet signs only bridge transfers into Injective (the vault
@@ -148,6 +151,8 @@ interface Pending {
   source?: SourceChain;
   /** A deposit's burn, followed once broadcast. */
   deposit?: { amount: string; account: string };
+  /** A Solana transaction, signed with the account's Solana key (./solana.ts). */
+  solana?: SolanaPending;
 }
 
 /** A Ledger send between its two steps: the vault gave the device its bytes; its signature
@@ -1163,6 +1168,10 @@ export function createSender(d: SendDeps) {
   }
 
   async function broadcast(p: Pending, signed: { tx_raw: string } & { raw: string; hash: string }): Promise<Result<Sent>> {
+    if (p.solana) {
+      if (!d.solanaBroadcast) return fail("bad_request", "Solana isn't set up.");
+      return d.solanaBroadcast(p.network, p.solana, signed as unknown as { signature: string; index: number });
+    }
     if (p.source) {
       // On the chain the USDC comes from. The background watcher follows Injective only; a
       // deposit's burn is followed by ./bridge.ts instead.

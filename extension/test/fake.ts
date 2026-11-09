@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 
+import { ed25519 } from "@noble/curves/ed25519";
 import { handle, initSync } from "choice-wallet-vault-glue";
 
 import { ethMessage, rawTx, resultData, type Log } from "../../chain/test/evm-fixture";
@@ -23,6 +24,15 @@ export const ME_EVM = "0x9858EfFD232B4033E47d90003D41EC34EcaEda94";
 export const THEM_KEY = "4646464646464646464646464646464646464646464646464646464646464646";
 export const THEM_EVM = "0x9d8A62f656a8d1615C1294fd71e9CFb3E4855A4F";
 export const PASSWORD = "correct horse battery staple";
+/** The phrase's Solana account 0 (Phantom's path), and another wallet there (its account 1). */
+export const ME_SOL = "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk";
+export const THEM_SOL = "Hh8QwFUA6MtVu1qAoq12ucvFHNwCcVTV7hpWjeY1Hztb";
+export const SOL_USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+/** Their associated USDC accounts (web3.js agrees). */
+export const ME_SOL_USDC = "5N3f1tj9v1vc5TUZ8S7mCAnVmjVKrfnzXWhxLaxyZAgt";
+export const THEM_SOL_USDC = "8X8ts1CnpZmtqApE2rREA97xEJuSRcomPGVcMFdS2cgY";
+export const SOLANA_MAINNET = "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp";
+const SOLANA_GENESIS = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d";
 export const INJ = 10n ** 18n;
 export const GAS_PRICE = 160_000_000n;
 export const USDT = "peggy0xdAC17F958D2ee523a2206206994597C13D831ec7";
@@ -254,6 +264,18 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
     irisDown: false,
     /** Solana accounts that exist (by base58 address), for the recipient check. */
     solanaAccounts: {} as Record<string, { owner: string }>,
+    /** Solana mainnet: ME_SOL's lamports and USDC, transactions sent (base64, each one's
+     *  signatures checked), their statuses, the block height, and ME_SOL's history. */
+    solana: {
+      lamports: 2_000_000_000n,
+      usdc: 5_000_000n,
+      sent: [] as string[],
+      landed: {} as Record<string, boolean>,
+      height: 1_000,
+      history: [] as { signature: string; slot: number; tx: Record<string, unknown> }[],
+      simulateErr: null as unknown,
+      down: false,
+    },
     /** Base: ME's USDC and ETH there, what TokenMessengerV2 may take, what was broadcast. */
     base: { usdc: 0n, eth: 10n ** 16n, allowance: 0n, sent: [] as string[], down: false },
     /** Injective's MessageTransmitterV2: the nonces it has used (minted). */
@@ -459,10 +481,67 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
       return json(404, { error: "not found" });
     }
     if (url.host === "solana-rpc.publicnode.com" && init?.method === "POST") {
-      const body = JSON.parse(String(init.body)) as { id: number; method: string; params: [string, unknown] };
-      const a = state.solanaAccounts[body.params[0]];
-      const value = a ? { owner: a.owner, lamports: 2039280, data: ["", "base64"], executable: false, rentEpoch: 0, space: 165 } : null;
-      return json(200, { jsonrpc: "2.0", id: body.id, result: { context: { slot: 1 }, value } });
+      const body = JSON.parse(String(init.body)) as { id: number; method: string; params: unknown[] };
+      const sol = state.solana;
+      if (sol.down) return json(503, "down");
+      const ok = (result: unknown) => json(200, { jsonrpc: "2.0", id: body.id, result });
+      const ctx = { context: { slot: 400_000_000 } };
+      const tokenAccount = (owner: string, mint: string, amount: bigint) => ({
+        owner: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        lamports: 2039280,
+        data: { parsed: { type: "account", info: { mint, owner, tokenAmount: { amount: amount.toString(), decimals: 6 } } }, program: "spl-token", space: 165 },
+      });
+      switch (body.method) {
+        case "getGenesisHash":
+          return ok(SOLANA_GENESIS);
+        case "getAccountInfo": {
+          const a = state.solanaAccounts[body.params[0] as string];
+          return ok({ ...ctx, value: a ? { owner: a.owner, lamports: 2039280, data: ["", "base64"], executable: false, rentEpoch: 0, space: 165 } : null });
+        }
+        case "getBalance":
+          return ok({ ...ctx, value: body.params[0] === ME_SOL ? Number(sol.lamports) : 0 });
+        case "getTokenAccountsByOwner":
+          // As publicnode: refused.
+          return ok_err(body.id, -32602, "Request blocked");
+        case "getMultipleAccounts":
+          return ok({ ...ctx, value: (body.params[0] as string[]).map((a) => (a === ME_SOL_USDC && sol.usdc > 0n ? tokenAccount(ME_SOL, SOL_USDC, sol.usdc) : null)) });
+        case "getLatestBlockhash":
+          return ok({ ...ctx, value: { blockhash: "4wBqpZM9xaSheZzJSMawUKKwhdpChKbZ5eu5ky4Vigw", lastValidBlockHeight: sol.height + 150 } });
+        case "getBlockHeight":
+          return ok(sol.height);
+        case "getRecentPrioritizationFees":
+          return ok([{ slot: 1, prioritizationFee: 0 }, { slot: 2, prioritizationFee: 5000 }]);
+        case "getMinimumBalanceForRentExemption":
+          return ok(2039280);
+        case "simulateTransaction":
+          return ok({ ...ctx, value: { err: sol.simulateErr, logs: sol.simulateErr ? ["Program log: Error: insufficient funds"] : [], unitsConsumed: 30_000 } });
+        case "sendTransaction": {
+          const wire = Buffer.from(body.params[0] as string, "base64");
+          const n = wire[0]!;
+          const message = wire.subarray(1 + 64 * n);
+          const keys = message[0] & 0x80 ? message.subarray(5) : message.subarray(4);
+          for (let i = 0; i < n; i++) {
+            const sig = wire.subarray(1 + 64 * i, 1 + 64 * (i + 1));
+            assert.ok(ed25519.verify(sig, message, keys.subarray(32 * i, 32 * (i + 1))), `signature ${i} of a Solana transaction`);
+          }
+          sol.sent.push(body.params[0] as string);
+          const signature = bs58(wire.subarray(1, 65));
+          sol.landed[signature] ??= true;
+          return ok(signature);
+        }
+        case "getSignatureStatuses":
+          return ok({
+            ...ctx,
+            value: (body.params[0] as string[]).map((s) => (sol.landed[s] ? { slot: 400_000_000, confirmations: null, err: null, confirmationStatus: "confirmed" } : null)),
+          });
+        case "getSignaturesForAddress":
+          return ok(body.params[0] === ME_SOL ? sol.history.map((h) => ({ signature: h.signature, slot: h.slot, blockTime: 1_794_249_151, err: null, confirmationStatus: "finalized" })) : []);
+        case "getTransaction":
+          return ok(sol.history.find((h) => h.signature === body.params[0])?.tx ?? null);
+        default:
+          state.unhandled.push(`solana ${body.method}`);
+          return ok_err(body.id, -32601, "Method not found");
+      }
     }
     if (url.host === "evm-api.choice.exchange" && p === "/route") {
       state.routeAsks.push(url.searchParams);
@@ -584,6 +663,23 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
     return json(501, { code: 12, message: "Not Implemented", details: [] });
   };
   return { state, fetch };
+}
+
+const ok_err = (id: number, code: number, message: string) => new Response(JSON.stringify({ jsonrpc: "2.0", id, error: { code, message } }), { status: 200 });
+
+const B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+export function bs58(b: Uint8Array): string {
+  let n = BigInt(`0x${Buffer.from(b).toString("hex") || "0"}`);
+  let out = "";
+  while (n > 0n) {
+    out = B58[Number(n % 58n)]! + out;
+    n /= 58n;
+  }
+  for (const x of b) {
+    if (x !== 0) break;
+    out = `1${out}`;
+  }
+  return out;
 }
 
 /** A bank send of 1 INJ from ME to THEM, as the index has it, at `height`, now. */
