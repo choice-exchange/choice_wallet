@@ -98,6 +98,13 @@ pub struct Contact {
     /// The name the user gave it.
     #[serde(default)]
     pub name: String,
+    /// The memo this address needs, as an exchange's deposit address credits deposits by
+    /// it. Empty when it needs none.
+    #[serde(default)]
+    pub memo: String,
+    /// One of the user's own accounts rather than a saved contact.
+    #[serde(default)]
+    pub mine: bool,
 }
 
 /// What the host knows that the request doesn't say. Everything is optional; rules that
@@ -119,9 +126,13 @@ pub struct Context {
     /// contract address, or `native` for an EVM chain's coin.
     #[serde(default)]
     pub balances: BTreeMap<String, String>,
-    /// The user's address book.
+    /// The user's address book, and the user's own accounts.
     #[serde(default)]
     pub address_book: Vec<Contact>,
+    /// Addresses the host found take deposits with a memo: most transfers they receive
+    /// carry one, from many senders, as an exchange's shared deposit address does.
+    #[serde(default)]
+    pub memo_addresses: Vec<String>,
     /// Contracts this account has used before.
     #[serde(default)]
     pub known_contracts: Vec<String>,

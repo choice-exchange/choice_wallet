@@ -134,7 +134,7 @@ impl Checked {
                     granter: fee.granter.as_deref(),
                     payer: fee.payer.as_deref(),
                 };
-                choice_wallet_policy::cosmos(d.messages(), signer, fee, ctx)
+                choice_wallet_policy::cosmos(d.messages(), signer, d.memo(), fee, ctx)
             }
             Kind::AminoTx { tx, signer } | Kind::Amino { tx, signer } => {
                 let fee = CosmosFee {
@@ -142,7 +142,7 @@ impl Checked {
                     granter: tx.fee.granter.as_deref(),
                     payer: None,
                 };
-                choice_wallet_policy::cosmos(&tx.messages, signer, fee, ctx)
+                choice_wallet_policy::cosmos(&tx.messages, signer, &tx.memo, fee, ctx)
             }
             Kind::EvmTx { r, injective } => choice_wallet_policy::evm_transaction(r, *injective, ctx),
             Kind::TypedData {

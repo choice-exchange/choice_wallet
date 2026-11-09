@@ -50,17 +50,22 @@ fn lookalike<'a>(ctx: &'a Context, addr: &str) -> Option<&'a Contact> {
     })
 }
 
-/// Findings about sending to `to`.
-pub(crate) fn recipient(ctx: &Context, to: &str, out: &mut Vec<Finding>) {
-    if let Some(c) = contact(ctx, to) {
+/// Findings about sending to `to`. `memo` is the transaction's memo, or `None` where the
+/// transaction can't carry one (EVM): an exchange's shared deposit address credits a
+/// deposit by its memo, and one without is at best a support ticket.
+pub(crate) fn recipient(ctx: &Context, to: &str, memo: Option<&str>, out: &mut Vec<Finding>) {
+    let found = contact(ctx, to);
+    if let Some(c) = found {
+        let name = if c.name.is_empty() { short(to) } else { c.name.clone() };
         out.push(finding(
             "address_book",
             Level::Info,
-            format!(
-                "To {} from your address book.",
-                if c.name.is_empty() { short(to) } else { c.name.clone() }
-            ),
-            json!({ "address": to, "name": c.name }),
+            if c.mine {
+                format!("To your account {name}.")
+            } else {
+                format!("To {name} from your address book.")
+            },
+            json!({ "address": to, "name": c.name, "mine": c.mine }),
         ));
     } else if let Some(c) = lookalike(ctx, to) {
         out.push(finding(
@@ -77,6 +82,50 @@ pub(crate) fn recipient(ctx: &Context, to: &str, out: &mut Vec<Finding>) {
             ),
             json!({ "address": to, "looks_like": c.address, "name": c.name }),
         ));
+    }
+    memo_rules(ctx, to, found, memo, out);
+}
+
+fn memo_rules(ctx: &Context, to: &str, found: Option<&Contact>, memo: Option<&str>, out: &mut Vec<Finding>) {
+    let saved = found.map(|c| c.memo.trim()).filter(|m| !m.is_empty());
+    let seen = ctx.memo_addresses.iter().any(|a| same(a, to));
+    if saved.is_none() && !seen {
+        return;
+    }
+    let named = found.filter(|c| !c.name.is_empty()).map(|c| c.name.clone());
+    let params = json!({ "address": to, "name": named, "memo": saved });
+    // Who needs it, and why the wallet thinks so.
+    let needs = match (saved, &named) {
+        (Some(m), Some(n)) => format!("{n} needs memo {m}"),
+        (Some(m), None) => format!("{} needs memo {m}", short(to)),
+        (None, _) => format!(
+            "{} looks like an exchange: its deposits carry a memo",
+            named.clone().unwrap_or_else(|| short(to))
+        ),
+    };
+    match memo.map(str::trim) {
+        None => out.push(finding(
+            "memo_unsupported",
+            Level::Red,
+            format!("{needs}, which an EVM send can't carry."),
+            params,
+        )),
+        Some("") => out.push(finding(
+            "memo_missing",
+            Level::Red,
+            format!("{needs}. This send has none."),
+            params,
+        )),
+        Some(m) if saved.is_some_and(|s| s != m) => out.push(finding(
+            "memo_differs",
+            Level::Amber,
+            format!(
+                "The memo isn't the one saved for {}.",
+                named.unwrap_or_else(|| short(to))
+            ),
+            json!({ "address": to, "memo": m, "saved": saved }),
+        )),
+        Some(_) => {}
     }
 }
 
@@ -95,7 +144,7 @@ mod tests {
                 .iter()
                 .map(|a| Contact {
                     address: (*a).into(),
-                    name: String::new(),
+                    ..Default::default()
                 })
                 .collect(),
             ..Default::default()
@@ -107,7 +156,7 @@ mod tests {
         let a = EthAddress::from_bytes([0x11; 20]);
         let c = ctx(&[&a.to_inj()]);
         let mut out = vec![];
-        recipient(&c, &a.to_checksum_hex(), &mut out);
+        recipient(&c, &a.to_checksum_hex(), Some(""), &mut out);
         assert_eq!(out[0].rule, "address_book");
     }
 
@@ -116,12 +165,78 @@ mod tests {
         let real = "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed";
         let fake = "0x5aaeFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFeAed";
         let mut out = vec![];
-        recipient(&ctx(&[real]), fake, &mut out);
+        recipient(&ctx(&[real]), fake, Some(""), &mut out);
         assert_eq!(out[0].rule, "lookalike_address");
         assert_eq!(out[0].level, Level::Amber);
         // Unrelated addresses say nothing.
         let mut out = vec![];
-        recipient(&ctx(&[real]), "0x0000000000000000000000000000000000000001", &mut out);
+        recipient(
+            &ctx(&[real]),
+            "0x0000000000000000000000000000000000000001",
+            Some(""),
+            &mut out,
+        );
         assert!(out.is_empty());
+    }
+
+    fn rules(ctx: &Context, to: &str, memo: Option<&str>) -> Vec<(&'static str, Level, String)> {
+        let mut out = vec![];
+        recipient(ctx, to, memo, &mut out);
+        out.into_iter().map(|f| (f.rule, f.level, f.message)).collect()
+    }
+
+    #[test]
+    fn own_accounts_are_named_as_yours() {
+        let a = EthAddress::from_bytes([0x22; 20]).to_inj();
+        let c = Context {
+            address_book: vec![Contact {
+                address: a.clone(),
+                name: "Savings".into(),
+                mine: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert_eq!(rules(&c, &a, Some(""))[0].2, "To your account Savings.");
+    }
+
+    #[test]
+    fn exchange_memos() {
+        let exchange = EthAddress::from_bytes([0x33; 20]).to_inj();
+        let saved = Context {
+            address_book: vec![Contact {
+                address: exchange.clone(),
+                name: "My exchange".into(),
+                memo: "101234567".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        // The saved memo: just the contact.
+        assert_eq!(rules(&saved, &exchange, Some(" 101234567 ")).len(), 1);
+        // None at all: red.
+        let r = rules(&saved, &exchange, Some(""));
+        assert_eq!((r[1].0, r[1].1), ("memo_missing", Level::Red));
+        assert_eq!(r[1].2, "My exchange needs memo 101234567. This send has none.");
+        // Another memo: amber.
+        let r = rules(&saved, &exchange, Some("999"));
+        assert_eq!((r[1].0, r[1].1), ("memo_differs", Level::Amber));
+        // An EVM send can't carry one, in either address form.
+        let hex = EthAddress::from_bytes([0x33; 20]).to_checksum_hex();
+        let r = rules(&saved, &hex, None);
+        assert_eq!((r[1].0, r[1].1), ("memo_unsupported", Level::Red));
+
+        // Found from the chain, not saved: any memo will do, none won't.
+        let seen = Context {
+            memo_addresses: vec![hex.clone()],
+            ..Default::default()
+        };
+        assert!(rules(&seen, &exchange, Some("42")).is_empty());
+        let r = rules(&seen, &exchange, Some(""));
+        assert_eq!(r[0].0, "memo_missing");
+        assert!(r[0].2.contains("looks like an exchange"), "{}", r[0].2);
+        assert_eq!(rules(&seen, &exchange, None)[0].0, "memo_unsupported");
+        // Other addresses: nothing.
+        assert!(rules(&seen, &EthAddress::from_bytes([0x44; 20]).to_inj(), Some("")).is_empty());
     }
 }

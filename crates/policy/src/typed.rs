@@ -30,7 +30,7 @@ pub fn typed_data(td: &TypedData, injective_tx: Option<&Web3Tx>, signer: &EthAdd
             granter: None,
             payer: tx.fee.payer.as_deref(),
         };
-        return cosmos(&tx.messages, &signer.to_inj(), fee, ctx);
+        return cosmos(&tx.messages, &signer.to_inj(), &tx.memo, fee, ctx);
     }
     let mut out = site(ctx);
     out.push(rule(td));

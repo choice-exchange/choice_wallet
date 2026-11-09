@@ -26,12 +26,13 @@ const MSG_EXEC: &str = "/cosmos.authz.v1beta1.MsgExec";
 /// The word to type before granting.
 const GRANT: &str = "GRANT";
 
-/// Grade a Cosmos transaction's messages, signed by `signer` (its bech32 address).
-pub fn cosmos(messages: &[Msg], signer: &str, fee: CosmosFee, ctx: &Context) -> Assessment {
+/// Grade a Cosmos transaction's messages, signed by `signer` (its bech32 address), with
+/// its memo.
+pub fn cosmos(messages: &[Msg], signer: &str, memo: &str, fee: CosmosFee, ctx: &Context) -> Assessment {
     let mut out = site(ctx);
     let mut outflows = Outflows::default();
     for m in messages {
-        message(m, signer, ctx, Some(&mut outflows), &mut out);
+        message(m, signer, memo, ctx, Some(&mut outflows), &mut out);
     }
     match (fee.granter, fee.payer) {
         (Some(g), _) => out.push(finding(
@@ -71,10 +72,17 @@ fn grant_finding(rule: &'static str, message: String, params: serde_json::Value)
 }
 
 /// `outflows` is `None` inside `MsgExec`, where messages move the granters' funds.
-fn message(m: &Msg, signer: &str, ctx: &Context, mut outflows: Option<&mut Outflows>, out: &mut Vec<Finding>) {
+fn message(
+    m: &Msg,
+    signer: &str,
+    memo: &str,
+    ctx: &Context,
+    mut outflows: Option<&mut Outflows>,
+    out: &mut Vec<Finding>,
+) {
     match m {
         Msg::BankSend { from, to, amount } => {
-            recipient(ctx, to, out);
+            recipient(ctx, to, Some(memo), out);
             if let Some(o) = outflows.as_deref_mut()
                 && same(from, signer)
             {
@@ -93,7 +101,7 @@ fn message(m: &Msg, signer: &str, ctx: &Context, mut outflows: Option<&mut Outfl
             }
             match call {
                 ContractCall::Cw20Transfer { recipient: to, amount } => {
-                    recipient(ctx, to, out);
+                    recipient(ctx, to, Some(memo), out);
                     if let Some(o) = outflows {
                         o.add_str(contract, amount);
                     }
@@ -201,7 +209,7 @@ fn message(m: &Msg, signer: &str, ctx: &Context, mut outflows: Option<&mut Outfl
                 json!({ "messages": msgs.len() }),
             ));
             for inner in msgs {
-                message(inner, signer, ctx, None, out);
+                message(inner, signer, memo, ctx, None, out);
             }
         }
         Msg::AuthzRevoke {
@@ -399,7 +407,7 @@ mod tests {
     const ADAPTER: &str = "inj14ejqjyq8um4p3xfqj74yld5waqljf88f9eneuk";
 
     fn grade(msgs: &[Msg]) -> Assessment {
-        cosmos(msgs, ME, CosmosFee::default(), &Context::default())
+        cosmos(msgs, ME, "", CosmosFee::default(), &Context::default())
     }
 
     fn rules(a: &Assessment) -> Vec<&'static str> {
@@ -496,6 +504,7 @@ mod tests {
                 amount: inj("10"),
             }],
             ME,
+            "",
             CosmosFee::default(),
             &ctx,
         );
@@ -567,7 +576,7 @@ mod tests {
             balances: [(OTHER.to_owned(), "5".to_owned())].into(),
             ..Default::default()
         };
-        let a = cosmos(&[send], ME, CosmosFee::default(), &ctx);
+        let a = cosmos(&[send], ME, "", CosmosFee::default(), &ctx);
         // No note about the contract; spending the whole balance is still said.
         assert!(!rules(&a).contains(&"cw20_send"), "{:?}", rules(&a));
     }
@@ -594,7 +603,7 @@ mod tests {
             balances: [(OTHER.to_owned(), "4".to_owned())].into(),
             ..Default::default()
         };
-        let a = cosmos(&[call("5")], ME, CosmosFee::default(), &ctx);
+        let a = cosmos(&[call("5")], ME, "", CosmosFee::default(), &ctx);
         assert_eq!(rules(&a), ["allowance_over_balance"]);
     }
 
@@ -616,6 +625,7 @@ mod tests {
         let a = cosmos(
             std::slice::from_ref(&send),
             ME,
+            "",
             CosmosFee {
                 amount: &fee,
                 ..Default::default()
@@ -629,6 +639,7 @@ mod tests {
         let a = cosmos(
             &[send],
             ME,
+            "",
             CosmosFee {
                 amount: &fee,
                 granter: Some(OTHER),
@@ -645,6 +656,9 @@ mod tests {
             origin_blocked: true,
             ..Default::default()
         };
-        assert_eq!(cosmos(&[], ME, CosmosFee::default(), &blocked).level, Level::Blocked);
+        assert_eq!(
+            cosmos(&[], ME, "", CosmosFee::default(), &blocked).level,
+            Level::Blocked
+        );
     }
 }

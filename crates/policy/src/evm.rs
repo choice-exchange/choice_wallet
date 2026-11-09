@@ -223,9 +223,9 @@ pub fn evm_transaction(req: &TxRequest, injective: bool, ctx: &Context) -> Asses
         outflows.add("native", tx.value);
     }
     match tx.call_kind() {
-        Call::Transfer => recipient(ctx, &to, &mut out),
+        Call::Transfer => recipient(ctx, &to, None, &mut out),
         Call::Erc20Transfer { to: r, amount } => {
-            recipient(ctx, &r.to_checksum_hex(), &mut out);
+            recipient(ctx, &r.to_checksum_hex(), None, &mut out);
             outflows.add(&to, amount);
         }
         Call::Contract { selector } => contract_call(req, selector, injective, ctx, &mut out),

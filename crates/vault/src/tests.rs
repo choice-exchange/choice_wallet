@@ -529,6 +529,30 @@ fn context_changes_the_grade() {
 }
 
 #[test]
+fn the_signed_memo_meets_the_exchange_rules() {
+    let case = &vectors("direct")["cases"][0];
+    let to = case["build"]["to"].as_str().unwrap();
+    let book = json!({ "address_book": [{ "address": to, "name": "Exchange", "memo": "101234567" }] });
+    let rules = |memo: &str| {
+        let mut c = case.clone();
+        c["memo"] = memo.into();
+        c["tx_raw"] = Value::Null;
+        let d = ok("decode", json!({ "request": own_cosmos(&c), "context": book }));
+        let found: Vec<String> = d["risk"]["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f["rule"].as_str().unwrap().to_owned())
+            .collect();
+        (d["risk"]["level"].as_str().unwrap().to_owned(), found)
+    };
+    assert_eq!(rules("101234567"), ("info".into(), vec!["address_book".into()]));
+    assert_eq!(rules("").0, "red");
+    assert!(rules("").1.contains(&"memo_missing".to_owned()));
+    assert_eq!(rules("7").0, "amber");
+}
+
+#[test]
 fn personal_sign_matches_viem_and_checks_sign_in() {
     let v = vectors("personal");
     for c in v["cases"].as_array().unwrap() {
