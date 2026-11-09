@@ -314,6 +314,7 @@ export function createDapps(h: DappHost) {
           } catch (e) {
             if (!(e instanceof ChainError && /already known|already imported|known transaction/i.test(e.message))) throw e;
           }
+          h.sender.broadcasted(network, hash, (await h.unlocked())?.account.addresses[net.cosmos] ?? "");
           return hash;
         },
       );
@@ -382,6 +383,7 @@ export function createDapps(h: DappHost) {
       const hex = tx.replace(/^0x/, "");
       const hash = await cosmosTxHash(hex);
       await (await h.sender.lcd(network)).broadcast(hex, hash);
+      h.sender.broadcasted(network, hash, (await h.unlocked())?.account.addresses[net.cosmos] ?? "");
       return { result: hash };
     }
     // The account in use, as sites see it (not the list's first: another account, or a

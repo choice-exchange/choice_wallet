@@ -10,7 +10,7 @@
 //   from here. UI pages never see either.
 
 import { cw20Address, evmAddress, isNetworkId, NETWORKS, Pool, type Fetch, type NetworkId } from "@choice-wallet/chain";
-import type { AccountInfo, Result, Settings, Status, TokenFilter, UiRequest } from "@choice-wallet/ui/protocol";
+import type { AccountInfo, NotifyMode, Result, Settings, SnapshotView, Status, TokenFilter, UiRequest } from "@choice-wallet/ui/protocol";
 import { DEFAULT_FILTER } from "@choice-wallet/ui/token-filter";
 
 import { createDapps, type DappReply } from "./dapp";
@@ -23,6 +23,9 @@ import { createContacts } from "./contacts";
 import { createStaking } from "./staking";
 import { createSwaps } from "./swap";
 import { createWallets, isWatch } from "./wallets";
+import { settled as cachesSettled } from "./cache";
+import { createSnapshots } from "./snapshots";
+import { createWatcher, DEFAULT_MODE, type Notice } from "./watch";
 
 type UiResponse<T = unknown> = Result<T>;
 
@@ -45,6 +48,14 @@ export interface Deps {
   openWindow(requestId: string): Promise<number | undefined>;
   /** Tell open pages that what they see (accounts, chain) may have changed. */
   notify(): void;
+  /** Tell the wallet's own open pages (the popup) to read their data again. */
+  refresh?(): void;
+  /** A browser notification; false when it wasn't shown (the popup is open). */
+  showNotice?(n: Notice): Promise<boolean>;
+  /** The count on the toolbar icon; "" clears it. */
+  badge?(text: string): void;
+  /** Start or stop the background watcher's alarm. */
+  scheduleWatch?(on: boolean): void;
 }
 
 /** Minutes without activity before the wallet locks itself, unless the user picks another
@@ -53,7 +64,8 @@ export const AUTO_LOCK_MINUTES = 15;
 const LOCK_CHOICES = [5, 15, 60, 240];
 /** Local storage that belongs to the wallet, not the device: removing the wallet clears it.
  *  Endpoints, the network and other settings stay. */
-const WALLET_KEYS = ["vault", "wallets", "keystore", "kind", "accounts", "active_account", "connections", "custom_tokens", "custom_nfts", "rescue", "token_filter", "address_book"];
+const WALLET_KEYS = ["vault", "wallets", "keystore", "kind", "accounts", "active_account", "connections", "custom_tokens", "custom_nfts", "rescue", "token_filter", "address_book", "watch", "watch_own"];
+const NOTIFY_MODES: readonly NotifyMode[] = ["off", "active", "all"];
 /** The shortest password, as the keystore takes it. */
 const MIN_PASSWORD = 8;
 
@@ -125,6 +137,11 @@ export function createService(d: Deps) {
     return prices !== false;
   }
 
+  async function notifyMode(): Promise<NotifyMode> {
+    const { notify } = await d.local.get(["notify"]);
+    return NOTIFY_MODES.includes(notify as NotifyMode) ? (notify as NotifyMode) : DEFAULT_MODE;
+  }
+
   const sender = createSender({
     vault: d.vault,
     fetch: d.fetch,
@@ -135,6 +152,7 @@ export function createService(d: Deps) {
     evmIndexEndpoints,
     prices: showPrices,
     riskFacts: (n, recipient) => contacts.facts(n, recipient),
+    onBroadcast: (n, hash, from) => void watcher.track(n, hash, from).catch(() => {}),
   });
   const staking = createStaking(sender);
   const swaps = createSwaps(sender, d.session, d.fetch, async (net) => (await tokenFilter(net)).shown);
@@ -172,6 +190,62 @@ export function createService(d: Deps) {
       return u ? rescue.addressFor(u.account) : null;
     },
   });
+
+  const snapshots = createSnapshots(d.local);
+  const watcher = createWatcher({
+    local: d.local,
+    sender,
+    network,
+    accounts: async () => {
+      const s = await wallets.stored();
+      return { accounts: s.accounts, active: s.active };
+    },
+    mode: notifyMode,
+    filter: tokenFilter,
+    async names(net) {
+      const out = new Map<string, string>();
+      for (const c of await contacts.list()) {
+        out.set(c.address, c.name);
+        if (c.evm) out.set(c.evm.toLowerCase(), c.name);
+      }
+      for (const a of (await wallets.stored()).accounts) {
+        const inj = a.addresses[NETWORKS[net].cosmos];
+        const evm = a.addresses[NETWORKS[net].evm];
+        if (inj) out.set(inj, a.name);
+        if (evm) out.set(evm.toLowerCase(), a.name);
+      }
+      return out;
+    },
+    show: async (n) => (d.showNotice ? d.showNotice(n) : false),
+    badge: (text) => d.badge?.(text),
+    changed: () => d.refresh?.(),
+  });
+
+  /** After accounts went away: forget what was kept for them. */
+  async function forgetGone(): Promise<void> {
+    const left = (await wallets.stored()).accounts.flatMap((a) => Object.values(a.addresses));
+    await snapshots.keepOnly(left);
+    await watcher.forget(left);
+  }
+
+  /** Keep the account's latest answer for the next time the popup opens. Never in the way
+   *  of the answer itself. */
+  function keep(net: NetworkId, account: AccountInfo, part: "balances" | "staking" | "activity", value: unknown) {
+    void snapshots.save(net, account.addresses[NETWORKS[net].cosmos] ?? "", part, value).catch(() => {});
+  }
+
+  async function snapshot(net: NetworkId, account: AccountInfo): Promise<SnapshotView | null> {
+    const snap = await snapshots.get(net, account.addresses[NETWORKS[net].cosmos] ?? "");
+    if (!snap) return null;
+    // The lists as the user's settings say now, not as they were then.
+    const filter = await tokenFilter(net);
+    const out: SnapshotView = {};
+    type Value<K extends keyof SnapshotView> = NonNullable<SnapshotView[K]>["value"];
+    if (snap.balances) out.balances = { at: snap.balances.at, value: { ...(snap.balances.value as Value<"balances">), filter, prices: await showPrices() } };
+    if (snap.staking) out.staking = { at: snap.staking.at, value: snap.staking.value as Value<"staking"> };
+    if (snap.activity) out.activity = { at: snap.activity.at, value: { ...(snap.activity.value as Value<"activity">), filter } };
+    return out;
+  }
 
   const dapps = createDapps({
     vault: d.vault,
@@ -248,6 +322,7 @@ export function createService(d: Deps) {
         evmIndexDefault: { mainnet: [...NETWORKS.mainnet.evmIndex], testnet: [...NETWORKS.testnet.evmIndex] },
         prices: await showPrices(),
         autoLock: await lockAfter(),
+        notify: await notifyMode(),
       },
     };
   }
@@ -274,8 +349,9 @@ export function createService(d: Deps) {
     return next;
   }
 
-  async function saveSettings(net: unknown, lcd: unknown, evm: unknown, evmIndex: unknown, prices: unknown, autoLock: unknown): Promise<UiResponse<Settings>> {
+  async function saveSettings(net: unknown, lcd: unknown, evm: unknown, evmIndex: unknown, prices: unknown, autoLock: unknown, notify?: unknown): Promise<UiResponse<Settings>> {
     if (!isNetworkId(net)) return err("bad_request", "Unknown network.");
+    if (notify !== undefined && !NOTIFY_MODES.includes(notify as NotifyMode)) return err("bad_request", `notify must be one of ${NOTIFY_MODES.join(", ")}.`);
     if (prices !== undefined && typeof prices !== "boolean") return err("bad_request", "prices must be true or false.");
     if (autoLock !== undefined && !(typeof autoLock === "number" && LOCK_CHOICES.includes(autoLock))) return err("bad_request", `autoLock must be one of ${LOCK_CHOICES.join(", ")}.`);
     const stored = (await d.local.get(["endpoints", "evm_endpoints", "evm_index"])) as { endpoints?: Endpoints; evm_endpoints?: Endpoints; evm_index?: Endpoints };
@@ -293,8 +369,17 @@ export function createService(d: Deps) {
       evm_index: indexAll,
       ...(prices === undefined ? {} : { prices }),
       ...(autoLock === undefined ? {} : { auto_lock: autoLock }),
+      ...(notify === undefined ? {} : { notify }),
     });
     if (autoLock !== undefined && (await unlockKey()) !== undefined) await touch();
+    if (notify !== undefined) {
+      d.scheduleWatch?.(notify !== "off");
+      // Off forgets what was seen, so turning it on later starts from what is there then.
+      if (notify === "off") {
+        await watcher.forget(null);
+        await watcher.seen();
+      }
+    }
     if (net !== before) d.notify();
     return settings();
   }
@@ -334,24 +419,36 @@ export function createService(d: Deps) {
         return wallets.addWallet(r.secret, r.created === true);
       case "rename_wallet":
         return wallets.renameWallet(r.wallet, r.name);
-      case "remove_wallet":
-        return wallets.removeWallet(r.wallet, r.password);
+      case "remove_wallet": {
+        const out = await wallets.removeWallet(r.wallet, r.password);
+        if (out.ok) await forgetGone();
+        return out;
+      }
       case "switch_account":
         return wallets.changeAccount({ type: "switch", index: r.index });
       case "rename_account":
         return wallets.changeAccount({ type: "rename", index: r.index, name: r.name });
-      case "remove_account":
-        return wallets.changeAccount({ type: "remove", index: r.index });
+      case "remove_account": {
+        const out = await wallets.changeAccount({ type: "remove", index: r.index });
+        if (out.ok) await forgetGone();
+        return out;
+      }
       case "reveal_secret":
         return wallets.reveal(r.password, r.wallet, r.index);
       case "change_password":
         return wallets.changePassword(r.password, r.new_password, MIN_PASSWORD);
-      case "reset":
-        return wallets.reset(r.password, WALLET_KEYS);
+      case "reset": {
+        const out = await wallets.reset(r.password, [...WALLET_KEYS, ...(await snapshots.keys())]);
+        if (out.ok) d.badge?.("");
+        return out;
+      }
       case "settings":
         return settings();
       case "save_settings":
-        return saveSettings(r.network, r.lcd, r.evm, r.evmIndex, r.prices, r.autoLock);
+        return saveSettings(r.network, r.lcd, r.evm, r.evmIndex, r.prices, r.autoLock, r.notify);
+      case "seen":
+        await watcher.seen();
+        return { ok: true, result: null };
       case "save_token_filter":
         return saveTokenFilter(r.filter);
       case "add_token": {
@@ -371,6 +468,7 @@ export function createService(d: Deps) {
         return contacts.check(a.net, r.to);
       }
       case "balances":
+      case "snapshot":
       case "activity":
       case "prepare_send":
       case "prepare_convert":
@@ -399,20 +497,28 @@ export function createService(d: Deps) {
         if ((r.type === "prepare_send" || r.type === "prepare_convert" || r.type === "prepare_stake" || r.type === "prepare_revoke" || r.type === "prepare_revoke_erc20" || r.type === "prepare_swap" || r.type === "prepare_nft_send" || r.type === "prepare_rescue" || r.type === "prepare_rescue_grant" || r.type === "prepare_subaccount_withdraw") && isWatch(a.account)) {
           return err("watch_only", "This account is watch-only. Switch to one that can sign.");
         }
+        if (r.type === "snapshot") return { ok: true, result: await snapshot(a.net, a.account) };
         if (r.type === "balances") {
           const b = await sender.balances(a.net, a.account);
           if (!b.ok) return b;
+          keep(a.net, a.account, "balances", b.result);
           return { ok: true, result: { ...b.result, filter: await tokenFilter(a.net), prices: await showPrices() } };
         }
         if (r.type === "activity") {
           const page = await sender.activity(a.net, a.account, r.page);
           if (!page.ok) return page;
           const named = [...new Set(page.result.items.map((i) => i.counterparty ?? "").filter((c) => /^[a-z]+valoper1/.test(c)))];
-          return { ok: true, result: { ...page.result, filter: await tokenFilter(a.net), validators: await staking.names(a.net, named) } };
+          const result = { ...page.result, validators: await staking.names(a.net, named) };
+          if (r.page === 1) keep(a.net, a.account, "activity", result);
+          return { ok: true, result: { ...result, filter: await tokenFilter(a.net) } };
         }
         if (r.type === "prepare_send") return sender.prepare(a.net, a.account, r);
         if (r.type === "prepare_convert") return sender.prepareConvert(a.net, a.account, r);
-        if (r.type === "staking") return staking.summary(a.net, a.account);
+        if (r.type === "staking") {
+          const st = await staking.summary(a.net, a.account);
+          if (st.ok) keep(a.net, a.account, "staking", st.result);
+          return st;
+        }
         if (r.type === "prepare_stake") return staking.prepare(a.net, a.account, r);
         if (r.type === "approvals") return approvals.summary(a.net, a.account);
         if (r.type === "swap_tokens") return swaps.tokens(a.net, a.account);
@@ -455,7 +561,21 @@ export function createService(d: Deps) {
     return dapps.handle(origin, message);
   }
 
-  return { handle, lock, status, dapp, windowClosed: dapps.windowClosed };
+  return {
+    handle,
+    lock,
+    status,
+    dapp,
+    windowClosed: dapps.windowClosed,
+    /** The background watcher's check (the alarm's), and whether it is on. */
+    watch: watcher.tick,
+    watching: async () => (await notifyMode()) !== "off",
+    /** Every write the caches and the watcher have started is done (tests). */
+    async settled() {
+      await watcher.settled();
+      await cachesSettled();
+    },
+  };
 }
 
 /** The origin of a web page talking through this extension's content script, if it may:

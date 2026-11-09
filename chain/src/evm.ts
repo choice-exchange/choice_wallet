@@ -51,7 +51,8 @@ export class EvmRpc {
 
   /** One call, on whichever endpoint answers. */
   call(method: string, params: unknown[] = []): Promise<unknown> {
-    return this.pool.run((base) => this.#send(base, { method, params }));
+    // A raw transaction goes only to an endpoint known to serve this chain.
+    return this.pool.run((base) => this.#send(base, { method, params }), { write: method === "eth_sendRawTransaction" });
   }
 
   /** Several calls in batch requests, all on one endpoint. Each result is the call's value,

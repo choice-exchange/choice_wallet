@@ -93,6 +93,10 @@ const evmTxs = (me, now) => ({
   [evmHash(855)]: evmIndexed(855, new Date(now - 900_000), { from: SENDER_EVM, fromInj: FRIEND, to: USDT_ERC20, logs: [transferLog(USDT_ERC20, me0x, SENDER_EVM, 0n)] }),
 });
 let meInj = "";
+// Step 4e: balances that can't be read (the saved ones show), and 1 INJ more coming in
+// from FRIEND (the watcher notifies it).
+let balancesDown = false;
+let incoming = false;
 const lcd = createServer((req, res) => {
   const reply = (status, body) => {
     res.writeHead(status, { "content-type": "application/json", "access-control-allow-origin": "*", "access-control-allow-headers": "content-type" });
@@ -160,7 +164,8 @@ const lcd = createServer((req, res) => {
       return reply(200, { account: { "@type": "/injective.types.v1beta1.EthAccount", base_account: { address: tail, pub_key: null, account_number: "1234", sequence: "0" } } });
     }
     if (p.startsWith("/cosmos/bank/v1beta1/spendable_balances/")) {
-      return reply(200, { balances: [{ denom: SCAM, amount: "7000000" }, { denom: "inj", amount: "5000000000000000000" }, { denom: USDT, amount: "2500000" }], pagination: { next_key: null } });
+      if (balancesDown) return reply(503, "down");
+      return reply(200, { balances: [{ denom: SCAM, amount: "7000000" }, { denom: "inj", amount: incoming ? "6000000000000000000" : "5000000000000000000" }, { denom: USDT, amount: "2500000" }], pagination: { next_key: null } });
     }
     if (p === "/injective/txfees/v1beta1/cur_eip_base_fee") return reply(200, { base_fee: { base_fee: "160000000.000000000000000000" } });
     if (p === "/injective/erc20/v1beta1/all_token_pairs") {
@@ -242,7 +247,11 @@ const lcd = createServer((req, res) => {
       const list =
         q.startsWith("message.sender=") || q.startsWith("coin_spent.spender=")
           ? [...broadcasts.map((b) => indexed(sha(b), 900, new Date(now - 60_000), me, SENT_TO, "1500000000000000000inj")), ...(me0x ? [evmTxs(me, now).approval] : [])]
-          : [indexed("A".repeat(64), 800, new Date(now - 3_600_000), FRIEND, me, `2500000${USDT}`), indexed("B".repeat(64), 700, new Date(now - 26 * 3_600_000), FRIEND, me, `7000000${SCAM}`)];
+          : [
+              ...(incoming ? [indexed("D".repeat(64), 990, new Date(now), FRIEND, me, "1000000000000000000inj")] : []),
+              indexed("A".repeat(64), 800, new Date(now - 3_600_000), FRIEND, me, `2500000${USDT}`),
+              indexed("B".repeat(64), 700, new Date(now - 26 * 3_600_000), FRIEND, me, `7000000${SCAM}`),
+            ];
       return reply(200, { tx_responses: list, total: String(list.length) });
     }
     if (p.startsWith("/cosmos/tx/v1beta1/txs/")) {
@@ -296,6 +305,25 @@ fromChrome.on("data", (chunk) => {
 try {
   const { id: extId } = await send("Extensions.loadUnpacked", { path: ext });
   console.log("loaded extension", extId);
+
+  /** The extension's service worker, to evaluate in. */
+  async function serviceWorker() {
+    let target;
+    for (let t = 0; t < 5000 && !target; t += 100) {
+      const { targetInfos } = await send("Target.getTargets");
+      target = targetInfos.find((x) => x.type === "service_worker" && x.url === `chrome-extension://${extId}/background.js`);
+      if (!target) await sleep(100);
+    }
+    if (!target) throw new Error("no service worker");
+    const { sessionId } = await send("Target.attachToTarget", { targetId: target.targetId, flatten: true });
+    return {
+      async eval(expr) {
+        const r = await send("Runtime.evaluate", { expression: expr, awaitPromise: true, returnByValue: true }, sessionId);
+        if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description ?? r.exceptionDetails.text);
+        return r.result.value;
+      },
+    };
+  }
 
   async function openPopup() {
     const { targetId } = await send("Target.createTarget", { url: `chrome-extension://${extId}/popup.html` });
@@ -519,6 +547,77 @@ try {
   await p.waitText("Account 1");
   if (broadcasts.length !== 0) throw new Error("a cancelled conversion was broadcast");
   console.log("CW20: added by contract, its screen, a conversion reviewed and cancelled");
+
+  // 4e. Opening fast: what the account showed last is drawn from disk before the chain
+  // answers. With the endpoint down, the saved balances stay, with their age.
+  // The list once it has settled (a fresh open, read again until it stops changing).
+  await p.close();
+  p = await openPopup();
+  await p.waitText("USDT");
+  let shownBefore = [];
+  for (let t = 0, last = ""; t < 10000; t += 500) {
+    await sleep(500);
+    shownBefore = await homeTokens();
+    if (shownBefore.join("|") === last) break;
+    last = shownBefore.join("|");
+  }
+  await p.close();
+  balancesDown = true;
+  p = await openPopup();
+  await p.waitText("Couldn't update. Showing balances from");
+  if ((await homeTokens()).join("|") !== shownBefore.join("|")) throw new Error(`saved balances differ: ${await homeTokens()}`);
+  await p.shot("09g-saved-balances");
+  balancesDown = false;
+  await p.close();
+  p = await openPopup();
+  await p.waitText("USDT");
+  console.log("saved balances: shown from disk while the endpoint is down");
+
+  // 4f. Notifications: on for the account in use by default. The watcher's alarm is fired
+  // by hand (an unpacked extension's alarms may fire at once): the first check only keeps
+  // what's there; 1 INJ from FRIEND then notifies, and counts on the toolbar icon until the
+  // wallet opens.
+  await p.click("Settings");
+  await p.waitText("All accounts");
+  const mode = await p.eval(`document.querySelector('[aria-label="Notifications"] [aria-pressed="true"]')?.textContent`);
+  if (mode !== "This account") throw new Error(`notifications default: ${mode}`);
+  await p.click("Wallet");
+  const sw = await serviceWorker();
+  if (!(await sw.eval(`chrome.alarms.get("watch").then((a) => a?.periodInMinutes)`))) throw new Error("no watcher alarm");
+  // Start clean: the minute alarm may already have run (on mainnet, before step 4).
+  await sw.eval(`Promise.all([chrome.storage.local.remove("watch"), chrome.action.setBadgeText({ text: "" }), chrome.notifications.getAll().then((all) => Promise.all(Object.keys(all).map((id) => chrome.notifications.clear(id))))])`);
+  // Fire the alarm, and wait until the check has written what it saw.
+  const fire = async () => {
+    const seenBefore = await sw.eval(`chrome.storage.local.get("watch").then((r) => JSON.stringify(r.watch?.accounts ?? null))`);
+    await sw.eval(`chrome.alarms.create("watch", { when: Date.now() })`);
+    for (let t = 0; t < 10000; t += 100) {
+      await sleep(100);
+      if ((await sw.eval(`chrome.storage.local.get("watch").then((r) => JSON.stringify(r.watch?.accounts ?? null))`)) !== seenBefore) return;
+    }
+    throw new Error("the watcher didn't run");
+  };
+  await fire();
+  incoming = true;
+  await fire();
+  let ids = [];
+  for (let t = 0; t < 8000 && ids.length === 0; t += 250) {
+    ids = Object.keys(await sw.eval(`chrome.notifications.getAll()`));
+    if (ids.length === 0) await sleep(250);
+  }
+  const notified = ids.find((id) => id.startsWith(`mainnet|${"D".repeat(64)}|inj1`));
+  if (!notified || ids.length !== 1) throw new Error(`notifications: ${JSON.stringify(ids)}`);
+  const badge = await sw.eval(`chrome.action.getBadgeText({})`);
+  if (badge !== "1") throw new Error(`badge: "${badge}"`);
+  await p.close();
+  p = await openPopup();
+  await p.waitText("USDT");
+  for (let t = 0; t < 3000 && (await sw.eval(`chrome.action.getBadgeText({})`)) !== ""; t += 100) await sleep(100);
+  if ((await sw.eval(`chrome.action.getBadgeText({})`)) !== "") throw new Error("the count stayed after the wallet opened");
+  await sw.eval(`chrome.notifications.clear(${JSON.stringify(notified)})`);
+  // Back as it was, and the watcher's alarm back on its minute.
+  incoming = false;
+  await sw.eval(`chrome.alarms.create("watch", { periodInMinutes: 1, delayInMinutes: 1 })`);
+  console.log("notifications: 1 INJ in notified once, counted, cleared on open");
 
   // 5. Send 1.5 INJ to an EVM address; the review shows the vault's decode.
   const THEM_EVM = "0x9d8A62f656a8d1615C1294fd71e9CFb3E4855A4F";

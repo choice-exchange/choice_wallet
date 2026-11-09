@@ -5,7 +5,7 @@ import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { useBackend } from "./backend";
 import { GlobeIcon, LockIcon } from "./icons";
 import { Screen, Segmented } from "./kit";
-import type { Connection, NetworkId, Settings, Status } from "./protocol";
+import type { Connection, NetworkId, NotifyMode, Settings, Status } from "./protocol";
 import { useRequest } from "./request";
 import { ChangePasswordView, ResetView, RevealView, type SecurityView } from "./Security";
 
@@ -46,6 +46,7 @@ export function SettingsView({
   const [indexText, setIndexText] = useState("");
   const [prices, setPrices] = useState(true);
   const [lockAfter, setLockAfter] = useState("15");
+  const [notify, setNotify] = useState<NotifyMode>("active");
   const [security, setSecurity] = useState<SecurityView | null>(null);
   const backend = useBackend();
   const [sites, setSites] = useState<Connection[]>([]);
@@ -64,6 +65,7 @@ export function SettingsView({
       setIndexText(s.evmIndex[s.network].join("\n"));
       setPrices(s.prices);
       setLockAfter(String(s.autoLock));
+      setNotify(s.notify);
     });
   }, []);
 
@@ -92,6 +94,7 @@ export function SettingsView({
         evmIndex: same(evmIndex, settings.evmIndexDefault[net]) ? null : evmIndex,
         prices,
         autoLock: Number(lockAfter),
+        notify,
       })
     ) {
       onDone();
@@ -208,6 +211,26 @@ export function SettingsView({
           onChange={(v) => setPrices(v === "on")}
         />
         <span className="meta">Mainnet prices from Choice. It sees no balances.</span>
+        <div className="eyebrow" style={{ marginTop: 8 }}>
+          Notifications
+        </div>
+        <Segmented
+          label="Notifications"
+          options={[
+            ["off", "Off"],
+            ["active", "This account"],
+            ["all", "All accounts"],
+          ]}
+          value={notify}
+          onChange={setNotify}
+        />
+        <span className="meta">
+          {notify === "off"
+            ? "No checks in the background."
+            : notify === "all"
+              ? "Every account, each minute. Your endpoint sees them together."
+              : "Tokens in and out, checked each minute, even while locked."}
+        </span>
         <div className="eyebrow" style={{ marginTop: 8 }}>
           Connected sites
         </div>

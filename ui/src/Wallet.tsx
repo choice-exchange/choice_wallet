@@ -15,7 +15,7 @@ import { BackBar, Callout, formatUsd, Screen, Segmented, shortAddress, tokenSub 
 import { NftsView, NftView } from "./Nfts";
 import { InventoryScreen } from "./Inventory";
 import { RescueView } from "./Rescue";
-import type { Balance, Nft, NftCollection, SendReview, Sent, StakingSummary, Status, TokenFilter } from "./protocol";
+import type { ActivityPage, Balance, Nft, NftCollection, SendReview, Sent, StakingSummary, Status, TokenFilter } from "./protocol";
 import { newDraft, SwapView, type SwapDraft } from "./Swap";
 import { QrCode } from "./QrCode";
 import { useRequest } from "./request";
@@ -51,6 +51,19 @@ type View =
 
 const COSMOS = "cosmos:injective-1";
 const EVM = "eip155:1776";
+/** While the wallet is on screen, its balances are read again this often. */
+const REFRESH_MS = 15_000;
+
+/** "just now", "4 min ago", "2 h ago", "3 days ago". */
+export function ago(at: number, now = Date.now()): string {
+  const m = Math.floor((now - at) / 60_000);
+  if (m < 1) return "just now";
+  if (m < 60) return `${m} min ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h} h ago`;
+  const days = Math.floor(h / 24);
+  return `${days} ${days === 1 ? "day" : "days"} ago`;
+}
 
 const TABS: readonly (readonly [Tab, string, typeof WalletIcon])[] = [
   ["wallet", "Wallet", WalletIcon],
@@ -84,6 +97,11 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
   const [staking, setStaking] = useState<StakingSummary | null>(null);
   const [swapDraft, setSwapDraft] = useState<SwapDraft>(() => newDraft(NETWORKS[status.network].feeDenom));
   const [swapNote, setSwapNote] = useState<string | null>(null);
+  /** When the balances on screen were read: from disk at first, then each answer. */
+  const [readAt, setReadAt] = useState<number | null>(null);
+  /** The chain answered for this account: what's on disk is older. */
+  const answered = useRef(false);
+  const [savedActivity, setSavedActivity] = useState<ActivityPage | null>(null);
   const { run, error, setError } = useRequest();
 
   // The last filter save, so a refresh never reads the filter before it lands.
@@ -92,24 +110,66 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
   const account = status.accounts[status.active] ?? status.accounts[0];
   const address = account?.addresses[COSMOS] ?? "";
   const watch = isWatch(account);
-  // Another account: its balances, never the last one's while they load.
+  // Another account: its balances, never the last one's while they load. What it showed
+  // last comes from disk at once, while the chain is asked.
   useEffect(() => {
     setBalances(null);
     setStaking(null);
+    setReadAt(null);
+    setSavedActivity(null);
+    answered.current = false;
     setSwapDraft(newDraft(NETWORKS[status.network].feeDenom));
+    let live = true;
+    void backend.send({ type: "snapshot" }).then((r) => {
+      if (!live || !r.ok || !r.result) return;
+      const { balances: b, staking: st, activity } = r.result;
+      if (b && !answered.current) {
+        setBalances(b.value.balances);
+        setFilter(b.value.filter);
+        setPrices(b.value.prices);
+        setReadAt(b.at);
+      }
+      if (st) setStaking((now) => now ?? st.value);
+      if (activity) setSavedActivity(activity.value);
+    });
+    return () => {
+      live = false;
+    };
   }, [address, status.network]);
+
+  // The wallet is open: the count on the toolbar icon is read.
+  useEffect(() => {
+    void backend.send({ type: "seen" }).catch(() => {});
+  }, []);
+
+  // Read again every few seconds while the wallet is on screen, and whenever the host says
+  // something landed.
+  useEffect(() => {
+    const again = () => {
+      if (document.visibilityState === "visible") setRefresh((n) => n + 1);
+    };
+    const timer = setInterval(again, REFRESH_MS);
+    const off = backend.onRefresh?.(again);
+    return () => {
+      clearInterval(timer);
+      off?.();
+    };
+  }, []);
 
   useEffect(() => {
     if (view.name !== "home" || tab !== "wallet") return;
     let live = true;
     // Staking loads beside the balances; if it fails the wallet still shows.
-    void backend.send({ type: "staking" }).then((r) => live && setStaking(r.ok ? r.result : null));
+    // A failure keeps what's on screen (the saved summary, or the last answer).
+    void backend.send({ type: "staking" }).then((r) => live && r.ok && setStaking(r.result));
     void saving.current.then(() => run({ type: "balances" })).then((r) => {
       if (live && r) {
         setBalances(r.balances);
         setFilter(r.filter);
         setPrices(r.prices);
         setEvmDown(r.evmDown === true);
+        setReadAt(Date.now());
+        answered.current = true;
       }
     });
     return () => {
@@ -301,7 +361,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
         />
       );
     case "home": {
-      if (tab === "activity") return <ActivityView key={address} network={status.network} tabs={tabs} />;
+      if (tab === "activity") return <ActivityView key={address} network={status.network} tabs={tabs} saved={savedActivity} />;
       if (tab === "swap") {
         return (
           <SwapView
@@ -401,7 +461,11 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
               </button>
             )}
           </div>
-          {error && <Callout level="amber">{error}</Callout>}
+          {error && balances !== null && readAt !== null ? (
+            <p className="meta warn">Couldn&apos;t update. Showing balances from {ago(readAt)}.</p>
+          ) : (
+            error && <Callout level="amber">{error}</Callout>
+          )}
           {sorted === null ? (
             !error && [0, 1, 2].map((i) => <div key={i} className="skeleton" style={{ height: 40 }} />)
           ) : sorted.shown.length === 0 && sorted.hidden.length === 0 ? (

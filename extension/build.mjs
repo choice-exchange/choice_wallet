@@ -82,10 +82,16 @@ const app = {
   ...common,
   platform: "browser",
   target: "chrome120",
-  entryPoints: dev
-    ? { background: "src/dev/background.ts", popup: "src/popup.ts", dev: "src/dev/page.ts" }
-    : { background: "src/background.ts", popup: "src/popup.ts" },
+  entryPoints: { background: dev ? "src/dev/background.ts" : "src/background.ts" },
   outdir: dist,
+};
+// The pages, split: what a Ledger needs (./src/ledger.ts and its packages, most of the
+// code) is its own file under chunks/, loaded the first time a Ledger is asked for.
+const pages = {
+  ...app,
+  entryPoints: dev ? { popup: "src/popup.ts", dev: "src/dev/page.ts" } : { popup: "src/popup.ts" },
+  splitting: true,
+  chunkNames: "chunks/[name]-[hash]",
 };
 // The content scripts: classic scripts, not modules. The provider's EIP-6963 icon is the
 // mark as a data URL, as the standard asks.
@@ -103,6 +109,7 @@ if (!dev) {
   buildVault();
   rmSync(dist, { recursive: true, force: true });
   await build(app);
+  await build(pages);
   await build(content);
   copyStatic();
   console.log(`built ${dist}`);
@@ -127,8 +134,9 @@ if (!dev) {
   };
   const stamp = () => {
     const assets = existsSync(join(dist, "assets")) ? readdirSync(join(dist, "assets")).map((f) => `assets/${f}`).sort() : [];
+    const chunks = existsSync(join(dist, "chunks")) ? readdirSync(join(dist, "chunks")).map((f) => `chunks/${f}`).sort() : [];
     const s = {
-      page: digest(["popup.js", "popup.css", "popup.html", "shell.css", ...assets]),
+      page: digest(["popup.js", "popup.css", "popup.html", "shell.css", ...assets, ...chunks]),
       worker: digest(["background.js", "inpage.js", "relay.js", "manifest.json", "vault/choice_wallet_wasm_bg.wasm"]),
     };
     writeFileSync(join(dist, "dev-build.json"), JSON.stringify(s) + "\n");
@@ -154,7 +162,7 @@ if (!dev) {
       });
     },
   };
-  for (const options of [app, content]) await (await context({ ...options, plugins: [devStamp] })).watch();
+  for (const options of [app, pages, content]) await (await context({ ...options, plugins: [devStamp] })).watch();
 
   watch(join(here, "public"), { recursive: true }, debounce(() => (copyStatic(), stamp())));
   const vault = debounce(() => {

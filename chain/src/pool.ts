@@ -71,15 +71,29 @@ export class Pool {
   }
 
   /** Run `attempt` against each endpoint in turn, starting from the last one that answered,
-   *  until one answers. `attempt` throws `Down` to move on. */
-  async run<T>(attempt: (base: string, tries: number) => Promise<T>): Promise<T> {
+   *  until one answers. `attempt` throws `Down` to move on.
+   *
+   *  A read (the default) is sent while the endpoint is still being identified, and its
+   *  answer counts only once the endpoint proves it serves the right chain: a wrong-chain
+   *  endpoint's answer, or its error, is thrown away like any other failure. That saves a
+   *  round trip on every new endpoint (each service worker start). A `write` (a broadcast)
+   *  waits for the endpoint to be identified first. */
+  async run<T>(attempt: (base: string, tries: number) => Promise<T>, opts: { write?: boolean } = {}): Promise<T> {
     const failures: string[] = [];
     for (let i = 0; i < this.urls.length; i++) {
       const index = (this.#preferred + i) % this.urls.length;
       const base = this.urls[index]!;
       try {
-        await this.#identify(base);
-        const value = await attempt(base, i);
+        let value: T;
+        if (opts.write) {
+          await this.#identify(base);
+          value = await attempt(base, i);
+        } else {
+          const [identified, answered] = await Promise.allSettled([this.#identify(base), attempt(base, i)]);
+          if (identified.status === "rejected") throw identified.reason;
+          if (answered.status === "rejected") throw answered.reason;
+          value = answered.value;
+        }
         this.#preferred = index;
         return value;
       } catch (e) {

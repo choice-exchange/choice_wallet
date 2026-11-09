@@ -94,7 +94,7 @@ export class Lcd {
 
   /** GET or POST `path` and return the body of a 200 answer. A chain error is thrown as
    *  `ChainError`; anything else moves on to the next endpoint. */
-  #call(path: string, post?: unknown, onAnswer?: (body: unknown, tries: number) => unknown): Promise<unknown> {
+  #call(path: string, post?: unknown, onAnswer?: (body: unknown, tries: number) => unknown, write = false): Promise<unknown> {
     return this.pool.run(async (base, tries) => {
       const init: RequestInit = post === undefined ? {} : { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(post) };
       const { status, body } = await this.pool.json(`${base}${path}`, init);
@@ -104,7 +104,7 @@ export class Lcd {
         throw new ChainError(body["code"], cleanMessage(body["message"]));
       }
       throw new Down(`HTTP ${status}`);
-    });
+    }, { write });
   }
 
   /** The account, or null if the chain has never seen it (nothing received yet). */
@@ -382,6 +382,7 @@ export class Lcd {
         if (code === WRONG_SEQUENCE && tries > 0) return { hash, uncertain: true };
         throw new ChainError(code, cleanMessage(String(r["raw_log"] ?? "")));
       },
+      true,
     );
     return result as Broadcast;
   }
@@ -427,6 +428,22 @@ export class Lcd {
     if (!/^0x[0-9a-f]{64}$/.test(h)) throw new RangeError(`not an EVM hash: ${hash}`);
     const { txs } = await this.searchTxs(`ethereum_tx.ethereumTxHash='${h}'`, 1, 1);
     return txs.find((t) => t.evm?.hash === h) ?? null;
+  }
+
+  /** A transaction as the index has it (messages, events), or null while it isn't in a
+   *  block. */
+  async indexedTx(hash: string): Promise<IndexedTx | null> {
+    if (!/^[0-9A-Fa-f]{64}$/.test(hash)) throw new RangeError(`not a transaction hash: ${hash}`);
+    let body: unknown;
+    try {
+      body = await this.#call(`/cosmos/tx/v1beta1/txs/${hash}`);
+    } catch (e) {
+      if (e instanceof ChainError && (e.code === 5 || /not found/i.test(e.message))) return null;
+      throw e;
+    }
+    const r = isObject(body) ? body["tx_response"] : undefined;
+    if (!isObject(r) || String(r["txhash"]).toUpperCase() !== hash.toUpperCase()) throw new ChainError(-1, "the node returned another transaction");
+    return indexedTx(r);
   }
 
   /** A transaction's result, or null while it isn't in a block (or never made it). */

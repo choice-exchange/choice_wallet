@@ -81,8 +81,13 @@ export type UiRequest =
   | { type: "settings" }
   /** Switch to `network`, with these LCD, EVM and Blockscout endpoints for it (`null`: the
    *  defaults; left out: unchanged; an empty Blockscout list turns it off). */
-  | { type: "save_settings"; network: NetworkId; lcd: string[] | null; evm?: string[] | null; evmIndex?: string[] | null; prices?: boolean; autoLock?: number }
+  | { type: "save_settings"; network: NetworkId; lcd: string[] | null; evm?: string[] | null; evmIndex?: string[] | null; prices?: boolean; autoLock?: number; notify?: NotifyMode }
   | { type: "balances" }
+  /** What the account in use showed last (balances, staking, the first page of activity),
+   *  from disk: drawn at once while the chain is asked again. */
+  | { type: "snapshot" }
+  /** The wallet is open: clear the count on the toolbar icon. */
+  | { type: "seen" }
   /** Which tokens the current network's lists show (see `TokenFilter`). */
   | { type: "save_token_filter"; filter: TokenFilter }
   /** Add a token by its contract address: an ERC20 (0x…) with no bank denom, or a CW20
@@ -498,6 +503,18 @@ export type Settings = {
   prices: boolean;
   /** Minutes without activity before the wallet locks: 5, 15, 60 or 240. */
   autoLock: number;
+  /** Notifications for tokens in and out, and the wallet's own transactions landing. */
+  notify: NotifyMode;
+};
+
+/** Who the background watcher follows: nobody, the account in use, or every account. */
+export type NotifyMode = "off" | "active" | "all";
+
+/** What the account in use showed last, each part with when (ms since 1970) it was read. */
+export type SnapshotView = {
+  balances?: { at: number; value: Replies["balances"] };
+  staking?: { at: number; value: StakingSummary };
+  activity?: { at: number; value: ActivityPage };
 };
 
 export type TxState = { state: "pending" | "success" | "failed"; log?: string };
@@ -553,6 +570,8 @@ export type Replies = {
    *  tokens (denom `evm:0x…`) and CW20s (`cw20:inj1…`) are in the list; `evmDown` says the
    *  EVM endpoints didn't answer, so EVM-only tokens may be missing. */
   balances: { network: NetworkId; balances: Balance[]; filter: TokenFilter; prices: boolean; evmDown?: true };
+  snapshot: SnapshotView | null;
+  seen: null;
   add_token: { denom: string; symbol: string; filter: TokenFilter };
   save_token_filter: TokenFilter;
   activity: ActivityPage;

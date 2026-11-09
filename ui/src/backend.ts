@@ -35,6 +35,9 @@ export interface Backend {
   /** Open the wallet's Ledger screen where pairing works (the extension: a tab, since the
    *  device chooser closes a popup). */
   openLedgerPage?(): void;
+  /** Call `listener` when the host says what the wallet shows has changed (a transaction
+   *  landed, tokens came in). Returns the unsubscribe. */
+  onRefresh?(listener: () => void): () => void;
 }
 
 export const BackendContext = createContext<Backend | null>(null);

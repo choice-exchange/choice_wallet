@@ -64,7 +64,8 @@ const ICON: Record<ActivityKind, (p: { size?: number }) => ReactNode> = {
 
 type Tokens = ActivityPage["tokens"];
 
-export function ActivityView({ network, tabs }: { network: NetworkId; tabs: ReactNode }) {
+/** `saved`: the first page as it was last read, shown until the chain answers. */
+export function ActivityView({ network, tabs, saved }: { network: NetworkId; tabs: ReactNode; saved?: ActivityPage | null }) {
   const [validators, setValidators] = useState<Record<string, string>>({});
   const backend = useBackend();
   const { run, error, busy } = useRequest();
@@ -80,7 +81,10 @@ export function ActivityView({ network, tabs }: { network: NetworkId; tabs: Reac
 
   async function load(p: number) {
     const r = await run({ type: "activity", page: p });
-    if (!r) return;
+    if (r) show(r, p);
+  }
+
+  function show(r: ActivityPage, p: number) {
     setItems((prev) => {
       const seen = new Set((p === 1 ? [] : (prev ?? [])).map((a) => a.hash));
       const all = [...(p === 1 ? [] : (prev ?? [])), ...r.items.filter((a) => !seen.has(a.hash))];
@@ -98,6 +102,11 @@ export function ActivityView({ network, tabs }: { network: NetworkId; tabs: Reac
   useEffect(() => {
     void load(1);
   }, [network, reload]);
+
+  // What the chain said last time, until it answers now.
+  useEffect(() => {
+    if (saved && items === null) show(saved, 1);
+  }, [saved]);
 
   const fee = NETWORKS[network].feeDenom;
   /** Junk: not signed here, and every token it moved is one the filter hides. Out counts

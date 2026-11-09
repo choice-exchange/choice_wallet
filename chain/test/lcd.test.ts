@@ -79,12 +79,58 @@ test("failover: network errors, HTML errors and wrong chains are skipped; chain 
     assert.equal(e.message, "failed to execute message; message index: 0: spendable balance 1inj is smaller than 2inj: insufficient funds");
     return true;
   });
-  // b (testnet) was never asked, and e wasn't either: d's chain error is the answer.
-  assert.ok(!calls.some((x) => x.includes("b.example") || x.includes("e.example")));
+  // b (testnet) answered, but a wrong-chain answer doesn't count; e was never asked: d's
+  // chain error is the answer.
+  assert.ok(!calls.some((x) => x.includes("e.example")));
   // The next call starts at d, the endpoint that answered.
   calls.length = 0;
   await assert.rejects(c.simulate("0a00"), ChainError);
   assert.deepEqual(calls, ["POST d.example/cosmos/tx/v1beta1/simulate"]);
+});
+
+test("a read goes out while the endpoint is identified; a broadcast waits for it", async () => {
+  const order: string[] = [];
+  let release!: () => void;
+  const held = new Promise<void>((r) => (release = r));
+  const fetch: Fetch = async (input, init) => {
+    const url = new URL(input);
+    order.push(url.pathname.split("/").pop()!);
+    if (url.pathname.endsWith("/node_info")) {
+      await held;
+      return new Response(JSON.stringify(NODE_INFO));
+    }
+    if (init?.method === "POST") return new Response(JSON.stringify({ tx_response: { txhash: "H", code: 0 } }));
+    return new Response(JSON.stringify({ balances: [{ denom: "inj", amount: "5" }], pagination: {} }));
+  };
+  const c = lcd(fetch, ["a.example"]);
+  const read = c.balances(ADDR);
+  await new Promise((r) => setTimeout(r, 10));
+  // Both requests are out; the answer waits for the node to say which chain it serves.
+  assert.deepEqual(order, ["node_info", ADDR]);
+  release();
+  assert.deepEqual(await read, [{ denom: "inj", amount: "5" }]);
+
+  order.length = 0;
+  let unblock!: () => void;
+  const gate = new Promise<void>((r) => (unblock = r));
+  const slow: Fetch = async (input, init) => {
+    if (new URL(input).pathname.endsWith("/node_info")) await gate;
+    return fetch(input, init);
+  };
+  const w = new Lcd(NETWORKS.mainnet, ["https://b.example"], slow, 1000).broadcast("0a00", "H");
+  await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(order, []);
+  unblock();
+  assert.deepEqual(await w, { hash: "H", uncertain: false });
+  assert.deepEqual(order, ["node_info", "txs"]);
+});
+
+test("a wrong-chain endpoint's read answer is thrown away, even when it comes first", async () => {
+  const { fetch } = fake(
+    { "a.example": () => ({ status: 200, body: { balances: [{ denom: "inj", amount: "999" }], pagination: {} } }), "b.example": () => ({ status: 200, body: { balances: [{ denom: "inj", amount: "5" }], pagination: {} } }) },
+    { "a.example": { status: 200, body: { default_node_info: { network: "injective-888" } } } },
+  );
+  assert.deepEqual(await lcd(fetch).balances(ADDR), [{ denom: "inj", amount: "5" }]);
 });
 
 test("no endpoint answering is reported as such", async () => {

@@ -211,7 +211,10 @@ test("a token Choice priced this week stays priced for the filter while Choice i
   const seen = local.data.get("choice_seen") as Record<string, number>;
   assert.deepEqual(Object.keys(seen).sort(), ["0x0000000000000000000000000000000000000000", CW_PAIR, "0x88f7f2b685f9692caf8c478f5badf09ee9b1cc13", LUMA]);
 
+  // Down, and the last price list on disk too old to stand in.
   net.state.pricesDown = true;
+  await service.settled();
+  local.data.delete("cache_prices");
   const restarted = ok<B>(await serviceOn(net, local, session).handle({ type: "balances" }));
   assert.deepEqual(restarted.balances.map((b) => [b.symbol, b.usd, b.onChoice]), [["INJ", undefined, true], ["USDT", undefined, true]]);
 

@@ -201,6 +201,15 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
     balanceAsked: [] as string[],
     /** Requests no route answered (501). */
     unhandled: [] as string[],
+    /** More indexed transactions in which ME received and spent coins (newest first). */
+    receivedTxs: [] as unknown[],
+    spentTxs: [] as unknown[],
+    /** Other accounts' bank balances and received transactions, where set. */
+    otherBalances: {} as Record<string, { denom: string; amount: string }[]>,
+    otherReceived: {} as Record<string, unknown[]>,
+    /** Times the token pairs and denom metadata were asked. */
+    pairCalls: 0,
+    metadataCalls: 0,
     /** Other accounts (inj1…) that exist and hold 5 INJ. */
     funded: new Set<string>(),
     /** ME's stakes, unbonding entries and rewards (chain decimals) by validator. */
@@ -301,11 +310,15 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
       // ME holds `balances`; any other account, nothing.
       const who = p.split("/").pop()!;
       state.balanceAsked.push(who);
-      const list = who === ME ? Object.entries(state.balances).map(([denom, a]) => ({ denom, amount: a.toString() })) : state.funded.has(who) ? [{ denom: "inj", amount: (5n * INJ).toString() }] : [];
+      const list =
+        who === ME
+          ? Object.entries(state.balances).map(([denom, a]) => ({ denom, amount: a.toString() }))
+          : (state.otherBalances[who] ?? (state.funded.has(who) ? [{ denom: "inj", amount: (5n * INJ).toString() }] : []));
       return json(200, { balances: list, pagination: { next_key: null } });
     }
     if (p === "/injective/txfees/v1beta1/cur_eip_base_fee") return json(200, { base_fee: { base_fee: "160000000.000000000000000000" } });
     if (p === "/injective/erc20/v1beta1/all_token_pairs") {
+      state.pairCalls++;
       return json(200, {
         token_pairs: [
           { bank_denom: USDT, erc20_address: "0x88f7F2b685F9692caf8c478f5BADF09eE9B1Cc13" },
@@ -367,6 +380,7 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
       });
     }
     if (p === "/cosmos/bank/v1beta1/denoms_metadata_by_query_string") {
+      state.metadataCalls++;
       const denom = url.searchParams.get("denom");
       if (denom === SCAM) return json(200, { metadata: { base: SCAM, display: "USDT", symbol: "USDT", name: "Tether USD", decimals: 6, denom_units: [] } });
       return json(404, { code: 5, message: "client metadata for denom", details: [] });
@@ -442,8 +456,10 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
       }
       // The signed list goes on for pages; the received one fits in this page.
       if (q === `message.sender='${ME}'`) return json(200, { tx_responses: [...SIGNED, ...state.signedEvm], total: "120" });
-      if (q === `coin_received.receiver='${ME}'`) return json(200, { tx_responses: RECEIVED, total: "2" });
+      if (q === `coin_received.receiver='${ME}'`) return json(200, { tx_responses: [...state.receivedTxs, ...RECEIVED], total: String(2 + state.receivedTxs.length) });
+      if (q === `coin_spent.spender='${ME}'`) return json(200, { tx_responses: state.spentTxs, total: String(state.spentTxs.length) });
       const to = /^coin_received\.receiver='(inj1[0-9a-z]+)'$/.exec(q)?.[1];
+      if (to && state.otherReceived[to]) return json(200, { tx_responses: state.otherReceived[to], total: String(state.otherReceived[to].length) });
       if (to) {
         state.depositChecks.push(to);
         const list = state.deposits[to] ?? [];
@@ -452,10 +468,12 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
       return json(200, { tx_responses: [], total: "0" });
     }
     if (p.startsWith("/cosmos/tx/v1beta1/txs/")) {
+      // A broadcast is in a block at once: a bank send of 1 INJ from ME to THEM, as the
+      // index has it.
       const hash = p.split("/").pop()!;
       const known = state.broadcasts.some((b) => createHash("sha256").update(Buffer.from(b, "base64")).digest("hex").toUpperCase() === hash);
       return known
-        ? json(200, { tx_response: { txhash: hash, height: "190861703", code: 0, raw_log: "" } })
+        ? json(200, { tx_response: { ...sentTx(190861703, hash), raw_log: "" } })
         : json(404, { code: 5, message: `tx not found: ${hash}`, details: [] });
     }
     state.unhandled.push(`${init?.method ?? "GET"} ${url.host}${p}`);
@@ -464,10 +482,32 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
   return { state, fetch };
 }
 
+/** A bank send of 1 INJ from ME to THEM, as the index has it, at `height`, now. */
+export function sentTx(height: number, hash = height.toString(16).padStart(64, "0").toUpperCase()) {
+  const fee = "16000000000000inj";
+  return {
+    txhash: hash,
+    height: String(height),
+    timestamp: new Date().toISOString(),
+    code: 0,
+    tx: {
+      body: { messages: [{ "@type": "/cosmos.bank.v1beta1.MsgSend", from_address: ME, to_address: THEM, amount: [{ denom: "inj", amount: INJ.toString() }] }], memo: "" },
+      auth_info: { fee: { amount: [{ denom: "inj", amount: "16000000000000" }], gas_limit: "100000" } },
+    },
+    events: [
+      ...moved(ME, FEE_COLLECTOR, fee),
+      { type: "tx", attributes: attrs({ fee, fee_payer: ME }) },
+      { type: "message", attributes: attrs({ action: "/cosmos.bank.v1beta1.MsgSend", sender: ME, module: "bank" }) },
+      ...moved(ME, THEM, `${INJ}inj`),
+    ],
+  };
+}
+
 /** A service on these stores: a second one on the same stores is a service worker restart. */
-/** What the service asked of the browser: approval windows opened (by request ID) and
- *  "something changed" notices to pages. */
-export type Ui = { opened: string[]; notified: number };
+/** What the service asked of the browser: approval windows opened (by request ID),
+ *  "something changed" notices to pages, notifications shown (none while `popupOpen`),
+ *  the toolbar count, refreshes asked of the wallet's pages, and the watcher's alarm. */
+export type Ui = { opened: string[]; notified: number; notices?: { id: string; title: string; message: string }[]; badge?: string; refreshed?: number; popupOpen?: boolean; watching?: boolean };
 
 export function serviceOn(net: ReturnType<typeof chain>, local: Store, session: Store, ui: Ui = { opened: [], notified: 0 }) {
   return createService({
@@ -483,6 +523,20 @@ export function serviceOn(net: ReturnType<typeof chain>, local: Store, session: 
     },
     notify: () => {
       ui.notified++;
+    },
+    refresh: () => {
+      ui.refreshed = (ui.refreshed ?? 0) + 1;
+    },
+    async showNotice(n) {
+      if (ui.popupOpen) return false;
+      (ui.notices ??= []).push(n);
+      return true;
+    },
+    badge: (text) => {
+      ui.badge = text;
+    },
+    scheduleWatch: (on) => {
+      ui.watching = on;
     },
   });
 }

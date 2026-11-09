@@ -19,7 +19,11 @@
 // With `nfts`, it lists the account's test NFT collections and sends one CW721 and one
 // ERC721 to the recipient. With `rescue`, it sets a second account as the rescue address,
 // empties this account's INJ into it, gives gas from it, rescues everything else to it
-// (stakes unstaked) on that gas and checks the chain; the INJ goes back at the end. Otherwise it sends `amount` INJ.
+// (stakes unstaked) on that gas and checks the chain; the INJ goes back at the end. With
+// `notify`, it times a reopen (the saved balances), watches every account, sends `amount`
+// INJ to the phrase's second account, and checks the notifications the service worker made:
+// the send confirmed, the receive on the other account, each once. Otherwise it sends
+// `amount` INJ.
 //
 // The phrase is read from the file and typed into the import screen. It is never printed
 // and that screen is never captured. The browser profile, with the encrypted keystore in
@@ -281,7 +285,121 @@ try {
   console.log("sender", from, "holds", before.from.toString(), "inj");
   await shot("live-1-home");
 
-  if (tokenContract === "staking") {
+  if (tokenContract === "notify") {
+    // 3n. Notifications and opening fast, on the live chain. Reopening the wallet draws the
+    // saved balances at once (timed). Every account is watched; `amount` INJ goes from this
+    // account to the phrase's second account. The send is notified once it lands, within
+    // seconds ("Sent … · confirmed"); the watcher's next check (its alarm, fired by hand: an
+    // unpacked extension's alarms may fire at once) notifies the second account's receive.
+    // Notifications are read from the service worker, where the wallet makes them.
+    // `recipient` is ignored.
+    const timeToTokens = async () => {
+      const t0 = Date.now();
+      await send("Page.reload", {}, sessionId);
+      for (;;) {
+        const n = await evalIn(`document.querySelectorAll(".token-list .token").length`).catch(() => 0);
+        if (n > 0) return Date.now() - t0;
+        if (Date.now() - t0 > 30000) throw new Error("no balances after a reopen");
+        await sleep(20);
+      }
+    };
+    await sleep(1500);
+    console.log(`reopen: balances on screen in ${await timeToTokens()} ms (saved), ${await timeToTokens()} ms again`);
+    await waitText("Manage", 20000);
+
+    const me = await evalIn(`document.querySelector("[aria-label='Copy address']").title`);
+    const name = (await evalIn(`document.querySelector(".account-switch").getAttribute("aria-label")`)).match(/^Account: (.+)\. Switch accounts$/)[1];
+    await evalIn(`document.querySelector(".account-switch").click()`);
+    await waitText("Accounts");
+    // The second account: found at import if it has history, else added now.
+    const rows = await evalIn(`[...document.querySelectorAll(".account-row")].length`);
+    if (rows < 2) {
+      await evalIn(`[...document.querySelectorAll("button")].find((b) => (b.getAttribute("aria-label") ?? "").startsWith("Add an account to")).click()`);
+      await waitText("Manage", 20000);
+      await evalIn(`document.querySelector(".account-switch").click()`);
+      await waitText("Accounts");
+    }
+    const pick = async (n) => {
+      await evalIn(`[...document.querySelectorAll(".account-row")].find((b) => b.querySelector(".symbol")?.textContent === ${JSON.stringify(n)}).click()`);
+      await waitText("Manage", 20000);
+    };
+    const otherName = (await evalIn(`[...document.querySelectorAll(".account-row .symbol")].map((e) => e.textContent)`)).find((n) => n !== name);
+    await pick(otherName);
+    const second = await evalIn(`document.querySelector("[aria-label='Copy address']").title`);
+    if (second === me) throw new Error("the second account is this one");
+    await evalIn(`document.querySelector(".account-switch").click()`);
+    await waitText("Accounts");
+    await pick(name);
+    console.log(`watching ${name} ${me} and ${otherName} ${second}`);
+
+    await click("Settings");
+    await waitText("All accounts");
+    await click("All accounts");
+    await click("Save");
+    await waitText("Manage", 20000);
+
+    // The service worker, with what it shows recorded on the way to the browser.
+    let swTarget;
+    for (let n = 0; !swTarget; n += 100) {
+      swTarget = (await send("Target.getTargets")).targetInfos.find((x) => x.type === "service_worker" && x.url === `chrome-extension://${extId}/background.js`);
+      if (!swTarget && n > 5000) throw new Error("no service worker");
+      if (!swTarget) await sleep(100);
+    }
+    const sw = (await send("Target.attachToTarget", { targetId: swTarget.targetId, flatten: true })).sessionId;
+    const inSw = async (expr) => {
+      const r = await send("Runtime.evaluate", { expression: expr, awaitPromise: true, returnByValue: true }, sw);
+      if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description ?? r.exceptionDetails.text);
+      return r.result.value;
+    };
+    await inSw(`(() => { globalThis.__notes = []; const create = chrome.notifications.create.bind(chrome.notifications); chrome.notifications.create = (id, o) => { globalThis.__notes.push({ id, title: o.title, message: o.message }); return create(id, o); }; })()`);
+    const watchState = () => inSw(`chrome.storage.local.get("watch").then((r) => JSON.stringify(r.watch?.accounts ?? null))`);
+    const fire = async () => {
+      const was = await watchState();
+      await inSw(`chrome.alarms.create("watch", { when: Date.now() })`);
+      for (let n = 0; (await watchState()) === was; n += 250) {
+        if (n > 30000) throw new Error("the watcher didn't run");
+        await sleep(250);
+      }
+    };
+    await fire(); // the first check keeps what's there
+    if (Object.keys(JSON.parse(await watchState())).length !== 2) throw new Error(`watched: ${await watchState()}`);
+
+    const sent = BigInt(Math.round(Number(amount) * 1e6)) * 10n ** 12n;
+    const was = await injOf(second);
+    await click("Send");
+    await waitText("Balance");
+    await fill('input[placeholder^="inj1"]', 0, second);
+    await fill('input[inputmode="decimal"]', 0, amount);
+    await click("Review");
+    await waitText("Review send", 30000);
+    if (!(await text()).includes("Injective testnet")) throw new Error("the review is not for Injective testnet; stopping");
+    await click("Confirm and send");
+    const hash = await landed();
+    if ((await injOf(second)) - was !== sent) throw new Error("the second account didn't get the amount");
+    const notes = () => inSw(`globalThis.__notes`);
+    for (let n = 0; !(await notes()).some((x) => x.id === `testnet|${hash}|${me}`); n += 500) {
+      if (n > 30000) throw new Error(`no notification for the send: ${JSON.stringify(await notes())}`);
+      await sleep(500);
+    }
+    await fire();
+    for (let n = 0; !(await notes()).some((x) => x.id === `testnet|${hash}|${second}`); n += 500) {
+      if (n > 15000) throw new Error(`no notification for the receive: ${JSON.stringify(await notes())}`);
+      await sleep(500);
+    }
+    const all = await notes();
+    for (const x of all) console.log(`notification: ${x.title} | ${x.message}`);
+    const mine = all.find((x) => x.id === `testnet|${hash}|${me}`);
+    const theirs = all.find((x) => x.id === `testnet|${hash}|${second}`);
+    const shown = (Number(sent) / 1e18).toString();
+    if (mine.title !== `Sent ${shown} INJ` || !mine.message.endsWith("confirmed")) throw new Error(`send notification: ${JSON.stringify(mine)}`);
+    if (theirs.title !== `Received ${shown} INJ` || theirs.message !== `${otherName} · from ${name}`) throw new Error(`receive notification: ${JSON.stringify(theirs)}`);
+    console.log(`badge: "${await inSw(`chrome.action.getBadgeText({})`)}"`);
+    await shot("live-n1-after");
+    // Nothing more on the next check: each is shown once.
+    await fire();
+    if ((await notes()).length !== all.length) throw new Error(`shown again: ${JSON.stringify(await notes())}`);
+    console.log("LIVE NOTIFY OK");
+  } else if (tokenContract === "staking") {
     // 3k. Staking through the Staking screen; each step checked on chain.
     const sent = BigInt(Math.round(Number(amount) * 1e6)) * 10n ** 12n;
     const stakes = async () => new Map((await lcd(`/cosmos/staking/v1beta1/delegations/${from}`)).delegation_responses.map((d) => [d.delegation.validator_address, BigInt(d.balance.amount)]));
