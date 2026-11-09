@@ -74,6 +74,9 @@ export type UiRequest =
    *  a CW20 into its bank denom through the CW20 adapter, or back. Confirmed like a send. */
   | { type: "prepare_convert"; denom: string; amount: string }
   | { type: "staking" }
+  | { type: "approvals" }
+  | { type: "prepare_revoke"; items: RevokeItem[] }
+  | { type: "prepare_revoke_erc20"; token: string; spender: string }
   | ({ type: "prepare_stake" } & StakeRequest)
   /** Sign and broadcast the prepared send whose review showed `digest`. `confirm` is the
    *  word the review asked for, if any. */
@@ -199,6 +202,34 @@ export type StakeRequest =
   | { action: "move"; validator: string; to: string; amount: string }
   | { action: "claim"; validator?: string; amount?: undefined }
   | { action: "cancel"; validator: string; height: string; amount?: undefined };
+
+/** What this account lets others do. */
+export type ApprovalsSummary = {
+  network: NetworkId;
+  /** authz grants it gave. `msgTypeUrl` is what a revoke names; null when the wallet can't
+   *  tell (shown, not revocable here). */
+  grants: { grantee: string; type: string; msgTypeUrl: string | null; spendLimit?: Coin[]; allowList?: string[]; expiration: string | null }[];
+  /** Fee allowances it gave; an empty limit is none. */
+  feeGrants: { grantee: string; type: string; spendLimit: Coin[]; expiration: string | null; allowedMessages?: string[] }[];
+  /** Where staking rewards go, when it isn't this account. */
+  rewardsTo: string | null;
+  /** By the token's `cw20:` key. */
+  cw20: { token: string; spender: string; amount: string; expires: string }[];
+  /** By the token's `evm:` key; what is left of each, from the token. */
+  erc20: { token: string; spender: string; amount: string }[];
+  tokens: Record<string, TokenInfo>;
+  /** Blockscout didn't answer: ERC20 allowances may be missing. */
+  evmIndexDown?: true;
+  /** No EVM endpoint answered: ERC20 allowances couldn't be checked. */
+  evmDown?: true;
+};
+
+/** One Cosmos-side permission to take back. */
+export type RevokeItem =
+  | { type: "authz"; grantee: string; msg_type_url: string }
+  | { type: "fee"; grantee: string }
+  | { type: "rewards" }
+  | { type: "cw20"; contract: string; spender: string; amount: string };
 
 export type ValidatorInfo = {
   address: string;
@@ -361,6 +392,9 @@ export type Replies = {
   prepare_send: SendReview;
   prepare_convert: SendReview;
   staking: StakingSummary;
+  approvals: ApprovalsSummary;
+  prepare_revoke: SendReview;
+  prepare_revoke_erc20: SendReview;
   prepare_stake: SendReview;
   confirm_send: Sent;
   tx_status: TxState;

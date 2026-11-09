@@ -171,6 +171,15 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
     delegations: {} as Record<string, bigint>,
     unbonding: [] as { validator: string; amount: bigint; height: number; completes: string }[],
     rewards: {} as Record<string, string>,
+    /** What ME lets others do: authz grants and fee allowances (LCD JSON, granter filled in),
+     *  the rewards address, CW20 allowances by contract, Approval logs Blockscout has, and
+     *  what each (token spender) allowance is now. */
+    grants: [] as Record<string, unknown>[],
+    feeGrants: [] as Record<string, unknown>[],
+    rewardsTo: null as string | null,
+    cw20Allowances: {} as Record<string, { spender: string; allowance: string }[]>,
+    approvalLogs: [] as { token: string; spender: string }[],
+    erc20Allowance: {} as Record<string, bigint>,
   };
   const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status });
   type Rpc = { id: number; method: string; params: { to: string; data: string }[] };
@@ -196,6 +205,13 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
     const { to, data } = r.params[0]!;
     const t = ERC20[to.toLowerCase()];
     if (r.method !== "eth_call" || !t) return { jsonrpc: "2.0", id: r.id, error: { code: 3, message: "execution reverted" } };
+    if (data.startsWith("0xdd62ed3e")) {
+      // allowance(owner, spender): ME's, by token and spender.
+      const owner = `0x${data.slice(34, 74)}`;
+      const spender = `0x${data.slice(98, 138)}`;
+      const left = owner === ME_EVM.toLowerCase() ? (state.erc20Allowance[`${to.toLowerCase()} ${spender}`] ?? 0n) : 0n;
+      return { jsonrpc: "2.0", id: r.id, result: `0x${left.toString(16).padStart(64, "0")}` };
+    }
     if (data.startsWith("0x70a08231")) {
       state.evmBalanceCalls.push(to.toLowerCase());
       // ME holds `evm`; any other account, none.
@@ -246,7 +262,11 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
     if (smart) {
       // CW20 queries as wasmd answers them; any other contract refuses.
       const t = CW20[smart[1]!];
-      const q = JSON.parse(atob(decodeURIComponent(smart[2]!))) as { balance?: { address: string }; token_info?: object };
+      const q = JSON.parse(atob(decodeURIComponent(smart[2]!))) as { balance?: { address: string }; token_info?: object; all_allowances?: { owner: string } };
+      if (t && q.all_allowances) {
+        const list = q.all_allowances.owner === ME ? (state.cw20Allowances[smart[1]!] ?? []) : [];
+        return json(200, { data: { allowances: list.map((a) => ({ ...a, expires: { never: {} } })) } });
+      }
       if (!t) return json(500, { code: 2, message: "query wasm contract failed: Error parsing into type", details: [] });
       if (q.token_info) return json(200, { data: { ...t, total_supply: "1000000000000000000000000000" } });
       if (q.balance) {
@@ -259,6 +279,16 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
     if (url.host === "blockscout.injective.network" && p === "/api") {
       state.blockscoutCalls.push(url.search);
       if (state.blockscout === "down") return new Response("<html>502</html>", { status: 502 });
+      if (url.searchParams.get("action") === "getLogs") {
+        const pad = (a: string) => `0x${a.slice(2).toLowerCase().padStart(64, "0")}`;
+        const mine = url.searchParams.get("topic1") === pad(ME_EVM);
+        const logs = (mine ? state.approvalLogs : []).map((l) => ({
+          address: l.token,
+          topics: ["0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925", pad(ME_EVM), pad(l.spender), null],
+          data: `0x${"f".repeat(64)}`,
+        }));
+        return json(200, logs.length ? { message: "OK", result: logs, status: "1" } : { message: "No logs found", result: [], status: "0" });
+      }
       const rows = state.blockscout.map((t) => ({ blockNumber: String(t.blockNumber), hash: t.hash, from: THEM_EVM.toLowerCase(), to: ME_EVM.toLowerCase(), value: "1" }));
       return json(200, rows.length ? { message: "OK", result: rows, status: "1" } : { message: "No token transfers found", result: [], status: "0" });
     }
@@ -288,8 +318,14 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
     const stakingOf = /^\/cosmos\/(?:staking\/v1beta1\/delegations|staking\/v1beta1\/delegators|distribution\/v1beta1\/delegators)\/(inj1[0-9a-z]+)/.exec(p)?.[1];
     if (stakingOf && stakingOf !== ME) {
       // Anyone else has nothing staked.
-      return json(200, { delegation_responses: [], unbonding_responses: [], rewards: [], total: [] });
+      return json(200, { delegation_responses: [], unbonding_responses: [], rewards: [], total: [], withdraw_address: stakingOf });
     }
+    if (p === `/cosmos/authz/v1beta1/grants/granter/${ME}`) return json(200, { grants: state.grants.map((g) => ({ granter: ME, ...g })), pagination: { next_key: null } });
+    if (p.startsWith("/cosmos/authz/v1beta1/grants/granter/")) return json(200, { grants: [], pagination: { next_key: null } });
+    if (p.startsWith("/cosmos/feegrant/v1beta1/issued/")) {
+      return json(200, { allowances: p.endsWith(ME) ? state.feeGrants.map((g) => ({ granter: ME, ...g })) : [], pagination: { next_key: null } });
+    }
+    if (p === `/cosmos/distribution/v1beta1/delegators/${ME}/withdraw_address`) return json(200, { withdraw_address: state.rewardsTo ?? ME });
     if (p === `/cosmos/staking/v1beta1/delegations/${ME}`) {
       return json(200, {
         delegation_responses: Object.entries(state.delegations).map(([v, a]) => ({

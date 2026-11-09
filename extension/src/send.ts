@@ -649,8 +649,9 @@ export function createSender(d: SendDeps) {
   }
 
   /** An EVM-only token's send: an ERC20 `transfer` on the EVM side, fee in INJ. Same shape
-   *  as a bank send: build, estimate, build again with the real gas, decode and grade. */
-  async function prepareEvm(network: NetworkId, account: AccountInfo, req: { denom: string; to: string; amount: string }): Promise<Result<SendReview>> {
+   *  as a bank send: build, estimate, build again with the real gas, decode and grade. With
+   *  `revoke` (a spender), an `approve(spender, 0)` on the token instead, and no amount. */
+  async function prepareEvm(network: NetworkId, account: AccountInfo, req: { denom: string; to: string; amount: string; revoke?: string }): Promise<Result<SendReview>> {
     const net = NETWORKS[network];
     const contract = evmAddress(req.denom)!;
     const from = account.addresses[net.evm];
@@ -682,14 +683,15 @@ export function createSender(d: SendDeps) {
       // of the gap to the base fee (measured on testnet 2026-11-09). So no headroom on the
       // fee, whose base sits at the chain minimum, and a smaller gas margin than Cosmos's.
       const maxFee = baseFee + priority;
-      const amount = req.amount === "max" ? tokenHeld : BigInt(req.amount);
-      if (amount <= 0n || amount > tokenHeld) return fail("insufficient", `Not enough ${t.symbol}.`);
+      const amount = req.revoke ? 0n : req.amount === "max" ? tokenHeld : BigInt(req.amount);
+      if (!req.revoke && (amount <= 0n || amount > tokenHeld)) return fail("insufficient", `Not enough ${t.symbol}.`);
       const build = (gas: bigint) =>
         d.vault<{ request: { evm_transaction: { tx: { to: string; data: string } } } }>("build_evm", {
           chain: net.evm,
           from,
-          to: req.to,
+          to: req.revoke ? contract : req.to,
           token: contract,
+          ...(req.revoke ? { revoke: req.revoke } : {}),
           amount: amount.toString(),
           nonce: Number(quantity(nonce, "nonce")),
           gas_limit: Number(gas),
@@ -800,7 +802,7 @@ export function createSender(d: SendDeps) {
     }
   }
 
-  return { balances, activity, inspectToken, prepare, prepareConvert, prepareCosmos, confirm, status, lcd, evm, tokensFor, chainFailure, token };
+  return { balances, activity, inspectToken, prepare, prepareConvert, prepareCosmos, prepareEvm, confirm, status, lcd, evm, evmIndex, tokensFor, chainFailure, token };
 }
 
 /** Every token a decoded Cosmos transaction moves, by the wallet's keys: the fee, coins
