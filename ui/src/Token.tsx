@@ -27,6 +27,7 @@ export function TokenView({
   feeDenom,
   onSend,
   onConvert,
+  onBridge,
   canSign = true,
   onBack,
 }: {
@@ -34,6 +35,8 @@ export function TokenView({
   feeDenom: string;
   onSend: () => void;
   onConvert: () => void;
+  /** USDC: bridge it to another chain. */
+  onBridge?: () => void;
   /** False for a watch-only account: nothing to send or convert with. */
   canSign?: boolean;
   onBack: () => void;
@@ -51,6 +54,11 @@ export function TokenView({
           <button className="btn btn-gold" onClick={onSend}>
             <SendIcon /> Send
           </button>
+          {onBridge && (
+            <button className="btn" onClick={onBridge}>
+              <SwapIcon /> Bridge to another chain
+            </button>
+          )}
           {token.convertsTo && (
             <button className="btn" onClick={onConvert}>
               <SwapIcon /> Convert to {otherFormName(token)}

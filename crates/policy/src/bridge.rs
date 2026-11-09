@@ -135,7 +135,7 @@ pub(crate) fn burn(c: &Cctp, from: &EthAddress, read: &Result<Burn, CctpError>, 
         (Hook::Forward | Hook::ForwardWithAccount { .. }, None) if domain.forwarding => out.push(finding(
             "bridge_forward",
             Level::Info,
-            format!("Circle delivers it on {chain}, keeping part of the most shown as its fee."),
+            format!("Circle delivers it on {chain}, for a fee of at most the one shown."),
             json!({ "chain": chain, "max_fee": b.max_fee.to_string() }),
         )),
         (Hook::Forward | Hook::ForwardWithAccount { .. }, None) => out.push(finding(

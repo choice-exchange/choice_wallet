@@ -45,6 +45,7 @@ import {
 } from "@choice-wallet/chain";
 import type { AccountInfo, ActivityPage, Balance, CosmosDisplay, DeviceRequest, Result, Risk, SendReview, Sent, TokenInfo, TxState } from "@choice-wallet/ui/protocol";
 
+import { bridgeLabel } from "./bridge";
 import { diskCache } from "./cache";
 import { memoFrom, type RiskFacts } from "./contacts";
 import type { Store } from "./service";
@@ -564,7 +565,7 @@ export function createSender(d: SendDeps) {
       const open = streams.filter((st) => !st.done && st.heights.length > 0);
       const lows = open.map((st) => st.heights.reduce((m, h) => (h < m ? h : m)));
       const cutoff = lows.length > 0 ? lows.reduce((a, b) => (a > b ? a : b)).toString() : null;
-      const items = mergeActivity(lists);
+      const items = mergeActivity(lists).map((a) => (a.bridge ? { ...a, bridge: { ...a.bridge, ...bridgeLabel(network, a.bridge.domain, a.bridge.mintRecipient) } } : a));
       const denoms = new Set(items.flatMap((a) => [...a.changes, ...a.fee].map((c) => c.denom).concat(a.approval ? [a.approval.denom] : [])));
       const tokens = await labels(network, denoms);
       return {

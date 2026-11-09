@@ -112,6 +112,15 @@ export type UiRequest =
   | { type: "swap_quote"; from: string; to: string; amount: string; slippageBps?: number }
   /** The next step of a quoted swap, for review: an approval, or the swap itself. */
   | { type: "prepare_swap"; quote: string }
+  /** Where USDC can be bridged to (Circle's CCTP), and how much this account holds. */
+  | { type: "bridge_routes" }
+  /** Circle's fee for bridging `amount` (USDC base units, or "max") to chain `to` (a key from
+   *  `bridge_routes`), for `recipient` there: a 0x address, or a Solana wallet. */
+  | { type: "bridge_quote"; to: string; amount: string; recipient: string }
+  /** The next step of a quoted bridge transfer, for review: the approval, or the burn. */
+  | { type: "prepare_bridge"; quote: string }
+  /** Where a bridge transfer is, by its Injective transaction hash. */
+  | { type: "bridge_status"; hash: string }
   /** Convert `amount` (base units, or "max") of a token into its other form (`convertsTo`):
    *  a CW20 into its bank denom through the CW20 adapter, or back. Confirmed like a send. */
   | { type: "prepare_convert"; denom: string; amount: string }
@@ -248,10 +257,32 @@ export type EvmDisplay = {
   call:
     | { type: "transfer" }
     | { type: "erc20_transfer"; to: string; amount: string }
-    | { type: "contract"; selector: string | null; unreadable_swap?: true }
+    | { type: "contract"; selector: string | null; unreadable_swap?: true; unreadable_bridge?: true }
     | { type: "approve"; spender: string; amount: string }
     | { type: "permit2_approve"; token: string; spender: string; amount: string; expiration: number }
-    | EvmSwapCall;
+    | EvmSwapCall
+    | EvmBridgeCall;
+};
+
+/** USDC burned on Injective over Circle's CCTP, as the vault reads its calldata. */
+export type EvmBridgeCall = {
+  type: "bridge";
+  amount: string;
+  token: string;
+  domain: number;
+  /** The destination's name, when the wallet knows the domain. */
+  chain: string | null;
+  /** A 0x address, or a Solana account (base58); null when no address there can receive. */
+  recipient: string | null;
+  /** The most Circle keeps. */
+  max_fee: string;
+  finality: number;
+  /** Who mints on the destination: Circle (forwarding), whoever claims, or a hook's contract. */
+  delivery: "circle" | "claim" | "hook";
+  /** Solana: the wallet whose USDC account Circle opens. */
+  account_owner: string | null;
+  /** Set when only this address may mint. */
+  destination_caller: string | null;
 };
 
 /** A swap through Choice's aggregator or router, as the vault reads its calldata. The zero
@@ -288,6 +319,62 @@ export type SendReview = {
   nft?: { collection: string; tokenId: string; standard: NftStandard };
   /** A rescue: where everything goes, and how many messages didn't fit (run it again). */
   rescue?: { to: string; rest: number };
+  /** One step of a bridge transfer: where it goes, as the quote said (the vault's reading in
+   *  `display` is held to it). */
+  bridge?: BridgeStepInfo;
+};
+
+export type BridgeStep = "approve" | "burn";
+
+export type BridgeStepInfo = {
+  step: BridgeStep;
+  /** Steps after this one. */
+  left: number;
+  chain: string;
+  /** As typed: a 0x address, or the Solana wallet. */
+  recipient: string;
+  amount: string;
+  maxFee: string;
+  minReceived: string;
+  /** USDC's wallet key. */
+  usdc: string;
+};
+
+/** A chain USDC can be bridged to. */
+export type BridgeChain = { key: string; name: string; kind: "evm" | "solana" };
+
+export type BridgeRoutes = {
+  chains: BridgeChain[];
+  /** USDC's wallet key on this network, and this account's balance of it. */
+  usdc: string;
+  balance: string;
+  /** This account's 0x address: its own address on any EVM chain. */
+  address: string;
+};
+
+/** Circle's quote for the wallet's own bridge transfer. USDC base units. */
+export type BridgeQuote = {
+  /** What `prepare_bridge` builds from. */
+  id: string;
+  chain: string;
+  chainName: string;
+  recipient: string;
+  amount: string;
+  /** The most Circle keeps; it delivers at least `minReceived`. */
+  maxFee: string;
+  minReceived: string;
+  /** Solana: Circle also opens the recipient's USDC account (its fee covers the rent). */
+  recipientSetup: boolean;
+  steps: BridgeStep[];
+};
+
+/** Where a bridge transfer is. `track` is a page anyone can follow it on, and claim it from
+ *  if Circle never delivers. */
+export type BridgeStatus = {
+  phase: "pending" | "attesting" | "delivering" | "delivered" | "stuck";
+  track: string;
+  mintTx?: string;
+  mintUrl?: string;
 };
 
 /** What the account holds beyond its balance: trading accounts (orderbook subaccounts),
@@ -439,6 +526,7 @@ export type ActivityKind =
   | "swap"
   | "convert"
   | "approve"
+  | "bridge"
   | "contract"
   | "evm"
   | "orderbook"
@@ -468,6 +556,9 @@ export type ActivityItem = {
   evmHash?: string;
   /** For kind "approve": who may spend how much of which token ("0" takes it back). */
   approval?: { denom: string; spender: string; amount: string };
+  /** For kind "bridge": USDC sent to another chain over Circle's CCTP. `chain` and
+   *  `recipient` (a 0x address, or a Solana USDC account) when the wallet knows the domain. */
+  bridge?: { domain: number; mintRecipient: string; chain?: string; recipient?: string };
 };
 
 export type ActivityPage = {
@@ -583,6 +674,10 @@ export type Replies = {
   swap_tokens: SwapToken[];
   swap_quote: SwapQuote;
   prepare_swap: SendReview;
+  bridge_routes: BridgeRoutes;
+  bridge_quote: BridgeQuote;
+  prepare_bridge: SendReview;
+  bridge_status: BridgeStatus;
   prepare_convert: SendReview;
   staking: StakingSummary;
   approvals: ApprovalsSummary;

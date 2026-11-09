@@ -158,7 +158,13 @@ try {
   await send("Log.enable", {}, sessionId);
   await send("Emulation.setDeviceMetricsOverride", { width: 360, height: 600, deviceScaleFactor: 2, mobile: false }, sessionId);
   const evalIn = async (expr) => {
-    const r = await send("Runtime.evaluate", { expression: expr, awaitPromise: true, returnByValue: true }, sessionId);
+    // A page that stops answering is an error, not a hang.
+    const r = await Promise.race([
+      send("Runtime.evaluate", { expression: expr, awaitPromise: true, returnByValue: true }, sessionId),
+      sleep(30000).then(() => {
+        throw new Error(`the page didn't answer in 30 s: ${expr.slice(0, 120)}`);
+      }),
+    ]);
     if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description ?? r.exceptionDetails.text);
     return r.result.value;
   };
@@ -199,8 +205,13 @@ try {
   const openToken = (denom) => evalIn(`[...document.querySelectorAll(".token")].find((t) => t.title === ${JSON.stringify(denom)}).click()`);
   const shot = async (name) => {
     await sleep(250);
-    const { data } = await send("Page.captureScreenshot", { format: "png" }, sessionId);
-    writeFileSync(join(out, `${name}.png`), Buffer.from(data, "base64"));
+    // Headless Chrome stops drawing a tab another window covers (a site's approval window),
+    // and a screenshot then waits for a frame forever: bring it forward, and give up after
+    // 15 s rather than hang the run (the screenshot is a record, not a check).
+    await send("Page.bringToFront", {}, sessionId);
+    const got = await Promise.race([send("Page.captureScreenshot", { format: "png" }, sessionId), sleep(15000).then(() => null)]);
+    if (got) writeFileSync(join(out, `${name}.png`), Buffer.from(got.data, "base64"));
+    else console.log(`  (no screenshot for ${name}: the page drew nothing in 15 s)`);
   };
 
   /** The test site, served on 127.0.0.1 in a tab, and a way to answer the wallet's approval
@@ -1066,6 +1077,143 @@ try {
     if (after.usdt - before.usdt < minimum || after.usdt === before.usdt) throw new Error("less USDT arrived than the minimum shown");
     if (left !== 0n || p2left !== 0n) throw new Error("an allowance is left over");
     console.log("LIVE SWAP OK");
+  } else if (tokenContract === "bridge") {
+    // 3b. USDC out over Circle's CCTP (its sandbox): a site wraps 0.2 INJ into wINJ; the
+    // wallet swaps that for testnet USDC through Choice; then bridges `amount` USDC to this
+    // account's own address on Base Sepolia, delivered by Circle: the exact approval (if
+    // needed), then the burn. Checked on both chains: USDC on Injective down by exactly the
+    // amount, on Base Sepolia up by at least the minimum shown.
+    const WINJ = "0x0000000088827d2d103ee2d9A6b781773AE03FfB";
+    const USDC_T = "0x0C382e685bbeeFE5d3d9C29e29E341fEE8E84C5d";
+    const BASE_SEPOLIA_USDC = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
+    const pad = (a) => a.slice(2).toLowerCase().padStart(64, "0");
+    const balanceOf = async (token, who) => BigInt(await evmRpc("eth_call", [{ to: token, data: `0x70a08231${pad(who)}` }, "latest"]));
+    const baseSepolia = async (who) => {
+      const r = await fetch("https://sepolia.base.org", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_call", params: [{ to: BASE_SEPOLIA_USDC, data: `0x70a08231${pad(who)}` }, "latest"] }) });
+      return BigInt((await r.json()).result);
+    };
+    const amountIn = BigInt(Math.round(Number(amount) * 1e6));
+    const { server, approve, ask, reply } = await startSite();
+    let me;
+    try {
+      await ask("eth_requestAccounts");
+      await approve("wants to connect", "Connect", "live-b1-connect");
+      [me] = await reply();
+      if ((await balanceOf(USDC_T, me)) < amountIn) {
+        const wrapped = await balanceOf(WINJ, me);
+        await ask("eth_sendTransaction", [{ from: me, to: WINJ, value: `0x${(2n * 10n ** 17n).toString(16)}`, data: "0xd0e30db0" }]);
+        await approve("Estimated on", "Confirm", "live-b2-wrap");
+        const wrapHash = await reply();
+        for (let n = 0; (await balanceOf(WINJ, me)) === wrapped; n += 1000) {
+          if (n > 60000) throw new Error(`the wrap ${wrapHash} didn't land`);
+          await sleep(1000);
+        }
+        console.log("wrapped 0.2 INJ into wINJ:", wrapHash);
+      }
+    } finally {
+      server.close();
+    }
+    const pick = async (...names) => {
+      const want = JSON.stringify(names.map((x) => x.toLowerCase()));
+      for (let n = 0; n < 30000; n += 300) {
+        const hit = await evalIn(`(() => { const e = [...document.querySelectorAll(".token")].find((b) => ${want}.some((w) => (b.title || "").toLowerCase().includes(w))); if (e) e.click(); return !!e; })()`);
+        if (hit) return;
+        await sleep(300);
+      }
+      throw new Error(`no token row for ${names.join()}`);
+    };
+    /** Confirm each step's review until one says `last`; each must land. */
+    const steps = async (last, name) => {
+      for (let step = 1; ; step++) {
+        for (let n = 0; !/YOU ALLOW|YOU SWAP|YOU BRIDGE/.test(await text()); n += 300) {
+          if (n > 30000) throw new Error(`no review for step ${step}: ${await text()}`);
+          await sleep(300);
+        }
+        const t = await text();
+        if (!t.includes("Injective testnet (EVM)") && !t.includes("Injective (EVM)")) throw new Error("the review isn't for the EVM side");
+        await shot(`${name}-step${step}`);
+        const final = t.includes(last);
+        console.log(`  step ${step}:`, final ? last : "approval");
+        await click(final ? (last === "Review swap" ? "Confirm swap" : "Confirm and bridge") : "Approve");
+        if (final) return;
+        for (let n = 0; !(await text()).includes("It's in a block."); n += 500) {
+          if (n > 90000 || /Failed|Not confirmed yet/.test(await text())) throw new Error(`step ${step} didn't land: ${await text()}`);
+          await sleep(500);
+        }
+        await click("Next step");
+      }
+    };
+    if ((await balanceOf(USDC_T, me)) < amountIn) {
+      await click("Manage");
+      await click("Add a token by contract");
+      await fill('input[aria-label="Token contract"]', 0, USDC_T);
+      await click("Add");
+      for (let n = 0; await evalIn(`!!document.querySelector('input[aria-label="Token contract"]')`); n += 300) {
+        if (n > 30000) throw new Error(`adding testnet USDC didn't finish: ${await text()}`);
+        await sleep(300);
+      }
+      await click("Back");
+      await waitText("Manage", 20000);
+      await click("Swap");
+      await waitText("YOU PAY");
+      await click("Choose the token to pay");
+      await pick(WINJ);
+      await click("Choose the token to get");
+      await pick(USDC_T);
+      await fill('input[aria-label="Amount to pay"]', 0, "0.2");
+      await waitText("At least", 30000);
+      await evalIn(`[...document.querySelectorAll("button")].find((b) => b.textContent.startsWith("Review"))?.click()`);
+      console.log("swapping 0.2 wINJ for testnet USDC:");
+      await steps("Review swap", "live-b3-swap");
+      for (let n = 0; !(await text()).includes("It's in a block."); n += 500) {
+        if (n > 90000 || /Failed|Not confirmed yet/.test(await text())) throw new Error(`the swap didn't land: ${await text()}`);
+        await sleep(500);
+      }
+      await click("Done");
+      await waitText("Manage", 20000);
+      await click("Wallet");
+    }
+    const before = { inj: await balanceOf(USDC_T, me), base: await baseSepolia(me) };
+    console.log(`USDC on Injective testnet ${before.inj}; on Base Sepolia ${before.base}`);
+    if (before.inj < amountIn) throw new Error("not enough testnet USDC to bridge");
+
+    await waitText("Bridge USDC", 20000);
+    await evalIn(`[...document.querySelectorAll(".token")].find((b) => b.querySelector(".symbol")?.textContent === "Bridge USDC").click()`);
+    await waitText("FROM INJECTIVE", 20000);
+    // The chain button wakes once the chains are read.
+    for (let n = 0; !(await evalIn(`!document.querySelector('[aria-label="Choose the chain"]').disabled`)); n += 300) {
+      if (n > 30000) throw new Error(`the chains didn't load: ${await text()}`);
+      await sleep(300);
+    }
+    await click("Choose the chain");
+    await waitText("Bridge to");
+    await evalIn(`[...document.querySelectorAll(".token")].find((b) => b.querySelector(".symbol")?.textContent === "Base Sepolia").click()`);
+    await fill('input[aria-label="Amount of USDC"]', 0, amount);
+    await waitText("Circle's fee", 30000);
+    const lines = (await text()).split("\n");
+    const leastShown = lines[lines.indexOf("Arrives") + 1] ?? "";
+    const minimum = BigInt(Math.round(Number(leastShown.replace(/[^0-9.]/g, "")) * 1e6));
+    console.log("quote:", leastShown, "|", lines[lines.indexOf("Circle's fee") + 1]);
+    await shot("live-b4-quote");
+    await evalIn(`[...document.querySelectorAll("button")].find((b) => b.textContent.startsWith("Review"))?.click()`);
+    console.log("bridging:");
+    await steps("Review bridge", "live-b5-bridge");
+    const t0 = Date.now();
+    for (let n = 0; !(await text()).includes("Arrived on Base Sepolia"); n += 2000) {
+      if (n > 600000 || /Failed|Not delivered yet/.test(await text())) throw new Error(`not delivered: ${await text()}`);
+      await sleep(2000);
+    }
+    console.log(`Circle delivered it in ${Math.round((Date.now() - t0) / 1000)} s after the burn`);
+    await shot("live-b6-arrived");
+    let after = { inj: await balanceOf(USDC_T, me), base: await baseSepolia(me) };
+    for (let n = 0; after.base === before.base && n < 30000; n += 2000) {
+      await sleep(2000);
+      after = { inj: await balanceOf(USDC_T, me), base: await baseSepolia(me) };
+    }
+    console.log(`USDC on Injective -${before.inj - after.inj} (asked ${amountIn}); on Base Sepolia +${after.base - before.base} (at least ${minimum} shown)`);
+    if (before.inj - after.inj !== amountIn) throw new Error("USDC on Injective moved by another amount");
+    if (after.base - before.base < minimum) throw new Error("less arrived on Base Sepolia than the minimum shown");
+    console.log("LIVE BRIDGE OK");
   } else if (tokenContract === "activity") {
     // 3a. Activity, read back from testnet's own endpoints and Blockscout.
     await click("Activity");

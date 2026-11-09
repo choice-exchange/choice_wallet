@@ -15,6 +15,7 @@
 
 import { EVM_MSG, erc20Event, evmCall, transferRecipient, type Erc20Event } from "./evmtx.ts";
 import type { Coin, IndexedTx, TxEvent } from "./lcd.ts";
+import { NETWORKS } from "./networks.ts";
 import { evmDenom } from "./tokens.ts";
 import { toBigInt } from "./units.ts";
 
@@ -24,6 +25,7 @@ export type ActivityKind =
   | "swap"
   | "convert"
   | "approve"
+  | "bridge"
   | "contract"
   | "evm"
   | "orderbook"
@@ -54,6 +56,21 @@ export interface Activity {
   evmHash?: string;
   /** For kind "approve": who may now spend how much of which token ("0" takes it back). */
   approval?: { denom: string; spender: string; amount: string };
+  /** For kind "bridge": USDC burned over Circle's CCTP, to this domain and `mintRecipient`
+   *  (bytes32 hex), as the signed call says. */
+  bridge?: { domain: number; mintRecipient: string };
+}
+
+/** `depositForBurn` and `depositForBurnWithHook` (TokenMessengerV2). */
+const CCTP_BURNS = ["0x8e0250ee", "0x779b432d"];
+
+/** A CCTP burn this account signed, read from the call: where it goes. */
+function cctpBurn(call: { to: string | null; input: string } | null): { domain: number; mintRecipient: string } | null {
+  if (!call?.to || !Object.values(NETWORKS).some((n) => n.cctp.tokenMessenger.toLowerCase() === call.to)) return null;
+  if (!CCTP_BURNS.includes(call.input.slice(0, 10)) || call.input.length < 10 + 64 * 3) return null;
+  const word = (i: number) => call.input.slice(10 + 64 * i, 10 + 64 * (i + 1));
+  const domain = Number.parseInt(word(1), 16);
+  return Number.isSafeInteger(domain) ? { domain, mintRecipient: `0x${word(2)}` } : null;
 }
 
 /** What `summarize` needs to read EVM transactions for this account. */
@@ -194,6 +211,8 @@ export function summarize(tx: IndexedTx, address: string, evm?: EvmView): Activi
 
   if (t === EVM_MSG) {
     if (!signed && up && !down) return kindOf("receive", from);
+    const burn = signed ? cctpBurn(call) : null;
+    if (burn) return { ...kindOf("bridge"), bridge: burn };
     if (signed && !base.ok) {
       // It reverted: say what it tried, from the signed call.
       const to = call ? transferRecipient(call.input) : null;

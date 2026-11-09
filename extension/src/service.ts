@@ -21,6 +21,7 @@ import { createNfts } from "./nfts";
 import { createRescue } from "./rescue";
 import { createContacts } from "./contacts";
 import { createStaking } from "./staking";
+import { createBridge } from "./bridge";
 import { createSwaps } from "./swap";
 import { createWallets, isWatch } from "./wallets";
 import { settled as cachesSettled } from "./cache";
@@ -156,6 +157,7 @@ export function createService(d: Deps) {
   });
   const staking = createStaking(sender);
   const swaps = createSwaps(sender, d.session, d.fetch, async (net) => (await tokenFilter(net)).shown);
+  const bridge = createBridge(sender, d.session, d.fetch);
   const approvals = createApprovals(sender);
 
   const wallets = createWallets({
@@ -478,6 +480,10 @@ export function createService(d: Deps) {
       case "swap_tokens":
       case "swap_quote":
       case "prepare_swap":
+      case "bridge_routes":
+      case "bridge_quote":
+      case "prepare_bridge":
+      case "bridge_status":
       case "prepare_revoke":
       case "prepare_revoke_erc20":
       case "inventory":
@@ -494,7 +500,7 @@ export function createService(d: Deps) {
       case "tx_status": {
         const a = await active();
         if ("ok" in a) return a;
-        if ((r.type === "prepare_send" || r.type === "prepare_convert" || r.type === "prepare_stake" || r.type === "prepare_revoke" || r.type === "prepare_revoke_erc20" || r.type === "prepare_swap" || r.type === "prepare_nft_send" || r.type === "prepare_rescue" || r.type === "prepare_rescue_grant" || r.type === "prepare_subaccount_withdraw") && isWatch(a.account)) {
+        if ((r.type === "prepare_send" || r.type === "prepare_convert" || r.type === "prepare_stake" || r.type === "prepare_revoke" || r.type === "prepare_revoke_erc20" || r.type === "prepare_swap" || r.type === "prepare_bridge" || r.type === "prepare_nft_send" || r.type === "prepare_rescue" || r.type === "prepare_rescue_grant" || r.type === "prepare_subaccount_withdraw") && isWatch(a.account)) {
           return err("watch_only", "This account is watch-only. Switch to one that can sign.");
         }
         if (r.type === "snapshot") return { ok: true, result: await snapshot(a.net, a.account) };
@@ -524,6 +530,10 @@ export function createService(d: Deps) {
         if (r.type === "swap_tokens") return swaps.tokens(a.net, a.account);
         if (r.type === "swap_quote") return swaps.quote(a.net, a.account, r);
         if (r.type === "prepare_swap") return swaps.prepare(a.net, a.account, r.quote);
+        if (r.type === "bridge_routes") return bridge.routes(a.net, a.account);
+        if (r.type === "bridge_quote") return bridge.quote(a.net, a.account, r);
+        if (r.type === "prepare_bridge") return bridge.prepare(a.net, a.account, r.quote);
+        if (r.type === "bridge_status") return bridge.status(a.net, r.hash);
         if (r.type === "prepare_revoke") return approvals.prepare(a.net, a.account, r.items);
         if (r.type === "prepare_revoke_erc20") return approvals.prepareErc20(a.net, a.account, r.token, r.spender);
         if (r.type === "inventory") return inventory.summary(a.net, a.account);

@@ -326,6 +326,24 @@ test("EVM: zero-value transfers change nothing; a log of a token leaving, from s
   assert.deepEqual(f.changes, [{ denom: `evm:${LUMA}`, amount: "-100" }]);
 });
 
+test("EVM: a CCTP burn reads as a bridge, to its domain and recipient; a reverted one too", () => {
+  // 25 USDC to 0x1111…1111 on Base (domain 6), Circle forwarding: injective-usdc-bridge's
+  // burnCall, checked against viem there and decoded byte for byte by the vault.
+  const input =
+    "0x779b432d00000000000000000000000000000000000000000000000000000000017d784000000000000000000000000000000000000000000000000000000000000000060000000000000000000000001111111111111111111111111111111111111111000000000000000000000000a00c59ff5a080d2b954d0c75e46e22a0c371235a00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000030d4000000000000000000000000000000000000000000000000000000000000007d000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000020636374702d666f72776172640000000000000000000000000000000000000000";
+  const usdc = "erc20:0xa00C59fF5a080D2b954d0c75e46E22a0c371235a";
+  const burned = [ev("coin_spent", { spender: ME, amount: `25000000${usdc}` }), ev("burn", { burner: ME, amount: `25000000${usdc}` })];
+  const t = evmTx(207, { from: ME_EVM, fromInj: ME, to: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d", input, events: burned });
+  const a = summarize(t, ME, view);
+  assert.deepEqual([a.kind, a.signed, a.ok], ["bridge", true, true]);
+  assert.deepEqual(a.bridge, { domain: 6, mintRecipient: `0x${"0".repeat(24)}${"1".repeat(40)}` });
+  assert.deepEqual(a.changes, [{ denom: usdc, amount: "-25000000" }]);
+  const failed = summarize(evmTx(208, { from: ME_EVM, fromInj: ME, to: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d", input, code: 3 }), ME, view);
+  assert.deepEqual([failed.kind, failed.ok, failed.bridge?.domain], ["bridge", false, 6]);
+  // The same call to any other contract isn't a bridge.
+  assert.notEqual(summarize(evmTx(209, { from: ME_EVM, fromInj: ME, to: ROUTER, input }), ME, view).kind, "bridge");
+});
+
 test("EVM: an approval names the spender and the allowance; zero takes it back", () => {
   const max = 2n ** 256n - 1n;
   const t = evmTx(207, { from: ME_EVM, fromInj: ME, to: USDT_ERC20, logs: [approvalLog(USDT_ERC20, ME_EVM, ROUTER, max)] });

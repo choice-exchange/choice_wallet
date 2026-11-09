@@ -34,6 +34,7 @@ import { formatShort, NETWORKS, shortDenom, summarize, type Activity, type Activ
 import type { AccountInfo, NotifyMode, TokenFilter } from "@choice-wallet/ui/protocol";
 import { hiddenWhy } from "@choice-wallet/ui/token-filter";
 
+import { bridgeLabel } from "./bridge";
 import type { createSender } from "./send";
 import type { Store } from "./service";
 
@@ -103,6 +104,7 @@ const DONE: Record<ActivityKind, string> = {
   swap: "Swapped",
   convert: "Converted",
   approve: "Approved",
+  bridge: "Bridged",
   contract: "Contract call",
   evm: "EVM transaction",
   orderbook: "INJ orderbook",
@@ -294,6 +296,10 @@ export function createWatcher(d: WatchDeps) {
     const parts = [account.name];
     if (who && a.kind === "receive") parts.push(`from ${who}`);
     else if (who && (a.kind === "send" || a.kind === "ibc")) parts.push(`to ${who}`);
+    else if (a.kind === "bridge" && a.bridge) {
+      const to = bridgeLabel(network, a.bridge.domain, a.bridge.mintRecipient).chain;
+      if (to) parts.push(`to ${to}`);
+    }
     if (ownResult) parts.push(ownResult);
     else if (!a.ok) parts.push("failed");
     return { id: `${network}|${a.evmHash ?? a.hash}|${account.addresses[NETWORKS[network].cosmos]}`, title, message: parts.join(" · ") };

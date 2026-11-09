@@ -8,7 +8,8 @@ import { RecipientPicker } from "./Contacts";
 import { ArrowDownIcon, CheckIcon, ChevronDownIcon, ClockIcon, CloseIcon, ExternalIcon } from "./icons";
 import { BackBar, Callout, formatUsd, Screen, shortAddress, tokenSub } from "./kit";
 import { DeviceStep } from "./Ledger";
-import type { AccountInfo, Balance, Coin, Contact, DeviceRequest, DeviceSignature, NetworkId, RecipientCheck, SendReview, Sent, SwapStepInfo, TokenInfo, TxState } from "./protocol";
+import { BridgeCard } from "./Bridge";
+import type { AccountInfo, Balance, BridgeStatus, BridgeStepInfo, Coin, Contact, DeviceRequest, DeviceSignature, NetworkId, RecipientCheck, SendReview, Sent, SwapStepInfo, TokenInfo, TxState } from "./protocol";
 import { useRequest } from "./request";
 import { permissionName } from "./permissions";
 import { shown, spenderName, type Shown, type StakeLine } from "./review";
@@ -274,8 +275,9 @@ export function Review({
   rewards?: Record<string, string>;
 }) {
   const { risk, tokens } = review;
-  const view = shown(review.display, network, review.swap);
+  const view = shown(review.display, network, review.swap ?? (review.bridge ? { from: review.bridge.usdc, to: review.bridge.usdc } : undefined));
   const swapping = view.swaps.length > 0;
+  const bridging = view.bridges.length > 0;
   const approving = view.approvals.length > 0 && !swapping;
   const converting = view.converts.length > 0 && view.sends.length === 0;
   const staking = view.stakes.length > 0 && view.sends.length === 0 && view.converts.length === 0;
@@ -322,7 +324,7 @@ export function Review({
     <Screen
       top={
         <BackBar
-          title={review.rescue ? "Review rescue" : gasGrant ? "Review gas" : view.moves.length > 0 ? "Review move" : swapping ? "Review swap" : approving ? "Review approval" : revoking ? "Review revoke" : staking ? "Review staking" : converting ? "Review conversion" : "Review send"}
+          title={review.rescue ? "Review rescue" : gasGrant ? "Review gas" : view.moves.length > 0 ? "Review move" : bridging ? "Review bridge" : swapping ? "Review swap" : approving ? "Review approval" : revoking ? "Review revoke" : staking ? "Review staking" : converting ? "Review conversion" : "Review send"}
           onBack={onCancel}
         />
       }
@@ -337,7 +339,11 @@ export function Review({
             disabled={busy || blocked || needsWord}
             onClick={() => void confirm()}
           >
-            {swapping
+            {bridging
+              ? busy
+                ? "Sending…"
+                : "Confirm and bridge"
+              : swapping
               ? busy
                 ? "Swapping…"
                 : "Confirm swap"
@@ -376,7 +382,8 @@ export function Review({
         </Callout>
       ))}
       {review.swap && review.swap.left > 0 && <p className="meta">{review.swap.left === 1 ? "One more step after this." : "Two more steps after this."}</p>}
-      <SwapCards view={view} tokens={tokens} network={network} from={(review.display as { from?: string }).from ?? ""} {...(review.swap ? { step: review.swap } : {})} usd={usd} />
+      {review.bridge && review.bridge.left > 0 && <p className="meta">Then the transfer itself.</p>}
+      <SwapCards view={view} tokens={tokens} network={network} from={(review.display as { from?: string }).from ?? ""} {...(review.swap ? { step: review.swap } : {})} {...(review.bridge ? { bridge: review.bridge } : {})} usd={usd} />
       {view.sends.map((m, i) => (
         <div className="surface-hero" key={i}>
           <div className="eyebrow">You send</div>
@@ -580,6 +587,7 @@ export function SwapCards({
   network,
   from,
   step,
+  bridge,
   usd,
 }: {
   view: Shown;
@@ -587,6 +595,8 @@ export function SwapCards({
   network: NetworkId;
   from: string;
   step?: SwapStepInfo;
+  /** A bridge transfer's step, as its quote said. */
+  bridge?: BridgeStepInfo;
   usd?: (cs: Coin[]) => string | null;
 }) {
   const coin = (c: Coin) => {
@@ -602,6 +612,9 @@ export function SwapCards({
   };
   return (
     <>
+      {view.bridges.map((b, i) => (
+        <BridgeCard key={`b${i}`} line={b} tokens={tokens} from={from} {...(bridge ? { info: bridge } : {})} />
+      ))}
       {view.swaps.map((sw, i) => {
         return (
           <div className="surface-hero" key={`w${i}`}>
@@ -647,7 +660,7 @@ export function SwapCards({
           <Figure coin={{ denom: a.token, amount: a.amount }} t={tokens[a.token]} />
           <p className="meta" style={{ marginTop: 10 }}>
             {a.until ? `Until ${new Date(a.until * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}. ` : ""}
-            {step ? "Exactly this swap's amount." : ""}
+            {step ? "Exactly this swap's amount." : bridge ? "Exactly this transfer's amount." : ""}
           </p>
         </div>
       ))}
@@ -666,6 +679,9 @@ const STAKE_VERB: Record<StakeLine["kind"], string> = {
 
 const POLL_MS = 1500;
 const POLL_TRIES = 40;
+/** A bridge transfer takes Circle seconds to minutes; asked every 3 s for 10 minutes. */
+const BRIDGE_POLL_MS = 3000;
+const BRIDGE_TRIES = 200;
 
 export function SentView({
   sent,
@@ -674,6 +690,7 @@ export function SentView({
   onNext,
   converting = false,
   done,
+  bridge,
 }: {
   sent: Sent;
   onDone: () => void;
@@ -683,9 +700,12 @@ export function SentView({
   onNext?: (() => void) | undefined;
   converting?: boolean;
   done?: string;
+  /** A bridge transfer's burn: followed, once in a block, until Circle delivers it. */
+  bridge?: { chain: string } | undefined;
 }) {
   const backend = useBackend();
   const [state, setState] = useState<TxState | { state: "slow" }>({ state: "pending" });
+  const [crossing, setCrossing] = useState<BridgeStatus | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -711,21 +731,65 @@ export function SentView({
     };
   }, [sent.hash]);
 
+  // Once the burn is in a block: Circle attests it, then mints on the destination.
+  useEffect(() => {
+    if (!bridge || state.state !== "success") return;
+    let live = true;
+    let tries = 0;
+    async function tick() {
+      if (!live) return;
+      try {
+        const r = await backend.send({ type: "bridge_status", hash: sent.hash });
+        if (!live) return;
+        if (r.ok) {
+          setCrossing(r.result);
+          if (r.result.phase === "delivered" || r.result.phase === "stuck") return;
+        }
+      } catch {
+        // Keep asking; the next try may get through.
+      }
+      if (++tries < BRIDGE_TRIES) setTimeout(() => void tick(), BRIDGE_POLL_MS);
+    }
+    void tick();
+    return () => {
+      live = false;
+    };
+  }, [sent.hash, state.state, bridge?.chain]);
+
   const s = state.state;
-  const title = { pending: converting ? "Converting" : "Sending", slow: "Not confirmed yet", success: done ?? (converting ? "Converted" : "Sent"), failed: "Failed" }[s];
-  const lead = {
+  let title = { pending: converting ? "Converting" : "Sending", slow: "Not confirmed yet", success: done ?? (converting ? "Converted" : "Sent"), failed: "Failed" }[s];
+  let lead = {
     pending: "Waiting for the next block.",
     slow: "Check the explorer for its status.",
     success: "It's in a block.",
     failed: ("log" in state && state.log) || "The chain rejected it.",
   }[s];
+  let icon: string = s;
+  if (bridge && s === "success") {
+    const phase = crossing?.phase ?? "pending";
+    title = phase === "delivered" ? `Arrived on ${bridge.chain}` : phase === "stuck" ? "Not delivered yet" : `Bridging to ${bridge.chain}`;
+    lead = {
+      pending: "Circle is picking it up.",
+      attesting: "Circle is confirming it.",
+      delivering: `Circle is delivering it on ${bridge.chain}.`,
+      delivered: "Circle delivered it.",
+      stuck: "Circle hasn't delivered it. Anyone can complete it from the bridge site.",
+    }[phase];
+    icon = phase === "delivered" ? "success" : phase === "stuck" ? "slow" : "pending";
+  }
   return (
     <Screen
       foot={
         <>
-          <button className="btn" onClick={() => backend.openLink(sent.explorer)}>
-            View on explorer <ExternalIcon size={16} />
-          </button>
+          {crossing?.mintUrl ? (
+            <button className="btn" onClick={() => backend.openLink(crossing.mintUrl!)}>
+              View on {bridge?.chain} <ExternalIcon size={16} />
+            </button>
+          ) : (
+            <button className="btn" onClick={() => backend.openLink(crossing?.phase === "stuck" ? crossing.track : sent.explorer)}>
+              {crossing?.phase === "stuck" ? "Open the bridge site" : "View on explorer"} <ExternalIcon size={16} />
+            </button>
+          )}
           {onNext && s === "success" ? (
             <button className="btn btn-gold" onClick={onNext}>
               Next step
@@ -744,10 +808,10 @@ export function SentView({
       }
     >
       <div className="status">
-        <span className={`status-icon ${s}`}>
-          {s === "success" && <CheckIcon size={30} />}
-          {s === "failed" && <CloseIcon size={28} />}
-          {s === "slow" && <ClockIcon size={28} />}
+        <span className={`status-icon ${icon}`}>
+          {icon === "success" && <CheckIcon size={30} />}
+          {icon === "failed" && <CloseIcon size={28} />}
+          {icon === "slow" && <ClockIcon size={28} />}
         </span>
         <h1 className="page-title">{title}</h1>
         <p className={s === "failed" ? "error" : "lead"}>{lead}</p>

@@ -6,6 +6,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { AccountMark, AccountsView, isWatch } from "./Accounts";
 import { ApprovalsView } from "./Approvals";
+import { BridgeView, newBridgeDraft, type BridgeDraft } from "./Bridge";
 import { ContactsView, type Draft } from "./Contacts";
 import { ActivityView } from "./Activity";
 import { merge, type ActivityState } from "./activityState";
@@ -39,8 +40,9 @@ type View =
   | { name: "token"; denom: string }
   | { name: "send"; denom?: string }
   | { name: "convert"; denom: string }
-  | { name: "review"; review: SendReview; entered: string; back: View; validators?: Record<string, string>; rewards?: Record<string, string>; quote?: string }
-  | { name: "sent"; sent: Sent; converting: boolean; done?: string; save?: Draft; next?: string }
+  | { name: "review"; review: SendReview; entered: string; back: View; validators?: Record<string, string>; rewards?: Record<string, string>; quote?: string; bridgeQuote?: string }
+  | { name: "sent"; sent: Sent; converting: boolean; done?: string; save?: Draft; next?: string; nextBridge?: string; bridge?: { chain: string } }
+  | { name: "bridge" }
   | { name: "staking" }
   | { name: "approvals" }
   | { name: "rescue" }
@@ -98,6 +100,8 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
   const [staking, setStaking] = useState<StakingSummary | null>(null);
   const [swapDraft, setSwapDraft] = useState<SwapDraft>(() => newDraft(NETWORKS[status.network].feeDenom));
   const [swapNote, setSwapNote] = useState<string | null>(null);
+  const [bridgeDraft, setBridgeDraft] = useState<BridgeDraft>(newBridgeDraft);
+  const [bridgeNote, setBridgeNote] = useState<string | null>(null);
   /** When the balances on screen were read: from disk at first, then each answer. */
   const [readAt, setReadAt] = useState<number | null>(null);
   /** The chain answered for this account: what's on disk is older. */
@@ -131,6 +135,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
     activity.current = null;
     answered.current = false;
     setSwapDraft(newDraft(NETWORKS[status.network].feeDenom));
+    setBridgeDraft(newBridgeDraft());
     let live = true;
     void backend.send({ type: "snapshot" }).then((r) => {
       if (!live || !r.ok || !r.result) return;
@@ -251,6 +256,18 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
     setView({ name: "home" });
   }
 
+  /** A bridge transfer's next step (the burn, after its approval landed); back to the form if
+   *  its quote ran out. */
+  async function nextBridgeStep(quote: string) {
+    const r = await backend.send({ type: "prepare_bridge", quote });
+    if (r.ok) {
+      setView({ name: "review", review: r.result, entered: "", back: { name: "bridge" }, bridgeQuote: quote });
+      return;
+    }
+    setBridgeNote(r.error.message);
+    setView({ name: "bridge" });
+  }
+
   return <KeptContext.Provider value={kept}>{screen()}</KeptContext.Provider>;
 
   function screen() {
@@ -281,6 +298,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
             canSign={!watch}
             onSend={() => setView({ name: "send", denom: t.denom })}
             onConvert={() => setView({ name: "convert", denom: t.denom })}
+            {...(t.denom.toLowerCase() === `erc20:${NETWORKS[status.network].cctp.usdc}`.toLowerCase() ? { onBridge: () => setView({ name: "bridge" }) } : {})}
             onBack={home}
           />
         );
@@ -340,6 +358,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
               const named = view.review.risk.findings.some((f) => f.rule === "address_book");
               const save = sentTo && sentTo.sends.length === 1 && !named ? { address: sentTo.sends[0]!.to, memo: sentTo.memo } : undefined;
               const step = view.review.swap;
+              const crossing = view.review.bridge;
               setView({
                 name: "sent",
                 sent,
@@ -347,6 +366,8 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
                 ...(back.name === "staking" || back.name === "approvals" || back.name === "rescue" || back.name === "inventory" ? { done: "Confirmed" } : {}),
                 ...(step ? { done: step.step === "swap" ? "Swapped" : "Approved" } : {}),
                 ...(step && step.left > 0 && view.quote ? { next: view.quote } : {}),
+                ...(crossing?.step === "approve" ? { done: "Approved", ...(view.bridgeQuote ? { nextBridge: view.bridgeQuote } : {}) } : {}),
+                ...(crossing?.step === "burn" ? { bridge: { chain: crossing.chain } } : {}),
                 ...(save ? { save } : {}),
               });
             }}
@@ -359,13 +380,30 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
             sent={view.sent}
             onDone={home}
             onSave={view.save ? () => setView({ name: "contacts", prefill: view.save! }) : undefined}
-            onNext={view.next ? () => void nextSwapStep(view.next!) : undefined}
+            onNext={view.next ? () => void nextSwapStep(view.next!) : view.nextBridge ? () => void nextBridgeStep(view.nextBridge!) : undefined}
             converting={view.converting}
+            bridge={view.bridge}
             {...(view.done ? { done: view.done } : {})}
           />
         );
       case "contacts":
         return <ContactsView prefill={view.prefill} onBack={home} />;
+      case "bridge":
+        return (
+          <BridgeView
+            key={`${address} ${status.network}`}
+            network={status.network}
+            canSign={!watch}
+            draft={bridgeDraft}
+            onDraft={setBridgeDraft}
+            note={bridgeNote}
+            onReview={(review, quote) => {
+              setBridgeNote(null);
+              setView({ name: "review", review, entered: "", back: { name: "bridge" }, bridgeQuote: quote.id });
+            }}
+            onBack={home}
+          />
+        );
       case "nfts":
         return <NftsView canSign={!watch} onOpen={(collection, nft) => setView({ name: "nft", collection, nft })} onBack={home} />;
       case "nft":
@@ -543,6 +581,14 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
             <div className="section-head">
               <span className="eyebrow">More</span>
             </div>
+            <button className="token" onClick={() => setView({ name: "bridge" })}>
+              <TokenMark denom={`erc20:${NETWORKS[status.network].cctp.usdc}`} symbol="USDC" known />
+              <span className="name">
+                <span className="symbol">Bridge USDC</span>
+                <span className="sub">To Base, Solana and more, by Circle</span>
+              </span>
+              <ChevronRightIcon size={16} />
+            </button>
             <button className="token" onClick={() => setView({ name: "inventory" })}>
               <span className="nft-tile small" aria-hidden="true">
                 LP

@@ -34,6 +34,9 @@ const broadcasts = [];
 // EVM transactions the mock JSON-RPC received (raw hex), for the swap step.
 const evmRaw = [];
 const PERMIT2_APPROVED = "095ea7b3000000000000000000000000000000000022d473030f116ddee9f6b43ac78ba3";
+// Circle's CCTP on Injective: native USDC's bank denom, and TokenMessengerV2's approval.
+const USDC = "erc20:0xa00C59fF5a080D2b954d0c75e46E22a0c371235a";
+const CCTP_APPROVED = "095ea7b300000000000000000000000028b5a0e9c621a5badaa536219b3a228c8168cf5d";
 const sha = (b64) => createHash("sha256").update(Buffer.from(b64, "base64")).digest("hex").toUpperCase();
 // Indexed transactions for Activity, shaped like mainnet's (bank events and the fee payer).
 const FRIEND = "inj1nk9x9ajk4rgkzhqjjn7hr6w0k0jg2kj0knl55v";
@@ -97,6 +100,8 @@ let meInj = "";
 // from FRIEND (the watcher notifies it).
 let balancesDown = false;
 let incoming = false;
+/** Step 7f: 3 USDC held, to bridge. */
+let usdcHeld = false;
 /** Tx index searches asked (Activity's), to see a tab revisit ask nothing. */
 let txSearches = 0;
 const txSearchLog = [];
@@ -150,6 +155,7 @@ const lcd = createServer((req, res) => {
             return ok({ status: "0x1" });
           case "eth_call": {
             const data = String(r.params[0].data);
+            if (data.startsWith("0xdd62ed3e") && data.toLowerCase().includes("28b5a0e9c621a5badaa536219b3a228c8168cf5d")) return ok(`0x${w(sent.includes(CCTP_APPROVED) ? 10n ** 30n : 0n)}`);
             if (data.startsWith("0xdd62ed3e")) return ok(`0x${w(sent.includes(PERMIT2_APPROVED) ? 10n ** 30n : 0n)}`);
             if (data.startsWith("0x927da105")) return ok(sent.includes("87517c45") ? `0x${w(10n ** 30n)}${w(Math.floor(Date.now() / 1000) + 1800)}${w(0)}` : `0x${w(0)}${w(0)}${w(0)}`);
             return ok(`0x${w(0)}`);
@@ -168,7 +174,7 @@ const lcd = createServer((req, res) => {
     }
     if (p.startsWith("/cosmos/bank/v1beta1/spendable_balances/")) {
       if (balancesDown) return reply(503, "down");
-      return reply(200, { balances: [{ denom: SCAM, amount: "7000000" }, { denom: "inj", amount: incoming ? "6000000000000000000" : "5000000000000000000" }, { denom: USDT, amount: "2500000" }], pagination: { next_key: null } });
+      return reply(200, { balances: [{ denom: SCAM, amount: "7000000" }, { denom: "inj", amount: incoming ? "6000000000000000000" : "5000000000000000000" }, { denom: USDT, amount: "2500000" }, ...(usdcHeld ? [{ denom: USDC, amount: "3000000" }] : [])], pagination: { next_key: null } });
     }
     if (p === "/injective/txfees/v1beta1/cur_eip_base_fee") return reply(200, { base_fee: { base_fee: "160000000.000000000000000000" } });
     if (p === "/injective/erc20/v1beta1/all_token_pairs") {
@@ -960,12 +966,51 @@ try {
   }
   await p.click("Done");
   await p.waitText("Manage", 15000);
+  console.log("swaps: INJ to USDT in one step; USDT to INJ through approve, Permit2 and the swap, each exact; all quoted live by Choice");
+
+  // 7f. Bridging USDC out over Circle's CCTP: Circle's real fee API answers the extension
+  // (no CORS preflight), the approval is exact, and the burn the vault reads goes to this
+  // account's own address on Base, delivered by Circle. Both go to the mock EVM endpoint.
+  usdcHeld = true;
+  await p.click("Wallet");
+  await p.waitText("Bridge USDC", 15000);
+  await p.eval(`[...document.querySelectorAll(".token")].find((b) => b.querySelector(".symbol")?.textContent === "Bridge USDC").click()`);
+  await p.waitText("FROM INJECTIVE");
+  await p.waitText("Balance 3 USDC", 15000);
+  await p.click("Choose the chain");
+  await p.waitText("Bridge to");
+  await p.eval(`[...document.querySelectorAll(".token")].find((b) => b.querySelector(".symbol")?.textContent === "Base").click()`);
+  await p.fill('input[aria-label="Amount of USDC"]', 0, "1");
+  await p.waitText("Circle's fee", 30000);
+  await p.waitText("One approval, for this amount only");
+  await p.shot("16v-bridge-quote");
+  await p.click("Review (2 steps)");
+  await p.waitText("Review approval", 30000);
+  for (const t of ["YOU ALLOW", "Circle's bridge (CCTP)", "Exactly this transfer's amount.", "Then the transfer itself."]) await p.waitText(t);
+  await p.shot("16w-review-bridge-approve");
+  await p.click("Approve");
+  await p.waitText("Next step", 15000);
+  await p.click("Next step");
+  await p.waitText("Review bridge", 30000);
+  for (const t of ["YOU BRIDGE", "TO BASE", "Your own address there.", "Bridges USDC to Base over Circle's CCTP.", "Delivered by"]) await p.waitText(t);
+  await p.shot("16x-review-bridge");
+  await p.click("Confirm and bridge");
+  await p.waitText("Bridging to Base", 20000);
+  await p.shot("16y-bridging");
+  const bridgeTxs = evmRaw.slice(-2).map((r) => r.toLowerCase());
+  if (!bridgeTxs[0].includes(CCTP_APPROVED) || !bridgeTxs[1].includes("28b5a0e9c621a5badaa536219b3a228c8168cf5d") || !bridgeTxs[1].includes("779b432d")) {
+    throw new Error("the bridge's two transactions aren't the exact approval and the burn");
+  }
+  await p.click("Done");
+  await p.waitText("Manage", 15000);
+  usdcHeld = false;
+  console.log("bridge: 1 USDC to this account's address on Base; Circle's fee quoted live from the extension; approve exact, then the burn the vault read");
+
   await p.click("Settings");
   await settingsLoaded();
   await p.fill("textarea", 1, "https://sentry.evm-rpc.injective.network\nhttps://injective-evm-rpc.publicnode.com");
   await p.click("Save");
   await p.waitText("Manage", 15000);
-  console.log("swaps: INJ to USDT in one step; USDT to INJ through approve, Permit2 and the swap, each exact; all quoted live by Choice");
 
   // 8. A site: finds the wallet through EIP-6963 (window.ethereum untouched), connects
   // through an approval window (rejected once, then approved), gets a message signed, and

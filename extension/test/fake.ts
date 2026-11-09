@@ -137,8 +137,13 @@ export const abiString = (s: string) => {
   const hex = Buffer.from(s).toString("hex");
   return `0x${"20".padStart(64, "0")}${(hex.length / 2).toString(16).padStart(64, "0")}${hex.padEnd(64, "0")}`;
 };
+/** Native USDC on Injective EVM (Circle's), and its bank denom; Circle's TokenMessengerV2. */
+export const USDC_ERC20 = "0xa00c59ff5a080d2b954d0c75e46e22a0c371235a";
+export const USDC = "erc20:0xa00C59fF5a080D2b954d0c75e46E22a0c371235a";
+export const TOKEN_MESSENGER = "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d";
 export const ERC20: Record<string, { symbol: string; name: string; decimals: number }> = {
   [LUMA]: { symbol: "LUMA", name: "Luma", decimals: 18 },
+  [USDC_ERC20]: { symbol: "USDC", name: "USD Coin", decimals: 6 },
   [ADDED]: { symbol: "TEST", name: "Test token", decimals: 6 },
   [USDT_ERC20]: { symbol: "USDT", name: "Tether USD", decimals: 6 },
 };
@@ -239,6 +244,12 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
     routes: CHOICE_ROUTES,
     routeAsks: [] as URLSearchParams[],
     permit2: {} as Record<string, { amount: bigint; expiration: number }>,
+    /** Circle's Iris: its messages by burn hash, and the requests it saw (with their headers). */
+    iris: {} as Record<string, unknown[]>,
+    irisAsks: [] as { path: string; headers: Record<string, string> }[],
+    irisDown: false,
+    /** Solana accounts that exist (by base58 address), for the recipient check. */
+    solanaAccounts: {} as Record<string, { owner: string }>,
   };
   const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status });
   type Rpc = { id: number; method: string; params: { to: string; data: string }[] };
@@ -254,7 +265,7 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
       assert.ok([ME_EVM, ...state.evmAlso].some((a) => a.toLowerCase() === tx.from.toLowerCase()), `estimate from ${tx.from}`);
       if (tx.data === "0xdeadbeef") return { jsonrpc: "2.0", id: r.id, error: { code: 3, message: "execution reverted" } };
       // 46,576 for an ERC20 transfer; approvals 46,000; a swap 250,000; 21,000 for a plain send.
-      const est = tx.data.startsWith("0xa9059cbb") ? "0xb5f0" : /^0x(095ea7b3|87517c45)/.test(tx.data) ? "0xb3b0" : /^0x(ddab6e8d|3593564c)/.test(tx.data) ? "0x3d090" : "0x5208";
+      const est = tx.data.startsWith("0xa9059cbb") ? "0xb5f0" : /^0x(095ea7b3|87517c45)/.test(tx.data) ? "0xb3b0" : /^0x(ddab6e8d|3593564c)/.test(tx.data) ? "0x3d090" : /^0x(779b432d|8e0250ee)/.test(tx.data) ? "0x76530" : "0x5208";
       return answer(est);
     }
     if (r.method === "eth_blockNumber") return answer("0xb6137d8");
@@ -294,7 +305,7 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
     const url = new URL(input);
     state.hosts.add(url.host);
     const p = url.pathname;
-    if (init?.method === "POST" && p === "/") {
+    if (init?.method === "POST" && p === "/" && url.host !== "solana-rpc.publicnode.com") {
       // EVM JSON-RPC.
       if (state.evmDown) return new Response("down", { status: 503 });
       const body = JSON.parse(String(init.body)) as Rpc | Rpc[];
@@ -364,6 +375,33 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
       }
       const rows = state.blockscout.map((t) => ({ blockNumber: String(t.blockNumber), hash: t.hash, from: THEM_EVM.toLowerCase(), to: ME_EVM.toLowerCase(), value: "1" }));
       return json(200, rows.length ? { message: "OK", result: rows, status: "1" } : { message: "No token transfers found", result: [], status: "0" });
+    }
+    if (url.host === "iris-api.circle.com") {
+      state.irisAsks.push({ path: `${p}${url.search}`, headers: Object.fromEntries(new Headers(init?.headers).entries()) });
+      if (state.irisDown) return new Response("down", { status: 503 });
+      // Circle's answers for Injective (domain 29) as of 2026-11-10's shape: standard only
+      // from Injective is free; forwarding costs a flat fee per destination.
+      const fees = /^\/v2\/burn\/USDC\/fees\/29\/(\d+)$/.exec(p);
+      if (fees) {
+        const setup = url.searchParams.get("includeRecipientSetup") === "true";
+        const fwd = fees[1] === "5" ? (setup ? 290_000 : 130_000) : 54_000;
+        const forwardFee = url.searchParams.get("forward") === "true" ? { forwardFee: { low: fwd - 4000, med: fwd, high: fwd + 6000 } } : {};
+        return json(200, [
+          { finalityThreshold: 1000, minimumFee: 1, ...forwardFee },
+          { finalityThreshold: 2000, minimumFee: 0, ...forwardFee },
+        ]);
+      }
+      if (p === "/v2/messages/29") {
+        const m = state.iris[url.searchParams.get("transactionHash") ?? ""];
+        return m ? json(200, { messages: m }) : json(404, { error: "Message not found" });
+      }
+      return json(404, { error: "not found" });
+    }
+    if (url.host === "solana-rpc.publicnode.com" && init?.method === "POST") {
+      const body = JSON.parse(String(init.body)) as { id: number; method: string; params: [string, unknown] };
+      const a = state.solanaAccounts[body.params[0]];
+      const value = a ? { owner: a.owner, lamports: 2039280, data: ["", "base64"], executable: false, rentEpoch: 0, space: 165 } : null;
+      return json(200, { jsonrpc: "2.0", id: body.id, result: { context: { slot: 1 }, value } });
     }
     if (url.host === "evm-api.choice.exchange" && p === "/route") {
       state.routeAsks.push(url.searchParams);

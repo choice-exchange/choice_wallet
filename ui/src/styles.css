@@ -588,3 +588,7 @@ details.raw summary {
 .nft-hero { display: flex; align-items: center; gap: 14px; }
 .nft-hero .nft-tile { width: 56px; height: 56px; font-size: 18px; border-radius: 14px; }
 .nft-hero .symbol { font-size: 18px; font-weight: 600; word-break: break-all; }
+
+/* Bridge: a chain is a tile of letters (the wallet ships no chain logos). */
+.chain-tile { border-radius: 99px; color: var(--muted); }
+.chain-tile.small { width: 24px; height: 24px; font-size: 9px; }
