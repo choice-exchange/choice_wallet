@@ -781,3 +781,89 @@ fn own_revokes_build_decode_and_sign() {
     assert_eq!(code("build_evm", params(token, "1", Some(spender), Some(token))), "bad_request");
     assert_eq!(code("build_evm", params(token, "0", Some(spender), None)), "bad_request");
 }
+
+/// A real route from Choice's API (2026-11-09), paying the test phrase's account 0.
+fn choice_route(name: &str) -> Value {
+    let v: Value = serde_json::from_str(include_str!("../../injective/tests/choice_routes.json")).unwrap();
+    v["cases"].as_array().unwrap().iter().find(|c| c["name"] == name).unwrap().clone()
+}
+
+fn evm_params(chain: &str, from: &str, to: &str, amount: &str, call: Value) -> Value {
+    json!({
+        "chain": chain, "from": from, "to": to, "amount": amount, "call": call,
+        "nonce": 3, "gas_limit": 400000, "max_fee_per_gas": "160000000", "max_priority_fee_per_gas": "0",
+    })
+}
+
+fn rules_of(d: &Value) -> Vec<String> {
+    d["risk"]["findings"].as_array().unwrap().iter().map(|f| f["rule"].as_str().unwrap().to_owned()).collect()
+}
+
+#[test]
+fn own_choice_swap_builds_decodes_and_signs() {
+    let c = choice_route("m-inj-usdt");
+    let me = c["api"]["recipient"].as_str().unwrap();
+    let swap = |from: &str, value: &str| evm_params("eip155:1776", from, c["to"].as_str().unwrap(), value, json!({ "type": "swap", "data": c["data"] }));
+    let request = ok("build_evm", swap(me, c["value"].as_str().unwrap()))["request"].clone();
+    assert_eq!(request["evm_transaction"]["tx"]["data"], c["data"]);
+    let d = ok("decode", json!({ "request": request }));
+    let call = &d["display"]["call"];
+    assert_eq!(call["type"], "swap");
+    assert_eq!(call["executor"], "aggregator");
+    assert_eq!(call["token_in"], "0x0000000000000000000000000000000000000000");
+    assert_eq!(call["token_out"], "0x88f7F2b685F9692caf8c478f5BADF09eE9B1Cc13");
+    assert_eq!(call["minimum_out"], "8145811");
+    assert_eq!(call["recipient"], me);
+    assert_eq!(call["venues"][0]["venue"], "Solidly");
+    assert_eq!(d["risk"]["level"], "info");
+    assert_eq!(rules_of(&d), ["swap"]);
+    assert!(approve_and_sign(&request, account(0))["raw"].is_string());
+
+    // Refused: paying someone else, INJ that doesn't match, a contract that isn't Choice's,
+    // and calldata that isn't a swap.
+    assert_eq!(code("build_evm", swap("0x9d8A62f656a8d1615C1294fd71e9CFb3E4855A4F", c["value"].as_str().unwrap())), "bad_request");
+    assert_eq!(code("build_evm", swap(me, "1")), "bad_request");
+    let elsewhere = evm_params("eip155:1776", me, "0x4444444444444444444444444444444444444444", "0", json!({ "type": "swap", "data": c["data"] }));
+    assert_eq!(code("build_evm", elsewhere), "bad_request");
+    let junk = evm_params("eip155:1776", me, c["to"].as_str().unwrap(), "0", json!({ "type": "swap", "data": "0xddab6e8d00" }));
+    assert_eq!(code("build_evm", junk), "bad_request");
+
+    // The router on testnet: an ERC20 in, so no INJ sent.
+    let t = choice_route("t-winj-usdt");
+    let r = ok("build_evm", evm_params("eip155:1439", me, t["to"].as_str().unwrap(), "0", json!({ "type": "swap", "data": t["data"] })))["request"].clone();
+    let d = ok("decode", json!({ "request": r }));
+    assert_eq!(d["display"]["call"]["executor"], "router");
+    assert_eq!(rules_of(&d), ["swap"]);
+}
+
+#[test]
+fn own_swap_approvals_are_exact() {
+    let me = "0x9858EfFD232B4033E47d90003D41EC34EcaEda94";
+    let usdt = "0x88f7F2b685F9692caf8c478f5BADF09eE9B1Cc13";
+    let permit2 = "0x000000000022D473030F116dDEE9F6B43aC78BA3";
+    let aggregator = "0xa705d0D5f549Af25024038dc575E3074B9Bd37c9";
+    // approve(Permit2, 5 USDT) on the token.
+    let r = ok("build_evm", evm_params("eip155:1776", me, usdt, "5000000", json!({ "type": "approve" })))["request"].clone();
+    let d = ok("decode", json!({ "request": r }));
+    assert_eq!(d["display"]["call"], json!({ "type": "approve", "spender": permit2, "amount": "5000000" }));
+    assert_eq!(d["risk"]["findings"][0]["message"], "Permit2 could spend this token up to the amount shown.");
+    assert_eq!(d["risk"]["level"], "amber");
+    assert!(approve_and_sign(&r, account(0))["raw"].is_string());
+    // Permit2.approve(USDT, aggregator, 5 USDT, an hour).
+    let p2 = |to: &str, spender: &str, amount: &str| {
+        evm_params("eip155:1776", me, to, amount, json!({ "type": "permit2_approve", "token": usdt, "spender": spender, "expiration": 1_800_000_000u64 }))
+    };
+    let r = ok("build_evm", p2(permit2, aggregator, "5000000"))["request"].clone();
+    let d = ok("decode", json!({ "request": r }));
+    assert_eq!(d["display"]["call"]["type"], "permit2_approve");
+    assert_eq!(d["display"]["call"]["spender"], aggregator);
+    assert_eq!(rules_of(&d), ["permit2_limited"]);
+    assert!(d["risk"]["findings"][0]["message"].as_str().unwrap().starts_with("Choice's aggregator could spend"));
+    // Never unlimited, never for anyone but Choice's executors, only at Permit2.
+    let unlimited = "1267650600228229401496703205376";
+    assert_eq!(code("build_evm", evm_params("eip155:1776", me, usdt, unlimited, json!({ "type": "approve" }))), "bad_request");
+    assert_eq!(code("build_evm", evm_params("eip155:1776", me, usdt, "0", json!({ "type": "approve" }))), "bad_request");
+    assert_eq!(code("build_evm", p2(permit2, "0x4444444444444444444444444444444444444444", "5")), "bad_request");
+    assert_eq!(code("build_evm", p2(usdt, aggregator, "5")), "bad_request");
+    assert_eq!(code("build_evm", p2(permit2, aggregator, unlimited)), "bad_request");
+}

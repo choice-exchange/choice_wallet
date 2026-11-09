@@ -207,11 +207,114 @@ pub(crate) struct EvmParams {
     /// 0)`). `to` must be the token and `amount` "0".
     #[serde(default)]
     revoke: Option<String>,
+    /// Instead of a transfer: one step of a Choice swap. `amount` is the INJ sent with a
+    /// swap, or the allowance an approval gives.
+    #[serde(default)]
+    call: Option<OwnCall>,
     amount: String,
     nonce: U64,
     gas_limit: U64,
     max_fee_per_gas: String,
     max_priority_fee_per_gas: String,
+}
+
+/// One step of a Choice swap on Injective EVM, as the wallet builds it.
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum OwnCall {
+    /// The swap: calldata from Choice's routing API, sent to its executor (`to`). Built
+    /// only when the vault reads it as a swap that pays the sender, with a minimum, any fee
+    /// to Choice's treasury, and no adapter Choice doesn't trust.
+    Swap { data: String },
+    /// `approve(Permit2, amount)` on the ERC20 at `to`: exactly what one swap spends.
+    Approve,
+    /// `Permit2.approve(token, spender, amount, expiration)` at Permit2 (`to`), for a Choice
+    /// executor.
+    Permit2Approve {
+        token: String,
+        spender: String,
+        expiration: U64,
+    },
+}
+
+fn own_call(
+    entry: &chains::Entry,
+    chain_id: u64,
+    from: &choice_wallet_core::EthAddress,
+    to: choice_wallet_core::EthAddress,
+    amount: U256,
+    call: &OwnCall,
+) -> Result<Eip1559Tx, VaultError> {
+    use choice_wallet_injective::choice;
+    let network = entry
+        .injective
+        .ok_or_else(|| VaultError::new(INVALID, "Choice swaps are Injective only"))?;
+    let c = &network.choice;
+    let parse = |s: &str| {
+        choice_wallet_core::EthAddress::parse_hex(&entry.parse_address(s)?).map_err(|_| VaultError::bad("address"))
+    };
+    let unlimited = U256::from_dec_str("1267650600228229401496703205376")?; // 2^100, the risk rules' "unlimited"
+    match call {
+        OwnCall::Swap { data } => {
+            let data = hex(data.strip_prefix("0x").unwrap_or(data), "data")?;
+            let s = choice::swap(c, &to, amount, &data)
+                .ok_or_else(|| VaultError::bad("that isn't a Choice swap contract on this network"))?
+                .map_err(|e| VaultError::bad(format!("not a swap the wallet can read: {e}")))?;
+            let refuse = |why: &str| Err(VaultError::bad(format!("refused: {why}")));
+            if s.recipient.is_some_and(|r| r != *from) {
+                return refuse("the swap pays someone else");
+            }
+            if s.minimum_out.is_zero() {
+                return refuse("the swap has no minimum");
+            }
+            if s.fee_bps > 0 && s.fee_recipient != Some(c.treasury()) {
+                return refuse("the fee goes somewhere other than Choice's treasury");
+            }
+            if s.venues
+                .iter()
+                .any(|v| matches!(v, choice::Venue::Adapter { adapter } if !c.trusts_adapter(adapter)))
+            {
+                return refuse("the route runs an adapter Choice doesn't trust");
+            }
+            if s.permit.is_some() {
+                return refuse("the wallet approves on chain, not by a signed permit");
+            }
+            let inj = s.token_in == choice_wallet_core::EthAddress::from_bytes([0; 20]);
+            if !amount.is_zero() && !(inj && amount == s.amount_in) {
+                return refuse("the INJ sent doesn't match the swap");
+            }
+            Ok(Eip1559Tx::contract_call(chain_id, to, amount, data))
+        }
+        OwnCall::Approve => {
+            if amount.is_zero() || amount >= unlimited {
+                return Err(VaultError::bad("an approval for a swap is for the exact amount"));
+            }
+            Ok(Eip1559Tx::contract_call(
+                chain_id,
+                to,
+                U256::ZERO,
+                choice_wallet_evm::erc20::approve_calldata(&c.permit2(), &amount),
+            ))
+        }
+        OwnCall::Permit2Approve {
+            token,
+            spender,
+            expiration,
+        } => {
+            let spender = parse(spender)?;
+            if to != c.permit2() || c.executor(&spender).is_none() {
+                return Err(VaultError::bad(
+                    "a Permit2 approval goes to Permit2, for a Choice swap contract",
+                ));
+            }
+            if amount.is_zero() || amount >= unlimited {
+                return Err(VaultError::bad("an approval for a swap is for the exact amount"));
+            }
+            let data = choice::permit2_approve_calldata(&parse(token)?, &spender, amount, expiration.0)
+                .ok_or_else(|| VaultError::bad("amount or expiration out of range for Permit2"))?;
+            Ok(Eip1559Tx::contract_call(chain_id, to, U256::ZERO, data))
+        }
+    }
 }
 
 pub(crate) fn evm(p: EvmParams) -> Result<Value, VaultError> {
@@ -222,17 +325,20 @@ pub(crate) fn evm(p: EvmParams) -> Result<Value, VaultError> {
     };
     let amount = U256::from_dec_str(&p.amount)?;
     let to = address(&p.to)?;
-    let mut tx = match (&p.token, &p.revoke) {
-        (Some(token), Some(spender)) => {
+    let from = address(&p.from)?;
+    let mut tx = match (&p.token, &p.revoke, &p.call) {
+        (None, None, Some(call)) => own_call(entry, chain_id, &from, to, amount, call)?,
+        (_, _, Some(_)) => return Err(VaultError::bad("a call takes no token or revoke")),
+        (Some(token), Some(spender), None) => {
             let token = address(token)?;
             if token != to || !amount.is_zero() {
                 return Err(VaultError::bad("a revoke goes to the token, with amount 0"));
             }
             Eip1559Tx::erc20_revoke(chain_id, token, &address(spender)?)
         }
-        (None, Some(_)) => return Err(VaultError::bad("a revoke needs the token")),
-        (Some(token), None) => Eip1559Tx::erc20_transfer(chain_id, address(token)?, &to, amount)?,
-        (None, None) => Eip1559Tx::native_transfer(chain_id, to, amount)?,
+        (None, Some(_), None) => return Err(VaultError::bad("a revoke needs the token")),
+        (Some(token), None, None) => Eip1559Tx::erc20_transfer(chain_id, address(token)?, &to, amount)?,
+        (None, None, None) => Eip1559Tx::native_transfer(chain_id, to, amount)?,
     };
     tx.nonce = p.nonce.0;
     tx.gas_limit = p.gas_limit.0;
@@ -250,7 +356,7 @@ pub(crate) fn evm(p: EvmParams) -> Result<Value, VaultError> {
             "tx": {
                 "type": "0x2",
                 "chainId": q(u128::from(chain_id)),
-                "from": address(&p.from)?.to_checksum_hex(),
+                "from": from.to_checksum_hex(),
                 "to": tx.to.to_checksum_hex(),
                 "value": tx.value.to_quantity(),
                 "data": format!("0x{}", hexutil::encode(&tx.data)),

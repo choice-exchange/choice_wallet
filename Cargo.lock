@@ -246,6 +246,7 @@ dependencies = [
  "choice-wallet-cosmos",
  "choice-wallet-evm",
  "choice-wallet-injective",
+ "hex",
  "serde",
  "serde_json",
 ]

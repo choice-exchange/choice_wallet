@@ -110,7 +110,8 @@ enum Kind {
     },
     EvmTx {
         r: Box<TxRequest>,
-        injective: bool,
+        /// The Injective network, on Injective EVM.
+        network: Option<&'static choice_wallet_injective::chain::Network>,
     },
     TypedData {
         td: Box<TypedData>,
@@ -144,7 +145,7 @@ impl Checked {
                 };
                 choice_wallet_policy::cosmos(&tx.messages, signer, &tx.memo, fee, ctx)
             }
-            Kind::EvmTx { r, injective } => choice_wallet_policy::evm_transaction(r, *injective, ctx),
+            Kind::EvmTx { r, network } => choice_wallet_policy::evm_transaction(r, *network, ctx),
             Kind::TypedData {
                 td,
                 signer,
@@ -203,7 +204,7 @@ pub(crate) fn decode(req: SignRequest) -> Result<Checked, VaultError> {
                 display,
                 kind: Kind::EvmTx {
                     r: Box::new(r),
-                    injective: entry.injective.is_some(),
+                    network: entry.injective,
                 },
             })
         }
@@ -347,6 +348,89 @@ fn amino_display(kind: &str, entry: &Entry, pk: &PublicKey, tx: &AminoTx) -> Val
     })
 }
 
+/// A contract call the wallet reads: a Choice swap, an ERC20 approval, a Permit2 approval;
+/// otherwise just its selector.
+fn contract_display(entry: &Entry, r: &TxRequest, selector: Option<[u8; 4]>) -> Value {
+    use choice_wallet_evm::abi::{self, Ty};
+    use choice_wallet_injective::choice::{self, Executor, Venue};
+    let tx = &r.tx;
+    let hex_addr = |a: &EthAddress| a.to_checksum_hex();
+    let plain = json!({
+        "type": "contract",
+        "selector": selector.map(|s| format!("0x{}", hexutil::encode(&s))),
+    });
+    let Some(network) = entry.injective else {
+        return plain;
+    };
+    let c = &network.choice;
+    if let Some(read) = choice::swap(c, &tx.to, tx.value, &tx.data) {
+        let Ok(s) = read else {
+            return json!({ "type": "contract", "selector": plain["selector"], "unreadable_swap": true });
+        };
+        let venues: Vec<Value> = s
+            .venues
+            .iter()
+            .filter_map(|v| match v {
+                Venue::Wrap | Venue::Unwrap => None,
+                Venue::Infinity { vault, hops } => Some(json!({
+                    "venue": c.vault_name(vault).unwrap_or("Infinity"),
+                    "contract": hex_addr(vault),
+                    "hops": hops,
+                })),
+                Venue::Solidly { pair } => Some(json!({ "venue": "Solidly", "contract": hex_addr(pair) })),
+                Venue::Orderbook { market } => Some(json!({ "venue": "INJ orderbook", "market": market })),
+                Venue::Adapter { adapter } => Some(json!({ "venue": "Adapter", "contract": hex_addr(adapter) })),
+                Venue::RouterSwap => Some(json!({ "venue": "Choice" })),
+            })
+            .collect();
+        return json!({
+            "type": "swap",
+            "executor": match s.executor { Executor::Aggregator => "aggregator", Executor::UniversalRouter => "router" },
+            "token_in": hex_addr(&s.token_in),
+            "token_out": hex_addr(&s.token_out),
+            "amount_in": s.amount_in.to_string(),
+            "minimum_out": s.minimum_out.to_string(),
+            "recipient": hex_addr(&s.recipient.unwrap_or(r.from)),
+            "deadline": s.deadline.map(|d| d.to_string()),
+            "fee_bps": s.fee_bps,
+            "fee_recipient": s.fee_recipient.as_ref().map(hex_addr),
+            "venues": venues,
+            "permit": s.permit.as_ref().map(|p| json!({
+                "token": hex_addr(&p.token),
+                "spender": hex_addr(&p.spender),
+                "amount": p.amount.to_string(),
+                "expiration": p.expiration,
+            })),
+        });
+    }
+    let args = tx.data.get(4..).unwrap_or_default();
+    match selector {
+        Some(choice_wallet_evm::erc20::APPROVE_SELECTOR) => {
+            if let Ok(v) = abi::decode(&[Ty::Word, Ty::Word], args)
+                && let (Ok(spender), Ok(amount)) = (v[0].address(), v[1].uint())
+            {
+                return json!({ "type": "approve", "spender": hex_addr(&spender), "amount": amount.to_string() });
+            }
+        }
+        Some(choice::PERMIT2_APPROVE) if tx.to == c.permit2() => {
+            if let Ok(v) = abi::decode(&[Ty::Word, Ty::Word, Ty::Word, Ty::Word], args)
+                && let (Ok(token), Ok(spender), Ok(amount), Ok(expiration)) =
+                    (v[0].address(), v[1].address(), v[2].uint_bits(160), v[3].small(48))
+            {
+                return json!({
+                    "type": "permit2_approve",
+                    "token": hex_addr(&token),
+                    "spender": hex_addr(&spender),
+                    "amount": amount.to_string(),
+                    "expiration": expiration,
+                });
+            }
+        }
+        _ => {}
+    }
+    plain
+}
+
 fn evm_tx_display(entry: &Entry, r: &TxRequest) -> Result<Value, VaultError> {
     let tx = &r.tx;
     let max_gas_cost = U256::product(u128::from(tx.gas_limit), tx.max_fee_per_gas);
@@ -357,10 +441,7 @@ fn evm_tx_display(entry: &Entry, r: &TxRequest) -> Result<Value, VaultError> {
             "to": to.to_checksum_hex(),
             "amount": amount.to_string(),
         }),
-        Call::Contract { selector } => json!({
-            "type": "contract",
-            "selector": selector.map(|s| format!("0x{}", hexutil::encode(&s))),
-        }),
+        Call::Contract { selector } => contract_display(entry, r, selector),
     };
     Ok(json!({
         "kind": "evm_transaction",

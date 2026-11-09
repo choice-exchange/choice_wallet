@@ -4,6 +4,8 @@
 //! - [`chain`]: mainnet and testnet, their Cosmos profiles and EVM chain IDs.
 //! - [`adapter`]: CW20 ⇄ bank conversions through the CW20 adapter.
 //! - [`eip712`]: Cosmos transactions signed as EIP-712 v2 typed data by EVM wallets.
+//! - [`choice`]: swaps through Choice's aggregator and router on the EVM side, read from
+//!   their calldata, and the contracts pinned per network.
 //!
 //! How each kind of token moves:
 //!
@@ -23,6 +25,7 @@
 
 pub mod adapter;
 pub mod chain;
+pub mod choice;
 pub mod eip712;
 
 pub use choice_wallet_cosmos::Error;

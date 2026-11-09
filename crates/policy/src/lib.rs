@@ -23,6 +23,7 @@ mod amounts;
 mod cosmos;
 mod evm;
 mod message;
+mod swap;
 mod text;
 mod typed;
 

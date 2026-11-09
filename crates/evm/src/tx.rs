@@ -66,6 +66,12 @@ impl Eip1559Tx {
         )
     }
 
+    /// A call to contract `to` with this calldata and `value` attached. Callers decide what
+    /// calldata is acceptable; the wallet builds its own calls only after reading them.
+    pub fn contract_call(chain_id: u64, to: EthAddress, value: U256, data: Vec<u8>) -> Self {
+        Self::call(chain_id, to, value, data)
+    }
+
     fn call(chain_id: u64, to: EthAddress, value: U256, data: Vec<u8>) -> Self {
         Self {
             chain_id,

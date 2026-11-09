@@ -3,11 +3,15 @@
 
 use choice_wallet_core::EthAddress;
 use choice_wallet_evm::U256;
+use choice_wallet_evm::abi;
 use choice_wallet_evm::request::{Call, TxRequest};
+use choice_wallet_injective::chain::Network;
+use choice_wallet_injective::choice;
 use serde_json::json;
 
 use crate::addresses::{known_contract, recipient};
 use crate::amounts::{Outflows, UNLIMITED, balance};
+use crate::swap;
 use crate::text::short;
 use crate::{Assessment, Context, Finding, Level, finding, site};
 
@@ -212,23 +216,30 @@ fn system_address(to: &EthAddress) -> Option<u8> {
     b[..19].iter().all(|&x| x == 0).then_some(b[19])
 }
 
-/// Grade an EVM transaction. `injective` says the chain is Injective EVM, where the
-/// precompiles exist.
-pub fn evm_transaction(req: &TxRequest, injective: bool, ctx: &Context) -> Assessment {
+/// Grade an EVM transaction. `network` is the Injective network when the chain is
+/// Injective EVM, where the precompiles and Choice's swap contracts exist.
+pub fn evm_transaction(req: &TxRequest, network: Option<&Network>, ctx: &Context) -> Assessment {
     let tx = &req.tx;
     let to = tx.to.to_checksum_hex();
     let mut out = site(ctx);
     let mut outflows = Outflows::default();
-    if !tx.value.is_zero() {
+    let swapped = network.and_then(|n| choice::swap(&n.choice, &tx.to, tx.value, &tx.data));
+    // A swap that pays this account trades value rather than giving it away: its input isn't
+    // counted as leaving. Its findings say what comes back.
+    let to_self = matches!(&swapped, Some(Ok(s)) if swap::to_self(s, &req.from));
+    if !tx.value.is_zero() && !to_self {
         outflows.add("native", tx.value);
     }
-    match tx.call_kind() {
-        Call::Transfer => recipient(ctx, &to, None, &mut out),
-        Call::Erc20Transfer { to: r, amount } => {
-            recipient(ctx, &r.to_checksum_hex(), None, &mut out);
-            outflows.add(&to, amount);
-        }
-        Call::Contract { selector } => contract_call(req, selector, injective, ctx, &mut out),
+    match (&swapped, network) {
+        (Some(read), Some(n)) => swap::swap(&n.choice, &req.from, tx.value, read, &mut out),
+        _ => match tx.call_kind() {
+            Call::Transfer => recipient(ctx, &to, None, &mut out),
+            Call::Erc20Transfer { to: r, amount } => {
+                recipient(ctx, &r.to_checksum_hex(), None, &mut out);
+                outflows.add(&to, amount);
+            }
+            Call::Contract { selector } => contract_call(req, selector, network, ctx, &mut out),
+        },
     }
     outflows.check(ctx, &mut out);
     // The amount plus the most gas could cost, against the native balance.
@@ -246,12 +257,19 @@ pub fn evm_transaction(req: &TxRequest, injective: bool, ctx: &Context) -> Asses
     Assessment::from(out)
 }
 
-fn contract_call(req: &TxRequest, selector: Option<[u8; 4]>, injective: bool, ctx: &Context, out: &mut Vec<Finding>) {
+fn contract_call(
+    req: &TxRequest,
+    selector: Option<[u8; 4]>,
+    network: Option<&Network>,
+    ctx: &Context,
+    out: &mut Vec<Finding>,
+) {
     let tx = &req.tx;
     let data = tx.data.as_slice();
     let to = tx.to.to_checksum_hex();
+    let choice = network.map(|n| &n.choice);
     if let Some(n) = system_address(&tx.to) {
-        out.push(system_call(req, n, selector, injective));
+        out.push(system_call(req, n, selector, network.is_some()));
         return;
     }
     let Some(sel) = selector else {
@@ -266,10 +284,12 @@ fn contract_call(req: &TxRequest, selector: Option<[u8; 4]>, injective: bool, ct
     match sel {
         APPROVE | INCREASE_ALLOWANCE if data.len() == 68 => {
             if let (Some(spender), Some(amount)) = (address_arg(data, 0), uint_arg(data, 1)) {
+                let named = choice.and_then(|c| swap::known_name(c, &spender));
                 out.push(erc20_allowance(
                     ctx,
                     &to,
                     &spender.to_checksum_hex(),
+                    named,
                     amount,
                     sel == APPROVE,
                 ));
@@ -299,14 +319,15 @@ fn contract_call(req: &TxRequest, selector: Option<[u8; 4]>, injective: bool, ct
             }
         }
         PERMIT2_APPROVE if data.len() == 4 + 4 * 32 => {
-            if let (Some(token), Some(spender)) = (address_arg(data, 0), address_arg(data, 1)) {
-                let spender = spender.to_checksum_hex();
-                out.push(finding(
-                    "permit2_allowance",
-                    Level::Red,
-                    format!("{} could spend your tokens through Permit2.", short(&spender)),
-                    json!({ "permit2": to, "token": token.to_checksum_hex(), "spender": spender }),
-                ));
+            let typed = |i: usize, bits: u32| {
+                let w: [u8; 32] = word(data, i)?.try_into().ok()?;
+                abi::Val::Word(w).uint_bits(bits).ok()
+            };
+            if let (Some(token), Some(spender), Some(amount), Some(expiration)) =
+                (address_arg(data, 0), address_arg(data, 1), typed(2, 160), typed(3, 48))
+            {
+                let expiration = expiration.to_u64().expect("48 bits");
+                out.push(swap::permit2_approve(choice, &token, &spender, amount, expiration));
                 return;
             }
         }
@@ -322,8 +343,15 @@ fn contract_call(req: &TxRequest, selector: Option<[u8; 4]>, injective: bool, ct
     }
 }
 
-fn erc20_allowance(ctx: &Context, token: &str, spender: &str, amount: U256, approve: bool) -> Finding {
-    let s = short(spender);
+fn erc20_allowance(
+    ctx: &Context,
+    token: &str,
+    spender: &str,
+    named: Option<&str>,
+    amount: U256,
+    approve: bool,
+) -> Finding {
+    let s = named.map_or_else(|| short(spender), str::to_owned);
     let params = json!({ "token": token, "spender": spender, "amount": amount.to_string() });
     if approve && amount.is_zero() {
         finding(
@@ -458,6 +486,7 @@ mod tests {
     use super::*;
     use choice_wallet_core::secp256k1::keccak256;
     use choice_wallet_evm::{Eip1559Tx, erc20};
+    use choice_wallet_injective::chain::{MAINNET, TESTNET};
 
     #[test]
     fn selectors_match_their_signatures() {
@@ -507,7 +536,7 @@ mod tests {
     }
 
     fn grade(r: &TxRequest) -> Assessment {
-        evm_transaction(r, true, &Context::default())
+        evm_transaction(r, Some(&MAINNET), &Context::default())
     }
 
     fn precompile(n: u8) -> EthAddress {
@@ -563,7 +592,7 @@ mod tests {
         assert_eq!(a.findings[0].message, "Stakes INJ with a validator.");
         assert_eq!(grade(&req(precompile(BANK), vec![0; 4])).level, Level::Amber);
         // Off Injective, a system address is just unusual.
-        let a = evm_transaction(&req(precompile(EXCHANGE), vec![0; 4]), false, &Context::default());
+        let a = evm_transaction(&req(precompile(EXCHANGE), vec![0; 4]), None, &Context::default());
         assert_eq!(a.findings[0].rule, "system_address");
     }
 
@@ -575,12 +604,121 @@ mod tests {
             balances: [("native".to_owned(), "100".to_owned())].into(),
             ..Default::default()
         };
-        let rules: Vec<_> = evm_transaction(&r, true, &ctx)
+        let rules: Vec<_> = evm_transaction(&r, Some(&MAINNET), &ctx)
             .findings
             .iter()
             .map(|f| f.rule)
             .collect();
         // 60 is over half; 60 + 100,000 gas at 1 wei is over the balance.
         assert_eq!(rules, ["most_of_balance", "gas_over_balance"]);
+    }
+
+    fn route(name: &str) -> (EthAddress, U256, Vec<u8>, EthAddress) {
+        let v: serde_json::Value =
+            serde_json::from_str(include_str!("../../injective/tests/choice_routes.json")).unwrap();
+        let c = v["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["name"] == name)
+            .unwrap();
+        let hex = |k: &str| hex::decode(c[k].as_str().unwrap().trim_start_matches("0x")).unwrap();
+        (
+            EthAddress::from_bytes(hex("to").try_into().unwrap()),
+            U256::from_dec_str(c["value"].as_str().unwrap()).unwrap(),
+            hex("data"),
+            EthAddress::parse_hex(c["api"]["recipient"].as_str().unwrap()).unwrap(),
+        )
+    }
+
+    fn rules_of(a: &Assessment) -> Vec<&'static str> {
+        a.findings.iter().map(|f| f.rule).collect()
+    }
+
+    #[test]
+    fn choice_swaps() {
+        let (to, value, data, recipient) = route("m-inj-usdt");
+        let mut r = req(to, data.clone());
+        r.tx.value = value;
+        r.from = recipient;
+        // All of this account's INJ into the swap: it pays this account, so nothing "leaves".
+        let ctx = Context {
+            balances: [("native".to_owned(), value.to_string())].into(),
+            ..Context::default()
+        };
+        let a = evm_transaction(&r, Some(&MAINNET), &ctx);
+        // The gas is on top of a balance the swap takes whole; nothing about the swap itself.
+        assert_eq!(rules_of(&a), ["gas_over_balance", "swap"]);
+        assert_eq!(
+            a.findings[1].params["token_in"],
+            "0x0000000000000000000000000000000000000000"
+        );
+        assert_eq!(a.findings[1].params["minimum_out"], "8145811");
+        // Signed by another account, the same route pays someone else.
+        r.from = EthAddress::from_bytes(FROM);
+        let a = grade(&r);
+        assert_eq!(a.level, Level::Red);
+        assert!(rules_of(&a).contains(&"swap_recipient"));
+        // Testnet has no aggregator there: just a contract.
+        let mut t = req(to, data);
+        t.tx.chain_id = 1439;
+        assert_eq!(
+            rules_of(&evm_transaction(&t, Some(&TESTNET), &Context::default())),
+            ["new_contract"]
+        );
+        // Junk to the aggregator.
+        assert_eq!(
+            rules_of(&grade(&req(to, vec![0xdd, 0xab, 0x6e, 0x8d, 1]))),
+            ["swap_unreadable"]
+        );
+        // The router: value it doesn't use.
+        let (rt, _, rdata, _) = route("t-winj-usdt");
+        let mut rr = req(rt, rdata);
+        rr.tx.chain_id = 1439;
+        rr.tx.value = U256::from_u128(1);
+        let a = evm_transaction(&rr, Some(&TESTNET), &Context::default());
+        assert_eq!(rules_of(&a), ["swap_value", "swap"]);
+    }
+
+    #[test]
+    fn permit2_and_choice_are_named() {
+        let permit2 = MAINNET.choice.permit2();
+        let aggregator = EthAddress::parse_hex(MAINNET.choice.aggregator.unwrap()).unwrap();
+        let token = addr_word([0x11; 20]);
+        let small = U256::from_u128(5_000_000).to_be_bytes();
+        let soon = U256::from_u128(1_800_000_000).to_be_bytes();
+        let p2 = |amount: [u8; 32], exp: [u8; 32]| {
+            req(
+                permit2,
+                call(
+                    PERMIT2_APPROVE,
+                    &[token, addr_word(*aggregator.as_bytes()), amount, exp],
+                ),
+            )
+        };
+        let a = grade(&p2(small, soon));
+        assert_eq!((a.level, a.findings[0].rule), (Level::Amber, "permit2_limited"));
+        assert!(
+            a.findings[0]
+                .message
+                .starts_with("Choice's aggregator could spend this token through Permit2"),
+            "{}",
+            a.findings[0].message
+        );
+        let mut max160 = [0u8; 32];
+        max160[12..].fill(0xff);
+        assert_eq!(grade(&p2(max160, soon)).level, Level::Red);
+        assert_eq!(grade(&p2([0; 32], soon)).findings[0].rule, "allowance_revoke");
+        // Out of range for uint160: not read as an approval at all.
+        assert!(rules_of(&grade(&p2([0xff; 32], soon))).contains(&"new_contract"));
+        // An ERC20 approval to Permit2 names it.
+        let a = grade(&req(
+            EthAddress::from_bytes([0x11; 20]),
+            call(APPROVE, &[addr_word(*permit2.as_bytes()), small]),
+        ));
+        assert_eq!(
+            a.findings[0].message,
+            "Permit2 could spend this token up to the amount shown."
+        );
     }
 }

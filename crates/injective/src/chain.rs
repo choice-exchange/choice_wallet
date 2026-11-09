@@ -39,6 +39,8 @@ pub struct Network {
     /// EIP-712 domain chain IDs the chain accepts for Cosmos txs signed as typed data. Besides
     /// its own EVM chain ID it accepts Ethereum's, so MetaMask needn't switch networks.
     pub eip712_chain_ids: &'static [u64],
+    /// Choice's swap contracts on the EVM side.
+    pub choice: crate::choice::Choice,
 }
 
 impl Network {
@@ -54,6 +56,7 @@ pub const MAINNET: Network = Network {
     evm_chain_id: 1776,
     cw20_adapter: Some("inj14ejqjyq8um4p3xfqj74yld5waqljf88f9eneuk"),
     eip712_chain_ids: &[1776, 1],
+    choice: crate::choice::MAINNET,
 };
 
 /// Injective testnet. Its adapter (Injective's, label "Cw20Adapter") was checked with a
@@ -63,6 +66,7 @@ pub const TESTNET: Network = Network {
     evm_chain_id: 1439,
     cw20_adapter: Some("inj1hdvy6tl89llqy3ze8lv6mz5qh66sx9enn0jxg6"),
     eip712_chain_ids: &[1439, 11155111],
+    choice: crate::choice::TESTNET,
 };
 
 /// Every Injective network the wallet knows.
