@@ -540,6 +540,102 @@ try {
     if (tx.tx.body.memo !== MEMO) throw new Error("the chain has another memo");
     if (got !== BigInt(Math.round(Number(amount) * 1e6)) * 10n ** 12n) throw new Error("the recipient got the wrong amount");
     console.log("LIVE CONTACTS OK");
+  } else if (tokenContract === "swap") {
+    // 3a. A swap through Choice on testnet, where only its router runs (Choice's own pools,
+    // an ERC20 at both ends): a site wraps 0.01 INJ into wINJ through the wallet; testnet
+    // USDT is added by contract; `amount` wINJ is swapped for USDT through the exact
+    // approvals and the swap. The chain is asked after: wINJ down by exactly the amount,
+    // USDT up by at least the minimum shown, and both allowances used up.
+    const WINJ = "0x0000000088827d2d103ee2d9A6b781773AE03FfB";
+    const USDT_T = "0xaDC7bcB5d8fe053Ef19b4E0C861c262Af6e0db60";
+    const PERMIT2 = "0x000000000022D473030F116dDEE9F6B43aC78BA3";
+    const ROUTER = "0x6F82761E0103846E4F4588DB5B7A5505A2907B04";
+    const pad = (a) => a.slice(2).toLowerCase().padStart(64, "0");
+    const balanceOf = async (token, who) => BigInt(await evmRpc("eth_call", [{ to: token, data: `0x70a08231${pad(who)}` }, "latest"]));
+    const { server, onSite, approve, ask, reply } = await startSite();
+    let me;
+    try {
+      await ask("eth_requestAccounts");
+      await approve("wants to connect", "Connect", "live-w1-connect");
+      [me] = await reply();
+      const wrapped = await balanceOf(WINJ, me);
+      await ask("eth_sendTransaction", [{ from: me, to: WINJ, value: `0x${(10n ** 16n).toString(16)}`, data: "0xd0e30db0" }]);
+      await approve("Estimated on", "Confirm", "live-w2-wrap");
+      const wrapHash = await reply();
+      for (let n = 0; (await balanceOf(WINJ, me)) === wrapped; n += 1000) {
+        if (n > 60000) throw new Error(`the wrap ${wrapHash} didn't land`);
+        await sleep(1000);
+      }
+      console.log("wrapped 0.01 INJ into wINJ:", wrapHash);
+    } finally {
+      server.close();
+    }
+    const amountIn = BigInt(Math.round(Number(amount) * 1e6)) * 10n ** 12n;
+    const before = { winj: await balanceOf(WINJ, me), usdt: await balanceOf(USDT_T, me) };
+
+    await click("Manage");
+    await click("Add a token by contract");
+    await fill('input[aria-label="Token contract"]', 0, USDT_T);
+    await click("Add");
+    // The form closes once the token is added.
+    for (let n = 0; await evalIn(`!!document.querySelector('input[aria-label="Token contract"]')`); n += 300) {
+      if (n > 30000) throw new Error(`adding testnet USDT didn't finish: ${await text()}`);
+      await sleep(300);
+    }
+    await click("Back");
+    await waitText("Manage", 20000);
+    // A token row by any of its names (testnet USDT has two bank denoms paired with it).
+    const pick = async (...names) => {
+      const want = JSON.stringify(names.map((x) => x.toLowerCase()));
+      for (let n = 0; n < 30000; n += 300) {
+        const hit = await evalIn(`(() => { const e = [...document.querySelectorAll(".token")].find((b) => ${want}.some((w) => (b.title || "").toLowerCase().includes(w))); if (e) e.click(); return !!e; })()`);
+        if (hit) return;
+        await sleep(300);
+      }
+      throw new Error(`no token row for ${address}`);
+    };
+    await click("Swap");
+    await waitText("YOU PAY");
+    await click("Choose the token to pay");
+    await pick(WINJ);
+    await click("Choose the token to get");
+    await pick(USDT_T, "peggy0x87aB3B4C8661e07D6372361211B96ed4Dc36B1B5");
+    await fill('input[aria-label="Amount to pay"]', 0, amount);
+    await waitText("At least", 30000);
+    const shownMin = (await text()).split("\n")[(await text()).split("\n").indexOf("At least") + 1] ?? "";
+    await shot("live-w3-quote");
+    const minimum = BigInt(Math.round(Number(shownMin.split(" ")[0]) * 1e6));
+    console.log("quote: at least", shownMin);
+    await evalIn(`[...document.querySelectorAll("button")].find((b) => b.textContent.startsWith("Review"))?.click()`);
+    for (let step = 1; ; step++) {
+      // The review's own cards, not the swap screen's "Review swap" button.
+      for (let n = 0; !/YOU ALLOW|YOU SWAP/.test(await text()); n += 300) {
+        if (n > 30000) throw new Error(`no review for step ${step}: ${await text()}`);
+        await sleep(300);
+      }
+      const t = await text();
+      if (!t.includes("Injective (EVM)") && !t.includes("Injective testnet (EVM)")) throw new Error("the review isn't for the EVM side");
+      await shot(`live-w4-step${step}`);
+      const swapping = t.includes("Review swap");
+      console.log(`step ${step}:`, swapping ? "swap" : t.includes("TO TAKE THROUGH PERMIT2") ? "Permit2 approval" : "token approval");
+      await click(swapping ? "Confirm swap" : "Approve");
+      for (let n = 0; !(await text()).includes("It's in a block."); n += 500) {
+        if (n > 90000 || /Failed|Not confirmed yet/.test(await text())) throw new Error(`step ${step} didn't land: ${await text()}`);
+        await sleep(500);
+      }
+      if (swapping) break;
+      await click("Next step");
+    }
+    await shot("live-w5-swapped");
+    const after = { winj: await balanceOf(WINJ, me), usdt: await balanceOf(USDT_T, me) };
+    const left = BigInt(await evmRpc("eth_call", [{ to: WINJ, data: `0xdd62ed3e${pad(me)}${pad(PERMIT2)}` }, "latest"]));
+    const p2 = await evmRpc("eth_call", [{ to: PERMIT2, data: `0x927da105${pad(me)}${pad(WINJ)}${pad(ROUTER)}` }, "latest"]);
+    const p2left = BigInt(`0x${p2.slice(2, 66)}`);
+    console.log(`wINJ -${before.winj - after.winj} (asked ${amountIn}); USDT +${after.usdt - before.usdt} (at least ${minimum} shown); allowance to Permit2 now ${left}; Permit2 allowance to the router now ${p2left}`);
+    if (before.winj - after.winj !== amountIn) throw new Error("wINJ moved by another amount");
+    if (after.usdt - before.usdt < minimum || after.usdt === before.usdt) throw new Error("less USDT arrived than the minimum shown");
+    if (left !== 0n || p2left !== 0n) throw new Error("an allowance is left over");
+    console.log("LIVE SWAP OK");
   } else if (tokenContract === "activity") {
     // 3a. Activity, read back from testnet's own endpoints and Blockscout.
     await click("Activity");
