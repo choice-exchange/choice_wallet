@@ -41,12 +41,16 @@ export type SwapLine = {
 /** An allowance a swap needs first, for its amount. */
 export type ApprovalLine = { token: string; spender: string; amount: string; via: "token" | "permit2"; until?: number };
 
+/** Coins the signer moves from one of its trading accounts back to its balance. */
+export type MoveLine = { nonce: number; coin: Coin };
+
 /** One NFT the signer gives away. */
 export type NftLine = { collection: string; tokenId: string; to: string };
 
 export type Shown = {
   sends: { coins: Coin[]; to: string }[];
   nfts: NftLine[];
+  moves: MoveLine[];
   swaps: SwapLine[];
   approvals: ApprovalLine[];
   converts: Conversion[];
@@ -80,7 +84,7 @@ export function shown(display: SendReview["display"], network: NetworkId, swap?:
   const net = NETWORKS[network];
   if (display.kind === "evm_transaction") {
     const d = display as EvmDisplay;
-    const base = { fee: [{ denom: net.feeDenom, amount: d.max_gas_cost }], memo: "", evm: true, converts: [], stakes: [], revokes: [], swaps: [], approvals: [], nfts: [] };
+    const base = { fee: [{ denom: net.feeDenom, amount: d.max_gas_cost }], memo: "", evm: true, converts: [], stakes: [], revokes: [], swaps: [], approvals: [], nfts: [], moves: [] };
     // An address as a wallet key: INJ, or the swap's own tokens, or an EVM token.
     const key = (a: string, side?: "from" | "to") => {
       if (a.toLowerCase() === NATIVE) return net.feeDenom;
@@ -125,7 +129,7 @@ export function shown(display: SendReview["display"], network: NetworkId, swap?:
     return { ...base, sends: [], others: [`Contract call to ${d.to}`] };
   }
   const c = display as CosmosDisplay;
-  const out: Shown = { sends: [], nfts: [], swaps: [], approvals: [], converts: [], stakes: [], revokes: [], others: [], fee: c.fee.amount, memo: c.memo, evm: false };
+  const out: Shown = { sends: [], nfts: [], moves: [], swaps: [], approvals: [], converts: [], stakes: [], revokes: [], others: [], fee: c.fee.amount, memo: c.memo, evm: false };
   for (const msg of c.messages) {
     const m = msg as Record<string, unknown>;
     const kind = STAKE_KINDS[String(m["type"])];
@@ -140,6 +144,12 @@ export function shown(display: SendReview["display"], network: NetworkId, swap?:
     }
     if (m["type"] === "set_withdraw_address" && m["delegator"] === c.signer && m["withdraw_address"] === c.signer) {
       out.revokes.push({ kind: "rewards" });
+      continue;
+    }
+    const sub = text(m["subaccount_id"]);
+    const [moved] = coins([m["amount"]]);
+    if (m["type"] === "exchange_withdraw" && m["sender"] === c.signer && sub && /^0x[0-9a-f]{64}$/.test(sub) && moved) {
+      out.moves.push({ nonce: parseInt(sub.slice(42), 16), coin: moved });
       continue;
     }
     if (m["type"] === "fee_grant" && m["granter"] === c.signer && text(m["grantee"])) {

@@ -70,6 +70,8 @@ pub(crate) enum OwnMsg {
         to: String,
         amount: Coin,
     },
+    /// Injective: `amount` from the signer's trading subaccount back to its balance.
+    ExchangeWithdraw { subaccount_id: String, amount: Coin },
     /// A fee allowance for `grantee`: up to `spend_limit`, for `allowed_messages` only.
     FeeGrant {
         grantee: String,
@@ -183,6 +185,9 @@ pub(crate) fn cosmos(p: CosmosParams) -> Result<Value, VaultError> {
             OwnMsg::SetWithdrawAddress { to } => builder::set_withdraw_address(chain, &from, &addr(&to)?)?,
             OwnMsg::TransferDelegation { validator, to, amount } => {
                 builder::transfer_delegation(chain, &from, &validator, &addr(&to)?, &amount)?
+            }
+            OwnMsg::ExchangeWithdraw { subaccount_id, amount } => {
+                builder::exchange_withdraw(chain, &from, &subaccount_id, &amount)?
             }
             OwnMsg::FeeGrant {
                 grantee,

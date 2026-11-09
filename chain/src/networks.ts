@@ -37,6 +37,8 @@ export interface Network {
     universalRouter: string;
     permit2: string;
     wrappedInj: string;
+    /** Choice's CLMM position manager (CosmWasm): each position is an NFT it issues. */
+    clmmManager: string;
   };
 }
 
@@ -72,6 +74,8 @@ export const NETWORKS: Readonly<Record<NetworkId, Network>> = {
       universalRouter: "0xDF242D1937Cfaf2F3f5245CFBd5A8F2012cda856",
       permit2: "0x000000000022D473030F116dDEE9F6B43aC78BA3",
       wrappedInj: "0x0000000088827d2d103ee2d9A6b781773AE03FfB",
+      // "Choice CLMM Manager", code 2041 (checked 2026-11-09).
+      clmmManager: "inj1eag2kjzs5ma5sflxvlhaacdxxpvdjg4ny7yg3g",
     },
   },
   testnet: {
@@ -95,6 +99,8 @@ export const NETWORKS: Readonly<Record<NetworkId, Network>> = {
       universalRouter: "0x6F82761E0103846E4F4588DB5B7A5505A2907B04",
       permit2: "0x000000000022D473030F116dDEE9F6B43aC78BA3",
       wrappedInj: "0x0000000088827d2d103ee2d9A6b781773AE03FfB",
+      // "Choice CLMM Manager", code 39613, as Choice's testnet app uses it (2026-11-09).
+      clmmManager: "inj1srtw4f8yzf4dvnmqr02n7qhpt2px0zf0v9lz5e",
     },
   },
 };

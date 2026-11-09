@@ -421,6 +421,35 @@ fn message(
                 ));
             }
         }
+        Msg::ExchangeWithdraw {
+            sender,
+            subaccount_id,
+            amount,
+        } => {
+            // `0x` + the owner's address + a 12-byte nonce.
+            let owner = format!("0x{}", subaccount_id.get(2..42).unwrap_or(""));
+            let nonce = u128::from_str_radix(subaccount_id.get(42..).unwrap_or(""), 16).unwrap_or(0);
+            // The review shows the amount in the token's units; the sentence names the token.
+            let what = ctx.token_name(amount.denom());
+            out.push(if same(sender, &owner) {
+                finding(
+                    "exchange_withdraw",
+                    Level::Info,
+                    format!("Moves {what} from trading account {nonce} to this account's balance."),
+                    json!({ "subaccount_id": subaccount_id, "amount": amount }),
+                )
+            } else {
+                finding(
+                    "exchange_withdraw_other",
+                    Level::Amber,
+                    format!(
+                        "Moves {what} out of another account's trading account {}.",
+                        short(&owner)
+                    ),
+                    json!({ "subaccount_id": subaccount_id, "amount": amount }),
+                )
+            });
+        }
         Msg::WasmClearAdmin { contract, .. } => out.push(finding(
             "contract_admin",
             Level::Red,

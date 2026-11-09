@@ -168,6 +168,13 @@ export class Lcd {
     return { symbol: String(m["symbol"] ?? ""), name: String(m["name"] ?? ""), decimals };
   }
 
+  /** Any read the client has no method for: the body, or the chain's error as a
+   *  `ChainError`. */
+  async get(path: string): Promise<unknown> {
+    if (!path.startsWith("/")) throw new RangeError("path");
+    return this.#call(path);
+  }
+
   /** A contract's answer to a smart query; null when the contract refuses it (not that
    *  kind of contract, or no contract there). */
   async smart(contract: string, query: unknown): Promise<unknown> {

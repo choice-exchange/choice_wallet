@@ -22,6 +22,7 @@ export {
 export { explorerTxUrl, isNetworkId, MIN_GAS_PRICE, NETWORKS, type Network, type NetworkId } from "./networks.ts";
 export { ChainError, Down, isObject, Pool, Unreachable, type Fetch } from "./pool.ts";
 export { CHOICE_PRICES, CLIENT, fetchPrices, priceAddress, usdValue, type PriceList } from "./prices.ts";
+export { clmmAmounts, clmmPositions, decFloor, subaccountId, subaccounts, SUBACCOUNTS, xykPositions, type ClmmPosition, type Deposit, type Position, type Subaccount, type XykPosition } from "./inventory.ts";
 export { cw721Collections, cw721Info, cw721Tokens, CW721_PAGE, erc721Collections, isTokenId, MAX_PER_COLLECTION, type Nft, type NftCollection, type NftStandard } from "./nfts.ts";
 export { grantedMsg, type AuthzGrant, type Cw20Allowance, type FeeGrant } from "./grants.ts";
 export { floorDecimal, type Delegation, type Unbonding, type Validator } from "./staking.ts";

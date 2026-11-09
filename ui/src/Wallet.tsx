@@ -13,6 +13,7 @@ import { useBackend } from "./backend";
 import { ActivityIcon, CheckIcon, ChevronDownIcon, ChevronRightIcon, CopyIcon, EyeOffIcon, LockIcon, ReceiveIcon, SendIcon, SettingsIcon, SwapIcon, WalletIcon } from "./icons";
 import { BackBar, Callout, formatUsd, Screen, Segmented, shortAddress, tokenSub } from "./kit";
 import { NftsView, NftView } from "./Nfts";
+import { InventoryScreen } from "./Inventory";
 import { RescueView } from "./Rescue";
 import type { Balance, Nft, NftCollection, SendReview, Sent, StakingSummary, Status, TokenFilter } from "./protocol";
 import { newDraft, SwapView, type SwapDraft } from "./Swap";
@@ -42,6 +43,7 @@ type View =
   | { name: "staking" }
   | { name: "approvals" }
   | { name: "rescue" }
+  | { name: "inventory" }
   | { name: "contacts"; prefill?: Draft }
   | { name: "nfts" }
   | { name: "nft"; collection: NftCollection; nft: Nft }
@@ -235,6 +237,8 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
           onBack={home}
         />
       );
+    case "inventory":
+      return <InventoryScreen canSign={!watch} onReview={(review) => setView({ name: "review", review, entered: "", back: { name: "inventory" } })} onBack={() => setView({ name: "home" })} />;
     case "rescue":
       return <RescueView status={status} onReview={(review) => setView({ name: "review", review, entered: "", back: { name: "rescue" } })} onBack={() => setView({ name: "home" })} />;
     case "approvals":
@@ -261,7 +265,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
               name: "sent",
               sent,
               converting: back.name === "convert",
-              ...(back.name === "staking" || back.name === "approvals" || back.name === "rescue" ? { done: "Confirmed" } : {}),
+              ...(back.name === "staking" || back.name === "approvals" || back.name === "rescue" || back.name === "inventory" ? { done: "Confirmed" } : {}),
               ...(step ? { done: step.step === "swap" ? "Swapped" : "Approved" } : {}),
               ...(step && step.left > 0 && view.quote ? { next: view.quote } : {}),
               ...(save ? { save } : {}),
@@ -450,8 +454,18 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
             </>
           )}
           <div className="section-head">
-            <span className="eyebrow">Collectibles</span>
+            <span className="eyebrow">More</span>
           </div>
+          <button className="token" onClick={() => setView({ name: "inventory" })}>
+            <span className="nft-tile small" aria-hidden="true">
+              LP
+            </span>
+            <span className="name">
+              <span className="symbol">Trading and liquidity</span>
+              <span className="sub">Orderbook accounts, Choice pools</span>
+            </span>
+            <ChevronRightIcon size={16} />
+          </button>
           <button className="token" onClick={() => setView({ name: "nfts" })}>
             <span className="nft-tile small" aria-hidden="true">
               NFT

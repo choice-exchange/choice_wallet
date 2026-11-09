@@ -322,7 +322,7 @@ export function Review({
     <Screen
       top={
         <BackBar
-          title={review.rescue ? "Review rescue" : gasGrant ? "Review gas" : swapping ? "Review swap" : approving ? "Review approval" : revoking ? "Review revoke" : staking ? "Review staking" : converting ? "Review conversion" : "Review send"}
+          title={review.rescue ? "Review rescue" : gasGrant ? "Review gas" : view.moves.length > 0 ? "Review move" : swapping ? "Review swap" : approving ? "Review approval" : revoking ? "Review revoke" : staking ? "Review staking" : converting ? "Review conversion" : "Review send"}
           onBack={onCancel}
         />
       }
@@ -345,7 +345,7 @@ export function Review({
                 ? busy
                   ? "Sending…"
                   : "Approve"
-                : staking || revoking
+                : staking || revoking || view.moves.length > 0
                   ? busy
                     ? "Sending…"
                     : "Confirm"
@@ -406,6 +406,17 @@ export function Review({
           )}
         </div>
       ))}
+      {view.moves.length > 0 && (
+        <div className="surface-hero">
+          <div className="eyebrow">You move to your balance</div>
+          {view.moves.map((mv, i) => (
+            <Figure key={i} coin={mv.coin} t={tokens[mv.coin.denom]} />
+          ))}
+          <hr className="divider" style={{ margin: "14px 0 12px" }} />
+          <div className="eyebrow">From</div>
+          <div style={{ marginTop: 6 }}>{[...new Set(view.moves.map((mv) => (mv.nonce === 0 ? "Your default trading account" : `Trading account ${mv.nonce}`)))].join(", ")}</div>
+        </div>
+      )}
       {view.nfts.map((n, i) => (
         <div className="surface-hero" key={`n${i}`}>
           <div className="eyebrow">You send an NFT</div>

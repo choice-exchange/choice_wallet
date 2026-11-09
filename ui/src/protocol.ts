@@ -120,6 +120,9 @@ export type UiRequest =
   | { type: "set_rescue"; address: string | null }
   | { type: "prepare_rescue_grant" }
   | { type: "prepare_rescue" }
+  /** Trading accounts and liquidity; a trading account's free coins back to the balance. */
+  | { type: "inventory" }
+  | { type: "prepare_subaccount_withdraw"; nonce: number }
   /** NFTs the account holds; a collection added by its contract; one NFT sent. */
   | { type: "nfts" }
   | { type: "add_nft_collection"; address: string }
@@ -280,6 +283,33 @@ export type SendReview = {
   nft?: { collection: string; tokenId: string; standard: NftStandard };
   /** A rescue: where everything goes, and how many messages didn't fit (run it again). */
   rescue?: { to: string; rest: number };
+};
+
+/** What the account holds beyond its balance: trading accounts (orderbook subaccounts),
+ *  Choice XYK shares and CLMM positions. Amounts in base units; `tokens` names them. */
+export type InventoryView = {
+  subaccounts: {
+    id: string;
+    nonce: number;
+    deposits: { denom: string; available: string; total: string }[];
+    positions: { marketId: string; long: boolean; quantity: string; entryPrice: string; margin: string }[];
+  }[];
+  xyk: { pool: string; share: string; amount: string; totalShare: string; assets: Coin[] }[];
+  clmm: {
+    id: string;
+    pool: string;
+    token0: string;
+    token1: string;
+    tickLower: number;
+    tickUpper: number;
+    liquidity: string;
+    inRange: boolean;
+    amount0: string;
+    amount1: string;
+    owed0: string;
+    owed1: string;
+  }[];
+  tokens: Record<string, TokenInfo>;
 };
 
 /** The rescue address set for the account in use, its name if it is one of the wallet's
@@ -539,6 +569,8 @@ export type Replies = {
   approvals: ApprovalsSummary;
   prepare_revoke: SendReview;
   prepare_revoke_erc20: SendReview;
+  inventory: InventoryView;
+  prepare_subaccount_withdraw: SendReview;
   rescue: RescueSummary;
   set_rescue: RescueSummary;
   prepare_rescue_grant: SendReview;

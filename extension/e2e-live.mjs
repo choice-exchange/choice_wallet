@@ -561,6 +561,31 @@ try {
     if (tx.tx.body.memo !== MEMO) throw new Error("the chain has another memo");
     if (got !== BigInt(Math.round(Number(amount) * 1e6)) * 10n ** 12n) throw new Error("the recipient got the wrong amount");
     console.log("LIVE CONTACTS OK");
+  } else if (tokenContract === "inventory") {
+    // 3a. Trading accounts: whatever is free in the account's orderbook trading accounts is
+    // listed and moved back to the balance, checked on chain. Put some in first (a dev
+    // script's MsgDeposit to trading account 1). `recipient` and `amount` are ignored.
+    const me = await evalIn(`document.querySelector("[aria-label='Copy address']").title`);
+    await evalIn(`[...document.querySelectorAll("button.token")].find((b) => b.textContent.includes("Trading and liquidity")).click()`);
+    await waitText("Trading account", 60000);
+    await shot("live-i1-inventory");
+    const sub = await evalIn(`[...document.querySelectorAll(".well .mono")].map((e) => e.title).find((t) => /^0x[0-9a-f]{64}$/.test(t)) ?? ""`);
+    const deposits = async () => (await lcd(`/injective/exchange/v2/exchange/subaccountDeposits?subaccount_id=${sub}`)).deposits ?? {};
+    const before = { deposits: await deposits(), inj: await injOf(me) };
+    console.log(`trading account ${sub}: ${JSON.stringify(before.deposits)}`);
+    await click("Move to wallet");
+    await waitText("Review move", 30000);
+    if (!(await text()).includes("Injective testnet")) throw new Error("the review is not for Injective testnet; stopping");
+    await shot("live-i2-review-move");
+    await evalIn(`[...document.querySelectorAll("button")].find((b) => /^Confirm/.test(b.textContent.trim()) && !b.disabled).click()`);
+    const hash = await landed();
+    const { tx, fee } = await cosmosTx(hash);
+    const after = { deposits: await deposits(), inj: await injOf(me) };
+    const freed = BigInt((before.deposits.inj?.available_balance ?? "0").split(".")[0]);
+    console.log(`move tx ${hash}: ${tx.tx.body.messages.map((m) => m["@type"]).join(", ")}; trading account now ${JSON.stringify(after.deposits)}; balance ${after.inj - before.inj} inj (moved ${freed}, fee ${fee})`);
+    if (Object.values(after.deposits).some((d) => BigInt(String(d.available_balance).split(".")[0]) > 0n)) throw new Error("free coins were left in the trading account");
+    if (after.inj - before.inj !== freed - fee) throw new Error("the balance didn't get exactly what left the trading account");
+    console.log("LIVE INVENTORY OK");
   } else if (tokenContract === "rescue") {
     // 3a. The rescue address. A second account of the same phrase is the rescue address; all
     // of this account's INJ goes there first, so a rescue has to run on gas the rescue

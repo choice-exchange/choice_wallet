@@ -288,6 +288,30 @@ pub fn fee_grant(
     }))
 }
 
+/// Injective: move `amount` from the signer's trading subaccount `subaccount_id` to its bank
+/// balance (exchange `MsgWithdraw`). Only the signer's own subaccounts.
+pub fn exchange_withdraw(chain: &Chain, from: &str, subaccount_id: &str, amount: &Coin) -> Result<Any, Error> {
+    chain.check_address(from)?;
+    check_amount(amount.amount())?;
+    let own = choice_wallet_core::address::decode_bech32(from, chain.bech32_prefix)
+        .ok()
+        .is_some_and(|b| {
+            b.len() == 20 && subaccount_id.get(2..42) == Some(choice_wallet_core::hexutil::encode(&b).as_str())
+        });
+    if !crate::msg::is_subaccount_id(subaccount_id) || !own {
+        return Err(Error::Decode("subaccount_id"));
+    }
+    Ok(Any {
+        type_url: crate::msg::EXCHANGE_WITHDRAW.into(),
+        value: crate::msg::ExchangeMsgWithdraw {
+            sender: from.into(),
+            subaccount_id: subaccount_id.into(),
+            amount: Some(amount.to_proto()),
+        }
+        .encode_to_vec(),
+    })
+}
+
 /// CW20 `decrease_allowance` of `spender` by `amount` on the token at `cw20`.
 pub fn cw20_decrease_allowance(
     chain: &Chain,

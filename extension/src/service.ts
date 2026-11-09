@@ -16,6 +16,7 @@ import { DEFAULT_FILTER } from "@choice-wallet/ui/token-filter";
 import { createDapps, type DappReply } from "./dapp";
 import { createSender } from "./send";
 import { createApprovals } from "./approvals";
+import { createInventory } from "./inventory";
 import { createNfts } from "./nfts";
 import { createRescue } from "./rescue";
 import { createContacts } from "./contacts";
@@ -159,6 +160,7 @@ export function createService(d: Deps) {
   });
   const status = wallets.status;
   const nfts = createNfts({ sender, local: d.local, vault: d.vault });
+  const inventory = createInventory({ sender });
   const rescue = createRescue({ sender, local: d.local, vault: d.vault, accounts: async () => (await wallets.stored()).accounts });
   const contacts = createContacts({
     vault: d.vault,
@@ -380,6 +382,8 @@ export function createService(d: Deps) {
       case "prepare_swap":
       case "prepare_revoke":
       case "prepare_revoke_erc20":
+      case "inventory":
+      case "prepare_subaccount_withdraw":
       case "rescue":
       case "set_rescue":
       case "prepare_rescue_grant":
@@ -392,7 +396,7 @@ export function createService(d: Deps) {
       case "tx_status": {
         const a = await active();
         if ("ok" in a) return a;
-        if ((r.type === "prepare_send" || r.type === "prepare_convert" || r.type === "prepare_stake" || r.type === "prepare_revoke" || r.type === "prepare_revoke_erc20" || r.type === "prepare_swap" || r.type === "prepare_nft_send" || r.type === "prepare_rescue" || r.type === "prepare_rescue_grant") && isWatch(a.account)) {
+        if ((r.type === "prepare_send" || r.type === "prepare_convert" || r.type === "prepare_stake" || r.type === "prepare_revoke" || r.type === "prepare_revoke_erc20" || r.type === "prepare_swap" || r.type === "prepare_nft_send" || r.type === "prepare_rescue" || r.type === "prepare_rescue_grant" || r.type === "prepare_subaccount_withdraw") && isWatch(a.account)) {
           return err("watch_only", "This account is watch-only. Switch to one that can sign.");
         }
         if (r.type === "balances") {
@@ -416,6 +420,8 @@ export function createService(d: Deps) {
         if (r.type === "prepare_swap") return swaps.prepare(a.net, a.account, r.quote);
         if (r.type === "prepare_revoke") return approvals.prepare(a.net, a.account, r.items);
         if (r.type === "prepare_revoke_erc20") return approvals.prepareErc20(a.net, a.account, r.token, r.spender);
+        if (r.type === "inventory") return inventory.summary(a.net, a.account);
+        if (r.type === "prepare_subaccount_withdraw") return inventory.prepareWithdraw(a.net, a.account, r.nonce);
         if (r.type === "rescue") return rescue.summary(a.net, a.account);
         if (r.type === "set_rescue") return rescue.set(a.account, r.address);
         if (r.type === "prepare_rescue_grant") return rescue.prepareGrant(a.net, a.account);

@@ -355,6 +355,17 @@ fn render_msg(m: &Msg) -> Result<Value, Error> {
             insert_nonempty(&mut v, "validator_address", validator);
             Ok(json!({ "type": "cosmos-sdk/MsgTransferDelegation", "value": v }))
         }
+        Msg::ExchangeWithdraw {
+            sender,
+            subaccount_id,
+            amount,
+        } => {
+            let mut v = Map::new();
+            v.insert("amount".into(), coin_json(amount));
+            insert_nonempty(&mut v, "sender", sender);
+            insert_nonempty(&mut v, "subaccount_id", subaccount_id);
+            Ok(json!({ "type": "exchange/MsgWithdraw", "value": v }))
+        }
         Msg::FeeGrant {
             granter,
             grantee,

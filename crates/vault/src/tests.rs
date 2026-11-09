@@ -1218,3 +1218,37 @@ fn rescue_messages_build_decode_and_sign_both_ways() {
         assert!(build_staking(bad.clone(), "direct").is_err(), "{bad}");
     }
 }
+
+#[test]
+fn trading_account_withdrawals_build_decode_and_sign_both_ways() {
+    let accounts = vectors("direct")["accounts"].clone();
+    let me = accounts[0]["eth"].as_str().unwrap().trim_start_matches("0x").to_owned();
+    let other = accounts[1]["eth"].as_str().unwrap().trim_start_matches("0x").to_owned();
+    let sub = |owner: &str, nonce: u32| format!("0x{owner}{nonce:024x}");
+    let usdt = json!({ "denom": "peggy0xdAC17F958D2ee523a2206206994597C13D831ec7", "amount": "2500000" });
+    for mode in ["direct", "amino_json"] {
+        let request = build_staking(
+            json!([{ "type": "exchange_withdraw", "subaccount_id": sub(&me, 1), "amount": usdt }]),
+            mode,
+        )
+        .unwrap()["request"]
+            .clone();
+        let d = ok("decode", json!({ "request": request }));
+        assert_eq!(d["display"]["messages"][0]["type"], "exchange_withdraw", "{mode}");
+        assert_eq!(d["risk"]["findings"][0]["rule"], "exchange_withdraw", "{mode}");
+        assert_eq!(d["risk"]["level"], "info", "{mode}");
+        assert!(
+            d["risk"]["findings"][0]["message"]
+                .as_str()
+                .unwrap()
+                .contains("from trading account 1 to this account's balance"),
+            "{mode}"
+        );
+        assert!(approve_and_sign(&request, account(0))["tx_raw"].is_string(), "{mode}");
+    }
+    // Another account's subaccount, or a malformed ID, isn't built.
+    for bad in [sub(&other, 1), sub(&me, 1).to_uppercase(), format!("0x{me}")] {
+        let r = build_staking(json!([{ "type": "exchange_withdraw", "subaccount_id": bad, "amount": usdt }]), "direct");
+        assert!(r.is_err(), "{bad}");
+    }
+}

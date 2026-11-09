@@ -100,6 +100,31 @@ struct TokenfactoryMsgChangeAdmin {
     new_admin: String,
 }
 
+/// Injective's exchange `MsgWithdraw` (v2): move coins from a trading subaccount back to the
+/// bank balance. Written from the wire format, like the tokenfactory message.
+#[derive(Clone, PartialEq, prost::Message)]
+pub(crate) struct ExchangeMsgWithdraw {
+    #[prost(string, tag = "1")]
+    pub(crate) sender: String,
+    #[prost(string, tag = "2")]
+    pub(crate) subaccount_id: String,
+    #[prost(message, optional, tag = "3")]
+    pub(crate) amount: Option<ProtoCoin>,
+}
+
+/// `/injective.exchange.v2.MsgWithdraw`.
+pub const EXCHANGE_WITHDRAW: &str = "/injective.exchange.v2.MsgWithdraw";
+
+/// A subaccount ID as Injective writes it: `0x`, the owner's 20-byte address, a 12-byte
+/// nonce, lowercase hex.
+pub fn is_subaccount_id(id: &str) -> bool {
+    id.len() == 66
+        && id.starts_with("0x")
+        && id[2..]
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
 /// Decode a list of coins, refusing invalid ones.
 pub(crate) fn coins_from_proto(coins: Vec<ProtoCoin>) -> Result<Vec<Coin>, Error> {
     coins.into_iter().map(Coin::from_proto).collect()
@@ -313,6 +338,15 @@ pub enum Msg {
         /// The coin given.
         amount: Coin,
     },
+    /// Injective's exchange `MsgWithdraw`: coins from a trading subaccount to the bank balance.
+    ExchangeWithdraw {
+        /// The signer.
+        sender: String,
+        /// The subaccount (`0x` + address + nonce).
+        subaccount_id: String,
+        /// The coin moved.
+        amount: Coin,
+    },
     /// The tokenfactory module's `MsgChangeAdmin`: give away a denom's admin rights.
     TokenfactoryChangeAdmin {
         /// Its type URL, e.g. `/injective.tokenfactory.v1beta1.MsgChangeAdmin`.
@@ -490,6 +524,16 @@ impl Msg {
                 receiver: m.receiver_address,
                 amount: one_coin(m.amount, "MsgTransferDelegation.amount")?,
             }
+        } else if t == EXCHANGE_WITHDRAW {
+            let m: ExchangeMsgWithdraw = decode_exact(v, "MsgWithdraw")?;
+            if !is_subaccount_id(&m.subaccount_id) {
+                return Err(Error::Decode("MsgWithdraw.subaccount_id"));
+            }
+            Self::ExchangeWithdraw {
+                sender: m.sender,
+                subaccount_id: m.subaccount_id,
+                amount: one_coin(m.amount, "MsgWithdraw.amount")?,
+            }
         } else if chain
             .tokenfactory
             .is_some_and(|pkg| t.strip_prefix('/').and_then(|r| r.strip_prefix(pkg)) == Some(".MsgChangeAdmin"))
@@ -542,6 +586,7 @@ impl Msg {
             Self::TransferDelegation { .. } => "/cosmos.staking.v1beta1.MsgTransferDelegation",
             Self::WasmUpdateAdmin { .. } => "/cosmwasm.wasm.v1.MsgUpdateAdmin",
             Self::WasmClearAdmin { .. } => "/cosmwasm.wasm.v1.MsgClearAdmin",
+            Self::ExchangeWithdraw { .. } => EXCHANGE_WITHDRAW,
             Self::TokenfactoryChangeAdmin { type_url, .. }
             | Self::Unknown { type_url, .. }
             | Self::UnknownJson { type_url, .. } => type_url,
@@ -554,6 +599,7 @@ impl Msg {
         match self {
             Self::BankSend { from, .. } => Some(from),
             Self::ExecuteContract { sender, .. }
+            | Self::ExchangeWithdraw { sender, .. }
             | Self::TokenfactoryChangeAdmin { sender, .. }
             | Self::WasmUpdateAdmin { sender, .. }
             | Self::WasmClearAdmin { sender, .. } => Some(sender),
