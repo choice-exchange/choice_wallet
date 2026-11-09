@@ -6,6 +6,7 @@ import { hexToBase64 } from "./encoding.ts";
 import { EVM_MSG, evmResults, failedEvmHash, type EvmLog } from "./evmtx.ts";
 import { MIN_GAS_PRICE, type Network } from "./networks.ts";
 import { ChainError, Down, isObject, Pool, type Fetch } from "./pool.ts";
+import { parseDelegations, parseRewards, parseUnbonding, parseUnbondingTime, parseValidators, type Delegation, type Unbonding, type Validator } from "./staking.ts";
 import { ceilDecimal, toBigInt } from "./units.ts";
 
 export interface Coin {
@@ -207,6 +208,56 @@ export class Lcd {
       }
     }
     return pairs;
+  }
+
+  /** The bonded validators (the active set), by voting power. */
+  async validators(): Promise<Validator[]> {
+    const out: Validator[] = [];
+    let key = "";
+    for (let page = 0; page < 5; page++) {
+      const q = key ? `&pagination.key=${encodeURIComponent(key)}` : "";
+      const body = await this.#call(`/cosmos/staking/v1beta1/validators?status=BOND_STATUS_BONDED&pagination.limit=300${q}`);
+      out.push(...parseValidators(body));
+      const next = isObject(body) && isObject(body["pagination"]) ? body["pagination"]["next_key"] : null;
+      if (typeof next !== "string" || !next) return out.sort((a, b) => (b.tokens > a.tokens ? 1 : b.tokens < a.tokens ? -1 : 0));
+      key = next;
+    }
+    throw new ChainError(-1, "too many validator pages");
+  }
+
+  /** `address`'s stakes in the bond denom. */
+  async delegations(address: string): Promise<Delegation[]> {
+    const body = await this.#empty(`/cosmos/staking/v1beta1/delegations/${encodeURIComponent(address)}?pagination.limit=500`, { delegation_responses: [] });
+    return parseDelegations(body, address, this.network.feeDenom);
+  }
+
+  /** What `address` is unstaking, soonest first. */
+  async unbonding(address: string): Promise<Unbonding[]> {
+    const body = await this.#empty(`/cosmos/staking/v1beta1/delegators/${encodeURIComponent(address)}/unbonding_delegations?pagination.limit=500`, {
+      unbonding_responses: [],
+    });
+    return parseUnbonding(body, address);
+  }
+
+  /** `address`'s unclaimed rewards in the bond denom, per validator. */
+  async rewards(address: string): Promise<Map<string, bigint>> {
+    const body = await this.#empty(`/cosmos/distribution/v1beta1/delegators/${encodeURIComponent(address)}/rewards`, { rewards: [] });
+    return parseRewards(body, this.network.feeDenom);
+  }
+
+  /** How long unstaking takes, in seconds. */
+  async unbondingTime(): Promise<number> {
+    return parseUnbondingTime(await this.#call("/cosmos/staking/v1beta1/params"));
+  }
+
+  /** `#call`, with "not found" (an account the chain hasn't seen) read as `empty`. */
+  async #empty(path: string, empty: unknown): Promise<unknown> {
+    try {
+      return await this.#call(path);
+    } catch (e) {
+      if (e instanceof ChainError && e.code === 5) return empty;
+      throw e;
+    }
   }
 
   /** A simulation's gas, and its events: what the transaction would do, as the bank module
