@@ -81,6 +81,8 @@ export type UiRequest =
   | { type: "settings" }
   /** Switch to `network`, with these LCD, EVM and Blockscout endpoints for it (`null`: the
    *  defaults; left out: unchanged; an empty Blockscout list turns it off). */
+  /** The chain Home shows, and mainnet or test networks; endpoints stay as they are. */
+  | { type: "pick_chain"; chain: ChainView; network?: NetworkId }
   | { type: "save_settings"; network: NetworkId; lcd: string[] | null; evm?: string[] | null; evmIndex?: string[] | null; solana?: string[] | null; prices?: boolean; autoLock?: number; notify?: NotifyMode }
   | { type: "balances" }
   /** What the account in use showed last (balances, staking, the first page of activity),
@@ -193,10 +195,15 @@ export type Contact = { id: string; name: string; address: string; evm: string; 
  *  memo, from many senders, as an exchange's shared deposit address does. */
 export type RecipientCheck = { contact?: Contact; mine?: string; takesMemo: boolean };
 
+/** The chain the wallet shows: Injective (its inj1 and 0x forms), or the account's Solana key. */
+export type ChainView = "injective" | "solana";
+
 export type Status = {
   hasWallet: boolean;
   unlocked: boolean;
   network: NetworkId;
+  /** The chain picked on Home. An account without that chain's key shows Injective. */
+  chain: ChainView;
   /** Only while unlocked. */
   wallets: WalletInfo[];
   accounts: AccountInfo[];
@@ -864,6 +871,7 @@ export type Replies = {
   remove_wallet: Status;
   reset: Status;
   settings: Settings;
+  pick_chain: Status;
   save_settings: Settings;
   /** Every balance; the UI applies `filter`. `prices` is the USD values setting. EVM-only
    *  tokens (denom `evm:0x…`) and CW20s (`cw20:inj1…`) are in the list; `evmDown` says the

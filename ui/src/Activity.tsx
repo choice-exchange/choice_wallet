@@ -7,6 +7,7 @@ import { explorerTxUrl, formatShort, NETWORKS, shortDenom } from "@choice-wallet
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { useBackend } from "./backend";
+import { ChainMark } from "./Chains";
 import {
   ChartIcon,
   CheckIcon,
@@ -24,7 +25,7 @@ import {
   WarningIcon,
 } from "./icons";
 import { Callout, Screen, shortAddress } from "./kit";
-import type { ActivityItem, ActivityKind, ActivityPage, Balance, Coin, NetworkId, Replies } from "./protocol";
+import type { ActivityItem, ActivityKind, ActivityPage, Balance, ChainView, Coin, NetworkId, Replies } from "./protocol";
 import { useRequest } from "./request";
 import { ACTIVITY_FRESH_MS, merge, type ActivityState } from "./activityState";
 import { hiddenWhy } from "./tokenFilter";
@@ -69,25 +70,39 @@ type Tokens = ActivityPage["tokens"];
 
 /** `kept`: what the tab showed last (this popup session, or the saved copy from disk).
  *  `onKeep` gets every change, for the next visit. */
-export function ActivityView({ network, tabs, kept, onKeep }: { network: NetworkId; tabs: ReactNode; kept?: ActivityState | null; onKeep?: (s: ActivityState) => void }) {
+export function ActivityView({
+  network,
+  chain,
+  tabs,
+  kept,
+  onKeep,
+}: {
+  network: NetworkId;
+  /** Whose history: Injective's, or the account's Solana key's. */
+  chain: ChainView;
+  tabs: ReactNode;
+  kept?: ActivityState | null;
+  onKeep?: (s: ActivityState) => void;
+}) {
   const backend = useBackend();
   const { run, error, busy } = useRequest();
   const [st, setSt] = useState<ActivityState | null>(kept ?? null);
   const [showHidden, setShowHidden] = useState(false);
-  /** The account's Solana history (its own key), beside Injective's. */
+  /** The account's Solana history (its own key), when that's the chain shown. */
   const [sol, setSol] = useState<Replies["solana_activity"] | null>(null);
+  const onSolana = chain === "solana";
   const live = useRef(true);
 
   async function load(p: number) {
-    if (p === 1) void loadSolana();
+    if (onSolana) return loadSolana();
     const r = await run({ type: "activity", page: p });
     if (r && live.current) setSt((prev) => merge(prev, r, p, Date.now()));
   }
 
   async function loadSolana(before?: string) {
-    const r = await backend.send({ type: "solana_activity", ...(before ? { before } : {}) });
-    if (!r.ok || !live.current) return;
-    setSol((prev) => (before && prev ? { items: [...prev.items, ...r.result.items], tokens: { ...prev.tokens, ...r.result.tokens }, next: r.result.next } : r.result));
+    const r = await run({ type: "solana_activity", ...(before ? { before } : {}) });
+    if (!r || !live.current) return;
+    setSol((prev) => (before && prev ? { items: [...prev.items, ...r.items], tokens: { ...prev.tokens, ...r.tokens }, next: r.next } : r));
   }
 
   useEffect(() => {
@@ -97,21 +112,21 @@ export function ActivityView({ network, tabs, kept, onKeep }: { network: Network
   // Shown at once; asked again only when it is old, or when something happened.
   useEffect(() => {
     live.current = true;
-    if (!kept || Date.now() - kept.at > ACTIVITY_FRESH_MS) void load(1);
+    if (onSolana || !kept || Date.now() - kept.at > ACTIVITY_FRESH_MS) void load(1);
     const off = backend.onRefresh?.(() => void load(1));
     return () => {
       live.current = false;
       off?.();
     };
-  }, [network]);
+  }, [network, chain]);
 
   // A saved copy that arrives after the tab opened (the wallet reads it from disk at start).
   useEffect(() => {
     if (kept && st === null) setSt(kept);
   }, [kept]);
 
-  const items = st?.items ?? null;
-  const tokens: Tokens = { ...(st?.tokens ?? {}), ...(sol?.tokens ?? {}) };
+  const items = onSolana ? (sol?.items ?? null) : (st?.items ?? null);
+  const tokens: Tokens = onSolana ? (sol?.tokens ?? {}) : (st?.tokens ?? {});
   const validators = st?.validators ?? {};
   const filter = st?.filter ?? null;
   const page = st?.page ?? 1;
@@ -131,9 +146,7 @@ export function ActivityView({ network, tabs, kept, onKeep }: { network: Network
       const b: Balance = { denom: c.denom, symbol: t?.symbol ?? "", name: t?.name ?? "", decimals: t?.decimals ?? 0, known: t?.known ?? false, amount: "0", ...(t?.onChoice ? { onChoice: true } : {}) };
       return hiddenWhy(b, filter, fee) !== null;
     });
-  const injective = (items ?? []).filter((a) => cutoff === null || BigInt(a.height) >= BigInt(cutoff));
-  // Solana's rows join by time; heights (slots) aren't Injective's.
-  const loaded = [...injective, ...(sol?.items ?? [])].sort((a, b) => (b.time > a.time ? 1 : b.time < a.time ? -1 : 0));
+  const loaded = onSolana ? (items ?? []) : (items ?? []).filter((a) => cutoff === null || BigInt(a.height) >= BigInt(cutoff));
   const hiddenCount = loaded.filter(junk).length;
   const visible = showHidden ? loaded : loaded.filter((a) => !junk(a));
 
@@ -151,6 +164,7 @@ export function ActivityView({ network, tabs, kept, onKeep }: { network: Network
       tabs={tabs}
       top={
         <>
+          <ChainMark chain={chain} small />
           <span className="title">Activity</span>
           <button className={busy ? "icon-btn busy" : "icon-btn"} aria-label="Refresh" disabled={busy} onClick={() => void load(1)}>
             <RefreshIcon />
@@ -161,7 +175,7 @@ export function ActivityView({ network, tabs, kept, onKeep }: { network: Network
       {error && <Callout level="amber">{error}</Callout>}
       {items === null ? (
         !error && [0, 1, 2, 3].map((i) => <div key={i} className="skeleton" style={{ height: 44 }} />)
-      ) : visible.length === 0 && hiddenCount === 0 && !more ? (
+      ) : visible.length === 0 && hiddenCount === 0 && !more && !sol?.next ? (
         <p className="empty">No activity yet.</p>
       ) : (
         <>
@@ -189,19 +203,14 @@ export function ActivityView({ network, tabs, kept, onKeep }: { network: Network
               <ChevronDownIcon size={16} />
             </button>
           )}
-          {more && (
-            <button className="btn btn-quiet" disabled={busy} onClick={() => void load(page + 1)}>
+          {(onSolana ? sol?.next : more) && (
+            <button className="btn btn-quiet" disabled={busy} onClick={() => void (onSolana ? loadSolana(sol!.next!) : load(page + 1))}>
               {busy ? "Loading…" : "Load more"}
-            </button>
-          )}
-          {sol?.next && (
-            <button className="btn btn-quiet" onClick={() => void loadSolana(sol.next!)}>
-              More from {NETWORKS[network].solana.name}
             </button>
           )}
         </>
       )}
-      {indexDown && <p className="footnote">Blockscout didn't answer, so some EVM transfers may be missing.</p>}
+      {!onSolana && indexDown && <p className="footnote">Blockscout didn't answer, so some EVM transfers may be missing.</p>}
       <p className="footnote">From your endpoints. How far back depends on the node.</p>
     </Screen>
   );
@@ -229,7 +238,6 @@ function Row({ a, tokens, validators, dim, onOpen }: { a: ActivityItem; tokens: 
         </span>
         <span className="sub">
           {timeLabel(a.time)}
-          {a.chain ? " · Solana" : ""}
           {who}
         </span>
       </span>

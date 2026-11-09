@@ -468,6 +468,14 @@ export function createService(d: Deps) {
       }
       case "settings":
         return settings();
+      case "pick_chain": {
+        if (r.chain !== "injective" && r.chain !== "solana") return err("bad_request", "Unknown chain.");
+        if (r.network !== undefined && !isNetworkId(r.network)) return err("bad_request", "Unknown network.");
+        const before = await network();
+        await d.local.set({ chain: r.chain, ...(r.network ? { network: r.network } : {}) });
+        if (r.network && r.network !== before) d.notify();
+        return { ok: true, result: await status() };
+      }
       case "save_settings":
         return saveSettings(r.network, r.lcd, r.evm, r.evmIndex, r.prices, r.autoLock, r.notify, r.solana);
       case "seen":

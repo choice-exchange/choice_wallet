@@ -359,8 +359,13 @@ try {
         throw new Error(`timed out waiting for "${text}"; page: ${await page.eval("document.body.innerText")}${problems.length ? `\nproblems so far:\n${problems.join("\n")}` : ""}`);
       },
       async click(text) {
-        // By its text, or by its accessible name for an icon button.
-        const ok = await page.eval(`(() => { const t = ${JSON.stringify(text)}; const b = [...document.querySelectorAll("button")].find((b) => (b.textContent.trim() === t || b.getAttribute("aria-label") === t) && !b.disabled); if (b) b.click(); return !!b; })()`);
+        // By its text, or by its accessible name for an icon button. A button still disabled
+        // while its screen loads (Settings' Save) gets up to 5 s.
+        let ok = false;
+        for (let t = 0; t < 5000 && !ok; t += 100) {
+          ok = await page.eval(`(() => { const t = ${JSON.stringify(text)}; const b = [...document.querySelectorAll("button")].find((b) => (b.textContent.trim() === t || b.getAttribute("aria-label") === t) && !b.disabled); if (b) b.click(); return !!b; })()`);
+          if (!ok) await sleep(100);
+        }
         if (!ok) throw new Error(`no enabled button "${text}"; page: ${await page.eval("document.body.innerText")}`);
       },
       async fill(selector, index, value) {
@@ -371,8 +376,13 @@ try {
       },
       async shot(name) {
         await sleep(250); // let the screen's entrance animation finish
-        const { data } = await send("Page.captureScreenshot", { format: "png" }, sessionId);
-        writeFileSync(join(out, `${name}.png`), Buffer.from(data, "base64"));
+        // Headless Chrome stops drawing a tab another window covered (a site's approval
+        // window), and a screenshot then waits for a frame forever: bring it forward first,
+        // and give up after 15 s rather than hang the run.
+        await send("Page.bringToFront", {}, sessionId);
+        const got = await Promise.race([send("Page.captureScreenshot", { format: "png" }, sessionId), sleep(15000).then(() => null)]);
+        if (!got) throw new Error(`screenshot ${name}: no frame in 15 s`);
+        writeFileSync(join(out, `${name}.png`), Buffer.from(got.data, "base64"));
         return join(out, `${name}.png`);
       },
       close: () => send("Target.closeTarget", { targetId }),

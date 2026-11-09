@@ -8,13 +8,14 @@ import type { Level } from "./protocol";
 
 /** A screen: a top bar, a scrolling body, a foot holding its action, and the tab bar on
  *  the screens it belongs to. */
-export function Screen({ top, children, foot, tabs }: { top?: ReactNode; children: ReactNode; foot?: ReactNode; tabs?: ReactNode }) {
+export function Screen({ top, children, foot, tabs, overlay }: { top?: ReactNode; children: ReactNode; foot?: ReactNode; tabs?: ReactNode; overlay?: ReactNode }) {
   return (
     <div className="app">
       <div className="topbar">{top}</div>
       <div className="body slide-in">{children}</div>
       {foot && <div className="foot">{foot}</div>}
       {tabs}
+      {overlay}
     </div>
   );
 }

@@ -1,4 +1,5 @@
-// Settings (a tab): the network, its endpoints, USD values, connected sites, and locking.
+// Settings (a tab): the network's endpoints, USD values, connected sites, and locking. Mainnet or
+// the test networks is picked in Home's chain sheet.
 
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 
@@ -71,15 +72,6 @@ export function SettingsView({
     });
   }, []);
 
-  const pick = (n: NetworkId) => {
-    setNet(n);
-    if (settings) {
-      setText(settings.lcd[n].join("\n"));
-      setEvmText(settings.evm[n].join("\n"));
-      setIndexText(settings.evmIndex[n].join("\n"));
-      setSolanaText(settings.solana[n].join("\n"));
-    }
-  };
   async function save(e: FormEvent) {
     e.preventDefault();
     if (!settings) return;
@@ -137,19 +129,7 @@ export function SettingsView({
           </>
         }
       >
-        <div className="eyebrow">Network</div>
-        <Segmented
-          label="Network"
-          options={[
-            ["mainnet", "Mainnet"],
-            ["testnet", "Testnet"],
-          ]}
-          value={net}
-          onChange={pick}
-        />
-        <div className="eyebrow" style={{ marginTop: 8 }}>
-          Endpoints
-        </div>
+        <div className="eyebrow">Endpoints · {net === "testnet" ? "Test networks" : "Mainnet"}</div>
         <label className="meta" htmlFor="lcd-endpoints">
           Injective (LCD)
         </label>

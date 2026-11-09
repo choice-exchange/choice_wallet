@@ -7,17 +7,18 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AccountMark, AccountsView, isWatch } from "./Accounts";
 import { ApprovalsView } from "./Approvals";
 import { BridgeView, newBridgeDraft, type BridgeDraft } from "./Bridge";
+import { ChainPill, ChainSheet, type ChainRow } from "./Chains";
 import { ContactsView, type Draft } from "./Contacts";
 import { ActivityView } from "./Activity";
 import { merge, type ActivityState } from "./activityState";
-import { Kept, KeptContext } from "./kept";
+import { Kept, KeptContext, useKept } from "./kept";
 import { useBackend } from "./backend";
-import { ActivityIcon, CheckIcon, ChevronDownIcon, ChevronRightIcon, CopyIcon, EyeOffIcon, LockIcon, ReceiveIcon, SendIcon, SettingsIcon, StakeIcon, SwapIcon, WalletIcon } from "./icons";
+import { ActivityIcon, CheckIcon, ChevronDownIcon, ChevronRightIcon, CopyIcon, EyeOffIcon, GlobeIcon, LockIcon, ReceiveIcon, SendIcon, SettingsIcon, StakeIcon, SwapIcon, WalletIcon } from "./icons";
 import { BackBar, Callout, formatUsd, Screen, Segmented, shortAddress, tokenSub } from "./kit";
 import { NftsView, NftView } from "./Nfts";
 import { InventoryScreen } from "./Inventory";
 import { RescueView } from "./Rescue";
-import type { ActivityPage, Balance, NetworkId, Nft, NftCollection, Replies, SendReview, Sent, StakingSummary, Status, TokenFilter } from "./protocol";
+import type { ActivityPage, Balance, ChainView, NetworkId, Nft, NftCollection, Replies, SendReview, Sent, StakingSummary, Status, TokenFilter } from "./protocol";
 import { newDraft, SwapView, type SwapDraft } from "./Swap";
 import { QrCode } from "./QrCode";
 import { useRequest } from "./request";
@@ -119,6 +120,10 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
   const account = status.accounts[status.active] ?? status.accounts[0];
   const address = account?.addresses[COSMOS] ?? "";
   const watch = isWatch(account);
+  const solAddress = account?.addresses[NETWORKS[status.network].solana.caip2];
+  /** The chain Home shows: the one picked, when this account has a key there. */
+  const chain: ChainView = status.chain === "solana" && solAddress ? "solana" : "injective";
+  const [picking, setPicking] = useState(false);
   /** What other screens read (NFTs, trading and liquidity, approvals, swap tokens), for this
    *  account and network while the popup is open. */
   const kept = useMemo(() => new Kept(), [address, status.network]);
@@ -248,6 +253,35 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
   // Staked, unstaking and unclaimed INJ are still yours: they count in the total.
   const stakedAll = staking ? BigInt(staking.staked) + BigInt(staking.unbondingTotal) + BigInt(staking.rewards) : 0n;
   const totalUsd = sorted?.totalUsd === undefined ? undefined : sorted.totalUsd + (injPrice && prices ? usdValue(stakedAll.toString(), 18, injPrice) : 0);
+  const solTotal = solana ? solanaTotal(solana.balances, prices) : null;
+
+  /** Show another chain, or switch between mainnet and the test networks (the sheet stays
+   *  open for that, its totals reading again). */
+  async function pickChain(next: ChainView, network: NetworkId = status.network) {
+    const r = await backend.send({ type: "pick_chain", chain: next, network });
+    if (!r.ok) {
+      setError(r.error.message);
+      return;
+    }
+    if (network === status.network) setPicking(false);
+    onStatus(r.result);
+  }
+  /** Each chain in the picker, with what the account holds there. */
+  const chainRows: ChainRow[] = [
+    {
+      chain: "injective",
+      address,
+      total: balances === null ? null : totalUsd !== undefined ? formatUsd(totalUsd) : `${formatShort((BigInt(balances.find((b) => b.denom === "inj")?.amount ?? "0") + stakedAll).toString(), 18, 4)} INJ`,
+      holds: sorted?.shown.length ? `${sorted.shown.length} ${sorted.shown.length === 1 ? "token" : "tokens"}` : "",
+    },
+    {
+      chain: "solana",
+      ...(solAddress ? { address: solAddress } : {}),
+      total: solTotal?.text ?? (balances === null ? null : "0 SOL"),
+      holds: solana ? holdsLine(solana.balances) : "",
+    },
+  ];
+  const allUsd = totalUsd !== undefined && (!solAddress || solTotal?.usd !== undefined) ? formatUsd(totalUsd + (solTotal?.usd ?? 0)) : undefined;
 
   /** The next step of a swap, once the last one landed; back to the form if its quote ran out. */
   async function nextSwapStep(quote: string) {
@@ -306,6 +340,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
           <Receive
             addresses={account?.addresses ?? {}}
             network={status.network}
+            chain={chain}
             onBack={home}
             onBridgeIn={() => {
               setBridgeDraft((d) => ({ ...d, dir: "in" }));
@@ -343,7 +378,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
       case "send":
         return (
           <SendForm
-            balances={[...(sorted?.shown ?? []), ...(solana?.balances ?? []).filter((b) => BigInt(b.amount) > 0n)]}
+            balances={chain === "solana" ? (solana?.balances ?? []).filter((b) => BigInt(b.amount) > 0n) : (sorted?.shown ?? [])}
             accounts={status.accounts.filter((_, i) => i !== status.active)}
             denom={view.denom}
             onReview={(review, entered, denom) => setView({ name: "review", review, entered, back: { name: "send", denom } })}
@@ -467,7 +502,30 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
         if (tab === "activity") {
           // This session's, or else the copy saved on disk (shown, then read again).
           const kept = activity.current ?? (savedActivity ? merge(null, savedActivity, 1, 0) : null);
-          return <ActivityView key={address} network={status.network} tabs={tabs} kept={kept} onKeep={(s) => (activity.current = s)} />;
+          if (chain === "solana") return <ActivityView key={`${address} solana`} network={status.network} chain="solana" tabs={tabs} />;
+          return <ActivityView key={address} network={status.network} chain="injective" tabs={tabs} kept={kept} onKeep={(s) => (activity.current = s)} />;
+        }
+        if (tab === "swap" && chain === "solana") {
+          return (
+            <Screen tabs={tabs} top={<span className="title">Swap</span>}>
+              <div className="surface-hero">
+                <TokenMark denom="inj" symbol="INJ" known />
+                <p className="lead">Swaps run on Injective. Bring USDC over from Solana to swap it.</p>
+              </div>
+              <button
+                className="btn btn-gold"
+                onClick={() => {
+                  setBridgeDraft((d) => ({ ...d, dir: "in", from: "solana" }));
+                  setView({ name: "bridge" });
+                }}
+              >
+                Bridge USDC
+              </button>
+              <button className="btn btn-quiet" onClick={() => void pickChain("injective")}>
+                Use Injective
+              </button>
+            </Screen>
+          );
         }
         if (tab === "swap") {
           return (
@@ -521,18 +579,43 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
                     <span className="account-name">{account?.name}</span>
                     <ChevronDownIcon size={16} />
                   </button>
-                  <CopyAddress address={address} />
+                  <CopyAddress address={chain === "solana" && solAddress ? solAddress : address} />
                 </div>
-                <button className="pill" onClick={() => setTab("settings")} aria-label={`Network: ${status.network}`}>
-                  <span className={status.network === "testnet" ? "dot testnet" : "dot"} />
-                  {status.network === "testnet" ? "Testnet" : "Mainnet"}
-                </button>
+                <ChainPill chain={chain} network={status.network} onClick={() => setPicking(true)} />
                 <button className="icon-btn" aria-label="Lock" onClick={onLock}>
                   <LockIcon />
                 </button>
               </>
             }
+            overlay={
+              picking && (
+                <ChainSheet
+                  chain={chain}
+                  network={status.network}
+                  rows={chainRows}
+                  {...(allUsd && solAddress ? { all: allUsd } : {})}
+                  onPick={(c) => void pickChain(c)}
+                  onTestnet={(on) => void pickChain(chain, on ? "testnet" : "mainnet")}
+                  onClose={() => setPicking(false)}
+                />
+              )
+            }
           >
+            {chain === "solana" && solAddress ? (
+              <SolanaHome
+                network={status.network}
+                holdings={solana ?? null}
+                total={solTotal}
+                watch={watch}
+                onSend={(denom) => setView({ name: "send", ...(denom ? { denom } : {}) })}
+                onReceive={() => setView({ name: "receive" })}
+                onBridge={() => {
+                  setBridgeDraft((d) => ({ ...d, dir: "in", from: "solana" }));
+                  setView({ name: "bridge" });
+                }}
+              />
+            ) : (
+              <>
             {/* Everything the account holds, staking included: in USD when Choice prices
                 something here, otherwise in INJ. */}
             <section className="balance-head" aria-label="Total balance">
@@ -608,30 +691,6 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
                 )}
               </div>
             )}
-            {/* The account's Solana key: shown once it holds something there (Receive has its address). */}
-            {solana && (solana.down || solana.balances.some((b) => BigInt(b.amount) > 0n)) && (
-              <>
-                <div className="section-head">
-                  <span className="eyebrow">{NETWORKS[status.network].solana.name}</span>
-                  <span className="meta mono">{shortAddress(solana.address)}</span>
-                </div>
-                {solana.down && <p className="meta warn">{NETWORKS[status.network].solana.name} didn&apos;t answer. Its balances may be missing.</p>}
-                <div className="token-list">
-                  {solana.balances
-                    .filter((b) => b.denom === "sol" || BigInt(b.amount) > 0n)
-                    .map((b) => (
-                      <button key={b.denom} className="token" title={b.denom} disabled={watch} onClick={() => setView({ name: "send", denom: b.denom })}>
-                        <TokenMark denom={b.denom} symbol={b.symbol} known={b.known} />
-                        <span className="name">
-                          <span className="symbol">{b.symbol}</span>
-                          <span className={b.known ? "sub" : "sub denom"}>{b.denom === "sol" ? "Solana" : b.known ? `${b.name} on Solana` : tokenSub(b)}</span>
-                        </span>
-                        <HoldingValue amount={formatShort(b.amount, b.decimals)} symbol={b.symbol} usd={b.usd} />
-                      </button>
-                    ))}
-                </div>
-              </>
-            )}
             {/* Staked, unstaking and unclaimed INJ. Nothing staked: the Stake button above. */}
             {staking && stakedAll > 0n && (
               <>
@@ -652,7 +711,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
               <span className="eyebrow">More</span>
             </div>
             <button className="token" onClick={() => setView({ name: "bridge" })}>
-              <TokenMark denom={`erc20:${NETWORKS[status.network].cctp.usdc}`} symbol="USDC" known />
+              <TokenMark denom="usdc:injective" symbol="USDC" known />
               <span className="name">
                 <span className="symbol">Bridge USDC</span>
                 <span className="sub">To Base, Solana and more, by Circle</span>
@@ -681,6 +740,8 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
             </button>
             {evmDown && <p className="meta warn">EVM tokens may be missing: no EVM endpoint answered.</p>}
             <p className="footnote">{totalUsd === undefined ? "Pre-alpha. Not for real funds." : "Prices from Choice. Pre-alpha. Not for real funds."}</p>
+              </>
+            )}
           </Screen>
         );
       }
@@ -722,6 +783,108 @@ function HoldingValue({ amount, symbol, usd }: { amount: string; symbol: string;
   );
 }
 
+type SolanaHoldings = NonNullable<Replies["balances"]["solana"]>;
+
+/** What the account holds on Solana, in one figure: USD when everything held has a price,
+ *  otherwise its SOL. */
+function solanaTotal(balances: Balance[], prices: boolean): { text: string; usd?: number } {
+  const held = balances.filter((b) => BigInt(b.amount) > 0n);
+  if (prices && held.length > 0 && held.every((b) => b.usd !== undefined)) {
+    const usd = held.reduce((t, b) => t + (b.usd ?? 0), 0);
+    return { text: formatUsd(usd), usd };
+  }
+  return { text: `${formatShort(balances.find((b) => b.denom === "sol")?.amount ?? "0", 9, 4)} SOL` };
+}
+
+/** "SOL, USDC": what's held, for the picker. */
+function holdsLine(balances: Balance[]): string {
+  const held = balances.filter((b) => BigInt(b.amount) > 0n).map((b) => b.symbol);
+  return held.length > 3 ? `${held.slice(0, 2).join(", ")} and ${held.length - 2} more` : held.join(", ");
+}
+
+/** Home on Solana: the account's Solana key, its SOL and tokens, and the way to Injective. */
+function SolanaHome({
+  network,
+  holdings,
+  total,
+  watch,
+  onSend,
+  onReceive,
+  onBridge,
+}: {
+  network: NetworkId;
+  holdings: SolanaHoldings | null;
+  total: { text: string; usd?: number } | null;
+  watch: boolean;
+  onSend: (denom?: string) => void;
+  onReceive: () => void;
+  onBridge: () => void;
+}) {
+  const cluster = NETWORKS[network].solana;
+  /** Rent in burn records that comes back to the account, 5 days after each transfer. */
+  const rent = useKept({ type: "bridge_reclaims" });
+  const ready = (rent.value ?? []).filter((r) => r.ready).length;
+  const waiting = (rent.value ?? []).length - ready;
+  const list = holdings?.balances.filter((b) => b.denom === "sol" || BigInt(b.amount) > 0n) ?? null;
+  return (
+    <>
+      <section className="balance-head" aria-label="Total balance">
+        {total === null ? (
+          <div className="skeleton" style={{ width: 168, height: 40, margin: "3px auto" }} />
+        ) : total.usd !== undefined ? (
+          <Figure text={total.text} />
+        ) : (
+          <Figure text={total.text.replace(/ SOL$/, "")} unit="SOL" />
+        )}
+        <div className="balance-sub">{watch && <span className="flag quiet">Watch-only</span>}</div>
+      </section>
+      <div className="quick-actions three">
+        <QuickAction label="Send" gold disabled={watch || !list?.some((b) => BigInt(b.amount) > 0n)} onClick={() => onSend()}>
+          <SendIcon size={20} />
+        </QuickAction>
+        <QuickAction label="Receive" onClick={onReceive}>
+          <ReceiveIcon size={20} />
+        </QuickAction>
+        <QuickAction label="Bridge" onClick={onBridge}>
+          <GlobeIcon size={20} />
+        </QuickAction>
+      </div>
+      <div className="section-head">
+        <span className="eyebrow">Tokens{list?.length ? ` · ${list.length}` : ""}</span>
+      </div>
+      {holdings?.down && <p className="meta warn">{cluster.name} didn&apos;t answer. Its balances may be missing.</p>}
+      {list === null ? (
+        [0, 1].map((i) => <div key={i} className="skeleton" style={{ height: 40 }} />)
+      ) : (
+        <div className="token-list">
+          {list.map((b) => (
+            <button key={b.denom} className="token" title={b.denom} disabled={watch || BigInt(b.amount) === 0n} onClick={() => onSend(b.denom)}>
+              <TokenMark denom={b.denom} symbol={b.symbol} known={b.known} />
+              <span className="name">
+                <span className="symbol">{b.symbol}</span>
+                <span className={b.known ? "sub" : "sub denom"}>{b.known ? b.name : tokenSub(b)}</span>
+              </span>
+              <HoldingValue amount={formatShort(b.amount, b.decimals)} symbol={b.symbol} usd={b.usd} />
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="section-head">
+        <span className="eyebrow">Bridge</span>
+      </div>
+      <button className="token" onClick={onBridge}>
+        <TokenMark denom="usdc:injective" symbol="USDC" known />
+        <span className="name">
+          <span className="symbol">USDC to Injective</span>
+          <span className="sub">{ready > 0 ? `Rent to take back from ${ready} ${ready === 1 ? "transfer" : "transfers"}` : waiting > 0 ? `Rent comes back 5 days after each transfer` : "By Circle"}</span>
+        </span>
+        <ChevronRightIcon size={16} />
+      </button>
+      <p className="footnote">Pre-alpha. Not for real funds.</p>
+    </>
+  );
+}
+
 function QuickAction({ label, gold, disabled, onClick, children }: { label: string; gold?: boolean; disabled?: boolean; onClick: () => void; children: ReactNode }) {
   return (
     <button className={gold ? "quick-action gold" : "quick-action"} disabled={disabled} onClick={onClick}>
@@ -753,13 +916,14 @@ function CopyAddress({ address }: { address: string }) {
   );
 }
 
-function Receive({ addresses, network, onBack, onBridgeIn }: { addresses: Record<string, string>; network: NetworkId; onBack: () => void; onBridgeIn: () => void }) {
+/** The account's address on the chain Home shows: Injective's in either form, or Solana's. */
+function Receive({ addresses, network, chain, onBack, onBridgeIn }: { addresses: Record<string, string>; network: NetworkId; chain: ChainView; onBack: () => void; onBridgeIn: () => void }) {
   const backend = useBackend();
-  const [side, setSide] = useState<"cosmos" | "evm" | "solana">("cosmos");
+  const [form, setForm] = useState<"cosmos" | "evm">("cosmos");
   const [copied, setCopied] = useState(false);
   const cluster = NETWORKS[network].solana;
-  const sol = addresses[cluster.caip2];
-  const address = (side === "cosmos" ? addresses[COSMOS] : side === "evm" ? addresses[EVM] : sol) ?? "";
+  const side = chain === "solana" ? "solana" : form;
+  const address = (side === "cosmos" ? addresses[COSMOS] : side === "evm" ? addresses[EVM] : addresses[cluster.caip2]) ?? "";
   return (
     <Screen
       top={<BackBar title="Receive" onBack={onBack} />}
@@ -778,15 +942,20 @@ function Receive({ addresses, network, onBack, onBridgeIn }: { addresses: Record
         </button>
       }
     >
-      <Segmented
-        label="Address format"
-        options={[["cosmos", "Injective"], ["evm", "EVM (0x)"], ...(sol ? ([["solana", "Solana"]] as const) : [])]}
-        value={side}
-        onChange={(v) => {
-          setSide(v);
-          setCopied(false);
-        }}
-      />
+      {chain === "injective" && (
+        <Segmented
+          label="Address format"
+          options={[
+            ["cosmos", "Injective"],
+            ["evm", "EVM (0x)"],
+          ]}
+          value={form}
+          onChange={(v) => {
+            setForm(v);
+            setCopied(false);
+          }}
+        />
+      )}
       <div className="surface-hero">
         <div className="eyebrow">{side === "cosmos" ? "Injective address" : side === "evm" ? "EVM address" : `${cluster.name} address`}</div>
         {address && (
@@ -800,10 +969,12 @@ function Receive({ addresses, network, onBack, onBridgeIn }: { addresses: Record
           </code>
         </div>
       </div>
-      <p className="lead">{side === "solana" ? "Only Solana tokens here. Same phrase, its own key." : "Both addresses are the same account."}</p>
-      <button type="button" className="btn btn-quiet" onClick={onBridgeIn}>
-        USDC on another chain? Bring it in
-      </button>
+      <p className="lead">{side === "solana" ? `Only ${cluster.name} tokens here. Same phrase, its own key.` : "Both addresses are the same account."}</p>
+      {side !== "solana" && (
+        <button type="button" className="btn btn-quiet" onClick={onBridgeIn}>
+          USDC on another chain? Bring it in
+        </button>
+      )}
     </Screen>
   );
 }

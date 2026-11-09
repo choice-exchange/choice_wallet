@@ -287,12 +287,14 @@ try {
   await click("Create wallet");
   await waitText("Account 1");
 
-  // 2. Testnet, with its default endpoints.
-  await click("Settings");
-  await waitText("Tried in order, one per line.");
-  await click("Testnet");
-  await click("Save");
-  await waitText("Testnet");
+  // 2. Testnet, from the chain sheet on Home (endpoints stay the defaults).
+  await click("Chain: Injective. Change chain");
+  await waitText("Test networks");
+  await sleep(1500);
+  await shot("live-0-chains-mainnet");
+  await click("Test networks");
+  await waitText("Test tokens only.");
+  await evalIn(`document.querySelectorAll(".chain-row")[0].click()`);
   await waitText("Manage", 20000); // home with balances loaded
   const from = await evalIn(`document.querySelector("[aria-label='Copy address']").title`);
   const before = { from: await injOf(from), to: null };
@@ -1321,18 +1323,23 @@ try {
       const r = await fetch("https://api.devnet.solana.com", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) });
       return (await r.json()).result;
     };
-    // Section heads are uppercase on screen, and in innerText.
-    await waitText("SOLANA DEVNET", 30000);
+    // Solana Devnet from the chain sheet: Home shows only what the Solana key holds.
+    await click("Chain: Injective Testnet. Change chain");
+    await waitText("Solana Devnet");
+    await sleep(1500); // each chain's total
+    await shot("live-sol0-chains");
+    await evalIn(`document.querySelectorAll(".chain-row")[1].click()`);
+    await waitText("USDC to Injective", 30000);
+    await sleep(1500);
     await shot("live-sol1-home");
     await click("Receive");
-    await waitText("Copy address");
-    await click("Solana");
+    // Section heads are uppercase on screen, and in innerText.
     await waitText("SOLANA DEVNET ADDRESS");
     const me = await evalIn(`document.querySelector("code.address").textContent.trim()`);
     console.log("Solana address", me);
     await shot("live-sol2-receive");
     await click("Back");
-    await waitText("SOLANA DEVNET", 20000);
+    await waitText("USDC to Injective", 20000);
     const lamports = BigInt(Math.round(Number(amount) * 1e9));
     const before = { me: BigInt((await sol("getBalance", [me])).value), to: BigInt((await sol("getBalance", [recipient])).value) };
     await openToken("sol");
@@ -1350,6 +1357,14 @@ try {
     const after = { me: BigInt((await sol("getBalance", [me])).value), to: BigInt((await sol("getBalance", [recipient])).value) };
     console.log(`Solana ${hash}: recipient +${after.to - before.to} (asked ${lamports}), sender -${before.me - after.me} (fee ${tx.meta.fee})`);
     if (after.to - before.to !== lamports || before.me - after.me !== lamports + BigInt(tx.meta.fee)) throw new Error("the SOL send didn't land as asked");
+    // Activity and Swap follow the chain: Solana's history only, and the way to Injective.
+    await click("Done");
+    await click("Activity");
+    await waitText("Sent", 30000);
+    await shot("live-sol5-activity");
+    await click("Swap");
+    await waitText("Use Injective");
+    await shot("live-sol6-swap");
     console.log("LIVE SOLANA OK");
   } else if (tokenContract === "activity") {
     // 3a. Activity, read back from testnet's own endpoints and Blockscout.

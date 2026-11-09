@@ -112,3 +112,19 @@ test("history: what this account's Solana transactions did", async () => {
   assert.deepEqual(h.items[0]!.changes, [{ denom: "sol", amount: "-10000000" }]);
   assert.equal(h.next, null);
 });
+
+test("the chain Home shows, and the test networks, picked without touching endpoints", async () => {
+  const net = chain({ balances: { inj: INJ } });
+  const { service } = await wallet(net);
+  type S = { chain: string; network: string };
+  assert.equal(ok<S>(await service.handle({ type: "status" })).chain, "injective");
+  const picked = ok<S>(await service.handle({ type: "pick_chain", chain: "solana" }));
+  assert.deepEqual([picked.chain, picked.network], ["solana", "mainnet"]);
+  ok(await service.handle({ type: "save_settings", network: "mainnet", lcd: ["https://my-lcd.example"] }));
+  const test = ok<S>(await service.handle({ type: "pick_chain", chain: "solana", network: "testnet" }));
+  assert.deepEqual([test.chain, test.network], ["solana", "testnet"]);
+  ok(await service.handle({ type: "pick_chain", chain: "injective", network: "mainnet" }));
+  assert.deepEqual(ok<{ lcd: { mainnet: string[] } }>(await service.handle({ type: "settings" })).lcd.mainnet, ["https://my-lcd.example"]);
+  assert.equal(code(await service.handle({ type: "pick_chain", chain: "ethereum" })), "bad_request");
+  assert.equal(code(await service.handle({ type: "pick_chain", chain: "solana", network: "devnet" })), "bad_request");
+});

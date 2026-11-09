@@ -108,6 +108,11 @@ export function createWallets(h: WalletsHost) {
     return typeof unlock_key === "string" ? unlock_key : undefined;
   }
 
+  async function chain(): Promise<Status["chain"]> {
+    const { chain } = await h.local.get(["chain"]);
+    return chain === "solana" ? "solana" : "injective";
+  }
+
   async function status(): Promise<Status> {
     const s = await stored();
     const unlocked = Boolean(s.vault) && (await unlockKey()) !== undefined;
@@ -115,6 +120,7 @@ export function createWallets(h: WalletsHost) {
       hasWallet: Boolean(s.vault || s.keystore),
       unlocked,
       network: await h.network(),
+      chain: await chain(),
       wallets: unlocked ? s.wallets.map(({ id, type, name }) => ({ id, type, name })) : [],
       accounts: unlocked ? s.accounts : [],
       active: unlocked ? s.active : 0,
