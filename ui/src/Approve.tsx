@@ -16,7 +16,7 @@ import { ArrowDownIcon, CheckIcon, GlobeIcon, LockIcon } from "./icons";
 import { Callout, Screen, shortAddress } from "./kit";
 import type { Coin, CosmosDisplay, DappRequest, DappReview, NetworkId, Status } from "./protocol";
 import { shown } from "./review";
-import { Figure, formName, realName } from "./Send";
+import { Figure, formName, realName, SwapCards } from "./Send";
 
 /** How long the window must be in front before its buttons work. */
 const ARM_MS = 800;
@@ -283,7 +283,8 @@ function SignBody({ review, network, typed, onTyped }: { review: DappReview; net
         </div>
       ))}
 
-      {d["kind"] === "evm_transaction" && view?.sends.length === 0 && <EvmCall d={d} />}
+      {view && <SwapCards view={view} tokens={tokens} network={network} from={String(d["from"] ?? "")} />}
+      {d["kind"] === "evm_transaction" && view?.sends.length === 0 && view.swaps.length === 0 && view.approvals.length === 0 && <EvmCall d={d} />}
       {isTx &&
         d["kind"] !== "evm_transaction" &&
         messages

@@ -10,9 +10,10 @@ import { ContactsView, type Draft } from "./Contacts";
 import { ActivityView } from "./Activity";
 import mark from "./assets/choice-mark.svg";
 import { useBackend } from "./backend";
-import { ActivityIcon, CheckIcon, ChevronDownIcon, ChevronRightIcon, CopyIcon, EyeOffIcon, LockIcon, ReceiveIcon, SendIcon, SettingsIcon, WalletIcon } from "./icons";
+import { ActivityIcon, CheckIcon, ChevronDownIcon, ChevronRightIcon, CopyIcon, EyeOffIcon, LockIcon, ReceiveIcon, SendIcon, SettingsIcon, SwapIcon, WalletIcon } from "./icons";
 import { BackBar, Callout, formatUsd, Screen, Segmented, shortAddress, tokenSub } from "./kit";
 import type { Balance, SendReview, Sent, StakingSummary, Status, TokenFilter } from "./protocol";
+import { newDraft, SwapView, type SwapDraft } from "./Swap";
 import { QrCode } from "./QrCode";
 import { useRequest } from "./request";
 import { Review, SendForm, SentView } from "./Send";
@@ -24,7 +25,7 @@ import { applyFilter, DEFAULT_FILTER } from "./tokenFilter";
 import { TokenMark } from "./TokenMark";
 import { TokensView } from "./Tokens";
 
-type Tab = "wallet" | "activity" | "settings";
+type Tab = "wallet" | "swap" | "activity" | "settings";
 
 /** A flow opened over the tabs; "home" is the tabs themselves. */
 type View =
@@ -34,8 +35,8 @@ type View =
   | { name: "token"; denom: string }
   | { name: "send"; denom?: string }
   | { name: "convert"; denom: string }
-  | { name: "review"; review: SendReview; entered: string; back: View; validators?: Record<string, string>; rewards?: Record<string, string> }
-  | { name: "sent"; sent: Sent; converting: boolean; done?: string; save?: Draft }
+  | { name: "review"; review: SendReview; entered: string; back: View; validators?: Record<string, string>; rewards?: Record<string, string>; quote?: string }
+  | { name: "sent"; sent: Sent; converting: boolean; done?: string; save?: Draft; next?: string }
   | { name: "staking" }
   | { name: "approvals" }
   | { name: "contacts"; prefill?: Draft }
@@ -46,6 +47,7 @@ const EVM = "eip155:1776";
 
 const TABS: readonly (readonly [Tab, string, typeof WalletIcon])[] = [
   ["wallet", "Wallet", WalletIcon],
+  ["swap", "Swap", SwapIcon],
   ["activity", "Activity", ActivityIcon],
   ["settings", "Settings", SettingsIcon],
 ];
@@ -73,6 +75,8 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
   const [evmDown, setEvmDown] = useState(false);
   const [refresh, setRefresh] = useState(0);
   const [staking, setStaking] = useState<StakingSummary | null>(null);
+  const [swapDraft, setSwapDraft] = useState<SwapDraft>(() => newDraft(NETWORKS[status.network].feeDenom));
+  const [swapNote, setSwapNote] = useState<string | null>(null);
   const { run, error, setError } = useRequest();
 
   // The last filter save, so a refresh never reads the filter before it lands.
@@ -85,7 +89,8 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
   useEffect(() => {
     setBalances(null);
     setStaking(null);
-  }, [address]);
+    setSwapDraft(newDraft(NETWORKS[status.network].feeDenom));
+  }, [address, status.network]);
 
   useEffect(() => {
     if (view.name !== "home" || tab !== "wallet") return;
@@ -151,6 +156,18 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
   // Staked, unstaking and unclaimed INJ are still yours: they count in the total.
   const stakedAll = staking ? BigInt(staking.staked) + BigInt(staking.unbondingTotal) + BigInt(staking.rewards) : 0n;
   const totalUsd = sorted?.totalUsd === undefined ? undefined : sorted.totalUsd + (injPrice && prices ? usdValue(stakedAll.toString(), 18, injPrice) : 0);
+
+  /** The next step of a swap, once the last one landed; back to the form if its quote ran out. */
+  async function nextSwapStep(quote: string) {
+    const r = await backend.send({ type: "prepare_swap", quote });
+    if (r.ok) {
+      setView({ name: "review", review: r.result, entered: "", back: { name: "home" }, quote });
+      return;
+    }
+    setSwapNote(r.error.message);
+    setTab("swap");
+    setView({ name: "home" });
+  }
 
   switch (view.name) {
     case "accounts":
@@ -232,11 +249,14 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
             const sentTo = back.name === "send" ? shown(view.review.display, status.network) : null;
             const named = view.review.risk.findings.some((f) => f.rule === "address_book");
             const save = sentTo && sentTo.sends.length === 1 && !named ? { address: sentTo.sends[0]!.to, memo: sentTo.memo } : undefined;
+            const step = view.review.swap;
             setView({
               name: "sent",
               sent,
               converting: back.name === "convert",
               ...(back.name === "staking" || back.name === "approvals" ? { done: "Confirmed" } : {}),
+              ...(step ? { done: step.step === "swap" ? "Swapped" : "Approved" } : {}),
+              ...(step && step.left > 0 && view.quote ? { next: view.quote } : {}),
               ...(save ? { save } : {}),
             });
           }}
@@ -249,6 +269,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
           sent={view.sent}
           onDone={home}
           onSave={view.save ? () => setView({ name: "contacts", prefill: view.save! }) : undefined}
+          onNext={view.next ? () => void nextSwapStep(view.next!) : undefined}
           converting={view.converting}
           {...(view.done ? { done: view.done } : {})}
         />
@@ -257,6 +278,23 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
       return <ContactsView prefill={view.prefill} onBack={home} />;
     case "home": {
       if (tab === "activity") return <ActivityView key={address} network={status.network} tabs={tabs} />;
+      if (tab === "swap") {
+        return (
+          <SwapView
+            key={`${address} ${status.network}`}
+            network={status.network}
+            canSign={!watch}
+            draft={swapDraft}
+            onDraft={setSwapDraft}
+            note={swapNote}
+            onReview={(review, quote) => {
+              setSwapNote(null);
+              setView({ name: "review", review, entered: "", back: { name: "home" }, quote: quote.id });
+            }}
+            tabs={tabs}
+          />
+        );
+      }
       if (tab === "settings") {
         return (
           <SettingsView

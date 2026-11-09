@@ -3,7 +3,7 @@
 
 import { adapterCw20, adapterDenom, cw20Denom, evmDenom, isContractAddress, NETWORKS } from "@choice-wallet/chain";
 
-import type { Coin, CosmosDisplay, EvmDisplay, NetworkId, SendReview } from "./protocol";
+import type { Coin, CosmosDisplay, EvmDisplay, EvmSwapCall, NetworkId, SendReview, SwapStepInfo } from "./protocol";
 
 /** A token turned into its other form by the CW20 adapter, one for one. */
 export type Conversion = { from: Coin; to: Coin; recipient: string };
@@ -26,8 +26,24 @@ export type RevokeLine =
   | { kind: "rewards" }
   | { kind: "allowance"; token: string; spender: string };
 
+/** A swap through Choice, as the vault read it. */
+export type SwapLine = {
+  from: Coin;
+  /** The least that arrives (after Choice's fee, if any). */
+  minimum: Coin;
+  recipient: string;
+  feeBps: number;
+  venues: string[];
+  executor: "aggregator" | "router";
+};
+
+/** An allowance a swap needs first, for its amount. */
+export type ApprovalLine = { token: string; spender: string; amount: string; via: "token" | "permit2"; until?: number };
+
 export type Shown = {
   sends: { coins: Coin[]; to: string }[];
+  swaps: SwapLine[];
+  approvals: ApprovalLine[];
   converts: Conversion[];
   stakes: StakeLine[];
   revokes: RevokeLine[];
@@ -44,11 +60,54 @@ const obj = (v: unknown): Record<string, unknown> | null => (typeof v === "objec
 const text = (v: unknown): string | null => (typeof v === "string" ? v : null);
 const coins = (v: unknown): Coin[] => (Array.isArray(v) ? v.filter((c): c is Coin => typeof obj(c)?.["denom"] === "string" && typeof obj(c)?.["amount"] === "string") : []);
 
-export function shown(display: SendReview["display"], network: NetworkId): Shown {
+const NATIVE = "0x0000000000000000000000000000000000000000";
+
+/** Names Choice's contracts and Permit2 go by, where the review names a spender. */
+export function spenderName(network: NetworkId, a: string): string | null {
+  const c = NETWORKS[network].choice;
+  const is = (x: string | null) => x !== null && x.toLowerCase() === a.toLowerCase();
+  return is(c.permit2) ? "Permit2" : is(c.aggregator) ? "Choice's aggregator" : is(c.universalRouter) ? "Choice's router" : null;
+}
+
+/** `swap`, when given, names the wallet keys of a swap step's two tokens, so amounts show
+ *  as the tokens the user picked. */
+export function shown(display: SendReview["display"], network: NetworkId, swap?: SwapStepInfo): Shown {
   const net = NETWORKS[network];
   if (display.kind === "evm_transaction") {
     const d = display as EvmDisplay;
-    const base = { fee: [{ denom: net.feeDenom, amount: d.max_gas_cost }], memo: "", evm: true, converts: [], stakes: [], revokes: [] };
+    const base = { fee: [{ denom: net.feeDenom, amount: d.max_gas_cost }], memo: "", evm: true, converts: [], stakes: [], revokes: [], swaps: [], approvals: [] };
+    // An address as a wallet key: INJ, or the swap's own tokens, or an EVM token.
+    const key = (a: string, side?: "from" | "to") => {
+      if (a.toLowerCase() === NATIVE) return net.feeDenom;
+      if (swap && side) return swap[side];
+      return evmDenom(a);
+    };
+    if (d.call.type === "swap") {
+      const c = d.call as EvmSwapCall;
+      const venues = [...new Set(c.venues.map((v) => v.venue))];
+      return {
+        ...base,
+        sends: [],
+        others: [],
+        swaps: [
+          {
+            from: { denom: key(c.token_in, "from"), amount: c.amount_in },
+            minimum: { denom: key(c.token_out, "to"), amount: c.minimum_out },
+            recipient: c.recipient,
+            feeBps: c.fee_bps,
+            venues,
+            executor: c.executor,
+          },
+        ],
+      };
+    }
+    if (d.call.type === "approve" && d.call.amount !== "0") {
+      return { ...base, sends: [], others: [], approvals: [{ token: key(d.to, "from"), spender: d.call.spender, amount: d.call.amount, via: "token" }] };
+    }
+    if (d.call.type === "permit2_approve") {
+      const c = d.call;
+      return { ...base, sends: [], others: [], approvals: [{ token: key(c.token, "from"), spender: c.spender, amount: c.amount, via: "permit2", until: c.expiration }] };
+    }
     if (d.call.type === "erc20_transfer") return { ...base, sends: [{ coins: [{ denom: evmDenom(d.to), amount: d.call.amount }], to: d.call.to }], others: [] };
     if (d.call.type === "transfer") return { ...base, sends: [{ coins: [{ denom: net.feeDenom, amount: d.value }], to: d.to }], others: [] };
     // approve(spender, 0): an allowance taken back.
@@ -57,7 +116,7 @@ export function shown(display: SendReview["display"], network: NetworkId): Shown
     return { ...base, sends: [], others: [`Contract call to ${d.to}`] };
   }
   const c = display as CosmosDisplay;
-  const out: Shown = { sends: [], converts: [], stakes: [], revokes: [], others: [], fee: c.fee.amount, memo: c.memo, evm: false };
+  const out: Shown = { sends: [], swaps: [], approvals: [], converts: [], stakes: [], revokes: [], others: [], fee: c.fee.amount, memo: c.memo, evm: false };
   for (const msg of c.messages) {
     const m = msg as Record<string, unknown>;
     const kind = STAKE_KINDS[String(m["type"])];

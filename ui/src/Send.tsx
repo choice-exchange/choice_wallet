@@ -7,10 +7,10 @@ import { useBackend } from "./backend";
 import { RecipientPicker } from "./Contacts";
 import { ArrowDownIcon, CheckIcon, ChevronDownIcon, ClockIcon, CloseIcon, ExternalIcon } from "./icons";
 import { BackBar, Callout, formatUsd, Screen, shortAddress, tokenSub } from "./kit";
-import type { AccountInfo, Balance, Coin, Contact, NetworkId, RecipientCheck, SendReview, Sent, TokenInfo, TxState } from "./protocol";
+import type { AccountInfo, Balance, Coin, Contact, NetworkId, RecipientCheck, SendReview, Sent, SwapStepInfo, TokenInfo, TxState } from "./protocol";
 import { useRequest } from "./request";
 import { permissionName } from "./permissions";
-import { shown, type StakeLine } from "./review";
+import { shown, spenderName, type Shown, type StakeLine } from "./review";
 import { TokenMark } from "./TokenMark";
 
 /** An amount typed into a form: base units (or "max"), or what's wrong with it. */
@@ -273,7 +273,9 @@ export function Review({
   rewards?: Record<string, string>;
 }) {
   const { risk, tokens } = review;
-  const view = shown(review.display, network);
+  const view = shown(review.display, network, review.swap);
+  const swapping = view.swaps.length > 0;
+  const approving = view.approvals.length > 0 && !swapping;
   const converting = view.converts.length > 0 && view.sends.length === 0;
   const staking = view.stakes.length > 0 && view.sends.length === 0 && view.converts.length === 0;
   const revoking = view.revokes.length > 0 && view.sends.length === 0 && view.converts.length === 0 && view.stakes.length === 0;
@@ -305,7 +307,12 @@ export function Review({
 
   return (
     <Screen
-      top={<BackBar title={revoking ? "Review revoke" : staking ? "Review staking" : converting ? "Review conversion" : "Review send"} onBack={onCancel} />}
+      top={
+        <BackBar
+          title={swapping ? "Review swap" : approving ? "Review approval" : revoking ? "Review revoke" : staking ? "Review staking" : converting ? "Review conversion" : "Review send"}
+          onBack={onCancel}
+        />
+      }
       foot={
         <>
           {error && <Callout level="red">{error}</Callout>}
@@ -314,7 +321,25 @@ export function Review({
             disabled={busy || blocked || needsWord}
             onClick={() => void confirm()}
           >
-            {staking || revoking ? (busy ? "Sending…" : "Confirm") : converting ? (busy ? "Converting…" : "Confirm and convert") : busy ? "Sending…" : "Confirm and send"}
+            {swapping
+              ? busy
+                ? "Swapping…"
+                : "Confirm swap"
+              : approving
+                ? busy
+                  ? "Sending…"
+                  : "Approve"
+                : staking || revoking
+                  ? busy
+                    ? "Sending…"
+                    : "Confirm"
+                  : converting
+                    ? busy
+                      ? "Converting…"
+                      : "Confirm and convert"
+                    : busy
+                      ? "Sending…"
+                      : "Confirm and send"}
           </button>
           <button className="btn btn-quiet" onClick={onCancel} disabled={busy}>
             Cancel
@@ -328,6 +353,8 @@ export function Review({
           {f.message}
         </Callout>
       ))}
+      {review.swap && review.swap.left > 0 && <p className="meta">{review.swap.left === 1 ? "One more step after this." : "Two more steps after this."}</p>}
+      <SwapCards view={view} tokens={tokens} network={network} from={(review.display as { from?: string }).from ?? ""} {...(review.swap ? { step: review.swap } : {})} usd={usd} />
       {view.sends.map((m, i) => (
         <div className="surface-hero" key={i}>
           <div className="eyebrow">You send</div>
@@ -453,6 +480,12 @@ export function Review({
             {usd(view.fee) && <span className="meta"> {usd(view.fee)}</span>}
           </span>
         </div>
+        {view.swaps.map((sw, i) => (
+          <div className="row" key={`fee${i}`}>
+            <span>Choice fee</span>
+            <span>{sw.feeBps > 0 ? `${(sw.feeBps / 100).toFixed(2)}%` : "None"}</span>
+          </div>
+        ))}
         <div className="row">
           <span>Network</span>
           <span>
@@ -481,6 +514,93 @@ export function Review({
   );
 }
 
+
+/** How the vault's venue names read in a sentence. */
+const VENUE_TEXT: Record<string, string> = { Solidly: "a Solidly pool", "INJ orderbook": "the INJ orderbook", Adapter: "an adapter contract", Infinity: "an Infinity pool" };
+
+/** A swap and the approvals before it, as the vault read them. `step` is the wallet's own
+ *  swap step (Choice's expected amount; approvals are this swap's amount). */
+export function SwapCards({
+  view,
+  tokens,
+  network,
+  from,
+  step,
+  usd,
+}: {
+  view: Shown;
+  tokens: Record<string, TokenInfo>;
+  network: NetworkId;
+  from: string;
+  step?: SwapStepInfo;
+  usd?: (cs: Coin[]) => string | null;
+}) {
+  const coin = (c: Coin) => {
+    const t = tokens[c.denom];
+    return t ? `${formatShort(c.amount, t.decimals, 6)} ${t.symbol}` : `${c.amount} ${shortDenom(c.denom)}`;
+  };
+  // A minimum shown to 6 decimals, rounded down: what arrives is never less than it says.
+  const floored = (c: Coin): Coin => {
+    const t = tokens[c.denom];
+    if (!t || t.decimals <= 6) return c;
+    const unit = 10n ** BigInt(t.decimals - 6);
+    return { ...c, amount: (BigInt(c.amount) - (BigInt(c.amount) % unit)).toString() };
+  };
+  return (
+    <>
+      {view.swaps.map((sw, i) => {
+        return (
+          <div className="surface-hero" key={`w${i}`}>
+            <div className="eyebrow">You swap</div>
+            <Figure coin={sw.from} t={tokens[sw.from.denom]} />
+            {usd?.([sw.from]) && <div className="meta num" style={{ marginTop: 4, marginLeft: 46 }}>{usd?.([sw.from])}</div>}
+            {realName(sw.from.denom, tokens[sw.from.denom]) && (
+              <div className="meta mono" style={{ marginTop: 4, marginLeft: 46, wordBreak: "break-all" }}>
+                {realName(sw.from.denom, tokens[sw.from.denom])}
+              </div>
+            )}
+            <div className="convert-arrow" aria-hidden="true">
+              <ArrowDownIcon size={18} />
+            </div>
+            <div className="eyebrow">You get at least</div>
+            <Figure coin={floored(sw.minimum)} t={tokens[sw.minimum.denom]} />
+            {step && <div className="meta" style={{ marginTop: 4, marginLeft: 46 }}>Choice expects {coin({ denom: sw.minimum.denom, amount: step.expectedOut })}.</div>}
+            {realName(sw.minimum.denom, tokens[sw.minimum.denom]) && (
+              <div className="meta mono" style={{ marginTop: 4, marginLeft: 46, wordBreak: "break-all" }}>
+                {realName(sw.minimum.denom, tokens[sw.minimum.denom])}
+              </div>
+            )}
+            {sw.recipient.toLowerCase() !== from.toLowerCase() && (
+              <div className="meta danger-text" style={{ marginTop: 8, wordBreak: "break-all" }}>
+                Paid to {sw.recipient}
+              </div>
+            )}
+            <p className="meta" style={{ marginTop: 10 }}>
+              {sw.venues.length > 0 ? `Through ${sw.venues.map((v) => VENUE_TEXT[v] ?? v).join(", ")}. ` : ""}If less would arrive, the swap fails and only the network fee is spent.
+            </p>
+          </div>
+        );
+      })}
+      {view.approvals.map((a, i) => (
+        <div className="surface-hero" key={`a${i}`}>
+          <div className="eyebrow">You allow</div>
+          <div className="validator-name" title={a.spender}>
+            {spenderName(network, a.spender) ?? shortAddress(a.spender)}
+          </div>
+          <div className="eyebrow" style={{ marginTop: 10 }}>
+            {a.via === "permit2" ? "To take through Permit2" : "To move"}
+          </div>
+          <Figure coin={{ denom: a.token, amount: a.amount }} t={tokens[a.token]} />
+          <p className="meta" style={{ marginTop: 10 }}>
+            {a.until ? `Until ${new Date(a.until * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}. ` : ""}
+            {step ? "Exactly this swap's amount." : ""}
+          </p>
+        </div>
+      ))}
+    </>
+  );
+}
+
 const STAKE_VERB: Record<StakeLine["kind"], string> = {
   stake: "You stake",
   unstake: "You unstake",
@@ -496,6 +616,7 @@ export function SentView({
   sent,
   onDone,
   onSave,
+  onNext,
   converting = false,
   done,
 }: {
@@ -503,6 +624,8 @@ export function SentView({
   onDone: () => void;
   /** Offered when the recipient isn't saved yet: save it to the address book. */
   onSave?: (() => void) | undefined;
+  /** A swap's next step, offered once this one is in a block. */
+  onNext?: (() => void) | undefined;
   converting?: boolean;
   done?: string;
 }) {
@@ -548,9 +671,15 @@ export function SentView({
           <button className="btn" onClick={() => backend.openLink(sent.explorer)}>
             View on explorer <ExternalIcon size={16} />
           </button>
-          <button className="btn btn-gold" onClick={onDone}>
-            Done
-          </button>
+          {onNext && s === "success" ? (
+            <button className="btn btn-gold" onClick={onNext}>
+              Next step
+            </button>
+          ) : (
+            <button className={onNext ? "btn" : "btn btn-gold"} onClick={onDone}>
+              Done
+            </button>
+          )}
           {onSave && s !== "failed" && (
             <button className="btn btn-quiet" onClick={onSave}>
               Save address

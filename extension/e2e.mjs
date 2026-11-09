@@ -31,6 +31,9 @@ const SCAM = "factory/inj1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqe2hm49/usdt";
 // SHROOM's CW20 (a published mainnet contract), held: 3, added by its contract below.
 const CW20 = "inj1300xcg9naqy00fujsr9r8alwk7dh65uqu87xm8";
 const broadcasts = [];
+// EVM transactions the mock JSON-RPC received (raw hex), for the swap step.
+const evmRaw = [];
+const PERMIT2_APPROVED = "095ea7b3000000000000000000000000000000000022d473030f116ddee9f6b43ac78ba3";
 const sha = (b64) => createHash("sha256").update(Buffer.from(b64, "base64")).digest("hex").toUpperCase();
 // Indexed transactions for Activity, shaped like mainnet's (bank events and the fee payer).
 const FRIEND = "inj1nk9x9ajk4rgkzhqjjn7hr6w0k0jg2kj0knl55v";
@@ -111,6 +114,45 @@ const lcd = createServer((req, res) => {
         dispatchEvent(new Event("eip6963:requestProvider"));
         window.__ask = (method, params) => { const w = window.__wallets.find((d) => d.info.rdns === "exchange.choice.wallet"); window.__r = w.provider.request({ method, params }).then((r) => ({ ok: r }), (e) => ({ code: e.code, message: e.message })); };
       </script>`);
+    }
+    if (req.method === "POST" && p === "/") {
+      // EVM JSON-RPC, for the swap step: 5 INJ, no allowances until the wallet sends them.
+      const rpc = (r) => {
+        const ok = (result) => ({ jsonrpc: "2.0", id: r.id, result });
+        const w = (n) => BigInt(n).toString(16).padStart(64, "0");
+        const sent = evmRaw.join(" ").toLowerCase();
+        switch (r.method) {
+          case "eth_chainId":
+            return ok("0x6f0");
+          case "eth_blockNumber":
+            return ok("0x1");
+          case "eth_getTransactionCount":
+            return ok(`0x${(5 + evmRaw.length).toString(16)}`);
+          case "eth_getBlockByNumber":
+            return ok({ number: "0x1", baseFeePerGas: "0x9896800" });
+          case "eth_maxPriorityFeePerGas":
+            return ok("0x0");
+          case "eth_getBalance":
+            return ok("0x4563918244f40000");
+          case "eth_estimateGas":
+            return ok("0x3d090");
+          case "eth_sendRawTransaction":
+            evmRaw.push(r.params[0]);
+            return ok(`0x${sha(Buffer.from(r.params[0].slice(2), "hex").toString("base64")).toLowerCase()}`);
+          case "eth_getTransactionReceipt":
+            return ok({ status: "0x1" });
+          case "eth_call": {
+            const data = String(r.params[0].data);
+            if (data.startsWith("0xdd62ed3e")) return ok(`0x${w(sent.includes(PERMIT2_APPROVED) ? 10n ** 30n : 0n)}`);
+            if (data.startsWith("0x927da105")) return ok(sent.includes("87517c45") ? `0x${w(10n ** 30n)}${w(Math.floor(Date.now() / 1000) + 1800)}${w(0)}` : `0x${w(0)}${w(0)}${w(0)}`);
+            return ok(`0x${w(0)}`);
+          }
+          default:
+            return { jsonrpc: "2.0", id: r.id, error: { code: -32601, message: "not here" } };
+        }
+      };
+      const calls = JSON.parse(body);
+      return reply(200, Array.isArray(calls) ? calls.map(rpc) : rpc(calls));
     }
     const tail = p.split("/").pop();
     if (p.endsWith("/node_info")) return reply(200, { default_node_info: { network: "injective-1" } });
@@ -720,6 +762,82 @@ try {
   await p.click("Wallet");
   await p.waitText("Manage", 15000);
   console.log("address book: a contact with its memo picked in Send and named in the review, red without the memo; an exchange found from its deposits, sent with a memo and saved");
+
+  // 7e. Swaps, quoted by Choice's real routing API (its calldata pays this wallet), sent to
+  // the mock EVM endpoint. INJ in is one step; USDT in needs two exact approvals first.
+  // Settings fill in once loaded (the LCD field shows the mock); only then edit them.
+  const settingsLoaded = async () => {
+    for (let t = 0; t < 10000 && !(await p.eval(`document.querySelector("#lcd-endpoints")?.value.includes(${JSON.stringify(lcdUrl)}) ?? false`)); t += 100) await sleep(100);
+  };
+  await p.click("Settings");
+  await settingsLoaded();
+  await p.fill("textarea", 1, lcdUrl);
+  await p.click("Save");
+  await p.waitText("Manage", 15000);
+  /** Pick a token in the swap picker once its row is there (the list loads with the screen). */
+  const pickToken = async (denom) => {
+    const sel = JSON.stringify(`.token[title="${denom}"]`);
+    for (let t = 0; t < 15000 && !(await p.eval(`!!document.querySelector(${sel})`)); t += 100) await sleep(100);
+    await p.eval(`document.querySelector(${sel}).click()`);
+  };
+  await p.click("Swap");
+  await p.waitText("YOU PAY");
+  await p.click("Choose the token to get");
+  await p.waitText("Swap to");
+  await pickToken(USDT);
+  await p.fill('input[aria-label="Amount to pay"]', 0, "0.5");
+  await p.waitText("At least", 30000);
+  await p.waitText("Choice fee");
+  await p.shot("16p-swap-quote");
+  await p.click("Review swap");
+  await p.waitText("Review swap", 30000);
+  for (const t of ["YOU SWAP", "YOU GET AT LEAST", "Choice expects", "0.5 INJ", "A swap through Choice's aggregator"]) await p.waitText(t);
+  await p.shot("16q-review-swap");
+  await p.click("Confirm swap");
+  await p.waitText("Swapped", 15000);
+  if (evmRaw.length !== 1 || !evmRaw[0].toLowerCase().includes("a705d0d5f549af25024038dc575e3074b9bd37c9")) throw new Error("the swap wasn't sent to Choice's aggregator");
+  await p.click("Done");
+  await p.waitText("Manage", 15000);
+
+  await p.click("Swap");
+  await p.waitText("YOU PAY");
+  await p.click("Choose the token to pay");
+  await p.waitText("Swap from");
+  await pickToken(USDT);
+  await p.click("Choose the token to get");
+  await pickToken("inj");
+  await p.fill('input[aria-label="Amount to pay"]', 0, "1");
+  await p.waitText("Two approvals, for this amount only", 30000);
+  await p.shot("16r-swap-usdt-quote");
+  await p.click("Review (3 steps)");
+  await p.waitText("Review approval", 30000);
+  for (const t of ["YOU ALLOW", "Permit2", "Exactly this swap's amount.", "2 more steps after this."]) await p.waitText(t);
+  await p.shot("16s-review-approve");
+  await p.click("Approve");
+  await p.waitText("Next step", 15000);
+  await p.click("Next step");
+  await p.waitText("TO TAKE THROUGH PERMIT2", 30000);
+  await p.waitText("Choice's aggregator");
+  await p.shot("16t-review-permit2");
+  await p.click("Approve");
+  await p.waitText("Next step", 15000);
+  await p.click("Next step");
+  await p.waitText("YOU GET AT LEAST", 30000);
+  await p.shot("16u-review-swap-usdt");
+  await p.click("Confirm swap");
+  await p.waitText("Swapped", 15000);
+  const swapTxs = evmRaw.map((r) => r.toLowerCase());
+  if (swapTxs.length !== 4 || !swapTxs[1].includes(PERMIT2_APPROVED) || !swapTxs[2].includes("87517c45") || !swapTxs[3].includes("a705d0d5f549af25024038dc575e3074b9bd37c9")) {
+    throw new Error("the USDT swap's three transactions aren't approve, Permit2, swap");
+  }
+  await p.click("Done");
+  await p.waitText("Manage", 15000);
+  await p.click("Settings");
+  await settingsLoaded();
+  await p.fill("textarea", 1, "https://sentry.evm-rpc.injective.network\nhttps://injective-evm-rpc.publicnode.com");
+  await p.click("Save");
+  await p.waitText("Manage", 15000);
+  console.log("swaps: INJ to USDT in one step; USDT to INJ through approve, Permit2 and the swap, each exact; all quoted live by Choice");
 
   // 8. A site: finds the wallet through EIP-6963 (window.ethereum untouched), connects
   // through an approval window (rejected once, then approved), gets a message signed, and
