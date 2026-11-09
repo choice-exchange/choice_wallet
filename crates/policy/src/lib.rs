@@ -20,6 +20,7 @@
 
 mod addresses;
 mod amounts;
+mod bridge;
 mod cosmos;
 mod evm;
 mod message;

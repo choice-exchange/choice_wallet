@@ -6,14 +6,14 @@ use choice_wallet_evm::U256;
 use choice_wallet_evm::abi;
 use choice_wallet_evm::request::{Call, TxRequest};
 use choice_wallet_injective::chain::Network;
-use choice_wallet_injective::choice;
+use choice_wallet_injective::{cctp, choice};
 use serde_json::json;
 
 use crate::addresses::{known_contract, recipient};
 use crate::amounts::{Outflows, UNLIMITED, balance};
-use crate::swap;
 use crate::text::short;
 use crate::{Assessment, Context, Finding, Level, finding, site};
+use crate::{bridge, swap};
 
 /// Injective precompiles.
 const BANK: u8 = 0x64;
@@ -235,8 +235,17 @@ pub fn evm_transaction(req: &TxRequest, network: Option<&Network>, ctx: &Context
     if !tx.value.is_zero() && !to_self {
         outflows.add("native", tx.value);
     }
-    match (&swapped, network) {
-        (Some(read), Some(n)) => swap::swap(&n.choice, &req.from, tx.value, read, &mut out),
+    let bridged = network.and_then(|n| cctp::burn(&n.cctp, &tx.to, tx.value, &tx.data));
+    match (&swapped, &bridged, network) {
+        (Some(read), _, Some(n)) => swap::swap(&n.choice, &req.from, tx.value, read, &mut out),
+        (_, Some(read), Some(n)) => {
+            bridge::burn(&n.cctp, &req.from, read, &mut out);
+            if let Ok(b) = read
+                && let Some(amount) = bridge::outflow(&n.cctp, b, &req.from)
+            {
+                outflows.add(&b.burn_token.to_checksum_hex(), amount);
+            }
+        }
         _ => match tx.call_kind() {
             Call::Transfer => recipient(ctx, &to, None, &mut out),
             Call::Erc20Transfer { to: r, amount } => {
@@ -289,7 +298,9 @@ fn contract_call(
     match sel {
         APPROVE | INCREASE_ALLOWANCE if data.len() == 68 => {
             if let (Some(spender), Some(amount)) = (address_arg(data, 0), uint_arg(data, 1)) {
-                let named = choice.and_then(|c| swap::known_name(c, &spender));
+                let named = network.and_then(|n| {
+                    swap::known_name(&n.choice, &spender).or_else(|| bridge::known_name(&n.cctp, &spender))
+                });
                 out.push(erc20_allowance(
                     ctx,
                     &to,
@@ -759,5 +770,98 @@ mod tests {
             a.findings[0].message,
             "Permit2 could spend this token up to the amount shown."
         );
+    }
+
+    /// A burn on mainnet, built like the wallet's Bridge screen builds one.
+    fn burn_req(domain: u32, recipient: [u8; 32], hook: cctp::Hook, max_fee: u128) -> TxRequest {
+        let b = cctp::Burn {
+            amount: U256::from_u128(25_000_000),
+            domain,
+            mint_recipient: recipient,
+            burn_token: MAINNET.cctp.usdc(),
+            destination_caller: [0; 32],
+            max_fee: U256::from_u128(max_fee),
+            min_finality: cctp::STANDARD,
+            hook,
+        };
+        req(MAINNET.cctp.token_messenger(), cctp::burn_calldata(&b))
+    }
+
+    #[test]
+    fn cctp_bridges() {
+        let me = addr_word(FROM);
+        // To this account's own address on Base, delivered by Circle: nothing to warn about.
+        let a = grade(&burn_req(6, me, cctp::Hook::Forward, 200_000));
+        assert_eq!(rules_of(&a), ["bridge", "bridge_to_self", "bridge_forward"]);
+        assert_eq!(a.level, Level::Info);
+        assert_eq!(a.findings[0].params["chain"], "Base");
+        assert_eq!(
+            a.findings[0].params["recipient"],
+            EthAddress::from_bytes(FROM).to_checksum_hex()
+        );
+        // Someone else's address there.
+        let other = grade(&burn_req(6, addr_word([0x33; 20]), cctp::Hook::Forward, 200_000));
+        assert_eq!(other.level, Level::Amber);
+        assert!(rules_of(&other).contains(&"bridge_recipient"));
+        // Solana: the owner Circle opens the account for is the one named.
+        let sol = grade(&burn_req(
+            5,
+            [7; 32],
+            cctp::Hook::ForwardWithAccount { owner: [9; 32] },
+            300_000,
+        ));
+        let named = sol.findings.iter().find(|f| f.rule == "bridge_recipient").unwrap();
+        assert_eq!(named.params["recipient"], cctp::base58(&[9; 32]));
+        // Nobody delivers; a chain Circle doesn't forward to; an unknown domain; an EVM
+        // recipient no address can be; Circle keeping all of it, or more than 5%.
+        assert!(rules_of(&grade(&burn_req(6, me, cctp::Hook::None, 0))).contains(&"bridge_claim"));
+        assert!(rules_of(&grade(&burn_req(33, me, cctp::Hook::Forward, 200_000))).contains(&"bridge_no_forwarding"));
+        assert_eq!(
+            rules_of(&grade(&burn_req(29, me, cctp::Hook::Forward, 0))),
+            ["bridge_unknown_chain"]
+        );
+        assert_eq!(grade(&burn_req(6, [7; 32], cctp::Hook::Forward, 0)).level, Level::Red);
+        assert_eq!(
+            grade(&burn_req(6, me, cctp::Hook::Forward, 25_000_000)).level,
+            Level::Red
+        );
+        assert!(rules_of(&grade(&burn_req(6, me, cctp::Hook::Forward, 1_250_001))).contains(&"bridge_fee_high"));
+        assert!(!rules_of(&grade(&burn_req(6, me, cctp::Hook::Forward, 1_250_000))).contains(&"bridge_fee_high"));
+        // Junk to TokenMessengerV2.
+        assert_eq!(
+            rules_of(&grade(&req(MAINNET.cctp.token_messenger(), vec![1, 2, 3, 4]))),
+            ["bridge_unreadable"]
+        );
+        // The approval it needs names Circle's bridge.
+        let approve = grade(&req(
+            MAINNET.cctp.usdc(),
+            call(
+                APPROVE,
+                &[
+                    addr_word(*MAINNET.cctp.token_messenger().as_bytes()),
+                    U256::from_u128(25_000_000).to_be_bytes(),
+                ],
+            ),
+        ));
+        assert!(
+            approve.findings[0]
+                .message
+                .starts_with("Circle's bridge (CCTP) could spend"),
+            "{}",
+            approve.findings[0].message
+        );
+        // All of this account's USDC to someone else counts as leaving; to itself it doesn't.
+        let ctx = Context {
+            balances: [(MAINNET.cctp.usdc().to_checksum_hex(), "25000000".to_owned())].into(),
+            ..Context::default()
+        };
+        let mine = evm_transaction(&burn_req(6, me, cctp::Hook::Forward, 200_000), Some(&MAINNET), &ctx);
+        assert!(!rules_of(&mine).contains(&"most_of_balance"));
+        let theirs = evm_transaction(
+            &burn_req(6, addr_word([0x33; 20]), cctp::Hook::Forward, 200_000),
+            Some(&MAINNET),
+            &ctx,
+        );
+        assert!(rules_of(&theirs).contains(&"most_of_balance"));
     }
 }

@@ -255,7 +255,8 @@ pub(crate) struct EvmParams {
     max_priority_fee_per_gas: String,
 }
 
-/// One step of a Choice swap on Injective EVM, as the wallet builds it.
+/// A contract call the wallet makes itself on Injective EVM: a step of a Choice swap, an NFT
+/// transfer, or a step of a bridge transfer.
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum OwnCall {
@@ -275,6 +276,14 @@ pub(crate) enum OwnCall {
     /// ERC721 `safeTransferFrom(from, to, token_id)` on `collection`, to the recipient `to`.
     /// `amount` is "0".
     NftTransfer { collection: String, token_id: String },
+    /// `approve(TokenMessengerV2, amount)` on this network's USDC (`to`): exactly what one
+    /// bridge transfer burns.
+    BridgeApprove,
+    /// A bridge transfer: `TokenMessengerV2` calldata (built by `injective-usdc-bridge`),
+    /// sent to it (`to`). Built only when the vault reads it as a USDC burn to a chain it
+    /// names, that Circle delivers, to an address that chain can use, with Circle's most
+    /// below the amount. `amount` is "0".
+    Bridge { data: String },
 }
 
 fn own_call(
@@ -288,7 +297,7 @@ fn own_call(
     use choice_wallet_injective::choice;
     let network = entry
         .injective
-        .ok_or_else(|| VaultError::new(INVALID, "Choice swaps are Injective only"))?;
+        .ok_or_else(|| VaultError::new(INVALID, "the wallet's own contract calls are Injective only"))?;
     let c = &network.choice;
     let parse = |s: &str| {
         choice_wallet_core::EthAddress::parse_hex(&entry.parse_address(s)?).map_err(|_| VaultError::bad("address"))
@@ -337,6 +346,59 @@ fn own_call(
             ))
         }
         OwnCall::NftTransfer { .. } => unreachable!("built in evm()"),
+        OwnCall::BridgeApprove => {
+            let cctp = &network.cctp;
+            if to != cctp.usdc() {
+                return Err(VaultError::bad("a bridge approval is on USDC"));
+            }
+            if amount.is_zero() || amount >= unlimited {
+                return Err(VaultError::bad(
+                    "an approval for a bridge transfer is for the exact amount",
+                ));
+            }
+            Ok(Eip1559Tx::contract_call(
+                chain_id,
+                to,
+                U256::ZERO,
+                choice_wallet_evm::erc20::approve_calldata(&cctp.token_messenger(), &amount),
+            ))
+        }
+        OwnCall::Bridge { data } => {
+            use choice_wallet_injective::cctp::{self, AddressKind, Hook};
+            let c = &network.cctp;
+            let data = hex(data.strip_prefix("0x").unwrap_or(data), "data")?;
+            if !amount.is_zero() {
+                return Err(VaultError::bad("a bridge transfer sends no INJ"));
+            }
+            let b = cctp::burn(c, &to, amount, &data)
+                .ok_or_else(|| VaultError::bad("that isn't Circle's TokenMessengerV2 on this network"))?
+                .map_err(|e| VaultError::bad(format!("not a burn the wallet can read: {e}")))?;
+            let refuse = |why: &str| Err(VaultError::bad(format!("refused: {why}")));
+            let Some(domain) = c.domain(b.domain) else {
+                return refuse("a chain the wallet doesn't name");
+            };
+            if b.burn_token != c.usdc() {
+                return refuse("it burns a token other than USDC");
+            }
+            let forwarded = match b.hook {
+                Hook::Forward => true,
+                Hook::ForwardWithAccount { .. } => domain.kind == AddressKind::Solana,
+                Hook::None | Hook::Other(_) => false,
+            };
+            if !forwarded || !domain.forwarding || !b.permissionless() {
+                return refuse("the wallet's transfers are delivered by Circle");
+            }
+            if b.recipient(c).is_none() {
+                return refuse("the recipient isn't an address on that chain");
+            }
+            if b.max_fee >= b.amount {
+                return refuse("Circle's fee could take all of it");
+            }
+            if b.min_finality != cctp::FAST && b.min_finality != cctp::STANDARD {
+                return refuse("an unknown finality threshold");
+            }
+            Ok(Eip1559Tx::contract_call(chain_id, to, U256::ZERO, data))
+        }
         OwnCall::Permit2Approve {
             token,
             spender,

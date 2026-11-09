@@ -783,6 +783,71 @@ fn own_revokes_build_decode_and_sign() {
     assert_eq!(code("build_evm", params(token, "0", Some(spender), None)), "bad_request");
 }
 
+/// A bridge transfer's calldata on mainnet, as `injective-usdc-bridge` builds it.
+fn burn_data(recipient: &str, domain: u32, hook: choice_wallet_injective::cctp::Hook, max_fee: u128) -> String {
+    use choice_wallet_core::{EthAddress, hexutil};
+    use choice_wallet_evm::U256;
+    use choice_wallet_injective::{cctp, chain::MAINNET};
+    let mut mint_recipient = [0u8; 32];
+    mint_recipient[12..].copy_from_slice(EthAddress::parse_hex(recipient).unwrap().as_bytes());
+    let b = cctp::Burn {
+        amount: U256::from_u128(25_000_000),
+        domain,
+        mint_recipient,
+        burn_token: MAINNET.cctp.usdc(),
+        destination_caller: [0; 32],
+        max_fee: U256::from_u128(max_fee),
+        min_finality: cctp::STANDARD,
+        hook,
+    };
+    format!("0x{}", hexutil::encode(&cctp::burn_calldata(&b)))
+}
+
+#[test]
+fn own_bridge_transfer_builds_decodes_and_signs() {
+    use choice_wallet_injective::cctp::{Hook, MAINNET};
+    let me = choice_route("m-inj-usdt")["api"]["recipient"].as_str().unwrap().to_owned();
+    let tm = MAINNET.token_messenger;
+    let bridge = |data: String| evm_params("eip155:1776", &me, tm, "0", json!({ "type": "bridge", "data": data }));
+    let data = burn_data(&me, 6, Hook::Forward, 200_000);
+    let request = ok("build_evm", bridge(data.clone()))["request"].clone();
+    assert_eq!(request["evm_transaction"]["tx"]["data"], data);
+    let d = ok("decode", json!({ "request": request }));
+    let call = &d["display"]["call"];
+    assert_eq!(call["type"], "bridge");
+    assert_eq!(call["chain"], "Base");
+    assert_eq!(call["recipient"], me);
+    assert_eq!(call["amount"], "25000000");
+    assert_eq!(call["max_fee"], "200000");
+    assert_eq!(call["delivery"], "circle");
+    assert_eq!(d["risk"]["level"], "info");
+    assert_eq!(rules_of(&d), ["bridge", "bridge_to_self", "bridge_forward"]);
+    assert!(approve_and_sign(&request, account(0))["raw"].is_string());
+
+    // Its approval: on USDC, for Circle's TokenMessengerV2, the exact amount.
+    let approve = ok("build_evm", evm_params("eip155:1776", &me, MAINNET.usdc, "25000000", json!({ "type": "bridge_approve" })))["request"].clone();
+    let d = ok("decode", json!({ "request": approve }));
+    assert_eq!(d["display"]["call"]["type"], "approve");
+    assert_eq!(d["display"]["call"]["spender"], tm);
+    assert_eq!(d["display"]["call"]["amount"], "25000000");
+    assert_eq!(code("build_evm", evm_params("eip155:1776", &me, tm, "25000000", json!({ "type": "bridge_approve" }))), "bad_request");
+    assert_eq!(code("build_evm", evm_params("eip155:1776", &me, MAINNET.usdc, "0", json!({ "type": "bridge_approve" }))), "bad_request");
+
+    // Refused: nobody to deliver, a chain Circle doesn't deliver to, a chain the wallet
+    // doesn't name, an EVM recipient no address can be, Circle keeping all of it, INJ sent
+    // with it, another contract, and calldata that isn't a burn.
+    assert_eq!(code("build_evm", bridge(burn_data(&me, 6, Hook::None, 0))), "bad_request");
+    assert_eq!(code("build_evm", bridge(burn_data(&me, 33, Hook::Forward, 200_000))), "bad_request");
+    assert_eq!(code("build_evm", bridge(burn_data(&me, 12, Hook::Forward, 200_000))), "bad_request");
+    assert_eq!(code("build_evm", bridge(burn_data(&me, 6, Hook::Forward, 25_000_000))), "bad_request");
+    let mut sent_inj = bridge(data.clone());
+    sent_inj["amount"] = "1".into();
+    assert_eq!(code("build_evm", sent_inj), "bad_request");
+    let elsewhere = evm_params("eip155:1776", &me, MAINNET.usdc, "0", json!({ "type": "bridge", "data": data }));
+    assert_eq!(code("build_evm", elsewhere), "bad_request");
+    assert_eq!(code("build_evm", bridge("0x12345678".into())), "bad_request");
+}
+
 /// A real route from Choice's API (2026-11-09), paying the test phrase's account 0.
 fn choice_route(name: &str) -> Value {
     let v: Value = serde_json::from_str(include_str!("../../injective/tests/choice_routes.json")).unwrap();

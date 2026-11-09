@@ -41,6 +41,8 @@ pub struct Network {
     pub eip712_chain_ids: &'static [u64],
     /// Choice's swap contracts on the EVM side.
     pub choice: crate::choice::Choice,
+    /// Circle's CCTP V2: native USDC to other chains.
+    pub cctp: crate::cctp::Cctp,
 }
 
 impl Network {
@@ -57,6 +59,7 @@ pub const MAINNET: Network = Network {
     cw20_adapter: Some("inj14ejqjyq8um4p3xfqj74yld5waqljf88f9eneuk"),
     eip712_chain_ids: &[1776, 1],
     choice: crate::choice::MAINNET,
+    cctp: crate::cctp::MAINNET,
 };
 
 /// Injective testnet. Its adapter (Injective's, label "Cw20Adapter") was checked with a
@@ -67,6 +70,7 @@ pub const TESTNET: Network = Network {
     cw20_adapter: Some("inj1hdvy6tl89llqy3ze8lv6mz5qh66sx9enn0jxg6"),
     eip712_chain_ids: &[1439, 11155111],
     choice: crate::choice::TESTNET,
+    cctp: crate::cctp::TESTNET,
 };
 
 /// Every Injective network the wallet knows.

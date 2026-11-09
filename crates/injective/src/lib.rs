@@ -6,6 +6,7 @@
 //! - [`eip712`]: Cosmos transactions signed as EIP-712 v2 typed data by EVM wallets.
 //! - [`choice`]: swaps through Choice's aggregator and router on the EVM side, read from
 //!   their calldata, and the contracts pinned per network.
+//! - [`cctp`]: native USDC to other chains over Circle's CCTP V2, read from burn calldata.
 //!
 //! How each kind of token moves:
 //!
@@ -24,6 +25,7 @@
 #![warn(missing_docs)]
 
 pub mod adapter;
+pub mod cctp;
 pub mod chain;
 pub mod choice;
 pub mod eip712;

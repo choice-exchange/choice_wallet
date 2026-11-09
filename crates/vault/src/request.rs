@@ -379,10 +379,11 @@ fn amino_display(kind: &str, entry: &Entry, pk: &PublicKey, tx: &AminoTx) -> Val
     })
 }
 
-/// A contract call the wallet reads: a Choice swap, an ERC20 approval, a Permit2 approval;
-/// otherwise just its selector.
+/// A contract call the wallet reads: a Choice swap, a CCTP bridge transfer, an ERC20
+/// approval, a Permit2 approval; otherwise just its selector.
 fn contract_display(entry: &Entry, r: &TxRequest, selector: Option<[u8; 4]>) -> Value {
     use choice_wallet_evm::abi::{self, Ty};
+    use choice_wallet_injective::cctp;
     use choice_wallet_injective::choice::{self, Executor, Venue};
     let tx = &r.tx;
     let hex_addr = |a: &EthAddress| a.to_checksum_hex();
@@ -432,6 +433,31 @@ fn contract_display(entry: &Entry, r: &TxRequest, selector: Option<[u8; 4]>) -> 
                 "amount": p.amount.to_string(),
                 "expiration": p.expiration,
             })),
+        });
+    }
+    if let Some(read) = cctp::burn(&network.cctp, &tx.to, tx.value, &tx.data) {
+        let Ok(b) = read else {
+            return json!({ "type": "contract", "selector": plain["selector"], "unreadable_bridge": true });
+        };
+        return json!({
+            "type": "bridge",
+            "amount": b.amount.to_string(),
+            "token": hex_addr(&b.burn_token),
+            "domain": b.domain,
+            "chain": network.cctp.domain(b.domain).map(|d| d.name),
+            "recipient": b.recipient(&network.cctp).map(|r| r.display()),
+            "max_fee": b.max_fee.to_string(),
+            "finality": b.min_finality,
+            "delivery": match &b.hook {
+                cctp::Hook::Forward | cctp::Hook::ForwardWithAccount { .. } => "circle",
+                cctp::Hook::None => "claim",
+                cctp::Hook::Other(_) => "hook",
+            },
+            "account_owner": match &b.hook {
+                cctp::Hook::ForwardWithAccount { owner } => Some(cctp::base58(owner)),
+                _ => None,
+            },
+            "destination_caller": (!b.permissionless()).then(|| format!("0x{}", hexutil::encode(&b.destination_caller))),
         });
     }
     let args = tx.data.get(4..).unwrap_or_default();
