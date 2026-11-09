@@ -14,7 +14,7 @@ test("chain decimals round down; subaccount IDs are address and nonce", () => {
   assert.equal(decFloor("12.999999999999999999"), 12n);
   assert.equal(decFloor("7"), 7n);
   for (const bad of ["", "1e5", "1.0000000000000000001", "abc", 5]) assert.equal(decFloor(bad), null, String(bad));
-  assert.equal(subaccountId("0x47A660f365f7439CD3c411B8A7Ee69CF8e219e15", 1), "0x47a660f365f7439cd3c411b8a7ee69cf8e219e15000000000000000000000001");
+  assert.equal(subaccountId("0x9858EfFD232B4033E47d90003D41EC34EcaEda94", 1), "0x9858effd232b4033e47d90003d41ec34ecaeda94000000000000000000000001");
   assert.throws(() => subaccountId("0x47a6", 1));
 });
 
