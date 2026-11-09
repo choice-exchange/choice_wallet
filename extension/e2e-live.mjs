@@ -24,7 +24,9 @@
 // INJ to the phrase's second account, and checks the notifications the service worker made:
 // the send confirmed, the receive on the other account, each once; then the same for 1 of
 // each token in NOTIFY_TOKENS (comma-separated: a CW20 inj1… and an ERC20 0x… this account
-// holds), added by contract. Otherwise it sends `amount` INJ.
+// holds), added by contract. With `solana`, the account's Solana side beside testnet (Solana
+// Devnet, its own key): Home and its Receive tab, then `amount` SOL to `recipient` (a Solana
+// address) through the review, checked on devnet. Otherwise it sends `amount` INJ.
 //
 // The phrase is read from the file and typed into the import screen. It is never printed
 // and that screen is never captured. The browser profile, with the encrypted keystore in
@@ -1314,6 +1316,41 @@ try {
     if (before.base - after.base !== amountIn) throw new Error("USDC on Base Sepolia moved by another amount");
     if (after.inj - before.inj < minimum) throw new Error("less arrived on Injective than the minimum shown");
     console.log("LIVE BRIDGE IN OK");
+  } else if (tokenContract === "solana") {
+    const sol = async (method, params) => {
+      const r = await fetch("https://api.devnet.solana.com", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) });
+      return (await r.json()).result;
+    };
+    // Section heads are uppercase on screen, and in innerText.
+    await waitText("SOLANA DEVNET", 30000);
+    await shot("live-sol1-home");
+    await click("Receive");
+    await waitText("Copy address");
+    await click("Solana");
+    await waitText("SOLANA DEVNET ADDRESS");
+    const me = await evalIn(`document.querySelector("code.address").textContent.trim()`);
+    console.log("Solana address", me);
+    await shot("live-sol2-receive");
+    await click("Back");
+    await waitText("SOLANA DEVNET", 20000);
+    const lamports = BigInt(Math.round(Number(amount) * 1e9));
+    const before = { me: BigInt((await sol("getBalance", [me])).value), to: BigInt((await sol("getBalance", [recipient])).value) };
+    await openToken("sol");
+    await waitText("this account's Solana address", 20000);
+    await fill('input[aria-label="Amount"]', 0, amount);
+    await fill('input[aria-label="To"]', 0, recipient);
+    await click("Review");
+    await waitText("Simulated on", 30000);
+    if (!(await text()).includes("Solana Devnet")) throw new Error("the review isn't for Solana Devnet");
+    await shot("live-sol3-review");
+    await click("Confirm and send");
+    const hash = await landed();
+    await shot("live-sol4-sent");
+    const tx = await sol("getTransaction", [hash, { encoding: "json", maxSupportedTransactionVersion: 0, commitment: "confirmed" }]);
+    const after = { me: BigInt((await sol("getBalance", [me])).value), to: BigInt((await sol("getBalance", [recipient])).value) };
+    console.log(`Solana ${hash}: recipient +${after.to - before.to} (asked ${lamports}), sender -${before.me - after.me} (fee ${tx.meta.fee})`);
+    if (after.to - before.to !== lamports || before.me - after.me !== lamports + BigInt(tx.meta.fee)) throw new Error("the SOL send didn't land as asked");
+    console.log("LIVE SOLANA OK");
   } else if (tokenContract === "activity") {
     // 3a. Activity, read back from testnet's own endpoints and Blockscout.
     await click("Activity");

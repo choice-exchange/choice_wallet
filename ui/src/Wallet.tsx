@@ -393,7 +393,8 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
               // A send to an address the review didn't name (no contact, not an account here): offer to save it.
               const sentTo = back.name === "send" ? shown(view.review.display, status.network) : null;
               const named = view.review.risk.findings.some((f) => f.rule === "address_book");
-              const save = sentTo && sentTo.sends.length === 1 && !named ? { address: sentTo.sends[0]!.to, memo: sentTo.memo } : undefined;
+              // (The address book holds Injective addresses, not Solana's yet.)
+              const save = sentTo && sentTo.sends.length === 1 && !named && view.review.display.kind !== "solana_transaction" ? { address: sentTo.sends[0]!.to, memo: sentTo.memo } : undefined;
               const step = view.review.swap;
               const crossing = view.review.bridge;
               const arriving = view.review.bridgeIn;
@@ -623,7 +624,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
                         <TokenMark denom={b.denom} symbol={b.symbol} known={b.known} />
                         <span className="name">
                           <span className="symbol">{b.symbol}</span>
-                          <span className={b.known ? "sub" : "sub denom"}>{b.known ? `${b.name} on Solana` : tokenSub(b)}</span>
+                          <span className={b.known ? "sub" : "sub denom"}>{b.denom === "sol" ? "Solana" : b.known ? `${b.name} on Solana` : tokenSub(b)}</span>
                         </span>
                         <HoldingValue amount={formatShort(b.amount, b.decimals)} symbol={b.symbol} usd={b.usd} />
                       </button>
