@@ -177,6 +177,7 @@ export function Review({
   onSent,
   onCancel,
   validators = {},
+  rewards = {},
 }: {
   review: SendReview;
   entered: string;
@@ -185,6 +186,8 @@ export function Review({
   onCancel: () => void;
   /** Validator names by address, for a staking review. */
   validators?: Record<string, string>;
+  /** Unclaimed rewards by validator when the review was made, for a claim. */
+  rewards?: Record<string, string>;
 }) {
   const { risk, tokens } = review;
   const view = shown(review.display, network);
@@ -298,6 +301,14 @@ export function Review({
         <div className="surface-hero" key={`s${i}`}>
           <div className="eyebrow">{STAKE_VERB[st.kind]}</div>
           {st.amount && <Figure coin={st.amount} t={tokens[st.amount.denom]} />}
+          {st.kind === "claim" && rewards[st.validator] && rewards[st.validator] !== "0" && (
+            <>
+              <Figure coin={{ denom: "inj", amount: rewards[st.validator]! }} t={tokens["inj"]} />
+              <div className="meta" style={{ marginTop: 4, marginLeft: 46 }}>
+                At least this much: it grows each block.
+              </div>
+            </>
+          )}
           {st.amount && usd([st.amount]) && <div className="meta num" style={{ marginTop: 4, marginLeft: 46 }}>{usd([st.amount])}</div>}
           <hr className="divider" style={{ margin: "14px 0 12px" }} />
           <div className="eyebrow">{st.to ? "From" : st.kind === "claim" ? "Rewards from" : "Validator"}</div>

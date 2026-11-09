@@ -31,7 +31,7 @@ type View =
   | { name: "token"; denom: string }
   | { name: "send"; denom?: string }
   | { name: "convert"; denom: string }
-  | { name: "review"; review: SendReview; entered: string; back: View; validators?: Record<string, string> }
+  | { name: "review"; review: SendReview; entered: string; back: View; validators?: Record<string, string>; rewards?: Record<string, string> }
   | { name: "sent"; sent: Sent; converting: boolean; done?: string }
   | { name: "staking" }
   | { name: "tokens" };
@@ -199,14 +199,14 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
       );
     }
     case "staking":
-      return staking ? (
+      return (
         <StakingView
-          summary={staking}
+          initial={staking}
           canSign={!watch}
-          onReview={(review, validators) => setView({ name: "review", review, entered: "", back: { name: "staking" }, validators })}
+          onReview={(review, validators, rewards) => setView({ name: "review", review, entered: "", back: { name: "staking" }, validators, rewards })}
           onBack={home}
         />
-      ) : null;
+      );
     case "review":
       return (
         <Review
@@ -214,6 +214,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
           entered={view.entered}
           network={status.network}
           {...(view.validators ? { validators: view.validators } : {})}
+          {...(view.rewards ? { rewards: view.rewards } : {})}
           onSent={(sent) => {
             const back = view.back;
             // What a conversion makes is what the user asked for: show it, like a token added by hand.

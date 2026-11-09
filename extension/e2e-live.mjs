@@ -11,7 +11,10 @@
 // provider: connect, eth_sendTransaction of `amount` INJ, then window.choice signDirect of a
 // bank send of `amount` INJ, broadcast with sendTx. With `activity`, it sends nothing: it
 // opens Activity and prints what testnet's endpoints and Blockscout say the account did,
-// which must include an EVM transaction. Otherwise it sends `amount` INJ.
+// which must include an EVM transaction. With `staking` (recipient ignored), it stakes
+// `amount` INJ with the top validator, unstakes half, cancels that, moves the stake to
+// another validator, claims rewards, and reads Activity back; each step checked on chain.
+// Otherwise it sends `amount` INJ.
 //
 // The phrase is read from the file and typed into the import screen. It is never printed
 // and that screen is never captured. The browser profile, with the encrypted keystore in
@@ -186,7 +189,131 @@ try {
   console.log("sender", from, "holds", before.from.toString(), "inj");
   await shot("live-1-home");
 
-  if (tokenContract === "activity") {
+  if (tokenContract === "staking") {
+    // 3k. Staking through the Staking screen; each step checked on chain.
+    const sent = BigInt(Math.round(Number(amount) * 1e6)) * 10n ** 12n;
+    const stakes = async () => new Map((await lcd(`/cosmos/staking/v1beta1/delegations/${from}`)).delegation_responses.map((d) => [d.delegation.validator_address, BigInt(d.balance.amount)]));
+    const unbonding = async (v) => (await lcd(`/cosmos/staking/v1beta1/delegators/${from}/unbonding_delegations`)).unbonding_responses.filter((u) => u.validator_address === v).flatMap((u) => u.entries);
+    const near = (a, b) => (a > b ? a - b : b - a) <= 1000n; // share rounding
+    const openStaking = async () => {
+      for (let n = 0; n < 30000; n += 300) {
+        const ok = await evalIn(`(() => { const b = [...document.querySelectorAll(".token")].find((t) => /^Stake(d)? INJ$/.test(t.querySelector(".symbol")?.textContent ?? "")); if (b) b.click(); return !!b; })()`);
+        if (ok) return waitText("Unstaking takes");
+        await sleep(300);
+      }
+      throw new Error("no Staking row on the home screen");
+    };
+    /** Click the first element matching `selector` once it shows (the summary refreshes). */
+    const clickWhen = async (selector) => {
+      for (let n = 0; n < 30000; n += 300) {
+        if (await evalIn(`(() => { const e = document.querySelector(${JSON.stringify(selector)}); if (e) e.click(); return !!e; })()`)) return;
+        await sleep(300);
+      }
+      throw new Error(`nothing matches ${selector}`);
+    };
+    /** Review (testnet, the words expected), confirm, wait for the block; the chain's tx. */
+    const confirmStaking = async (words, shotName) => {
+      await waitText("Review staking", 30000);
+      const t = await text();
+      if (!t.includes("Injective testnet")) throw new Error("the review is not for Injective testnet; stopping");
+      for (const w of words) if (!t.includes(w)) throw new Error(`the review doesn't say "${w}": ${t}`);
+      await shot(shotName);
+      await click("Confirm");
+      const hash = await landed();
+      const { tx } = await cosmosTx(hash);
+      await click("Done");
+      await waitText("Manage", 20000);
+      return { hash, msgs: tx.tx.body.messages };
+    };
+
+    await openStaking();
+    await shot("live-k1-staking");
+    await click("Stake");
+    await waitText("Pick a validator");
+    const [val, moniker] = await evalIn(`[document.querySelector(".token").title, document.querySelector(".token .symbol").textContent]`);
+    console.log("staking with", moniker, val);
+    await evalIn(`document.querySelector(".token").click()`);
+    await fill("input[inputmode=decimal]", 0, amount);
+    await click("Review");
+    const before0 = (await stakes()).get(val) ?? 0n;
+    const staked = await confirmStaking(["YOU STAKE", moniker, "Unstaking it later takes the unbonding period."], "live-k2-review-stake");
+    const m0 = staked.msgs[0];
+    if (m0["@type"] !== "/cosmos.staking.v1beta1.MsgDelegate" || m0.validator_address !== val || m0.amount.amount !== sent.toString()) throw new Error(`not the reviewed stake: ${JSON.stringify(m0)}`);
+    const after0 = (await stakes()).get(val) ?? 0n;
+    if (!near(after0 - before0, sent)) throw new Error(`stake moved by ${after0 - before0}, expected ${sent}`);
+    console.log("staked", staked.hash, `+${after0 - before0}`);
+
+    // Unstake half.
+    const half = sent / 2n;
+    await openStaking();
+    await clickWhen(`.token[title="${val}"]`);
+    await waitText("Move to another validator");
+    await click("Unstake");
+    await fill("input[inputmode=decimal]", 0, (Number(half) / 1e18).toString());
+    await click("Review");
+    const entriesBefore = (await unbonding(val)).length;
+    const unstaked = await confirmStaking(["YOU UNSTAKE", moniker, "Starts unstaking"], "live-k3-review-unstake");
+    if (unstaked.msgs[0]["@type"] !== "/cosmos.staking.v1beta1.MsgUndelegate") throw new Error("not an undelegation");
+    const entries = await unbonding(val);
+    if (entries.length !== entriesBefore + 1) throw new Error("no new unbonding entry");
+    console.log("unstaked", unstaked.hash, "entry until", entries[entries.length - 1].completion_time);
+
+    // Cancel that unstaking: it is staked again.
+    await openStaking();
+    await waitText("UNSTAKING", 30000);
+    const height = entries[entries.length - 1].creation_height;
+    await shot("live-k4-unstaking");
+    await evalIn(`[...document.querySelectorAll(".token")].find((t) => t.innerText.includes("${moniker}") && t.querySelector(".pill")).querySelector(".pill").click()`);
+    const cancelled = await confirmStaking(["YOU STAKE AGAIN", moniker], "live-k5-review-cancel");
+    const c0 = cancelled.msgs[0];
+    if (c0["@type"] !== "/cosmos.staking.v1beta1.MsgCancelUnbondingDelegation") throw new Error("not a cancellation");
+    console.log("cancelled", cancelled.hash, "entry from height", c0.creation_height, "(newest was", height + ")");
+    if ((await unbonding(val)).some((e) => e.creation_height === c0.creation_height)) throw new Error("the entry is still unbonding");
+
+    // Move all of it to another validator.
+    await openStaking();
+    await clickWhen(`.token[title="${val}"]`);
+    await waitText("Move to another validator");
+    await click("Move to another validator");
+    await waitText("Move to");
+    const [dst, dstName] = await evalIn(`[document.querySelector(".token").title, document.querySelector(".token .symbol").textContent]`);
+    await evalIn(`document.querySelector(".token").click()`);
+    await click("Max");
+    await click("Review");
+    const moving = (await stakes()).get(val) ?? 0n;
+    const dstBefore = (await stakes()).get(dst) ?? 0n;
+    const moved = await confirmStaking(["YOU MOVE", moniker, dstName], "live-k6-review-move");
+    const r0 = moved.msgs[0];
+    if (r0["@type"] !== "/cosmos.staking.v1beta1.MsgBeginRedelegate" || r0.validator_dst_address !== dst || r0.amount.amount !== moving.toString()) throw new Error(`not the reviewed move: ${JSON.stringify(r0)}`);
+    const now = await stakes();
+    if (now.has(val) || !near((now.get(dst) ?? 0n) - dstBefore, moving)) throw new Error("the stake didn't move");
+    console.log("moved", moved.hash, `${moving} to ${dstName}`);
+
+    // Claim whatever has accrued.
+    await openStaking();
+    if (await evalIn(`[...document.querySelectorAll("button")].some((b) => b.textContent.trim() === "Claim all" && !b.disabled)`)) {
+      await click("Claim all");
+      const claimed = await confirmStaking(["YOU CLAIM"], "live-k7-review-claim");
+      if (!claimed.msgs.every((m) => m["@type"] === "/cosmos.distribution.v1beta1.MsgWithdrawDelegatorReward")) throw new Error("not reward claims");
+      console.log("claimed", claimed.hash, `from ${claimed.msgs.length} validator(s)`);
+    } else {
+      console.log("no rewards to claim yet");
+      await click("Back");
+    }
+
+    // Activity, from testnet's endpoints: the staking rows, by validator name.
+    await click("Activity");
+    let rows = [];
+    for (let t = 0; t < 30000 && rows.length < 4; t += 500) {
+      rows = await evalIn(`[...document.querySelectorAll(".activity")].map((r) => r.innerText.replace(/\\s+/g, " "))`);
+      if (rows.length < 4) await sleep(500);
+    }
+    for (const r of rows.slice(0, 6)) console.log("  ", r);
+    for (const want of ["Staked", "Unstaked", "Stake moved"]) if (!rows.some((r) => r.startsWith(want))) throw new Error(`no "${want}" row in Activity`);
+    if (!rows.some((r) => r.includes(`with ${moniker}`))) throw new Error("Activity doesn't name the validator");
+    await shot("live-k8-activity");
+    console.log("LIVE STAKING OK");
+  } else if (tokenContract === "activity") {
     // 3a. Activity, read back from testnet's own endpoints and Blockscout.
     await click("Activity");
     let rows = [];

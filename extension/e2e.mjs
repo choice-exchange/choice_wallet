@@ -575,7 +575,21 @@ try {
   await p.shot("16f-staked");
   await p.click("Done");
   await p.waitText("Account 1");
-  console.log("staking: home row 3.05 INJ, screen, picker search, stake max with Bravo reviewed and broadcast");
+  // Claim all: the review shows what is waiting (0.05 INJ with Alpha); cancelled here.
+  await p.eval(`[...document.querySelectorAll(".token")].find((b) => b.innerText.includes("Staked INJ")).click()`);
+  await p.waitText("YOUR VALIDATORS");
+  await p.click("Claim all");
+  await p.waitText("Review staking", 15000);
+  await p.waitText("YOU CLAIM");
+  await p.waitText("0.05 INJ");
+  await p.waitText("At least this much");
+  await p.shot("16g-review-claim");
+  await p.click("Cancel");
+  await p.waitText("YOUR VALIDATORS");
+  await p.click("Back");
+  await p.waitText("Account 1");
+  if (broadcasts.length !== 2) throw new Error("a cancelled claim was broadcast");
+  console.log("staking: home row 3.05 INJ, screen, picker search, stake max with Bravo reviewed and broadcast, claim reviewed and cancelled");
 
   // 8. A site: finds the wallet through EIP-6963 (window.ethereum untouched), connects
   // through an approval window (rejected once, then approved), gets a message signed, and

@@ -3,8 +3,9 @@
 // go to the same review screen as a send.
 
 import { formatShort, parseUnits } from "@choice-wallet/chain";
-import { useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 
+import { useBackend } from "./backend";
 import { BackBar, Callout, Screen, shortAddress } from "./kit";
 import type { SendReview, StakeRequest, StakingSummary, ValidatorInfo } from "./protocol";
 import { useRequest } from "./request";
@@ -19,25 +20,49 @@ type Sub =
   | { name: "pick"; purpose: "stake" | "move"; from?: string }
   | { name: "amount"; action: "stake" | "unstake" | "move"; validator: string; to?: string };
 
-export function StakingView({
-  summary,
-  canSign,
-  onReview,
-  onBack,
-}: {
-  summary: StakingSummary;
+type ViewProps = {
   canSign: boolean;
-  onReview: (review: SendReview, names: Record<string, string>) => void;
+  /** The review, with validator names and each validator's unclaimed rewards. */
+  onReview: (review: SendReview, names: Record<string, string>, rewards: Record<string, string>) => void;
   onBack: () => void;
-}) {
+};
+
+/** Shows the last summary the wallet had (if any) at once, and reads a fresh one. */
+export function StakingView({ initial, ...props }: ViewProps & { initial: StakingSummary | null }) {
+  const backend = useBackend();
+  const [summary, setSummary] = useState(initial);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    void backend.send({ type: "staking" }).then((r) => {
+      if (!live) return;
+      if (r.ok) setSummary(r.result);
+      else setError(r.error.message);
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
+  if (!summary) {
+    return (
+      <Screen top={<BackBar title="Staking" onBack={props.onBack} />}>
+        {error ? <Callout level="amber">{error}</Callout> : <div className="skeleton" style={{ height: 120 }} />}
+      </Screen>
+    );
+  }
+  return <Staking summary={summary} {...props} />;
+}
+
+function Staking({ summary, canSign, onReview, onBack }: ViewProps & { summary: StakingSummary }) {
   const [sub, setSub] = useState<Sub>({ name: "main" });
   const { run, error, busy } = useRequest();
   const byAddress = useMemo(() => new Map(summary.validators.map((v) => [v.address, v])), [summary]);
   const names = useMemo(() => Object.fromEntries(summary.validators.map((v) => [v.address, v.moniker])), [summary]);
+  const rewards = useMemo(() => Object.fromEntries(summary.stakes.map((s) => [s.validator, s.rewards])), [summary]);
   const name = (a: string) => byAddress.get(a)?.moniker || shortAddress(a);
   const prepare = async (req: StakeRequest) => {
     const r = await run({ type: "prepare_stake", ...req });
-    if (r) onReview(r, names);
+    if (r) onReview(r, names, rewards);
   };
 
   if (sub.name === "pick") {
