@@ -78,6 +78,8 @@ const REFUSED: Record<string, string> = {
 /** Requests waiting at once: in all, and per site. */
 const MAX_WAITING = 10;
 const MAX_PER_SITE = 3;
+/** The most data `signArbitrary` signs (the vault's own limit). */
+const MAX_ARBITRARY = 64 * 1024;
 /** Gas a dapp's EVM transaction may use, at most (Injective charges the whole limit). */
 const EVM_MAX_GAS = 10_000_000n;
 
@@ -121,6 +123,11 @@ const b64 = (hex: string) => {
   let bin = "";
   for (let i = 0; i < hex.length; i += 2) bin += String.fromCharCode(parseInt(hex.slice(i, i + 2), 16));
   return btoa(bin);
+};
+/** Base64 to hex, or null if it isn't base64. */
+const fromB64 = (s: unknown): string | null => {
+  if (typeof s !== "string" || !/^[A-Za-z0-9+/]*={0,2}$/.test(s) || s.length % 4 !== 0) return null;
+  return Array.from(atob(s), (c) => c.charCodeAt(0).toString(16).padStart(2, "0")).join("");
 };
 
 export function createDapps(h: DappHost) {
@@ -416,6 +423,28 @@ export function createDapps(h: DappHost) {
         async (signed) => signature(signed["signature"]),
       );
     }
+    if (method === "choice_signArbitrary" || method === "choice_verifyArbitrary") {
+      const data = p["data"];
+      if (typeof data !== "string" || !bytesHex(data) || data.replace(/^0x/, "").length > 2 * MAX_ARBITRARY) return no(INVALID_PARAMS, `${method.slice(7)} takes the data as bytes, at most ${MAX_ARBITRARY} of them.`);
+      const dataHex = data.replace(/^0x/, "");
+      if (method === "choice_signArbitrary") {
+        return sign(
+          origin,
+          "cosmos_arbitrary",
+          async () => ({ request: { cosmos_arbitrary: { chain: net.cosmos, signer: pubkey, data: dataHex } } }),
+          async (signed) => signature(signed["signature"]),
+        );
+      }
+      // verifyArbitrary: whether a signature of `data` is this account's (Keplr's checks).
+      const sig = p["signature"];
+      const pk = isObject(sig) && isObject(sig["pub_key"]) ? fromB64(sig["pub_key"]["value"]) : null;
+      const rs = isObject(sig) ? fromB64(sig["signature"]) : null;
+      if (pk === null || rs === null) return no(INVALID_PARAMS, "verifyArbitrary takes a StdSignature.");
+      if (pk !== pubkey) return no(INVALID_PARAMS, "That signature's key isn't this account's.");
+      const r = await h.vault<{ valid: boolean }>("verify_arbitrary", { chain: net.cosmos, address: account.addresses[net.cosmos], data: dataHex, public_key: pk, signature: rs });
+      if (!r.ok) return no(INVALID_PARAMS, r.error.message);
+      return { result: r.result.valid };
+    }
     return no(UNSUPPORTED, `${method} isn't supported.`);
   }
 
@@ -489,6 +518,8 @@ export function createDapps(h: DappHost) {
         case "choice_getKey":
         case "choice_signDirect":
         case "choice_signAmino":
+        case "choice_signArbitrary":
+        case "choice_verifyArbitrary":
         case "choice_sendTx":
           return cosmos(origin, method, isObject(params) ? params : {});
       }

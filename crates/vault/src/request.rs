@@ -63,6 +63,16 @@ pub(crate) enum SignRequest<'a> {
         #[serde(borrow)]
         typed_data: &'a RawValue,
     },
+    /// `signArbitrary` (ADR-036): data that isn't a transaction, signed inside a fixed sign
+    /// doc the vault builds.
+    CosmosArbitrary {
+        /// CAIP-2 chain ID.
+        chain: String,
+        /// The signer's compressed public key.
+        signer: String,
+        /// The data, hex.
+        data: String,
+    },
     /// `personal_sign`.
     EvmPersonalSign {
         /// CAIP-2 chain ID.
@@ -122,6 +132,9 @@ enum Kind {
         message: Vec<u8>,
         signer: EthAddress,
     },
+    Arbitrary {
+        a: Box<choice_wallet_cosmos::adr36::Arbitrary>,
+    },
 }
 
 impl Checked {
@@ -152,6 +165,7 @@ impl Checked {
                 injective_tx,
             } => choice_wallet_policy::typed_data(td, injective_tx.as_deref(), signer, ctx),
             Kind::Personal { message, signer } => choice_wallet_policy::personal_message(message, signer, ctx),
+            Kind::Arbitrary { a } => choice_wallet_policy::arbitrary_message(a.data(), ctx),
         }
     }
 }
@@ -249,6 +263,23 @@ pub(crate) fn decode(req: SignRequest) -> Result<Checked, VaultError> {
                     signer,
                     injective_tx: injective.map(Box::new),
                 },
+            })
+        }
+        SignRequest::CosmosArbitrary { chain, signer, data } => {
+            let entry = chains::find(&chain)?;
+            let pk = public_key(&signer)?;
+            let a = choice_wallet_cosmos::adr36::Arbitrary::new(entry.cosmos()?, &pk, hex(&data, "data")?)?;
+            let display = json!({
+                "kind": "cosmos_arbitrary",
+                "chain": entry.id,
+                "signer": a.address(),
+                "text": std::str::from_utf8(a.data()).ok(),
+                "hex": format!("0x{}", hexutil::encode(a.data())),
+            });
+            Ok(Checked {
+                display,
+                digest: digest("cosmos_arbitrary", entry.id, &pk.compressed(), a.sign_bytes()),
+                kind: Kind::Arbitrary { a: Box::new(a) },
             })
         }
         SignRequest::EvmPersonalSign { chain, signer, message } => {
@@ -516,6 +547,13 @@ pub(crate) fn sign(checked: Checked, approved: &str, key: &PrivateKey) -> Result
             }
             Ok(json!({ "signature": prefixed(&personal::sign(&message, key)) }))
         }
+        Kind::Arbitrary { a } => {
+            let sig = a.sign(key)?;
+            Ok(json!({
+                "signature": hexutil::encode(&sig),
+                "signed_doc": String::from_utf8_lossy(a.sign_bytes()),
+            }))
+        }
     }
 }
 
@@ -540,6 +578,7 @@ pub(crate) fn device_request(checked: &Checked, approved: &str) -> Result<Value,
         Kind::AminoTx { tx, .. } | Kind::Amino { tx, .. } => Ok(out("cosmos", "amino", tx.sign_bytes())),
         Kind::EvmTx { r, .. } => Ok(out("ethereum", "transaction", &r.tx.unsigned_bytes())),
         Kind::Personal { message, .. } => Ok(out("ethereum", "message", message)),
+        Kind::Arbitrary { a } => Ok(out("cosmos", "amino", a.sign_bytes())),
         Kind::Direct { .. } => Err(VaultError::new(
             DEVICE_UNSUPPORTED,
             "A Ledger signs Cosmos transactions as amino JSON, not this form.",
@@ -618,11 +657,42 @@ pub(crate) fn device_sign(
                 .ok_or_else(bad)?;
             Ok(json!({ "signature": prefixed(&personal::with_signature(&sig, recid)) }))
         }
+        Kind::Arbitrary { a } => {
+            if *a.signer() != public_key.compressed() {
+                return Err(wrong_account());
+            }
+            let sig = a.check_signature(&sig).ok_or_else(bad)?;
+            Ok(json!({
+                "signature": hexutil::encode(&sig),
+                "signed_doc": String::from_utf8_lossy(a.sign_bytes()),
+            }))
+        }
         Kind::Direct { .. } | Kind::TypedData { .. } => Err(VaultError::new(
             DEVICE_UNSUPPORTED,
             "A Ledger can't sign this kind of request here.",
         )),
     }
+}
+
+/// Whether `signature` (64 bytes `r || s`, either S) is `public_key`'s ADR-036 signature of
+/// `data` and that key is `address`'s on `chain` (`verifyArbitrary`).
+pub(crate) fn verify_arbitrary(
+    chain: &str,
+    address: &str,
+    data: Vec<u8>,
+    public_key: &PublicKey,
+    signature: &[u8],
+) -> Result<bool, VaultError> {
+    let entry = chains::find(chain)?;
+    let cosmos = entry.cosmos()?;
+    if cosmos.address(public_key) != address {
+        return Ok(false);
+    }
+    let Ok(sig) = <[u8; 64]>::try_from(signature) else {
+        return Ok(false);
+    };
+    let a = choice_wallet_cosmos::adr36::Arbitrary::new(cosmos, public_key, data)?;
+    Ok(a.check_signature(&sig).is_some())
 }
 
 /// The messages of a checked Cosmos request, for tests.

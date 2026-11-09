@@ -34,7 +34,7 @@ use serde_json::Value;
 
 pub use cosmos::{CosmosFee, cosmos};
 pub use evm::evm_transaction;
-pub use message::personal_message;
+pub use message::{arbitrary_message, personal_message};
 pub use typed::typed_data;
 
 /// How risky something is. Ordered: `Info < Amber < Red < Blocked`.

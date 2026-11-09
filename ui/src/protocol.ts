@@ -447,8 +447,8 @@ export type DappRequest = {
   /** connect: see the account and ask for approvals. switch: move the wallet to `to`.
    *  sign: one of the vault's request kinds (`method` names it). */
   kind: "connect" | "switch" | "sign";
-  /** For sign: evm_transaction, evm_personal_sign, evm_typed_data, cosmos_direct or
-   *  cosmos_amino. */
+  /** For sign: evm_transaction, evm_personal_sign, evm_typed_data, cosmos_direct,
+   *  cosmos_amino or cosmos_arbitrary (ADR-036). */
   method?: string;
   /** For switch: the network asked for. */
   to?: NetworkId;

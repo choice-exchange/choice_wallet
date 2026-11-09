@@ -20,6 +20,9 @@ pub enum Error {
         /// The chain the request names.
         got: String,
     },
+    /// An ADR-036 message the wallet won't sign.
+    #[error("{0}")]
+    Arbitrary(String),
     /// The transaction has no messages.
     #[error("transaction has no messages")]
     NoMessages,

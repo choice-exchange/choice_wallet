@@ -231,3 +231,24 @@ test("only a tab's top frame, at https (or http on this machine), is a site", ()
   assert.equal(dappOrigin(s({ url: "https://evil.example/" }), ext), null);
   assert.equal(dappOrigin(s({ origin: "null" }), ext), null);
 });
+
+test("signArbitrary (ADR-036): the window shows the text; the page gets injective-ts's signature; verifyArbitrary checks it", async () => {
+  const { page, window, service } = await connected();
+  const site = page(SITE);
+  const text = "Sign in to example.org\nNonce: 42";
+  const data = Buffer.from(text).toString("hex");
+  assert.equal((await site("choice_signArbitrary", { chainId: "injective-1", signer: THEM, data })).error?.code, 4100);
+  const asked = site("choice_signArbitrary", { chainId: "injective-1", signer: ME, data });
+  const w = await window();
+  assert.deepEqual([w.req.kind, w.req.method], ["sign", "cosmos_arbitrary"]);
+  const review = ok<{ digest: string; display: { text: string; signer: string }; risk: { level: string } }>(await service.handle({ type: "dapp_review", id: w.id }));
+  assert.deepEqual([review.display.text, review.display.signer], [text, ME]);
+  ok(await service.handle({ type: "dapp_answer", id: w.id, approve: true, digest: review.digest }));
+  const got = (await asked).result as { pub_key: { type: string; value: string }; signature: string };
+  // The same signature injective-ts makes (crates/injective/tests/vectors/adr36.json, "text").
+  const expected = "8815d95c3fa82418693f4993d7f16939406b75539e1a2e8db7eb6ea114fd7f6c23280294df2e64d0c2d23d93f8a247652f463de8ecf1f";
+  assert.ok(Buffer.from(got.signature, "base64").toString("hex").startsWith(expected), got.signature);
+  assert.equal(got.pub_key.type, "tendermint/PubKeySecp256k1");
+  assert.equal(await site("choice_verifyArbitrary", { chainId: "injective-1", signer: ME, data, signature: got }).then((r) => r.result), true);
+  assert.equal(await site("choice_verifyArbitrary", { chainId: "injective-1", signer: ME, data: "00", signature: got }).then((r) => r.result), false);
+});

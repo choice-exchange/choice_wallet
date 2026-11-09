@@ -34,6 +34,7 @@
 //! | `key_addresses` | `public_key` (a hardware wallet's account, from the device) | its addresses on every chain |
 //! | `device_request` | `request`, `digest` | what a hardware wallet signs: `app` (`cosmos`, `ethereum`), `kind`, `payload` |
 //! | `device_sign` | `request`, `digest`, `public_key`, `signature`, `format` (`der`, `rs`) | as `sign`, from the device's signature |
+//! | `verify_arbitrary` | `chain`, `address`, `data`, `public_key`, `signature` (`r \|\| s`) | `valid`: an ADR-036 signature of `data` by `address` |
 //!
 //! A hardware wallet's account has no secret here. The host keeps its public key (read from
 //! the device when it was added); `device_request` gives the bytes the device signs (and
@@ -41,7 +42,7 @@
 //! exactly those bytes, for the request that was approved.
 //!
 //! A sign request is one of `cosmos_direct`, `cosmos_amino_tx`, `cosmos_amino`,
-//! `evm_transaction`, `evm_typed_data`, `evm_personal_sign`. `decode` grades it with the
+//! `cosmos_arbitrary` (ADR-036), `evm_transaction`, `evm_typed_data`, `evm_personal_sign`. `decode` grades it with the
 //! risk rules (`choice-wallet-policy`) against the host's `context`. `sign` decodes it again
 //! and signs only if its digest is the one `decode` returned and the user approved.
 //!
@@ -141,6 +142,16 @@ struct DeviceSign<'a> {
     public_key: String,
     signature: String,
     format: request::SignatureFormat,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VerifyArbitrary {
+    chain: String,
+    address: String,
+    data: String,
+    public_key: String,
+    signature: String,
 }
 
 #[derive(Deserialize)]
@@ -345,6 +356,23 @@ fn call(request: &str) -> Result<Value, VaultError> {
                     .map(|c| (c.id.to_owned(), Value::String(c.address(&pk))))
                     .collect::<serde_json::Map<String, Value>>(),
             }))
+        }
+        "verify_arbitrary" => {
+            let VerifyArbitrary {
+                chain,
+                address,
+                data,
+                public_key,
+                signature,
+            } = params(p)?;
+            let valid = request::verify_arbitrary(
+                &chain,
+                &address,
+                util::hex(&data, "data")?,
+                &device_key(&public_key)?,
+                &util::hex(&signature, "signature")?,
+            )?;
+            Ok(json!({ "valid": valid }))
         }
         "device_request" => {
             let DeviceRequest { request, digest } = borrowed(p)?;

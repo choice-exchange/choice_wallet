@@ -316,7 +316,7 @@ function SignBody({ review, network, typed, onTyped }: { review: DappReview; net
           })
           .map((m, i) => <MessageCard key={`m${i}`} m={m as Record<string, unknown>} />)}
 
-      {d["kind"] === "evm_personal_sign" && (
+      {(d["kind"] === "evm_personal_sign" || d["kind"] === "cosmos_arbitrary") && (
         <div className="surface-hero">
           <div className="eyebrow">Message</div>
           <pre className="message-box">{typeof d["text"] === "string" ? d["text"] : String(d["hex"])}</pre>

@@ -200,6 +200,7 @@ The Swap tab trades through Choice on Injective's EVM side.
 | --- | --- | --- | --- |
 | SIGN_MODE_DIRECT (protobuf) | Our own txs; `signDirect` from Cosmos dapps | Decode and re-encode, recursing into every `Any` (MsgExec, grant authorizations, feegrant allowances, the signer pubkey). Byte-identical or refused | Built |
 | LEGACY_AMINO_JSON | Ledger Cosmos app; `signAmino` | Our own txs: amino JSON derived from the protobuf tx exactly as the chain derives it. Dapp sign docs: strict shape, signed in canonical form | Built |
+| ADR-036 (`signArbitrary`) | Sign-in and proofs on Cosmos dapps | The vault builds the sign doc from the data; the site can't give one | Built |
 | Injective EIP-712 v2 | EVM wallets on Cosmos dapps (`eth_signTypedData_v4`) | Strict typed data; the "Injective Web3" domain, its types, the `context` and the `msgs` must have exactly the v2 shape | Built (decode and sign). Building our own EIP-712 txs isn't needed |
 | Injective EIP-712 v1 | injective-ts sends it to EVM wallets not on its v2 list | Typed data derived from amino JSON | Not recognised; shown as generic typed data. We ask to be on the v2 list instead |
 | EVM txs, types 0, 1, 2 | Injective EVM and other EVM chains | Type 4 / `authorizationList` (EIP-7702) is refused: Injective EVM doesn't support it | EIP-1559 sends built; dapp requests next |
@@ -252,10 +253,11 @@ Built (2026-11-09) and checked on testnet through the extension: a test site con
   - Read-only methods (`eth_call`, `eth_getBalance`, logs, receipts, …) go to the user's own EVM endpoints.
 - **Injective dapps need a PR first.** injective-ts finds EIP-6963 wallets by a fixed list of `rdns` values tied to its `Wallet` enum, so until we're added, Helix and Hub won't see us. The PR to `wallet-base`, `wallet-evm` and `wallet-cosmos` is phase 0 work. It also puts Choice Wallet on the EIP-712 v2-only list (`isEip712V2OnlyWallet`), so Injective dapps send us v2 typed data, which we decode, rather than v1.
 - **Cosmos provider:** `window.choice`, Keplr's shape:
-  - Built: `enable`, `getKey` (with `algo: "ethsecp256k1"`, `isNanoLedger`, `ethereumHexAddress`), `signDirect`, `signAmino`, `getOfflineSigner`, `getOfflineSignerOnlyAmino`, `getOfflineSignerAuto`, `sendTx` (through the user's own endpoints), and a `choice_keystorechange` event. `window.choice.ethereum` is the EVM provider.
+  - Built: `enable`, `getKey` (with `algo: "ethsecp256k1"`, `isNanoLedger`, `ethereumHexAddress`), `signDirect`, `signAmino`, `signArbitrary` and `verifyArbitrary` (ADR-036), `getOfflineSigner`, `getOfflineSignerOnlyAmino`, `getOfflineSignerAuto` (amino only on a Ledger), `sendTx` (through the user's own endpoints), and a `choice_keystorechange` event. `window.choice.ethereum` is the EVM provider.
+  - `signArbitrary` (ADR-036): the site gives the data, never the sign doc. The vault builds the standard doc around it (`sign/MsgSignData`, empty chain ID, account number and sequence 0, no fee or memo, keys sorted) and signs keccak256 of it, as Injective keys sign: byte for byte what injective-ts's `generateArbitrarySignDoc` and its key make (`crates/injective/tests/vectors/adr36.json`). The window shows the text, or the bytes. Data shaped like a transaction (amino or protobuf JSON, a Cosmos tx's protobuf, an EVM transaction) is red, a 32-byte hash is red, other binary amber. On a Ledger it goes through the Cosmos app. `verifyArbitrary` checks a signature of this account's against the same doc, in the vault.
   - `signDirect` is simulated first, unsigned, on the user's endpoints: the approval shows what this account would see (from the bank and CW20 events, the fee apart), or why it would fail.
   - The wallet signs exactly what the dapp sent and never changes its fee.
-  - Later: `signArbitrary` / `verifyArbitrary` (ADR-036, with its own risk rule), `signEthereum`, `experimentalSuggestChain` (other chains come with phase 3).
+  - Later: `signEthereum`, `experimentalSuggestChain` (other chains come with phase 3).
 - **Later adapters:** Interchain Kit (Cosmos Kit's successor) and graz. EIP-5792 `wallet_sendCalls` with `atomicRequired: false`.
 - **Choice apps first:** choice.exchange and the Choice bridge integrate first.
 - **Mobile (phase 2):** Reown WalletKit and an in-app browser.
@@ -290,7 +292,7 @@ Implemented in `choice-wallet-policy`. `decode` returns them as `risk`: a level,
 | First interaction with a contract; fee paid through a grant or by a payer; `MsgExec`; revokes; staking (stake and unstake note the unbonding period; staked coins aren't counted as leaving); a recipient from the address book or one of the user's accounts; sign-in for this site; a Choice swap (its input isn't counted as leaving when it pays this account); Choice's fee to its treasury | Info | `swap`, `swap_fee`, `new_contract`, `fee_grant_used`, `fee_payer`, `authz_exec`, `authz_revoke`, `fee_revoke`, `allowance_revoke`, `precompile_call`, `stake`, `unstake`, `address_book`, `sign_in` |
 | EIP-7702 authorizations, chain ID mismatches | Refused by the decoders, never graded | |
 | `eth_sign` | Disabled: never reaches the vault | |
-| `signArbitrary` (ADR-036) of data that parses as a tx | Red, when ADR-036 lands | |
+| `signArbitrary` (ADR-036) of data shaped like a transaction (amino or protobuf JSON, a Cosmos tx's protobuf, an EVM transaction); a 32-byte hash; other binary data | Red; red; amber | `arbitrary_tx`, `hash_signature`, `binary_message` |
 
 Injective precompiles are read from their function selectors: bank `0x…64`, exchange `0x…65`, staking `0x…66`, oracle `0x…67`. The signatures come from injective-core v1.20.3's generated bindings (read, not copied); viem computed the selectors, and a test checks each against keccak256 of its signature. Exchange methods name the account they act for first, so a call for anyone but the sender is flagged as using that account's grant.
 

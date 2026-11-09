@@ -15,6 +15,7 @@ fn vectors(name: &str) -> Value {
         "eip1559" => include_str!("../../evm/tests/vectors/eip1559.json"),
         "personal" => include_str!("../../evm/tests/vectors/personal.json"),
         "messages" => include_str!("../../injective/tests/vectors/messages.json"),
+        "adr36" => include_str!("../../injective/tests/vectors/adr36.json"),
         _ => unreachable!(),
     };
     serde_json::from_str(text).unwrap()
@@ -1077,4 +1078,58 @@ fn a_ledger_signs_evm_transactions_and_messages() {
         json!({ "request": message, "digest": digest, "public_key": pk, "signature": hex::encode(ledger.rs(&hash, true)), "format": "rs" }),
     );
     assert_eq!(signed["signature"], approve_and_sign(&message, LEDGER_0())["signature"]);
+}
+
+#[test]
+fn sign_arbitrary_matches_injective_ts() {
+    let v = vectors("adr36");
+    let pk = v["public_key"].as_str().unwrap();
+    assert_eq!(pk, signer_key(0));
+    for c in v["cases"].as_array().unwrap() {
+        let name = c["name"].as_str().unwrap();
+        let request = json!({ "cosmos_arbitrary": { "chain": "cosmos:injective-1", "signer": pk, "data": c["data_hex"] } });
+        let d = ok("decode", json!({ "request": request }));
+        assert_eq!(d["display"]["signer"], v["signer"], "{name}");
+        let signed = approve_and_sign(&request, account(0));
+        assert_eq!(signed["signed_doc"], c["sign_doc"], "{name}");
+        assert_eq!(signed["signature"], c["signature"], "{name}");
+        // verifyArbitrary: the signature, for this data and this account only.
+        let verify = |address: &Value, data: &Value, sig: &Value| {
+            ok(
+                "verify_arbitrary",
+                json!({ "chain": "cosmos:injective-1", "address": address, "data": data, "public_key": pk, "signature": sig }),
+            )["valid"]
+                .as_bool()
+                .unwrap()
+        };
+        assert!(verify(&v["signer"], &c["data_hex"], &c["signature"]), "{name}");
+        assert!(!verify(&v["signer"], &json!("00"), &c["signature"]), "{name}");
+        let other = vectors("direct")["accounts"][1]["inj"].clone();
+        assert!(!verify(&other, &c["data_hex"], &c["signature"]), "{name}");
+    }
+    // Shown as text; graded like a message: a transaction's shape is red.
+    let text = json!({ "cosmos_arbitrary": { "chain": "cosmos:injective-1", "signer": pk, "data": hex::encode("hello") } });
+    let d = ok("decode", json!({ "request": text }));
+    assert_eq!((d["display"]["text"].as_str(), d["risk"]["level"].as_str()), (Some("hello"), Some("info")));
+    let amino = json!({ "cosmos_arbitrary": { "chain": "cosmos:injective-1", "signer": pk, "data": hex::encode(r#"{"chain_id":"injective-1","msgs":[]}"#) } });
+    let d = ok("decode", json!({ "request": amino }));
+    assert_eq!(d["risk"]["findings"][0]["rule"], "arbitrary_tx");
+    assert_eq!(d["risk"]["level"], "red");
+}
+
+#[test]
+fn a_ledger_signs_arbitrary_messages_in_the_cosmos_app() {
+    use choice_wallet_core::secp256k1::keccak256;
+    let ledger = FakeLedger::new(0);
+    let pk = ledger.public_key();
+    let request = json!({ "cosmos_arbitrary": { "chain": "cosmos:injective-1", "signer": pk, "data": hex::encode("Sign in") } });
+    let digest = ok("decode", json!({ "request": request }))["digest"].clone();
+    let dev = ok("device_request", json!({ "request": request, "digest": digest }));
+    assert_eq!((dev["app"].as_str(), dev["kind"].as_str()), (Some("cosmos"), Some("amino")));
+    let doc = hex::decode(dev["payload"].as_str().unwrap()).unwrap();
+    let signed = ok(
+        "device_sign",
+        json!({ "request": request, "digest": digest, "public_key": pk, "signature": ledger.der(&keccak256(&doc), true), "format": "der" }),
+    );
+    assert_eq!(signed["signature"], approve_and_sign(&request, LEDGER_0())["signature"]);
 }

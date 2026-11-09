@@ -909,6 +909,23 @@ try {
   const request = { evm_personal_sign: { chain: "eip155:1776", signer: addrs[1], message } };
   const expected = v("sign", { secret, wallet: "w", unlock_key, account: { derivation: "default", index: 0 }, request, digest: v("decode", { request }).digest }).signature;
   if (signature !== expected) throw new Error(`personal_sign: got ${signature}, the vault signs ${expected}`);
+  // ADR-036 through window.choice: the window shows the text; the page gets the vault's
+  // signature, which verifyArbitrary accepts.
+  const arbitraryText = "Sign in to the test dapp";
+  // (Assigned in a statement, so the evaluation doesn't wait for the answer.)
+  await site.eval(`void (window.__r = window.choice.signArbitrary("injective-1", ${JSON.stringify(addrs[0])}, ${JSON.stringify(arbitraryText)}).then((r) => ({ ok: r }), (e) => ({ code: e.code, message: e.message })))`);
+  const arb = await approval();
+  await arb.waitText(arbitraryText, 15000);
+  await arb.shot("18b-site-sign-arbitrary");
+  await sleep(900);
+  await arb.click("Sign");
+  const stdSig = (await answer()).ok;
+  if (!stdSig?.signature) throw new Error(`signArbitrary: ${JSON.stringify(await answer())}`);
+  const arbRequest = { cosmos_arbitrary: { chain: "cosmos:injective-1", signer: v("accounts", { secret, wallet: "w", unlock_key, accounts: [{ derivation: "default", index: 0 }] }).accounts[0].public_key, data: Buffer.from(arbitraryText).toString("hex") } };
+  const arbExpected = v("sign", { secret, wallet: "w", unlock_key, account: { derivation: "default", index: 0 }, request: arbRequest, digest: v("decode", { request: arbRequest }).digest }).signature;
+  if (Buffer.from(stdSig.signature, "base64").toString("hex") !== arbExpected) throw new Error("signArbitrary: the page's signature isn't the vault's");
+  await site.eval(`void (window.__r = window.choice.verifyArbitrary("injective-1", ${JSON.stringify(addrs[0])}, ${JSON.stringify(arbitraryText)}, ${JSON.stringify(stdSig)}).then((r) => ({ ok: r }), (e) => ({ code: e.code, message: e.message })))`);
+  if ((await answer()).ok !== true) throw new Error("verifyArbitrary didn't accept the wallet's own signature");
   await p.click("Settings");
   await p.waitText(lcdUrl);
   await p.eval(`document.querySelector(".site-row")?.scrollIntoView()`);
@@ -917,7 +934,7 @@ try {
   await p.waitText("None. A site asks first, in its own window.");
   await ask("eth_accounts");
   if (JSON.stringify((await answer()).ok) !== "[]") throw new Error("a disconnected site still sees the account");
-  console.log("site: found by EIP-6963, connect rejected then approved, personal_sign = the vault's signature, disconnected");
+  console.log("site: found by EIP-6963, connect rejected then approved, personal_sign and signArbitrary = the vault's signatures (verifyArbitrary agrees), disconnected");
 
   // 9. Accounts: a second one from the phrase (the same address the vault derives in Node),
   // renamed; an address to watch, which can't send; then back to the first.

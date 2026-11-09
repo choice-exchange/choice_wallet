@@ -14,6 +14,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod adr36;
 pub mod amino;
 pub mod builder;
 mod canonical;

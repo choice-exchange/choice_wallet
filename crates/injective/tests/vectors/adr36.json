@@ -1,0 +1,26 @@
+{
+  "generator": "tools/vectors/gen_adr36.mjs with @injectivelabs/sdk-ts 1.20.62",
+  "phrase": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+  "signer": "inj1npvwllfr9dqr8erajqqr6s0vxnk2ak55re90dz",
+  "public_key": "0237b0bb7a8288d38ed49a524b5dc98cff3eb5ca824c9f9dc0dfdb3d9cd600f299",
+  "cases": [
+    {
+      "name": "text",
+      "data_hex": "5369676e20696e20746f206578616d706c652e6f72670a4e6f6e63653a203432",
+      "sign_doc": "{\"account_number\":\"0\",\"chain_id\":\"\",\"fee\":{\"amount\":[],\"gas\":\"0\"},\"memo\":\"\",\"msgs\":[{\"type\":\"sign/MsgSignData\",\"value\":{\"data\":\"U2lnbiBpbiB0byBleGFtcGxlLm9yZwpOb25jZTogNDI=\",\"signer\":\"inj1npvwllfr9dqr8erajqqr6s0vxnk2ak55re90dz\"}}],\"sequence\":\"0\"}",
+      "signature": "8815d95c3fa82418693f4993d7f16939406b75539e1a2e8db7eb6ea114fd7f6c23280294df2e64d0c2d23d93f8a247652f463de8ecf1f8bc3b9bbabe53a4b7ca"
+    },
+    {
+      "name": "empty",
+      "data_hex": "",
+      "sign_doc": "{\"account_number\":\"0\",\"chain_id\":\"\",\"fee\":{\"amount\":[],\"gas\":\"0\"},\"memo\":\"\",\"msgs\":[{\"type\":\"sign/MsgSignData\",\"value\":{\"data\":\"\",\"signer\":\"inj1npvwllfr9dqr8erajqqr6s0vxnk2ak55re90dz\"}}],\"sequence\":\"0\"}",
+      "signature": "4326b423fb3cd53e9eba3bdc906cf8bf88589eecda9cf117917d4a8feee44c29019cafb298c8ac45ef6d3567a8a21dea3a5bd0437471afca5a76849a3f78d10b"
+    },
+    {
+      "name": "unicode",
+      "data_hex": "43686f69636520e29c9320e4bda0e5a5bd",
+      "sign_doc": "{\"account_number\":\"0\",\"chain_id\":\"\",\"fee\":{\"amount\":[],\"gas\":\"0\"},\"memo\":\"\",\"msgs\":[{\"type\":\"sign/MsgSignData\",\"value\":{\"data\":\"Q2hvaWNlIOKckyDkvaDlpb0=\",\"signer\":\"inj1npvwllfr9dqr8erajqqr6s0vxnk2ak55re90dz\"}}],\"sequence\":\"0\"}",
+      "signature": "0cc5b6af75945405f5dedc2083a9f9f1423888c87f23381db3347a1b9c6e211d50a060d587c1364c916351618c0781af1d44a08a67bcfeaf38a70bcb94021748"
+    }
+  ]
+}

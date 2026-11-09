@@ -146,6 +146,14 @@ const TO_PAGE = "choice-wallet:page";
       const signature = await call("choice_signAmino", { chainId, signer, signDoc });
       return { signed: signDoc, signature };
     },
+    /** ADR-036: sign data that isn't a transaction (text, or bytes). */
+    async signArbitrary(chainId: string, signer: string, data: string | Uint8Array) {
+      return call("choice_signArbitrary", { chainId, signer, data: hex(typeof data === "string" ? new TextEncoder().encode(data) : data) });
+    },
+    /** Whether `signature` is this account's ADR-036 signature of `data`. */
+    async verifyArbitrary(chainId: string, signer: string, data: string | Uint8Array, signature: unknown): Promise<boolean> {
+      return (await call("choice_verifyArbitrary", { chainId, signer, data: hex(typeof data === "string" ? new TextEncoder().encode(data) : data), signature })) as boolean;
+    },
     async sendTx(chainId: string, tx: Uint8Array, mode?: string): Promise<Uint8Array> {
       return bytes((await call("choice_sendTx", { chainId, tx: hex(tx), mode })) as string);
     },
@@ -164,8 +172,10 @@ const TO_PAGE = "choice-wallet:page";
         signAmino: (signer: string, doc: unknown) => choice.signAmino(chainId, signer, doc),
       };
     },
+    // A Ledger signs amino only (getKey says so), as Keplr's auto signer reads it.
     async getOfflineSignerAuto(chainId: string) {
-      return choice.getOfflineSigner(chainId);
+      const k = await choice.getKey(chainId);
+      return (k as { isNanoLedger?: boolean }).isNanoLedger ? choice.getOfflineSignerOnlyAmino(chainId) : choice.getOfflineSigner(chainId);
     },
     ethereum: provider,
   };

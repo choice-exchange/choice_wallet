@@ -1,4 +1,4 @@
-//! Rules for `personal_sign` messages.
+//! Rules for signed messages: `personal_sign`, and ADR-036 `signArbitrary`.
 
 use choice_wallet_core::EthAddress;
 use serde_json::json;
@@ -14,27 +14,172 @@ fn host(origin: &str) -> &str {
     rest.split('/').next().unwrap_or(rest)
 }
 
-/// Grade a `personal_sign` message.
-pub fn personal_message(message: &[u8], signer: &EthAddress, ctx: &Context) -> Assessment {
-    let mut out = site(ctx);
-    let text = std::str::from_utf8(message).ok().filter(|t| {
+/// The message as text, if it is printable text.
+fn as_text(message: &[u8]) -> Option<&str> {
+    std::str::from_utf8(message).ok().filter(|t| {
         t.chars()
             .all(|c| !c.is_control() || c == '\n' || c == '\r' || c == '\t')
-    });
-    match text {
-        None if message.len() == 32 => out.push(finding(
+    })
+}
+
+/// Grade an ADR-036 message (`signArbitrary`). The signature covers a sign doc that wraps
+/// the data and can't be broadcast, but data shaped like a transaction (a Cosmos or EVM
+/// transaction's bytes, or amino or protobuf JSON) has no business here: a site that asks
+/// for it is likely dressing one up.
+pub fn arbitrary_message(data: &[u8], ctx: &Context) -> Assessment {
+    let mut out = site(ctx);
+    if let Some(shape) = tx_shaped(data) {
+        out.push(finding(
+            "arbitrary_tx",
+            Level::Red,
+            "This message is shaped like a transaction. Sites have no reason to ask for that here.".into(),
+            json!({ "shape": shape }),
+        ));
+    } else if as_text(data).is_none() {
+        binary(data, &mut out);
+    }
+    Assessment::from(out)
+}
+
+/// What kind of transaction `data` looks like, if any.
+fn tx_shaped(data: &[u8]) -> Option<&'static str> {
+    // JSON: an amino sign doc, a protobuf-JSON tx or its body.
+    if let Ok(serde_json::Value::Object(o)) = serde_json::from_slice::<serde_json::Value>(data) {
+        const KEYS: [&str; 7] = [
+            "msgs",
+            "messages",
+            "body",
+            "body_bytes",
+            "bodyBytes",
+            "auth_info",
+            "authInfoBytes",
+        ];
+        if KEYS.iter().any(|k| o.contains_key(*k)) {
+            return Some("json");
+        }
+    }
+    if cosmos_tx(data) {
+        return Some("cosmos");
+    }
+    if evm_tx(data) {
+        return Some("evm");
+    }
+    None
+}
+
+/// A protobuf field: its number and, if length-delimited, its bytes.
+type Field<'a> = (u64, Option<&'a [u8]>);
+
+/// A protobuf field walk. `None` unless the whole input is well-formed fields.
+fn proto_fields(mut b: &[u8]) -> Option<Vec<Field<'_>>> {
+    fn varint(b: &mut &[u8]) -> Option<u64> {
+        let mut v = 0u64;
+        for i in 0..10 {
+            let (&x, rest) = b.split_first()?;
+            *b = rest;
+            v |= u64::from(x & 0x7f) << (7 * i);
+            if x & 0x80 == 0 {
+                return Some(v);
+            }
+        }
+        None
+    }
+    let mut out = Vec::new();
+    while !b.is_empty() {
+        let key = varint(&mut b)?;
+        let (field, wire) = (key >> 3, key & 7);
+        if field == 0 {
+            return None;
+        }
+        match wire {
+            0 => {
+                varint(&mut b)?;
+                out.push((field, None));
+            }
+            2 => {
+                let len = usize::try_from(varint(&mut b)?).ok()?;
+                if b.len() < len {
+                    return None;
+                }
+                let (v, rest) = b.split_at(len);
+                out.push((field, Some(v)));
+                b = rest;
+            }
+            _ => return None,
+        }
+    }
+    Some(out)
+}
+
+/// A Cosmos `TxRaw`, `SignDoc` or `Tx`: field 1 is a body whose messages (field 1) are
+/// `Any`s with a type URL (`/…`).
+fn cosmos_tx(data: &[u8]) -> bool {
+    let is_body = |body: &[u8]| {
+        proto_fields(body).is_some_and(|f| {
+            f.iter().any(|(n, v)| {
+                *n == 1
+                    && v.and_then(proto_fields)
+                        .and_then(|any| any.into_iter().find(|(n, _)| *n == 1))
+                        .and_then(|(_, url)| url)
+                        .is_some_and(|u| u.first() == Some(&b'/') && u.len() > 1 && u.iter().all(u8::is_ascii_graphic))
+            })
+        })
+    };
+    proto_fields(data).is_some_and(|f| f.iter().any(|(n, v)| *n == 1 && v.is_some_and(is_body))) || is_body(data)
+}
+
+/// An EVM transaction: a typed one (`0x01`..`0x04` then an RLP list) or a legacy RLP list,
+/// covering the whole input.
+fn evm_tx(data: &[u8]) -> bool {
+    let list = |b: &[u8]| -> bool {
+        let Some(&h) = b.first() else { return false };
+        let (head, len) = match h {
+            0xc0..=0xf7 => (1, usize::from(h - 0xc0)),
+            0xf8..=0xff => {
+                let n = usize::from(h - 0xf7);
+                let Some(bytes) = b.get(1..1 + n) else { return false };
+                (
+                    1 + n,
+                    bytes
+                        .iter()
+                        .fold(0usize, |a, &x| a.saturating_mul(256).saturating_add(usize::from(x))),
+                )
+            }
+            _ => return false,
+        };
+        len > 0 && head.checked_add(len) == Some(b.len())
+    };
+    match data.first() {
+        Some(0x01..=0x04) => list(&data[1..]),
+        Some(0xc0..) => list(data),
+        _ => false,
+    }
+}
+
+fn binary(message: &[u8], out: &mut Vec<crate::Finding>) {
+    out.push(if message.len() == 32 {
+        finding(
             "hash_signature",
             Level::Red,
             "This looks like a transaction hash, not a message. Signing it could authorize something you can't see."
                 .into(),
             json!({ "bytes": 32 }),
-        )),
-        None => out.push(finding(
+        )
+    } else {
+        finding(
             "binary_message",
             Level::Amber,
             "The message isn't text, so the wallet can't show what it says.".into(),
             json!({ "bytes": message.len() }),
-        )),
+        )
+    });
+}
+
+/// Grade a `personal_sign` message.
+pub fn personal_message(message: &[u8], signer: &EthAddress, ctx: &Context) -> Assessment {
+    let mut out = site(ctx);
+    match as_text(message) {
+        None => binary(message, &mut out),
         Some(t) => {
             let mut lines = t.lines();
             if let Some(domain) = lines.next().and_then(|l| l.strip_suffix(SIWE_SUFFIX)) {
@@ -98,6 +243,38 @@ mod tests {
         assert_eq!(rule(&[0xab; 32], None), Some("hash_signature"));
         assert_eq!(rule(&[0xff, 0xfe, 0], None), Some("binary_message"));
         assert_eq!(rule(b"hello", None), None);
+    }
+
+    #[test]
+    fn arbitrary_messages() {
+        let rule = |data: &[u8]| {
+            arbitrary_message(
+                data,
+                &Context {
+                    origin_known: true,
+                    ..Default::default()
+                },
+            )
+            .findings
+            .first()
+            .map(|f| f.rule)
+        };
+        assert_eq!(rule(b"Sign in to example.org\nNonce: 42"), None);
+        assert_eq!(rule(&[0xab; 32]), Some("hash_signature"));
+        assert_eq!(rule(&[0xff, 0xfe, 0]), Some("binary_message"));
+        // Shaped like transactions: amino and protobuf JSON, a TxRaw, EVM transactions.
+        assert_eq!(rule(br#"{"chain_id":"injective-1","msgs":[]}"#), Some("arbitrary_tx"));
+        assert_eq!(rule(br#"{"body":{"messages":[]}}"#), Some("arbitrary_tx"));
+        let any = [&[0x0a, 0x1c][..], b"/cosmos.bank.v1beta1.MsgSend", &[0x12, 0x00]].concat();
+        let body = [&[0x0a, any.len() as u8][..], &any].concat();
+        let tx_raw = [&[0x0a, body.len() as u8][..], &body, &[0x12, 0x02, 0x0a, 0x00]].concat();
+        assert_eq!(rule(&tx_raw), Some("arbitrary_tx"));
+        assert_eq!(rule(&body), Some("arbitrary_tx"));
+        assert_eq!(rule(&[0x02, 0xc3, 0x01, 0x02, 0x03]), Some("arbitrary_tx"));
+        assert_eq!(rule(&[0xc3, 0x80, 0x80, 0x80]), Some("arbitrary_tx"));
+        // Text that merely mentions a transaction is fine; JSON without tx keys too.
+        assert_eq!(rule(br#"{"nonce":"42","domain":"example.org"}"#), None);
+        assert_eq!(rule(&[0x02, 0xc3, 0x01]), Some("binary_message"));
     }
 
     #[test]
