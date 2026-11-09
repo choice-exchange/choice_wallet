@@ -31,6 +31,14 @@
 //! | `build_evm` | chain, from, to, amount, token, fees | a sign request |
 //! | `decode` | `request`, `context` (optional) | `display`, `risk`, `digest` |
 //! | `sign` | `secret`, `wallet`, `unlock_key`, `account`, `request`, `digest` | signature and signed tx |
+//! | `key_addresses` | `public_key` (a hardware wallet's account, from the device) | its addresses on every chain |
+//! | `device_request` | `request`, `digest` | what a hardware wallet signs: `app` (`cosmos`, `ethereum`), `kind`, `payload` |
+//! | `device_sign` | `request`, `digest`, `public_key`, `signature`, `format` (`der`, `rs`) | as `sign`, from the device's signature |
+//!
+//! A hardware wallet's account has no secret here. The host keeps its public key (read from
+//! the device when it was added); `device_request` gives the bytes the device signs (and
+//! shows), and `device_sign` takes the signature only if it verifies against that key over
+//! exactly those bytes, for the request that was approved.
 //!
 //! A sign request is one of `cosmos_direct`, `cosmos_amino_tx`, `cosmos_amino`,
 //! `evm_transaction`, `evm_typed_data`, `evm_personal_sign`. `decode` grades it with the
@@ -112,6 +120,31 @@ struct Addresses {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct KeyAddresses {
+    public_key: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeviceRequest<'a> {
+    #[serde(borrow)]
+    request: SignRequest<'a>,
+    digest: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeviceSign<'a> {
+    #[serde(borrow)]
+    request: SignRequest<'a>,
+    digest: String,
+    public_key: String,
+    signature: String,
+    format: request::SignatureFormat,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct GenerateMnemonic {
     words: usize,
 }
@@ -176,6 +209,12 @@ struct Sign<'a> {
     digest: String,
 }
 
+/// A public key a device returned, compressed (33 bytes) or not (65), hex.
+fn device_key(s: &str) -> Result<choice_wallet_core::PublicKey, VaultError> {
+    choice_wallet_core::PublicKey::from_sec1_bytes(&util::hex(s, "public_key")?)
+        .map_err(|_| VaultError::bad("public_key is not a secp256k1 public key"))
+}
+
 /// Parameters that borrow from the request text (embedded JSON kept exactly as sent).
 fn borrowed<'a, T: Deserialize<'a>>(raw: Option<&'a RawValue>) -> Result<T, VaultError> {
     serde_json::from_str(raw.map_or("{}", RawValue::get)).map_err(|e| VaultError::bad(e.to_string()))
@@ -203,12 +242,20 @@ fn call(request: &str) -> Result<Value, VaultError> {
             Ok(json!({ "unlock_key": hexutil::encode(key.as_bytes()) }))
         }
         "seal_secret" => {
-            let SealSecret { unlock_key, wallet, secret } = params(p)?;
+            let SealSecret {
+                unlock_key,
+                wallet,
+                secret,
+            } = params(p)?;
             let (sealed, kind) = keys::seal_secret(&unlock_key, &wallet, secret)?;
             Ok(json!({ "secret": hexutil::encode(&sealed), "kind": kind }))
         }
         "migrate" => {
-            let Migrate { keystore, password, wallet } = params(p)?;
+            let Migrate {
+                keystore,
+                password,
+                wallet,
+            } = params(p)?;
             let (m, kind) = keys::migrate(&keystore, &password, &wallet)?;
             Ok(json!({
                 "vault": hexutil::encode(&m.vault),
@@ -226,7 +273,12 @@ fn call(request: &str) -> Result<Value, VaultError> {
             } = params(p)?;
             let list = accounts
                 .into_iter()
-                .map(|a| Ok(keys::info(a, &keys::key(&secret, &wallet, &unlock_key, a)?.public_key())))
+                .map(|a| {
+                    Ok(keys::info(
+                        a,
+                        &keys::key(&secret, &wallet, &unlock_key, a)?.public_key(),
+                    ))
+                })
                 .collect::<Result<Vec<_>, VaultError>>()?;
             Ok(json!({ "accounts": list }))
         }
@@ -282,6 +334,33 @@ fn call(request: &str) -> Result<Value, VaultError> {
             let checked = request::decode(request)?;
             let key = keys::key(&secret, &wallet, &unlock_key, account)?;
             request::sign(checked, &digest, &key)
+        }
+        "key_addresses" => {
+            let KeyAddresses { public_key } = params(p)?;
+            let pk = device_key(&public_key)?;
+            Ok(json!({
+                "public_key": hexutil::encode(&pk.compressed()),
+                "addresses": chains::CHAINS
+                    .iter()
+                    .map(|c| (c.id.to_owned(), Value::String(c.address(&pk))))
+                    .collect::<serde_json::Map<String, Value>>(),
+            }))
+        }
+        "device_request" => {
+            let DeviceRequest { request, digest } = borrowed(p)?;
+            request::device_request(&request::decode(request)?, &digest)
+        }
+        "device_sign" => {
+            let DeviceSign {
+                request,
+                digest,
+                public_key,
+                signature,
+                format,
+            } = borrowed(p)?;
+            let checked = request::decode(request)?;
+            let pk = device_key(&public_key)?;
+            request::device_sign(checked, &digest, &pk, &util::hex(&signature, "signature")?, format)
         }
         other => Err(VaultError::new(UNKNOWN_METHOD, format!("unknown method {other:?}"))),
     }

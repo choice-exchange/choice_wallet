@@ -117,6 +117,16 @@ impl Eip1559Tx {
             return Err(Error::PriorityFee);
         }
         let (sig, recid) = key.sign_prehash(&self.signing_hash());
+        self.with_signature(&sig, recid)
+    }
+
+    /// The signed transaction from a signature made elsewhere (a hardware wallet): `r || s`
+    /// with low S and its recovery id, both from [`choice_wallet_core::PublicKey::check_prehash`]
+    /// over [`Self::signing_hash`].
+    pub fn with_signature(&self, sig: &[u8; 64], recid: u8) -> Result<SignedTx, Error> {
+        if self.max_priority_fee_per_gas > self.max_fee_per_gas {
+            return Err(Error::PriorityFee);
+        }
         if recid > 1 {
             return Err(Error::RecoveryId);
         }

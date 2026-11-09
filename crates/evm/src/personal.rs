@@ -18,8 +18,13 @@ pub fn hash(message: &[u8]) -> [u8; 32] {
 /// Sign as `personal_sign` does: 65 bytes `r || s || v`, with v = 27 or 28.
 pub fn sign(message: &[u8], key: &PrivateKey) -> [u8; 65] {
     let (sig, recid) = key.sign_prehash(&hash(message));
+    with_signature(&sig, recid)
+}
+
+/// The 65-byte form of a signature made elsewhere (a hardware wallet) over [`hash`].
+pub fn with_signature(sig: &[u8; 64], recid: u8) -> [u8; 65] {
     let mut out = [0u8; 65];
-    out[..64].copy_from_slice(&sig);
+    out[..64].copy_from_slice(sig);
     out[64] = 27 + (recid & 1);
     out
 }

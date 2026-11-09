@@ -3,7 +3,7 @@
 use core::fmt;
 
 use k256::ecdsa::signature::hazmat::PrehashVerifier;
-use k256::ecdsa::{Signature, SigningKey, VerifyingKey};
+use k256::ecdsa::{RecoveryId, Signature, SigningKey, VerifyingKey};
 use sha3::{Digest, Keccak256};
 use zeroize::Zeroizing;
 
@@ -122,6 +122,55 @@ impl PublicKey {
         }
         self.0.verify_prehash(&keccak256(msg), &sig).is_ok()
     }
+
+    /// A signature from somewhere else (a hardware wallet), checked against this key and
+    /// `hash`: `r || s` with S made low (its twin `(r, n - s)` is the same signature to
+    /// ECDSA, and chains take only the low one), and the recovery id that gives back this
+    /// key. `None` unless it verifies.
+    pub fn check_prehash(&self, hash: &[u8; 32], sig: &[u8; 64]) -> Option<([u8; 64], u8)> {
+        let sig = Signature::from_slice(sig).ok()?.normalize_s();
+        self.0.verify_prehash(hash, &sig).ok()?;
+        let recid = (0u8..2).find(|&b| {
+            RecoveryId::from_byte(b)
+                .and_then(|id| VerifyingKey::recover_from_prehash(hash, &sig, id).ok())
+                .is_some_and(|k| k == self.0)
+        })?;
+        Some((sig.to_bytes().into(), recid))
+    }
+}
+
+/// `r || s` from an ASN.1 DER ECDSA signature (`SEQUENCE { INTEGER r, INTEGER s }`), as
+/// Ledger's Cosmos app returns it. Strict: minimal lengths and integers, nothing after.
+pub fn signature_from_der(der: &[u8]) -> Option<[u8; 64]> {
+    fn integer(b: &[u8]) -> Option<(&[u8], &[u8])> {
+        let (&tag, rest) = b.split_first()?;
+        let (&len, rest) = rest.split_first()?;
+        let len = usize::from(len);
+        if tag != 0x02 || len == 0 || len > 33 || rest.len() < len {
+            return None;
+        }
+        let (v, rest) = rest.split_at(len);
+        // Positive and minimal: a leading zero only to clear the sign bit.
+        if v[0] & 0x80 != 0 || (v.len() > 1 && v[0] == 0 && v[1] & 0x80 == 0) {
+            return None;
+        }
+        let v = if v[0] == 0 { &v[1..] } else { v };
+        (v.len() <= 32).then_some((v, rest))
+    }
+    let (&tag, rest) = der.split_first()?;
+    let (&len, body) = rest.split_first()?;
+    if tag != 0x30 || len >= 0x80 || usize::from(len) != body.len() {
+        return None;
+    }
+    let (r, rest) = integer(body)?;
+    let (s, rest) = integer(rest)?;
+    if !rest.is_empty() {
+        return None;
+    }
+    let mut out = [0u8; 64];
+    out[32 - r.len()..32].copy_from_slice(r);
+    out[64 - s.len()..].copy_from_slice(s);
+    Some(out)
 }
 
 impl fmt::Debug for PublicKey {
@@ -192,6 +241,80 @@ mod tests {
         let high = Signature::from_scalars(r.to_bytes(), (-*s).to_bytes()).unwrap();
         let high: [u8; 64] = high.to_bytes().into();
         assert!(!key.public_key().verify_keccak256(b"msg", &high));
+    }
+
+    /// DER as a device writes it: each integer minimal, a 0x00 before a high bit.
+    fn der(sig: &[u8; 64]) -> Vec<u8> {
+        let int = |v: &[u8]| {
+            let v = &v[v.iter().position(|&b| b != 0).unwrap_or(31)..];
+            let mut out = vec![0x02];
+            if v[0] & 0x80 != 0 {
+                out.push(v.len() as u8 + 1);
+                out.push(0);
+            } else {
+                out.push(v.len() as u8);
+            }
+            out.extend_from_slice(v);
+            out
+        };
+        let body = [int(&sig[..32]), int(&sig[32..])].concat();
+        [vec![0x30, body.len() as u8], body].concat()
+    }
+
+    #[test]
+    fn device_signatures_are_checked_and_made_low_s() {
+        let key = PrivateKey::from_hex(TEST_KEY).unwrap();
+        let pk = key.public_key();
+        for i in 0u8..16 {
+            let hash = keccak256(&[i; 3]);
+            let (sig, recid) = key.sign_prehash(&hash);
+            assert_eq!(signature_from_der(&der(&sig)), Some(sig));
+            assert_eq!(pk.check_prehash(&hash, &sig), Some((sig, recid)));
+            // The high-S twin a device may return comes back low, with the same key.
+            let parsed = Signature::from_slice(&sig).unwrap();
+            let (r, s) = parsed.split_scalars();
+            let high: [u8; 64] = Signature::from_scalars(r.to_bytes(), (-*s).to_bytes())
+                .unwrap()
+                .to_bytes()
+                .into();
+            assert_eq!(signature_from_der(&der(&high)), Some(high));
+            assert_eq!(pk.check_prehash(&hash, &high), Some((sig, recid)));
+            // Another hash, another key: refused.
+            assert_eq!(pk.check_prehash(&keccak256(b"other"), &sig), None);
+            let other = PrivateKey::from_hex(&"11".repeat(32)).unwrap().public_key();
+            assert_eq!(other.check_prehash(&hash, &sig), None);
+        }
+    }
+
+    #[test]
+    fn der_is_strict() {
+        let key = PrivateKey::from_hex(TEST_KEY).unwrap();
+        let (sig, _) = key.sign_prehash(&keccak256(b"x"));
+        let good = der(&sig);
+        let mut trailing = good.clone();
+        trailing.push(0);
+        let mut long = good.clone();
+        long[1] += 1;
+        // A padded integer: 0x00 before a byte without the high bit.
+        let padded = {
+            let r = &sig[..32];
+            let r = &r[r.iter().position(|&b| b != 0).unwrap()..];
+            let mut int = vec![0x02, r.len() as u8 + 1, 0];
+            int.extend_from_slice(r);
+            if r[0] & 0x80 != 0 {
+                None
+            } else {
+                let s_part = good[2 + 2 + good[3] as usize..].to_vec();
+                let body = [int, s_part].concat();
+                Some([vec![0x30, body.len() as u8], body].concat())
+            }
+        };
+        for bad in [vec![], trailing, long, good[..good.len() - 1].to_vec(), vec![0x30, 0]] {
+            assert_eq!(signature_from_der(&bad), None, "{bad:02x?}");
+        }
+        if let Some(p) = padded {
+            assert_eq!(signature_from_der(&p), None);
+        }
     }
 
     #[test]

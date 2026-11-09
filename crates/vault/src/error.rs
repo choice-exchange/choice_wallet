@@ -28,6 +28,10 @@ pub const INVALID: &str = "invalid";
 pub const WRONG_ACCOUNT: &str = "wrong_account";
 /// The request isn't the one that was approved.
 pub const NOT_APPROVED: &str = "not_approved";
+/// A hardware wallet can't sign this kind of request.
+pub const DEVICE_UNSUPPORTED: &str = "device_unsupported";
+/// A hardware wallet's signature didn't verify against the account's key and the request.
+pub const BAD_SIGNATURE: &str = "bad_signature";
 
 impl VaultError {
     pub(crate) fn new(code: &'static str, message: impl Into<String>) -> Self {

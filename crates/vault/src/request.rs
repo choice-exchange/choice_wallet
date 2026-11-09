@@ -24,7 +24,7 @@ use serde_json::value::RawValue;
 use serde_json::{Value, json};
 
 use crate::chains::{self, Entry};
-use crate::error::{INVALID, NOT_APPROVED, VaultError, WRONG_ACCOUNT};
+use crate::error::{BAD_SIGNATURE, DEVICE_UNSUPPORTED, INVALID, NOT_APPROVED, VaultError, WRONG_ACCOUNT};
 use crate::util::{U64, hex, json_text};
 
 /// A request to sign, as hosts send it. Byte fields are hex without a prefix.
@@ -516,6 +516,112 @@ pub(crate) fn sign(checked: Checked, approved: &str, key: &PrivateKey) -> Result
             }
             Ok(json!({ "signature": prefixed(&personal::sign(&message, key)) }))
         }
+    }
+}
+
+fn check_approved(checked: &Checked, approved: &str) -> Result<(), VaultError> {
+    if approved == hexutil::encode(&checked.digest) {
+        Ok(())
+    } else {
+        Err(VaultError::new(
+            NOT_APPROVED,
+            "this request is not the one that was approved",
+        ))
+    }
+}
+
+/// What a hardware wallet signs for an approved request: the app that signs it and the exact
+/// bytes, which the device shows. Ledger's Cosmos app signs amino JSON; its Ethereum app
+/// signs EVM transactions and `personal_sign` messages.
+pub(crate) fn device_request(checked: &Checked, approved: &str) -> Result<Value, VaultError> {
+    check_approved(checked, approved)?;
+    let out = |app: &str, kind: &str, payload: &[u8]| json!({ "app": app, "kind": kind, "payload": hexutil::encode(payload) });
+    match &checked.kind {
+        Kind::AminoTx { tx, .. } | Kind::Amino { tx, .. } => Ok(out("cosmos", "amino", tx.sign_bytes())),
+        Kind::EvmTx { r, .. } => Ok(out("ethereum", "transaction", &r.tx.unsigned_bytes())),
+        Kind::Personal { message, .. } => Ok(out("ethereum", "message", message)),
+        Kind::Direct { .. } => Err(VaultError::new(
+            DEVICE_UNSUPPORTED,
+            "A Ledger signs Cosmos transactions as amino JSON, not this form.",
+        )),
+        Kind::TypedData { .. } => Err(VaultError::new(
+            DEVICE_UNSUPPORTED,
+            "A Ledger account can't sign typed data in Choice Wallet yet.",
+        )),
+    }
+}
+
+/// How a device wrote its signature.
+#[derive(Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum SignatureFormat {
+    /// ASN.1 DER (Ledger's Cosmos app).
+    Der,
+    /// 64 bytes `r || s` (Ledger's Ethereum app returns `v || r || s`; the host drops `v`,
+    /// since the vault works the recovery id out itself).
+    Rs,
+}
+
+/// The signed result for an approved request from a signature its signer's hardware wallet
+/// made, in the same form [`sign`] returns. The signature must verify against `public_key`
+/// (the account's, kept since pairing) over the exact bytes [`device_request`] gave, and
+/// that key must be the request's signer; otherwise nothing comes back.
+pub(crate) fn device_sign(
+    checked: Checked,
+    approved: &str,
+    public_key: &PublicKey,
+    signature: &[u8],
+    format: SignatureFormat,
+) -> Result<Value, VaultError> {
+    check_approved(&checked, approved)?;
+    let sig: [u8; 64] = match format {
+        SignatureFormat::Der => choice_wallet_core::secp256k1::signature_from_der(signature),
+        SignatureFormat::Rs => signature.try_into().ok(),
+    }
+    .ok_or_else(|| VaultError::new(BAD_SIGNATURE, "the device's signature isn't readable"))?;
+    let bad = || {
+        VaultError::new(
+            BAD_SIGNATURE,
+            "the device's signature isn't this account's, for this request",
+        )
+    };
+    let wrong_account = || VaultError::new(WRONG_ACCOUNT, "this account is not the request's signer");
+    let prefixed = |b: &[u8]| format!("0x{}", hexutil::encode(b));
+    match checked.kind {
+        Kind::AminoTx { tx, .. } | Kind::Amino { tx, .. } => {
+            if *tx.signer() != public_key.compressed() {
+                return Err(wrong_account());
+            }
+            let sig = tx.device_signature(&sig).ok_or_else(bad)?;
+            Ok(match tx.tx_raw(&sig) {
+                Some(raw) => json!({ "signature": hexutil::encode(&sig), "tx_raw": hexutil::encode(&raw) }),
+                None => json!({
+                    "signature": hexutil::encode(&sig),
+                    "signed_doc": String::from_utf8_lossy(tx.sign_bytes()),
+                }),
+            })
+        }
+        Kind::EvmTx { r, .. } => {
+            if public_key.eth_address() != r.from {
+                return Err(wrong_account());
+            }
+            let (sig, recid) = public_key.check_prehash(&r.tx.signing_hash(), &sig).ok_or_else(bad)?;
+            let s = r.tx.with_signature(&sig, recid)?;
+            Ok(json!({ "raw": prefixed(&s.raw), "hash": prefixed(&s.hash) }))
+        }
+        Kind::Personal { message, signer } => {
+            if public_key.eth_address() != signer {
+                return Err(wrong_account());
+            }
+            let (sig, recid) = public_key
+                .check_prehash(&personal::hash(&message), &sig)
+                .ok_or_else(bad)?;
+            Ok(json!({ "signature": prefixed(&personal::with_signature(&sig, recid)) }))
+        }
+        Kind::Direct { .. } | Kind::TypedData { .. } => Err(VaultError::new(
+            DEVICE_UNSUPPORTED,
+            "A Ledger can't sign this kind of request here.",
+        )),
     }
 }
 

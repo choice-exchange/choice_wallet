@@ -82,6 +82,18 @@ impl AminoTx {
         PublicKey::from_sec1_bytes(&self.signer).is_ok_and(|pk| self.chain.verify(&pk, &self.sign_bytes, signature))
     }
 
+    /// A signature a hardware wallet returned for these bytes, made low-S (a device may
+    /// return either twin); `None` unless the signer's key made it over exactly them.
+    pub fn device_signature(&self, signature: &[u8; 64]) -> Option<[u8; 64]> {
+        let pk = PublicKey::from_sec1_bytes(&self.signer).ok()?;
+        self.chain.check_device(&pk, &self.sign_bytes, signature)
+    }
+
+    /// The signer's compressed public key.
+    pub fn signer(&self) -> &[u8; 33] {
+        &self.signer
+    }
+
     /// `TxRaw` ready to broadcast, for a transaction built with [`from_tx`]. `None` for a
     /// dapp's sign doc, which the dapp assembles and broadcasts itself.
     pub fn tx_raw(&self, signature: &[u8; 64]) -> Option<Vec<u8>> {

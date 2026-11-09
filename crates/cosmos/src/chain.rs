@@ -92,6 +92,16 @@ impl Chain {
             KeyKind::EthSecp256k1 { .. } => key.verify_keccak256(bytes, signature),
         }
     }
+
+    /// A signature made elsewhere over `bytes`, as this chain's key type signs, made low-S;
+    /// `None` unless `key` made it over exactly these bytes.
+    pub(crate) fn check_device(&self, key: &PublicKey, bytes: &[u8], signature: &[u8; 64]) -> Option<[u8; 64]> {
+        match self.key {
+            KeyKind::EthSecp256k1 { .. } => key
+                .check_prehash(&choice_wallet_core::secp256k1::keccak256(bytes), signature)
+                .map(|(s, _)| s),
+        }
+    }
 }
 
 #[cfg(test)]
