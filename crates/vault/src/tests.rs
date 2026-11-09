@@ -1006,6 +1006,23 @@ fn own_bridge_receive_mints_only_to_this_account() {
     let d = ok("decode", json!({ "request": theirs }));
     assert_eq!(d["risk"]["level"], "amber");
     assert!(rules_of(&d).contains(&"bridge_receive_other".to_owned()));
+
+    // From Solana: the sender is Circle's program there, the token Solana's USDC mint.
+    let program = choice_wallet_core::base58::decode32(MAINNET.solana.token_messenger_minter).unwrap();
+    let solana = |sender: [u8; 32], token: [u8; 32]| {
+        let mut m = hexutil::decode(&message(&me, base_usdc, 5)).unwrap();
+        m[44..76].copy_from_slice(&sender);
+        m[148 + 4..148 + 36].copy_from_slice(&token);
+        hexutil::encode(&m)
+    };
+    let request = ok("build_evm", receive(solana(program, MAINNET.solana.usdc_mint())))["request"].clone();
+    let d = ok("decode", json!({ "request": request }));
+    assert_eq!(d["display"]["call"]["chain"], "Solana");
+    assert_eq!(d["display"]["call"]["known_token"], true);
+    assert_eq!(d["risk"]["level"], "info");
+    // Not from Circle's program, or not its USDC: refused.
+    assert_eq!(code("build_evm", receive(solana([9; 32], MAINNET.solana.usdc_mint()))), "bad_request");
+    assert_eq!(code("build_evm", receive(solana(program, [9; 32]))), "bad_request");
 }
 
 /// A real route from Choice's API (2026-11-09), paying the test phrase's account 0.

@@ -174,7 +174,7 @@ export function createService(d: Deps) {
   });
   const staking = createStaking(sender);
   const swaps = createSwaps(sender, d.session, d.fetch, async (net) => (await tokenFilter(net)).shown);
-  const bridge = createBridge(sender, d.session, d.local, d.fetch);
+  const bridge = createBridge(sender, d.session, d.local, d.fetch, Date.now, solana);
   const approvals = createApprovals(sender);
 
   const wallets = createWallets({
@@ -514,6 +514,8 @@ export function createService(d: Deps) {
       case "bridge_in_status":
       case "prepare_bridge_receive":
       case "bridge_in_pending":
+      case "bridge_reclaims":
+      case "prepare_bridge_reclaim":
       case "prepare_revoke":
       case "prepare_revoke_erc20":
       case "inventory":
@@ -530,7 +532,7 @@ export function createService(d: Deps) {
       case "tx_status": {
         const a = await active();
         if ("ok" in a) return a;
-        if ((r.type === "prepare_send" || r.type === "prepare_convert" || r.type === "prepare_stake" || r.type === "prepare_revoke" || r.type === "prepare_revoke_erc20" || r.type === "prepare_swap" || r.type === "prepare_bridge" || r.type === "prepare_bridge_in" || r.type === "prepare_bridge_receive" || r.type === "prepare_nft_send" || r.type === "prepare_rescue" || r.type === "prepare_rescue_grant" || r.type === "prepare_subaccount_withdraw") && isWatch(a.account)) {
+        if ((r.type === "prepare_send" || r.type === "prepare_convert" || r.type === "prepare_stake" || r.type === "prepare_revoke" || r.type === "prepare_revoke_erc20" || r.type === "prepare_swap" || r.type === "prepare_bridge" || r.type === "prepare_bridge_in" || r.type === "prepare_bridge_receive" || r.type === "prepare_bridge_reclaim" || r.type === "prepare_nft_send" || r.type === "prepare_rescue" || r.type === "prepare_rescue_grant" || r.type === "prepare_subaccount_withdraw") && isWatch(a.account)) {
           return err("watch_only", "This account is watch-only. Switch to one that can sign.");
         }
         if (r.type === "snapshot") return { ok: true, result: await snapshot(a.net, a.account) };
@@ -573,6 +575,8 @@ export function createService(d: Deps) {
         if (r.type === "bridge_in_status") return bridge.inStatus(a.net, a.account, r);
         if (r.type === "prepare_bridge_receive") return bridge.prepareReceive(a.net, a.account, r);
         if (r.type === "bridge_in_pending") return bridge.inPending(a.net, a.account);
+        if (r.type === "bridge_reclaims") return bridge.reclaims(a.net, a.account);
+        if (r.type === "prepare_bridge_reclaim") return bridge.prepareReclaim(a.net, a.account, r.hash);
         if (r.type === "prepare_revoke") return approvals.prepare(a.net, a.account, r.items);
         if (r.type === "prepare_revoke_erc20") return approvals.prepareErc20(a.net, a.account, r.token, r.spender);
         if (r.type === "inventory") return inventory.summary(a.net, a.account);

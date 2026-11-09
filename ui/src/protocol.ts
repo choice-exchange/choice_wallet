@@ -97,6 +97,9 @@ export type UiRequest =
   | { type: "activity"; page: number }
   /** The account's Solana history, newest first; `before` continues after a page. */
   | { type: "solana_activity"; before?: string }
+  /** Burns on Solana whose record's rent comes back (5 days on), and taking one back. */
+  | { type: "bridge_reclaims" }
+  | { type: "prepare_bridge_reclaim"; hash: string }
   /** `amount` in base units, or "max" (the fee token: everything but the fee). `memo` goes
    *  in a Cosmos transaction; an EVM-only token's send can't carry one. */
   | { type: "prepare_send"; denom: string; to: string; amount: string; memo?: string }
@@ -471,7 +474,8 @@ export type BridgeInStepInfo = {
 
 /** A chain USDC can come in from. `symbol` is its gas coin; `fast`: Circle attests a burn
  *  there in seconds rather than after its finality. */
-export type BridgeSource = { key: string; name: string; symbol: string; fast: boolean };
+/** `decimals`: its gas coin's (18 on EVM chains, 9 for SOL). */
+export type BridgeSource = { key: string; name: string; symbol: string; fast: boolean; decimals?: number };
 
 export type BridgeInRoutes = {
   chains: BridgeSource[];
@@ -875,6 +879,8 @@ export type Replies = {
     solana?: { address: string; balances: Balance[]; down?: true };
   };
   solana_activity: { items: ActivityItem[]; tokens: Record<string, TokenInfo>; next: string | null };
+  bridge_reclaims: { hash: string; event: string; ready: boolean; at: number }[];
+  prepare_bridge_reclaim: SendReview;
   snapshot: SnapshotView | null;
   seen: null;
   add_token: { denom: string; symbol: string; filter: TokenFilter };

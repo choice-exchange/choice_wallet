@@ -104,6 +104,10 @@ export interface DepositSent {
   amount: string;
   /** The account's 0x address. */
   account: string;
+  /** On Solana: the burn's record (its rent comes back later) and the account's Solana
+   *  address, which paid it. */
+  event?: string;
+  owner?: string;
 }
 
 /** OP Stack's GasPriceOracle predeploy, and `getL1FeeUpperBound(uint256 unsignedTxSize)`. */
@@ -150,7 +154,7 @@ interface Pending {
   /** Signed on another chain, where USDC comes from: broadcast there. */
   source?: SourceChain;
   /** A deposit's burn, followed once broadcast. */
-  deposit?: { amount: string; account: string };
+  deposit?: { amount: string; account: string; event?: string; owner?: string };
   /** A Solana transaction, signed with the account's Solana key (./solana.ts). */
   solana?: SolanaPending;
 }
@@ -1170,7 +1174,9 @@ export function createSender(d: SendDeps) {
   async function broadcast(p: Pending, signed: { tx_raw: string } & { raw: string; hash: string }): Promise<Result<Sent>> {
     if (p.solana) {
       if (!d.solanaBroadcast) return fail("bad_request", "Solana isn't set up.");
-      return d.solanaBroadcast(p.network, p.solana, signed as unknown as { signature: string; index: number });
+      const sent = await d.solanaBroadcast(p.network, p.solana, signed as unknown as { signature: string; index: number });
+      if (sent.ok && p.deposit) await d.onDeposit?.(p.network, { chain: "solana", hash: sent.result.hash, ...p.deposit });
+      return sent;
     }
     if (p.source) {
       // On the chain the USDC comes from. The background watcher follows Injective only; a

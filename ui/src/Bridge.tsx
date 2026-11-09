@@ -359,6 +359,8 @@ function BridgeInView({ network, canSign, draft, onDraft, onReview, onBack, note
   const routes = useKept({ type: "bridge_in_routes" });
   const balances = useKept({ type: "bridge_in_balances" });
   const pending = useKept({ type: "bridge_in_pending" });
+  /** Burns on Solana whose record's rent comes back to the account, 5 days on. */
+  const rent = useKept({ type: "bridge_reclaims" });
   const r = routes.value;
   const [picking, setPicking] = useState(false);
   const [quote, setQuote] = useState<{ q: BridgeInQuote; at: number } | null>(null);
@@ -442,7 +444,7 @@ function BridgeInView({ network, canSign, draft, onDraft, onReview, onBack, note
 
   const q = quote?.q;
   const usdc = (v: string) => `${formatShort(v, USDC_DECIMALS, 6)} USDC`;
-  const coin = (v: string) => `${formatShort(v, 18, 6)} ${chain?.symbol ?? ""}`;
+  const coin = (v: string) => `${formatShort(v, chain?.decimals ?? 18, 6)} ${chain?.symbol ?? ""}`;
   const short = q !== undefined && BigInt(q.gasHeld) < BigInt(q.gasNeed);
   return (
     <Screen
@@ -461,6 +463,29 @@ function BridgeInView({ network, canSign, draft, onDraft, onReview, onBack, note
       {routes.error && <Callout level="amber">{routes.error}</Callout>}
       {(pending.value ?? []).map((p) => (
         <PendingIn key={p.hash} item={p} network={network} onFinish={() => onFinish(p.chain, p.hash)} onArrived={() => void pending.reload()} />
+      ))}
+      {(rent.value ?? []).map((x) => (
+        <div className="surface" key={x.hash} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <ChainTile name="Solana" small />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div className="num">Rent from a transfer</div>
+            <div className="meta">{x.ready ? "About 0.004 SOL, yours to take back" : `Yours to take back from ${new Date(x.at + 5 * 86_400_000).toLocaleDateString()}`}</div>
+          </div>
+          {x.ready && canSign && (
+            <button
+              type="button"
+              className="pill pill-gold"
+              disabled={busy}
+              onClick={() =>
+                void run({ type: "prepare_bridge_reclaim", hash: x.hash }).then((rv) => {
+                  if (rv) onReview(rv, { id: "", dir: "in" });
+                })
+              }
+            >
+              Take back
+            </button>
+          )}
+        </div>
       ))}
       <div className="surface-hero">
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -571,7 +596,7 @@ function SourcePicker({ chains, held, onPick, onBack }: { chains: BridgeSource[]
               <ChainTile name={c.name} />
               <span className="name">
                 <span className="symbol">{c.name}</span>
-                <span className="sub">{h?.usdc ? `${formatShort(h.usdc, USDC_DECIMALS, 2)} USDC · ${formatShort(h.native ?? "0", 18, 4)} ${c.symbol}` : h ? "Balance unknown" : "Checking…"}</span>
+                <span className="sub">{h?.usdc ? `${formatShort(h.usdc, USDC_DECIMALS, 2)} USDC · ${formatShort(h.native ?? "0", c.decimals ?? 18, 4)} ${c.symbol}` : h ? "Balance unknown" : "Checking…"}</span>
               </span>
             </button>
           );

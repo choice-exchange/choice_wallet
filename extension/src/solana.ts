@@ -207,6 +207,8 @@ export function createSolana(d: SolanaDeps) {
       tokenAccounts?: Record<string, { owner: string; mint: string }>;
       tokens: Record<string, TokenInfo>;
       cosigner?: Uint8Array;
+      /** A deposit into Injective: followed once broadcast. */
+      deposit?: { amount: string; account: string; event: string; owner: string };
       extra?: Partial<SendReview>;
       /** Holds the vault's reading to what was asked; a message why not. */
       expect?: (display: Record<string, unknown>) => string | null;
@@ -249,6 +251,7 @@ export function createSolana(d: SolanaDeps) {
         wallet: account.wallet,
         confirm: risk.confirm ?? null,
         blocked: risk.level === "blocked",
+        ...(spec.deposit ? { deposit: spec.deposit } : {}),
         solana: {
           message: bytesToHex(message.bytes),
           signers: message.signers,

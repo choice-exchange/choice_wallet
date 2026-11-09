@@ -179,12 +179,15 @@ test("in: the chains USDC comes from, and this account's USDC and gas on them", 
   const r = ok<{ chains: { key: string; name: string; symbol: string; fast: boolean }[]; address: string; usdc: string; gasDrop: boolean }>(await service.handle({ type: "bridge_in_routes" }));
   assert.equal(r.address, ME_EVM);
   assert.equal(r.gasDrop, true);
-  assert.deepEqual(r.chains.find((c) => c.key === "base"), { key: "base", name: "Base", symbol: "ETH", fast: true });
-  assert.ok(!r.chains.some((c) => c.key === "injective" || c.key === "solana"));
+  assert.deepEqual(r.chains.find((c) => c.key === "base"), { key: "base", name: "Base", symbol: "ETH", fast: true, decimals: 18 });
+  assert.ok(!r.chains.some((c) => c.key === "injective"));
+  // Solana, signed with the account's Solana key.
+  assert.deepEqual(r.chains.find((c) => c.key === "solana"), { key: "solana", name: "Solana", symbol: "SOL", fast: true, decimals: 9 });
   const held = ok<{ chain: string; usdc: string | null; native: string | null }[]>(await service.handle({ type: "bridge_in_balances" }));
   assert.deepEqual(held.find((h) => h.chain === "base"), { chain: "base", usdc: "12000000", native: (10n ** 16n).toString() });
   // The fake answers only Base: every other chain comes back unknown, not as zero.
   assert.deepEqual(held.find((h) => h.chain === "arbitrum"), { chain: "arbitrum", usdc: null, native: null });
+  assert.deepEqual(held.find((h) => h.chain === "solana"), { chain: "solana", usdc: "5000000", native: "2000000000" });
 });
 
 test("in from Base: an exact approval, then a burn into this account; then minted here", async () => {
@@ -297,7 +300,8 @@ test("in: refused without the USDC, the gas, or a chain it comes from", async ()
   net.state.base.usdc = 5_000_000n;
   const { service } = await wallet(net);
   assert.equal(code(await service.handle({ type: "bridge_in_quote", from: "base", amount: "6000000", gasDrop: false })), "insufficient");
-  assert.equal(code(await service.handle({ type: "bridge_in_quote", from: "solana", amount: "1000000", gasDrop: false })), "bad_request");
+  assert.equal(code(await service.handle({ type: "bridge_in_quote", from: "nowhere", amount: "1000000", gasDrop: false })), "bad_request");
+  assert.equal(code(await service.handle({ type: "bridge_in_quote", from: "solana", amount: "6000000", gasDrop: false })), "insufficient");
   assert.equal(code(await service.handle({ type: "bridge_in_quote", from: "base", amount: "2", gasDrop: false })), "bridge_amount");
   net.state.base.eth = 0n;
   const q = ok<InQuote>(await service.handle({ type: "bridge_in_quote", from: "base", amount: "1000000", gasDrop: false }));

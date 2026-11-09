@@ -420,14 +420,14 @@ fn own_call(
                 .ok_or_else(|| VaultError::bad("that isn't Circle's MessageTransmitterV2 on this network"))?
                 .map_err(|e| VaultError::bad(format!("not a mint the wallet can read: {e}")))?;
             let refuse = |why: &str| Err(VaultError::bad(format!("refused: {why}")));
-            let Some(source) = c.source_domain(m.source_domain) else {
+            let Some(source) = c.inbound(m.source_domain) else {
                 return refuse("it comes from a chain the wallet doesn't name");
             };
             let tm = cctp::word(&c.token_messenger());
-            if m.destination_domain != cctp::INJECTIVE_DOMAIN || m.sender != tm || m.recipient != tm {
+            if m.destination_domain != cctp::INJECTIVE_DOMAIN || m.sender != source.sender || m.recipient != tm {
                 return refuse("it isn't a USDC transfer to Injective");
             }
-            if m.burn_token != cctp::word(&source.usdc()) {
+            if m.burn_token != source.burn_token {
                 return refuse("it mints a token other than USDC");
             }
             if !m.permissionless() || m.paid() != Some(*from) || m.amount.is_zero() {

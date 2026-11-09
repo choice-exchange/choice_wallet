@@ -639,14 +639,14 @@ fn contract_display(entry: &Entry, r: &TxRequest, selector: Option<[u8; 4]>) -> 
         let Ok(m) = read else {
             return json!({ "type": "contract", "selector": plain["selector"], "unreadable_bridge": true });
         };
-        let source = network.cctp.source_domain(m.source_domain);
+        let source = network.cctp.inbound(m.source_domain);
         return json!({
             "type": "bridge_receive",
             "domain": m.source_domain,
             "chain": source.map(|s| s.name),
             "to_injective": m.destination_domain == cctp::INJECTIVE_DOMAIN,
             "token": hex_addr(&network.cctp.usdc()),
-            "known_token": source.is_some_and(|s| m.burn_token == cctp::word(&s.usdc())),
+            "known_token": source.is_some_and(|s| m.burn_token == s.burn_token),
             "amount": m.amount.to_string(),
             "fee": m.fee_executed.to_string(),
             "minted": m.minted().to_string(),

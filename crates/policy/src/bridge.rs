@@ -290,7 +290,7 @@ pub(crate) fn receive(c: &Cctp, from: &EthAddress, read: &Result<Receive, CctpEr
             return;
         }
     };
-    let source = c.source_domain(r.source_domain);
+    let source = c.inbound(r.source_domain);
     let chain = source.map_or_else(|| format!("CCTP domain {}", r.source_domain), |s| s.name.to_owned());
     if r.destination_domain != cctp::INJECTIVE_DOMAIN {
         out.push(finding(
@@ -313,7 +313,7 @@ pub(crate) fn receive(c: &Cctp, from: &EthAddress, read: &Result<Receive, CctpEr
             "fee": r.fee_executed.to_string(),
         }),
     ));
-    if source.is_none_or(|s| r.burn_token != cctp::word(&s.usdc())) {
+    if source.is_none_or(|s| r.burn_token != s.burn_token) {
         out.push(finding(
             "bridge_receive_token",
             Level::Amber,

@@ -99,6 +99,9 @@ pub struct SolanaSide {
     pub caip2: &'static str,
     /// Native USDC's mint there, base58.
     pub usdc_mint: &'static str,
+    /// Circle's TokenMessengerMinterV2 program there, base58: the sender of every transfer
+    /// from Solana.
+    pub token_messenger_minter: &'static str,
 }
 
 impl SolanaSide {
@@ -110,6 +113,17 @@ impl SolanaSide {
 
 /// Solana's CCTP domain.
 pub const SOLANA_DOMAIN: u32 = 5;
+
+/// A chain USDC comes into Injective from, as its messages name it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Inbound {
+    /// The chain's name.
+    pub name: &'static str,
+    /// The message sender every transfer from there carries.
+    pub sender: [u8; 32],
+    /// The USDC burned there.
+    pub burn_token: [u8; 32],
+}
 
 /// Injective as a destination, for burns that start elsewhere (Solana).
 pub const INJECTIVE: Domain = Domain {
@@ -222,6 +236,7 @@ pub const MAINNET: Cctp = Cctp {
         name: "Solana",
         caip2: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
         usdc_mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        token_messenger_minter: "CCTPV2vPZJS2u2BBsUoscuikbYjnpFmbFsvVuJdgUMQe",
     },
 };
 
@@ -270,6 +285,7 @@ pub const TESTNET: Cctp = Cctp {
         name: "Solana Devnet",
         caip2: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
         usdc_mint: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        token_messenger_minter: "CCTPV2vPZJS2u2BBsUoscuikbYjnpFmbFsvVuJdgUMQe",
     },
 };
 
@@ -316,6 +332,26 @@ impl Cctp {
             SOLANA_DOMAIN => None,
             _ => self.domain(id),
         }
+    }
+
+    /// Where a transfer into Injective from `domain` comes from, as the wallet names it: the
+    /// chain, the sender its message must carry (TokenMessengerV2 on an EVM chain, Circle's
+    /// program on Solana), and the USDC it burned there.
+    pub fn inbound(&self, domain: u32) -> Option<Inbound> {
+        if domain == SOLANA_DOMAIN {
+            let program = choice_wallet_core::base58::decode32(self.solana.token_messenger_minter).expect("pinned programs are valid");
+            return Some(Inbound {
+                name: self.solana.name,
+                sender: program,
+                burn_token: self.solana.usdc_mint(),
+            });
+        }
+        let s = self.source_domain(domain)?;
+        Some(Inbound {
+            name: s.name,
+            sender: word(&self.token_messenger()),
+            burn_token: word(&s.usdc()),
+        })
     }
 
     /// The source chain with this CCTP domain.
