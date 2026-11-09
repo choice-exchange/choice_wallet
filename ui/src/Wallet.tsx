@@ -5,6 +5,7 @@ import { formatShort, NETWORKS, shortDenom, usdValue } from "@choice-wallet/chai
 import { useEffect, useRef, useState } from "react";
 
 import { AccountsView, isWatch } from "./Accounts";
+import { ApprovalsView } from "./Approvals";
 import { ActivityView } from "./Activity";
 import mark from "./assets/choice-mark.svg";
 import { useBackend } from "./backend";
@@ -34,6 +35,7 @@ type View =
   | { name: "review"; review: SendReview; entered: string; back: View; validators?: Record<string, string>; rewards?: Record<string, string> }
   | { name: "sent"; sent: Sent; converting: boolean; done?: string }
   | { name: "staking" }
+  | { name: "approvals" }
   | { name: "tokens" };
 
 const COSMOS = "cosmos:injective-1";
@@ -207,6 +209,8 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
           onBack={home}
         />
       );
+    case "approvals":
+      return <ApprovalsView canSign={!watch} onReview={(review) => setView({ name: "review", review, entered: "", back: { name: "approvals" } })} onBack={() => setView({ name: "home" })} />;
     case "review":
       return (
         <Review
@@ -220,7 +224,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
             // What a conversion makes is what the user asked for: show it, like a token added by hand.
             const made = back.name === "convert" ? balances?.find((b) => b.denom === back.denom)?.convertsTo : undefined;
             if (made && !filter.shown.includes(made)) changeFilter({ ...filter, shown: [...filter.shown, made], hidden: filter.hidden.filter((x) => x !== made) });
-            setView({ name: "sent", sent, converting: back.name === "convert", ...(back.name === "staking" ? { done: "Confirmed" } : {}) });
+            setView({ name: "sent", sent, converting: back.name === "convert", ...(back.name === "staking" || back.name === "approvals" ? { done: "Confirmed" } : {}) });
           }}
           onCancel={() => setView(view.back)}
         />
@@ -236,6 +240,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
             onStatus={(s) => onStatus(s)}
             tabs={tabs}
             onLock={onLock}
+            onApprovals={() => setView({ name: "approvals" })}
             onDone={() => {
               onStatus();
               home();

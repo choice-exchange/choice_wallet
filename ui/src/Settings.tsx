@@ -21,12 +21,15 @@ export function SettingsView({
   onStatus,
   onDone,
   onLock,
+  onApprovals,
   tabs,
 }: {
   status: Status;
   onStatus: (s: Status) => void;
   onDone: () => void;
   onLock: () => void;
+  /** Open Approvals and grants. */
+  onApprovals: () => void;
   tabs: ReactNode;
 }) {
   const { run, error, busy } = useRequest();
@@ -224,6 +227,13 @@ export function SettingsView({
             ))}
           </div>
         )}
+        <div className="eyebrow" style={{ marginTop: 8 }}>
+          Approvals
+        </div>
+        <button type="button" className="btn" onClick={onApprovals}>
+          Approvals and grants
+        </button>
+        <span className="meta">Who can spend your tokens or act for you. Revoke any of it.</span>
         <div className="eyebrow" style={{ marginTop: 8 }}>
           Security
         </div>

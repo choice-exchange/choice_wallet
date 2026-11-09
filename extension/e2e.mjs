@@ -126,6 +126,7 @@ const lcd = createServer((req, res) => {
       const q = JSON.parse(Buffer.from(decodeURIComponent(smart[2]), "base64").toString());
       if (smart[1] !== CW20) return reply(500, { code: 2, message: "query wasm contract failed: Error parsing into type" });
       if (q.token_info) return reply(200, { data: { name: "shroomin", symbol: "SHROOM", decimals: 18, total_supply: "1000000000000000000000000000" } });
+      if (q.all_allowances) return reply(200, { data: { allowances: [{ spender: FRIEND, allowance: "2000000000000000000", expires: { never: {} } }] } });
       return reply(200, { data: { balance: "3000000000000000000" } });
     }
     if (p === "/cosmos/bank/v1beta1/denoms_metadata_by_query_string") {
@@ -147,6 +148,16 @@ const lcd = createServer((req, res) => {
       return reply(200, { unbonding_responses: [{ delegator_address: who, validator_address: VAL_B, entries: [{ creation_height: "190000000", completion_time: "2026-11-30T08:00:00Z", initial_balance: "1000000000000000000", balance: "1000000000000000000" }] }] });
     }
     if (p.endsWith("/rewards")) return reply(200, { rewards: [{ validator_address: VAL_A, reward: [{ denom: "inj", amount: "50000000000000000.25" }] }], total: [] });
+    // Approvals: a grant to send everything, a fee allowance, rewards redirected, and a CW20
+    // allowance; each made to FRIEND.
+    if (p.startsWith("/cosmos/authz/v1beta1/grants/granter/")) {
+      return reply(200, { grants: [{ granter: tail, grantee: FRIEND, authorization: { "@type": "/cosmos.authz.v1beta1.GenericAuthorization", msg: "/cosmos.bank.v1beta1.MsgSend" }, expiration: null }], pagination: { next_key: null } });
+    }
+    if (p.startsWith("/cosmos/feegrant/v1beta1/issued/")) {
+      return reply(200, { allowances: [{ granter: tail, grantee: FRIEND, allowance: { "@type": "/cosmos.feegrant.v1beta1.BasicAllowance", spend_limit: [], expiration: null } }], pagination: { next_key: null } });
+    }
+    if (p.endsWith("/withdraw_address")) return reply(200, { withdraw_address: FRIEND });
+    if (p === "/api" && url.searchParams.get("action") === "getLogs") return reply(200, { message: "No logs found", result: [], status: "0" });
     if (p === "/cosmos/tx/v1beta1/simulate") return reply(200, { gas_info: { gas_wanted: "150000000", gas_used: "82771" } });
     if (p === "/cosmos/tx/v1beta1/txs" && req.method === "POST") {
       const { tx_bytes } = JSON.parse(body);
@@ -590,6 +601,34 @@ try {
   await p.waitText("Account 1");
   if (broadcasts.length !== 2) throw new Error("a cancelled claim was broadcast");
   console.log("staking: home row 3.05 INJ, screen, picker search, stake max with Bravo reviewed and broadcast, claim reviewed and cancelled");
+
+  // 7c. Approvals and grants, from Settings: rewards redirected (red), a grant that can send
+  // everything (red), a fee allowance and a SHROOM allowance; "Revoke all" takes all four back
+  // in one transaction.
+  await p.click("Settings");
+  await p.click("Approvals and grants");
+  await p.waitText("PERMISSIONS", 20000);
+  await p.waitText("Your staking rewards go to");
+  await p.waitText("Send your tokens");
+  await p.waitText("Pays fees from your INJ");
+  await p.waitText("may take 2 SHROOM");
+  if (!(await p.eval(`document.querySelector(".danger-text")?.textContent === "Send your tokens"`))) throw new Error("the send grant isn't marked");
+  await p.shot("16h-approvals");
+  await p.click("Revoke all 4");
+  await p.waitText("Review revoke", 15000);
+  await p.waitText("YOU TAKE BACK");
+  for (const line of ["Send your tokens", "Fee allowance", "Staking rewards come to this account again", "SHROOM allowance"]) await p.waitText(line);
+  await p.waitText("Removes");
+  await p.shot("16i-review-revoke");
+  await p.click("Confirm");
+  await p.waitText("Confirmed", 15000);
+  const revoked = Buffer.from(broadcasts[broadcasts.length - 1], "base64");
+  for (const t of ["/cosmos.authz.v1beta1.MsgRevoke", "/cosmos.feegrant.v1beta1.MsgRevokeAllowance", "/cosmos.distribution.v1beta1.MsgSetWithdrawAddress", "decrease_allowance"]) {
+    if (!revoked.includes(Buffer.from(t))) throw new Error(`the revoke tx has no ${t}`);
+  }
+  await p.click("Done");
+  await p.waitText("Account 1");
+  console.log("approvals: rewards address, send grant, fee allowance and CW20 allowance listed, all revoked in one tx");
 
   // 8. A site: finds the wallet through EIP-6963 (window.ethereum untouched), connects
   // through an approval window (rejected once, then approved), gets a message signed, and

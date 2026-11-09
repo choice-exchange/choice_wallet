@@ -8,6 +8,7 @@ import { ArrowDownIcon, CheckIcon, ChevronDownIcon, ClockIcon, CloseIcon, Extern
 import { BackBar, Callout, formatUsd, Screen, shortAddress, tokenSub } from "./kit";
 import type { Balance, Coin, NetworkId, SendReview, Sent, TokenInfo, TxState } from "./protocol";
 import { useRequest } from "./request";
+import { permissionName } from "./permissions";
 import { shown, type StakeLine } from "./review";
 import { TokenMark } from "./TokenMark";
 
@@ -193,6 +194,8 @@ export function Review({
   const view = shown(review.display, network);
   const converting = view.converts.length > 0 && view.sends.length === 0;
   const staking = view.stakes.length > 0 && view.sends.length === 0 && view.converts.length === 0;
+  const revoking = view.revokes.length > 0 && view.sends.length === 0 && view.converts.length === 0 && view.stakes.length === 0;
+  const symbol = (key: string) => tokens[key]?.symbol ?? shortDenom(key);
   const named = (v: string) => validators[v] || shortAddress(v);
   const [typed, setTyped] = useState("");
   const { run, error, busy } = useRequest();
@@ -220,7 +223,7 @@ export function Review({
 
   return (
     <Screen
-      top={<BackBar title={staking ? "Review staking" : converting ? "Review conversion" : "Review send"} onBack={onCancel} />}
+      top={<BackBar title={revoking ? "Review revoke" : staking ? "Review staking" : converting ? "Review conversion" : "Review send"} onBack={onCancel} />}
       foot={
         <>
           {error && <Callout level="red">{error}</Callout>}
@@ -229,7 +232,7 @@ export function Review({
             disabled={busy || blocked || needsWord}
             onClick={() => void confirm()}
           >
-            {staking ? (busy ? "Sending…" : "Confirm") : converting ? (busy ? "Converting…" : "Confirm and convert") : busy ? "Sending…" : "Confirm and send"}
+            {staking || revoking ? (busy ? "Sending…" : "Confirm") : converting ? (busy ? "Converting…" : "Confirm and convert") : busy ? "Sending…" : "Confirm and send"}
           </button>
           <button className="btn btn-quiet" onClick={onCancel} disabled={busy}>
             Cancel
@@ -327,6 +330,33 @@ export function Review({
           )}
         </div>
       ))}
+      {revoking && (
+        <div className="surface-hero">
+          <div className="eyebrow">You take back</div>
+          <ul className="revoke-list">
+            {view.revokes.map((r, i) => (
+              <li key={i}>
+                {r.kind === "grant" && (
+                  <>
+                    {permissionName(r.msgTypeUrl)} <span className="meta mono">· {shortAddress(r.grantee)}</span>
+                  </>
+                )}
+                {r.kind === "fee" && (
+                  <>
+                    Fee allowance <span className="meta mono">· {shortAddress(r.grantee)}</span>
+                  </>
+                )}
+                {r.kind === "rewards" && <>Staking rewards come to this account again</>}
+                {r.kind === "allowance" && (
+                  <>
+                    {symbol(r.token)} allowance <span className="meta mono">· {shortAddress(r.spender)}</span>
+                  </>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {view.others.map((o, i) => (
         <div className="surface" key={`o${i}`}>
           <div className="eyebrow">Other message</div>

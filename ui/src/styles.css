@@ -531,3 +531,17 @@ details.raw summary {
   border-color: var(--gold);
   color: var(--gold);
 }
+
+/* Approvals */
+.approval-row .name { min-width: 0; }
+.approval-row .sub { white-space: normal; }
+.danger-text { color: var(--negative); }
+.revoke-list {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 6px;
+  font-size: 14px;
+  line-height: 20px;
+}
+.revoke-list .mono { white-space: nowrap; }

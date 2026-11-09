@@ -816,7 +816,7 @@ export function displayDenoms(network: NetworkId, display: CosmosDisplay): Set<s
     const call = isObject(m["call"]) ? m["call"] : null;
     const contract = typeof m["contract"] === "string" ? m["contract"] : "";
     if (!call || !isContractAddress(contract)) continue;
-    if (call["type"] === "cw20_transfer" || call["type"] === "cw20_send" || call["type"] === "cw20_increase_allowance") out.add(cw20Denom(contract));
+    if (["cw20_transfer", "cw20_send", "cw20_increase_allowance", "cw20_decrease_allowance"].includes(String(call["type"]))) out.add(cw20Denom(contract));
     // A CW20 sent to the adapter comes back as its bank form.
     if (call["type"] === "cw20_send" && call["contract"] === NETWORKS[network].cw20Adapter) out.add(adapterDenom(network, contract));
     if (call["type"] === "adapter_redeem") {

@@ -116,3 +116,39 @@ test("staking: the signer's own actions are staking lines; someone else's are na
   ]);
   assert.deepEqual(v.others, ["undelegate"]);
 });
+
+test("revokes: grants, fee allowances, the rewards address and allowances taken back", () => {
+  const v = shown(
+    tx([
+      { type: "authz_revoke", granter: ME, grantee: THEM, msg_type_url: "/cosmos.bank.v1beta1.MsgSend" },
+      { type: "fee_revoke", granter: ME, grantee: THEM },
+      { type: "set_withdraw_address", delegator: ME, withdraw_address: ME },
+      exec(CW, { type: "cw20_decrease_allowance", spender: THEM, amount: "5" }),
+      // Pointing rewards elsewhere is not a revoke.
+      { type: "set_withdraw_address", delegator: ME, withdraw_address: THEM },
+    ]),
+    "mainnet",
+  );
+  assert.deepEqual(v.revokes, [
+    { kind: "grant", grantee: THEM, msgTypeUrl: "/cosmos.bank.v1beta1.MsgSend" },
+    { kind: "fee", grantee: THEM },
+    { kind: "rewards" },
+    { kind: "allowance", token: `cw20:${CW}`, spender: THEM },
+  ]);
+  assert.deepEqual(v.others, ["set_withdraw_address"]);
+  const spender = "4444444444444444444444444444444444444444";
+  const evm = shown(
+    {
+      kind: "evm_transaction",
+      chain: "eip155:1776",
+      from: "0x9858EfFD232B4033E47d90003D41EC34EcaEda94",
+      to: "0xb0d94f200998997cf8175ae7ddf039927a8b3ef4",
+      value: "0",
+      data: `0x095ea7b3${spender.padStart(64, "0")}${"0".repeat(64)}`,
+      call: { type: "contract", selector: "0x095ea7b3" },
+      max_gas_cost: "1",
+    } as never,
+    "mainnet",
+  );
+  assert.deepEqual(evm.revokes, [{ kind: "allowance", token: "evm:0xb0d94f200998997cf8175ae7ddf039927a8b3ef4", spender: `0x${spender}` }]);
+});
