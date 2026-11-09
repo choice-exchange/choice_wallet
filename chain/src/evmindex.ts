@@ -13,11 +13,46 @@
 
 import { ChainError, Down, isObject, Pool, type Fetch } from "./pool.ts";
 
+/** `keccak256("Approval(address,address,uint256)")`. */
+const APPROVAL = "0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925";
+
 export class EvmIndex {
   readonly pool: Pool;
 
   constructor(urls: readonly string[], fetch: Fetch, timeoutMs?: number) {
     this.pool = new Pool(urls, { fetch, ...(timeoutMs === undefined ? {} : { timeoutMs }), identify: async () => {} });
+  }
+
+  /** Every (token, spender) `owner` ever gave an ERC20 allowance to, from `Approval` logs
+   *  (3 topics, a 32-byte amount; ERC721's have 4 and are left out). Places to look: what is
+   *  left of each comes from the token itself. */
+  async approvals(owner: string): Promise<{ token: string; spender: string }[]> {
+    if (!/^0x[0-9a-fA-F]{40}$/.test(owner)) throw new RangeError(`not an address: ${owner}`);
+    const topic1 = `0x${owner.slice(2).toLowerCase().padStart(64, "0")}`;
+    const seen = new Map<string, { token: string; spender: string }>();
+    for (let page = 1; page <= 5; page++) {
+      const q = new URLSearchParams({ module: "logs", action: "getLogs", fromBlock: "0", toBlock: "latest", topic0: APPROVAL, topic1, topic0_1_opr: "and", page: String(page), offset: "1000" });
+      const result = (await this.pool.run(async (base) => {
+        const { status, body } = await this.pool.json(`${base}/api?${q}`);
+        if (status !== 200 || !isObject(body)) throw new Down(`HTTP ${status}`);
+        const r = body["result"];
+        if (!Array.isArray(r)) throw new Down(`index: ${String(body["message"] ?? "no result").slice(0, 80)}`);
+        return r;
+      })) as unknown[];
+      for (const l of result) {
+        if (!isObject(l) || typeof l["address"] !== "string" || !Array.isArray(l["topics"])) continue;
+        const topics = l["topics"].filter((t): t is string => typeof t === "string");
+        const token = l["address"].toLowerCase();
+        if (topics.length !== 3 || topics[0] !== APPROVAL || topics[1]!.toLowerCase() !== topic1) continue;
+        if (!/^0x[0-9a-f]{40}$/.test(token) || typeof l["data"] !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(l["data"])) continue;
+        const s = topics[2]!.toLowerCase();
+        if (!/^0x0{24}[0-9a-f]{40}$/.test(s)) continue;
+        const spender = `0x${s.slice(26)}`;
+        seen.set(`${token} ${spender}`, { token, spender });
+      }
+      if (result.length < 1000) break;
+    }
+    return [...seen.values()];
   }
 
   /** The transactions behind a page of `holder`'s ERC20 transfers, newest first, each once

@@ -6,6 +6,7 @@ import { hexToBase64 } from "./encoding.ts";
 import { EVM_MSG, evmResults, failedEvmHash, type EvmLog } from "./evmtx.ts";
 import { MIN_GAS_PRICE, type Network } from "./networks.ts";
 import { ChainError, Down, isObject, Pool, type Fetch } from "./pool.ts";
+import { parseAuthzGrants, parseCw20Allowances, parseFeeGrants, parseWithdrawAddress, type AuthzGrant, type Cw20Allowance, type FeeGrant } from "./grants.ts";
 import { parseDelegations, parseRewards, parseUnbonding, parseUnbondingTime, parseValidators, type Delegation, type Unbonding, type Validator } from "./staking.ts";
 import { ceilDecimal, toBigInt } from "./units.ts";
 
@@ -258,6 +259,48 @@ export class Lcd {
   /** How long unstaking takes, in seconds. */
   async unbondingTime(): Promise<number> {
     return parseUnbondingTime(await this.#call("/cosmos/staking/v1beta1/params"));
+  }
+
+  /** The authz grants `granter` gave, every page. */
+  async authzGrants(granter: string): Promise<AuthzGrant[]> {
+    const out: AuthzGrant[] = [];
+    let key = "";
+    for (let page = 0; page < 10; page++) {
+      const q = key ? `&pagination.key=${encodeURIComponent(key)}` : "";
+      const body = await this.#empty(`/cosmos/authz/v1beta1/grants/granter/${encodeURIComponent(granter)}?pagination.limit=200${q}`, { grants: [] });
+      out.push(...parseAuthzGrants(body, granter));
+      const next = isObject(body) && isObject(body["pagination"]) ? body["pagination"]["next_key"] : null;
+      if (typeof next !== "string" || !next) return out;
+      key = next;
+    }
+    throw new ChainError(-1, "too many grant pages");
+  }
+
+  /** The fee allowances `granter` gave. */
+  async feeGrants(granter: string): Promise<FeeGrant[]> {
+    return parseFeeGrants(await this.#empty(`/cosmos/feegrant/v1beta1/issued/${encodeURIComponent(granter)}?pagination.limit=200`, { allowances: [] }), granter);
+  }
+
+  /** Where `delegator`'s staking rewards go (itself unless it set another address). */
+  async withdrawAddress(delegator: string): Promise<string> {
+    return parseWithdrawAddress(await this.#call(`/cosmos/distribution/v1beta1/delegators/${encodeURIComponent(delegator)}/withdraw_address`));
+  }
+
+  /** The allowances `owner` gave on the CW20 at `contract` (up to 300), or null if it
+   *  isn't a CW20 that answers `all_allowances`. */
+  async cw20Allowances(contract: string, owner: string): Promise<Cw20Allowance[] | null> {
+    const out: Cw20Allowance[] = [];
+    let after: string | undefined;
+    for (let page = 0; page < 10; page++) {
+      const r = await this.smart(contract, { all_allowances: { owner, limit: 30, ...(after ? { start_after: after } : {}) } });
+      if (r === null) return page === 0 ? null : out;
+      const list = isObject(r) && Array.isArray(r["allowances"]) ? r["allowances"] : [];
+      out.push(...parseCw20Allowances(r));
+      const last = list[list.length - 1];
+      if (list.length < 30 || !isObject(last) || typeof last["spender"] !== "string") return out;
+      after = last["spender"];
+    }
+    return out;
   }
 
   /** `#call`, with "not found" (an account the chain hasn't seen) read as `empty`. */

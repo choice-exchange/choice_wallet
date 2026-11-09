@@ -91,6 +91,13 @@ export class EvmRpc {
     return results.map((r) => (typeof r === "string" && /^0x[0-9a-fA-F]{1,64}$/.test(r) ? BigInt(r) : null));
   }
 
+  /** What each spender may still take of each token from `owner` (`allowance(owner,
+   *  spender)`), or null where the call failed. */
+  async erc20Allowances(pairs: readonly { token: string; spender: string }[], owner: string): Promise<(bigint | null)[]> {
+    const results = await this.batch(pairs.map((p) => ({ method: "eth_call", params: [{ to: p.token, data: `0xdd62ed3e${word(owner)}${word(p.spender)}` }, "latest"] })));
+    return results.map((r) => (typeof r === "string" && /^0x[0-9a-fA-F]{1,64}$/.test(r) ? BigInt(r) : null));
+  }
+
   /** An ERC20's symbol, name and decimals, or null if it doesn't answer like one. Symbols
    *  and names are whatever the deployer chose, cleaned like bank metadata. */
   async erc20Metadata(token: string): Promise<{ symbol: string; name: string; decimals: number } | null> {

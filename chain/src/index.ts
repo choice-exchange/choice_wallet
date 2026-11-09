@@ -21,6 +21,7 @@ export {
 export { explorerTxUrl, isNetworkId, MIN_GAS_PRICE, NETWORKS, type Network, type NetworkId } from "./networks.ts";
 export { ChainError, Down, isObject, Pool, Unreachable, type Fetch } from "./pool.ts";
 export { CHOICE_PRICES, CLIENT, fetchPrices, priceAddress, usdValue, type PriceList } from "./prices.ts";
+export { grantedMsg, type AuthzGrant, type Cw20Allowance, type FeeGrant } from "./grants.ts";
 export { floorDecimal, type Delegation, type Unbonding, type Validator } from "./staking.ts";
 export {
   adapterCw20,
