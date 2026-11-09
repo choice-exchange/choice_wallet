@@ -68,8 +68,17 @@ export type UiRequest =
   | { type: "add_token"; address: string }
   /** One page (from 1) of the account's activity, from the node's tx index. */
   | { type: "activity"; page: number }
-  /** `amount` in base units, or "max" (the fee token: everything but the fee). */
-  | { type: "prepare_send"; denom: string; to: string; amount: string }
+  /** `amount` in base units, or "max" (the fee token: everything but the fee). `memo` goes
+   *  in a Cosmos transaction; an EVM-only token's send can't carry one. */
+  | { type: "prepare_send"; denom: string; to: string; amount: string; memo?: string }
+  /** The address book: saved recipients, each with the memo an exchange needs, if any. */
+  | { type: "contacts" }
+  /** Save a contact: a new one, or `id`'s changes. */
+  | { type: "save_contact"; id?: string; name: string; address: string; memo: string }
+  | { type: "remove_contact"; id: string }
+  /** What the wallet knows of a recipient before the review: a contact, one of the user's
+   *  accounts, or an address whose deposits carry a memo (an exchange's). */
+  | { type: "check_recipient"; to: string }
   /** Convert `amount` (base units, or "max") of a token into its other form (`convertsTo`):
    *  a CW20 into its bank denom through the CW20 adapter, or back. Confirmed like a send. */
   | { type: "prepare_convert"; denom: string; amount: string }
@@ -92,6 +101,14 @@ export type UiRequest =
   /** Sites this wallet is connected to, and cutting one off. */
   | { type: "connections" }
   | { type: "disconnect"; origin: string };
+
+/** A saved recipient. `address` is its inj1 form and `evm` its 0x form; `memo` is what an
+ *  exchange credits deposits by (empty when it needs none). */
+export type Contact = { id: string; name: string; address: string; evm: string; memo: string };
+
+/** What the wallet knows of a recipient. `takesMemo`: most deposits it receives carry a
+ *  memo, from many senders, as an exchange's shared deposit address does. */
+export type RecipientCheck = { contact?: Contact; mine?: string; takesMemo: boolean };
 
 export type Status = {
   hasWallet: boolean;
@@ -390,6 +407,10 @@ export type Replies = {
   save_token_filter: TokenFilter;
   activity: ActivityPage;
   prepare_send: SendReview;
+  contacts: Contact[];
+  save_contact: Contact[];
+  remove_contact: Contact[];
+  check_recipient: RecipientCheck;
   prepare_convert: SendReview;
   staking: StakingSummary;
   approvals: ApprovalsSummary;

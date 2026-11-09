@@ -16,6 +16,7 @@ import { DEFAULT_FILTER } from "@choice-wallet/ui/token-filter";
 import { createDapps, type DappReply } from "./dapp";
 import { createSender } from "./send";
 import { createApprovals } from "./approvals";
+import { createContacts } from "./contacts";
 import { createStaking } from "./staking";
 import { createWallets, isWatch } from "./wallets";
 
@@ -48,7 +49,7 @@ export const AUTO_LOCK_MINUTES = 15;
 const LOCK_CHOICES = [5, 15, 60, 240];
 /** Local storage that belongs to the wallet, not the device: removing the wallet clears it.
  *  Endpoints, the network and other settings stay. */
-const WALLET_KEYS = ["vault", "wallets", "keystore", "kind", "accounts", "active_account", "connections", "custom_tokens", "token_filter"];
+const WALLET_KEYS = ["vault", "wallets", "keystore", "kind", "accounts", "active_account", "connections", "custom_tokens", "token_filter", "address_book"];
 /** The shortest password, as the keystore takes it. */
 const MIN_PASSWORD = 8;
 
@@ -120,7 +121,17 @@ export function createService(d: Deps) {
     return prices !== false;
   }
 
-  const sender = createSender({ vault: d.vault, fetch: d.fetch, local: d.local, session: d.session, endpoints, evmEndpoints, evmIndexEndpoints, prices: showPrices });
+  const sender = createSender({
+    vault: d.vault,
+    fetch: d.fetch,
+    local: d.local,
+    session: d.session,
+    endpoints,
+    evmEndpoints,
+    evmIndexEndpoints,
+    prices: showPrices,
+    riskFacts: (n, recipient) => contacts.facts(n, recipient),
+  });
   const staking = createStaking(sender);
   const approvals = createApprovals(sender);
 
@@ -143,6 +154,7 @@ export function createService(d: Deps) {
     },
   });
   const status = wallets.status;
+  const contacts = createContacts({ vault: d.vault, local: d.local, lcd: sender.lcd, accounts: async () => (await wallets.stored()).accounts });
 
   const dapps = createDapps({
     vault: d.vault,
@@ -327,6 +339,17 @@ export function createService(d: Deps) {
         const a = await active();
         if ("ok" in a) return a;
         return addToken(r.address);
+      }
+      case "contacts":
+      case "save_contact":
+      case "remove_contact":
+      case "check_recipient": {
+        const a = await active();
+        if ("ok" in a) return a;
+        if (r.type === "contacts") return { ok: true, result: await contacts.list() };
+        if (r.type === "save_contact") return contacts.save(r);
+        if (r.type === "remove_contact") return contacts.remove(r.id);
+        return contacts.check(a.net, r.to);
       }
       case "balances":
       case "activity":

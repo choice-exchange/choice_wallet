@@ -539,7 +539,7 @@ export function createDapps(h: DappHost) {
     } catch (e) {
       if (!(e instanceof Unreachable || e instanceof ChainError)) throw e;
     }
-    return { origin, origin_known: known, balances };
+    return { origin, origin_known: known, balances, ...(await h.sender.riskFacts(network, null)) };
   }
 
   async function answer(id: unknown, approve: unknown, digest: unknown, confirm: unknown): Promise<Result<{ done: true; hash?: string }>> {

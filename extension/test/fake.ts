@@ -66,6 +66,14 @@ export const indexed = (height: number, from: string, to: string, amount: string
 });
 export const SIGNED = [indexed(100, ME, THEM, "1000000000000000000inj")];
 
+/** Deposits to an exchange's shared address: each from its own sender, with a memo. */
+export function exchangeDeposits(exchange: string, n = 12): unknown[] {
+  return Array.from({ length: n }, (_, i) => {
+    const t = indexed(200 - i, `inj1sender${i}`, exchange, "1000000000000000000inj");
+    return { ...t, tx: { ...t.tx, body: { ...t.tx.body, memo: `10${i}234567` } } };
+  });
+}
+
 /** An EVM transaction as the LCD indexes it: the fee (no fee payer named), the `message`
  *  event with the bech32 sender, then `events`; the logs in its result. Its EVM hash is
  *  the height's, so tests can name it. */
@@ -180,6 +188,9 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
     cw20Allowances: {} as Record<string, { spender: string; allowance: string }[]>,
     approvalLogs: [] as { token: string; spender: string }[],
     erc20Allowance: {} as Record<string, bigint>,
+    /** What other accounts (inj1…) received, newest first (indexed txs), and whose were asked. */
+    deposits: {} as Record<string, unknown[]>,
+    depositChecks: [] as string[],
   };
   const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status });
   type Rpc = { id: number; method: string; params: { to: string; data: string }[] };
@@ -379,7 +390,14 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
       }
       // The signed list goes on for pages; the received one fits in this page.
       if (q === `message.sender='${ME}'`) return json(200, { tx_responses: [...SIGNED, ...state.signedEvm], total: "120" });
-      return json(200, { tx_responses: q === `coin_received.receiver='${ME}'` ? RECEIVED : [], total: "2" });
+      if (q === `coin_received.receiver='${ME}'`) return json(200, { tx_responses: RECEIVED, total: "2" });
+      const to = /^coin_received\.receiver='(inj1[0-9a-z]+)'$/.exec(q)?.[1];
+      if (to) {
+        state.depositChecks.push(to);
+        const list = state.deposits[to] ?? [];
+        return json(200, { tx_responses: list, total: String(list.length) });
+      }
+      return json(200, { tx_responses: [], total: "0" });
     }
     if (p.startsWith("/cosmos/tx/v1beta1/txs/")) {
       const hash = p.split("/").pop()!;

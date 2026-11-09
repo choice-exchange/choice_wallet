@@ -105,8 +105,8 @@ test("max sends everything but the fee", async () => {
   const review = ok<Review>(await service.handle({ type: "prepare_send", denom: "inj", to: ME_EVM, amount: "max" }));
   const fee = BigInt(review.display.fee.amount[0]!.amount);
   assert.equal(BigInt(review.display.messages[0]!.amount[0]!.amount) + fee, 5n * INJ);
-  // All of it: the risk rules point that out.
-  assert.deepEqual(review.risk.findings.map((f) => f.rule), ["most_of_balance"]);
+  // All of it: the risk rules point that out. It goes to this account, which they name.
+  assert.deepEqual(review.risk.findings.map((f) => f.rule), ["most_of_balance", "address_book"]);
 });
 
 test("refusals before anything is signed", async () => {

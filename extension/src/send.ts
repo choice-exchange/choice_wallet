@@ -44,6 +44,7 @@ import {
 } from "@choice-wallet/chain";
 import type { AccountInfo, ActivityPage, Balance, CosmosDisplay, Result, Risk, SendReview, Sent, TokenInfo, TxState } from "@choice-wallet/ui/protocol";
 
+import { memoFrom, type RiskFacts } from "./contacts";
 import type { Store } from "./service";
 
 export interface SendDeps {
@@ -59,6 +60,9 @@ export interface SendDeps {
   evmIndexEndpoints(network: NetworkId): Promise<readonly string[]>;
   /** Whether to show USD values (the user can turn them off). */
   prices(): Promise<boolean>;
+  /** The address book and the user's accounts for the risk rules, and whether `recipient`
+   *  takes deposits with a memo (./contacts.ts). */
+  riskFacts(network: NetworkId, recipient: string | null): Promise<RiskFacts>;
 }
 
 const PRICE_TTL_MS = 60_000;
@@ -492,13 +496,21 @@ export function createSender(d: SendDeps) {
     }
   }
 
-  async function prepare(network: NetworkId, account: AccountInfo, req: { denom: string; to: string; amount: string }): Promise<Result<SendReview>> {
+  async function prepare(network: NetworkId, account: AccountInfo, req: { denom: string; to: string; amount: string; memo?: unknown }): Promise<Result<SendReview>> {
     if (typeof req.denom !== "string" || !req.denom) return fail("bad_request", "Pick a token.");
-    if (evmAddress(req.denom)) return prepareEvm(network, account, req);
+    if (typeof req.to !== "string" || req.to.length > 128) return fail("invalid_address", "Check the recipient address.");
+    const memo = memoFrom(req.memo);
+    if (memo === null) return fail("bad_request", "A memo is at most 256 characters, on one line.");
+    if (evmAddress(req.denom)) {
+      if (memo) return fail("bad_request", "An EVM-only token's send can't carry a memo.");
+      return prepareEvm(network, account, { denom: req.denom, to: req.to, amount: req.amount });
+    }
     const cw20 = cw20Address(req.denom);
     return prepareCosmos(network, account, {
       denom: req.denom,
       amount: req.amount,
+      memo,
+      recipient: req.to,
       messages: (amount) => [
         cw20
           ? { type: "cw20_transfer", contract: cw20, to: req.to, amount: amount.toString() }
@@ -547,10 +559,16 @@ export function createSender(d: SendDeps) {
       reserve?: bigint;
       /** There is no amount (claiming rewards); `amount` is ignored. */
       noAmount?: boolean;
+      memo?: string;
+      /** Who receives the amount, for the address book and the memo check. */
+      recipient?: string;
     },
   ): Promise<Result<SendReview>> {
     const net = NETWORKS[network];
     const client = await lcd(network);
+    // Read alongside the rest; the risk rules need it at the end.
+    const facts = d.riskFacts(network, spec.recipient ?? null);
+    facts.catch(() => {});
     const max = !spec.noAmount && spec.amount === "max";
     if (!spec.noAmount && !max && !(typeof spec.amount === "string" && /^[0-9]+$/.test(spec.amount) && BigInt(spec.amount) > 0n)) {
       return fail("invalid_amount", "Enter an amount above zero.");
@@ -590,6 +608,7 @@ export function createSender(d: SendDeps) {
           account_number: acct.accountNumber.toString(),
           sequence: acct.sequence.toString(),
           fee: { amount: [{ denom: net.feeDenom, amount: (gas * price).toString() }], gas_limit: gas.toString() },
+          memo: spec.memo ?? "",
         });
 
       // Simulate with a provisional fee, then build with the real one.
@@ -627,7 +646,7 @@ export function createSender(d: SendDeps) {
       if (spec.returned) delete balances[cw20 ?? spec.denom];
       const decoded = await d.vault<Pick<SendReview, "digest" | "risk"> & { display: CosmosDisplay }>("decode", {
         request: built.result.request,
-        context: { balances, symbols, known_contracts: spec.knownContracts ?? [] },
+        context: { balances, symbols, known_contracts: spec.knownContracts ?? [], ...(await facts) },
       });
       if (!decoded.ok) return decoded;
       const { digest, display, risk } = decoded.result;
@@ -657,6 +676,8 @@ export function createSender(d: SendDeps) {
     const from = account.addresses[net.evm];
     if (!from) return fail("bad_request", "This account has no EVM address.");
     const client = await lcd(network);
+    const facts = d.riskFacts(network, req.revoke ? null : req.to);
+    facts.catch(() => {});
     try {
       const rpc = await evm(network);
       const t = await erc20Token(network, rpc, contract);
@@ -712,7 +733,11 @@ export function createSender(d: SendDeps) {
 
       const decoded = await d.vault<Pick<SendReview, "digest" | "display" | "risk">>("decode", {
         request: built.result.request,
-        context: { balances: { native: injHeld.toString(), [to]: tokenHeld.toString() }, symbols: { [to]: t.known ? t.symbol : shortDenom(req.denom) } },
+        context: {
+          balances: { native: injHeld.toString(), [to]: tokenHeld.toString() },
+          symbols: { [to]: t.known ? t.symbol : shortDenom(req.denom) },
+          ...(await facts),
+        },
       });
       if (!decoded.ok) return decoded;
       const { digest, display, risk } = decoded.result;
@@ -802,7 +827,24 @@ export function createSender(d: SendDeps) {
     }
   }
 
-  return { balances, activity, inspectToken, prepare, prepareConvert, prepareCosmos, prepareEvm, confirm, status, lcd, evm, evmIndex, tokensFor, chainFailure, token };
+  return {
+    balances,
+    activity,
+    inspectToken,
+    prepare,
+    prepareConvert,
+    prepareCosmos,
+    prepareEvm,
+    confirm,
+    status,
+    lcd,
+    evm,
+    evmIndex,
+    tokensFor,
+    chainFailure,
+    token,
+    riskFacts: d.riskFacts,
+  };
 }
 
 /** Every token a decoded Cosmos transaction moves, by the wallet's keys: the fee, coins
