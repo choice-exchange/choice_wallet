@@ -8,6 +8,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { useBackend } from "./backend";
 import { ArrowDownIcon, ChevronDownIcon } from "./icons";
+import { useKept } from "./kept";
 import { BackBar, Callout, Screen, Segmented, tokenSub } from "./kit";
 import type { NetworkId, SendReview, SwapQuote, SwapToken } from "./protocol";
 import { useRequest } from "./request";
@@ -53,7 +54,8 @@ export function SwapView({
 }) {
   const backend = useBackend();
   const { run, error, setError, busy } = useRequest();
-  const [list, setList] = useState<SwapToken[] | null>(null);
+  const tokens = useKept({ type: "swap_tokens" });
+  const list = tokens.value;
   const [picking, setPicking] = useState<"from" | "to" | null>(null);
   const [quote, setQuote] = useState<{ q: SwapQuote; at: number } | null>(null);
   const [quoting, setQuoting] = useState(false);
@@ -62,11 +64,8 @@ export function SwapView({
   const set = (p: Partial<SwapDraft>) => onDraft({ ...draft, ...p });
 
   useEffect(() => {
-    void backend.send({ type: "swap_tokens" }).then((r) => {
-      if (r.ok) setList(r.result);
-      else setError(r.error.message);
-    });
-  }, [network]);
+    if (tokens.error) setError(tokens.error);
+  }, [tokens.error]);
 
   const from = list?.find((t) => t.denom === draft.from);
   const to = list?.find((t) => t.denom === draft.to);

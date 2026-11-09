@@ -4,11 +4,9 @@
 // removing it happens on Choice.
 
 import { formatShort, shortDenom } from "@choice-wallet/chain";
-import { useEffect, useState } from "react";
-
-import { useBackend } from "./backend";
 import { BackBar, Callout, Screen, shortAddress } from "./kit";
-import type { InventoryView as Inventory, SendReview, TokenInfo } from "./protocol";
+import { useKept } from "./kept";
+import type { SendReview, TokenInfo } from "./protocol";
 import { useRequest } from "./request";
 
 function amount(tokens: Record<string, TokenInfo>, denom: string, base: string): string {
@@ -17,14 +15,8 @@ function amount(tokens: Record<string, TokenInfo>, denom: string, base: string):
 }
 
 export function InventoryScreen({ canSign, onReview, onBack }: { canSign: boolean; onReview: (r: SendReview) => void; onBack: () => void }) {
-  const backend = useBackend();
   const { run, error, busy } = useRequest();
-  const [inv, setInv] = useState<Inventory | null>(null);
-  const [problem, setProblem] = useState<string | null>(null);
-
-  useEffect(() => {
-    void backend.send({ type: "inventory" }).then((r) => (r.ok ? setInv(r.result) : setProblem(r.error.message)));
-  }, []);
+  const { value: inv, error: problem } = useKept({ type: "inventory" });
 
   async function withdraw(nonce: number) {
     const r = await run({ type: "prepare_subaccount_withdraw", nonce });

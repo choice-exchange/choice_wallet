@@ -30,6 +30,14 @@ const keyOf = (network: NetworkId, address: string) => `snap ${network} ${addres
 export function createSnapshots(local: Store, now: () => number = Date.now) {
   /** The last JSON written per part, to skip writes that change nothing. */
   const written = new Map<string, string>();
+  // Writes take turns: balances and staking arrive together, and each rewrites the
+  // account's item, so two at once would put back the other's old part.
+  let queue: Promise<unknown> = Promise.resolve();
+  function inTurn<T>(fn: () => Promise<T>): Promise<T> {
+    const p = queue.then(fn);
+    queue = p.catch(() => {});
+    return p;
+  }
 
   async function index(): Promise<Record<string, number>> {
     const v = (await local.get([INDEX]))[INDEX];
@@ -42,7 +50,11 @@ export function createSnapshots(local: Store, now: () => number = Date.now) {
     return typeof v === "object" && v !== null ? (v as Snapshot) : null;
   }
 
-  async function save(network: NetworkId, address: string, part: Part, value: unknown): Promise<void> {
+  function save(network: NetworkId, address: string, part: Part, value: unknown): Promise<void> {
+    return inTurn(() => write(network, address, part, value));
+  }
+
+  async function write(network: NetworkId, address: string, part: Part, value: unknown): Promise<void> {
     if (!address) return;
     const k = keyOf(network, address);
     const kept = part === "activity" ? trimActivity(value) : value;
@@ -63,7 +75,11 @@ export function createSnapshots(local: Store, now: () => number = Date.now) {
   }
 
   /** Forget accounts that are no longer in the wallet. */
-  async function keepOnly(addresses: readonly string[]): Promise<void> {
+  function keepOnly(addresses: readonly string[]): Promise<void> {
+    return inTurn(() => forgetOthers(addresses));
+  }
+
+  async function forgetOthers(addresses: readonly string[]): Promise<void> {
     const all = await index();
     const keep = new Set(addresses);
     const drop = Object.keys(all).filter((k) => !keep.has(k.split(" ")[2] ?? ""));

@@ -5,7 +5,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { transferLog } from "../../chain/test/evm-fixture";
-import { attrs, chain, CW, evmHashAt, evmIndexed, INJ, indexed, LUMA, ME, ME_EVM, PASSWORD, SCAM, sentTx, serviceOn, THEM, THEM_EVM, USDT, wallet } from "./fake";
+import { createSnapshots } from "../src/snapshots";
+import { attrs, chain, CW, evmHashAt, evmIndexed, INJ, indexed, LUMA, ME, ME_EVM, memory, PASSWORD, SCAM, sentTx, serviceOn, THEM, THEM_EVM, USDT, wallet } from "./fake";
 
 type R<T> = { ok: true; result: T } | { ok: false; error: { code: string; message: string } };
 function ok<T>(r: unknown): T {
@@ -242,4 +243,14 @@ test("what an account showed last is there at once, and goes with the wallet", a
   assert.ok(local.data.has("watch"));
   ok(await service.handle({ type: "reset", password: PASSWORD }));
   assert.deepEqual([...local.data.keys()].filter((k) => k.startsWith("snap") || k.startsWith("watch")), []);
+});
+
+test("saved parts that arrive together are both kept", async () => {
+  // A slow store, so the two writes overlap as balances and staking do in the browser.
+  const local = memory();
+  const slow = { ...local, get: async (k: string[]) => (await new Promise((r) => setTimeout(r, 5)), local.get(k)) };
+  const snaps = createSnapshots(slow);
+  await Promise.all([snaps.save("mainnet", ME, "balances", { a: 1 }), snaps.save("mainnet", ME, "staking", { b: 2 }), snaps.save("mainnet", ME, "activity", { items: [] })]);
+  const s = await snaps.get("mainnet", ME);
+  assert.deepEqual([s?.balances?.value, s?.staking?.value, s?.activity?.value], [{ a: 1 }, { b: 2 }, { items: [] }]);
 });

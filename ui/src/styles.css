@@ -381,6 +381,7 @@ button.token:hover { background: rgba(255, 255, 255, 0.03); }
 .status-icon.failed { color: var(--negative); background: rgba(251, 113, 133, 0.1); box-shadow: inset 0 0 0 1px rgba(251, 113, 133, 0.3); }
 .status-icon.slow { color: var(--warning); background: rgba(251, 191, 36, 0.1); box-shadow: inset 0 0 0 1px rgba(251, 191, 36, 0.3); }
 @keyframes spin { to { transform: rotate(360deg); } }
+.icon-btn.busy svg { animation: spin 0.9s linear infinite; }
 
 .skeleton { height: 20px; border-radius: 6px; background: linear-gradient(90deg, var(--inner), var(--raised), var(--inner)); background-size: 200% 100%; animation: shimmer 1.4s ease-in-out infinite; }
 @keyframes shimmer { 0% { background-position: 100% 0; } 100% { background-position: -100% 0; } }
@@ -388,7 +389,7 @@ button.token:hover { background: rgba(255, 255, 255, 0.03); }
 .footnote { color: var(--dim); font-size: 11px; line-height: 15px; text-align: center; margin: 4px 0 0; }
 .slide-in { animation: slide-in 140ms ease-out both; }
 @keyframes slide-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
-@media (prefers-reduced-motion: reduce) { .slide-in, .skeleton, .status-icon.pending { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .slide-in, .skeleton, .status-icon.pending, .icon-btn.busy svg { animation: none; } }
 
 /* One token's screen, and a conversion's review. */
 .token-hero {

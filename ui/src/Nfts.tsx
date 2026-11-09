@@ -6,9 +6,10 @@
 import { useEffect, useState, type FormEvent } from "react";
 
 import { useBackend } from "./backend";
+import { useKept } from "./kept";
 import { RecipientPicker } from "./Contacts";
 import { BackBar, Callout, Screen, shortAddress } from "./kit";
-import type { AccountInfo, Contact, Nft, NftCollection, NftList, SendReview } from "./protocol";
+import type { AccountInfo, Contact, Nft, NftCollection, SendReview } from "./protocol";
 import { useRequest } from "./request";
 
 /** A collection's or NFT's tile: its first letters, never a remote image. */
@@ -24,22 +25,16 @@ function Tile({ text, small }: { text: string; small?: boolean }) {
 export const nftLabel = (n: Nft) => n.name || `#${n.tokenId}`;
 
 export function NftsView({ canSign, onOpen, onBack }: { canSign: boolean; onOpen: (c: NftCollection, n: Nft) => void; onBack: () => void }) {
-  const backend = useBackend();
   const { run, error, busy } = useRequest();
-  const [list, setList] = useState<NftList | null>(null);
-  const [problem, setProblem] = useState<string | null>(null);
+  const { value: list, error: problem, update } = useKept({ type: "nfts" });
   const [adding, setAdding] = useState(false);
   const [address, setAddress] = useState("");
-
-  useEffect(() => {
-    void backend.send({ type: "nfts" }).then((r) => (r.ok ? setList(r.result) : setProblem(r.error.message)));
-  }, []);
 
   async function add(e: FormEvent) {
     e.preventDefault();
     const r = await run({ type: "add_nft_collection", address: address.trim() });
     if (r) {
-      setList(r);
+      update(r);
       setAdding(false);
       setAddress("");
     }

@@ -97,6 +97,9 @@ let meInj = "";
 // from FRIEND (the watcher notifies it).
 let balancesDown = false;
 let incoming = false;
+/** Tx index searches asked (Activity's), to see a tab revisit ask nothing. */
+let txSearches = 0;
+const txSearchLog = [];
 const lcd = createServer((req, res) => {
   const reply = (status, body) => {
     res.writeHead(status, { "content-type": "application/json", "access-control-allow-origin": "*", "access-control-allow-headers": "content-type" });
@@ -221,6 +224,8 @@ const lcd = createServer((req, res) => {
       return reply(200, { message: "OK", status: "1", result: [860, 855].map((h) => ({ blockNumber: String(h), hash: evmHash(h), value: "1" })) });
     }
     if (p === "/cosmos/tx/v1beta1/txs" && req.method === "GET") {
+      txSearches++;
+      txSearchLog.push(`${new Date().toISOString().slice(11, 23)} ${url.searchParams.get("query")}`);
       // The tx index: a receive and a junk airdrop, an EVM approval, and the send once it's
       // broadcast; by EVM hash, what Blockscout named.
       const q = url.searchParams.get("query") ?? "";
@@ -565,7 +570,9 @@ try {
   balancesDown = true;
   p = await openPopup();
   await p.waitText("Couldn't update. Showing balances from");
-  if ((await homeTokens()).join("|") !== shownBefore.join("|")) throw new Error(`saved balances differ: ${await homeTokens()}`);
+  // Tokens and amounts; USD values move with Choice's live prices between two reads.
+  const noUsd = (list) => list.map((x) => x.replace(/ \$[0-9.,<]+/g, "")).join("|");
+  if (noUsd(await homeTokens()) !== noUsd(shownBefore)) throw new Error(`saved balances differ: ${await homeTokens()} vs ${shownBefore}`);
   await p.shot("09g-saved-balances");
   balancesDown = false;
   await p.close();
@@ -614,9 +621,15 @@ try {
   for (let t = 0; t < 3000 && (await sw.eval(`chrome.action.getBadgeText({})`)) !== ""; t += 100) await sleep(100);
   if ((await sw.eval(`chrome.action.getBadgeText({})`)) !== "") throw new Error("the count stayed after the wallet opened");
   await sw.eval(`chrome.notifications.clear(${JSON.stringify(notified)})`);
-  // Back as it was, and the watcher's alarm back on its minute.
+  // Back as it was. Notifications go off for the rest: the watcher would see the 1 INJ go
+  // again and have the wallet read everything again, in the middle of later checks.
   incoming = false;
-  await sw.eval(`chrome.alarms.create("watch", { periodInMinutes: 1, delayInMinutes: 1 })`);
+  await p.click("Settings");
+  await p.waitText("All accounts");
+  await p.click("Off");
+  await p.click("Save");
+  await p.waitText("1 hidden token");
+  if (await sw.eval(`chrome.alarms.get("watch").then((a) => !!a)`)) throw new Error("the watcher's alarm stayed after notifications went off");
   console.log("notifications: 1 INJ in notified once, counted, cleared on open");
 
   // 5. Send 1.5 INJ to an EVM address; the review shows the vault's decode.
@@ -702,7 +715,20 @@ try {
   await p.shot("16-settings-tab");
   await p.click("Wallet");
   await p.waitText("1 hidden token");
-  console.log("tabs: Activity (send, receive, EVM approval, LUMA found through Blockscout; junk hidden, poisoning dropped), Settings, back to Wallet");
+  // Back to Activity within the minute: drawn at once from what the tab had, nothing asked.
+  const searched = txSearches;
+  await p.click("Activity");
+  let shownAgain = [];
+  for (let t = 0; t < 300 && shownAgain.length === 0; t += 20) {
+    await sleep(20);
+    shownAgain = await rows();
+  }
+  if (shownAgain.length !== 4 || shownAgain[0] !== shownRows[0]) throw new Error(`activity on a revisit: ${JSON.stringify(shownAgain)}`);
+  await sleep(1000);
+  if (txSearches !== searched) throw new Error(`a revisit asked the index again: ${JSON.stringify(txSearchLog.slice(searched))}`);
+  await p.click("Wallet");
+  await p.waitText("1 hidden token");
+  console.log("tabs: Activity (send, receive, EVM approval, LUMA found through Blockscout; junk hidden, poisoning dropped; a revisit drawn at once, nothing asked), Settings, back to Wallet");
 
   // 7b. Staking: the home row counts staked, unstaking and unclaimed INJ (2 + 1 + 0.05); the
   // Staking screen; staking with a validator from the picker, reviewed as staking (the

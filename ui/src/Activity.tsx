@@ -4,7 +4,7 @@
 // a row, like on the home screen. A row opens the explorer: Blockscout for an EVM one.
 
 import { explorerTxUrl, formatShort, NETWORKS, shortDenom } from "@choice-wallet/chain";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { useBackend } from "./backend";
 import {
@@ -24,8 +24,9 @@ import {
   WarningIcon,
 } from "./icons";
 import { Callout, Screen, shortAddress } from "./kit";
-import type { ActivityItem, ActivityKind, ActivityPage, Balance, Coin, NetworkId, TokenFilter } from "./protocol";
+import type { ActivityItem, ActivityKind, ActivityPage, Balance, Coin, NetworkId } from "./protocol";
 import { useRequest } from "./request";
+import { ACTIVITY_FRESH_MS, merge, type ActivityState } from "./activityState";
 import { hiddenWhy } from "./tokenFilter";
 
 const TITLE: Record<ActivityKind, string> = {
@@ -64,49 +65,48 @@ const ICON: Record<ActivityKind, (p: { size?: number }) => ReactNode> = {
 
 type Tokens = ActivityPage["tokens"];
 
-/** `saved`: the first page as it was last read, shown until the chain answers. */
-export function ActivityView({ network, tabs, saved }: { network: NetworkId; tabs: ReactNode; saved?: ActivityPage | null }) {
-  const [validators, setValidators] = useState<Record<string, string>>({});
+/** `kept`: what the tab showed last (this popup session, or the saved copy from disk).
+ *  `onKeep` gets every change, for the next visit. */
+export function ActivityView({ network, tabs, kept, onKeep }: { network: NetworkId; tabs: ReactNode; kept?: ActivityState | null; onKeep?: (s: ActivityState) => void }) {
   const backend = useBackend();
   const { run, error, busy } = useRequest();
-  const [items, setItems] = useState<ActivityItem[] | null>(null);
-  const [tokens, setTokens] = useState<Tokens>({});
-  const [filter, setFilter] = useState<TokenFilter | null>(null);
-  const [page, setPage] = useState(1);
-  const [more, setMore] = useState(false);
-  const [cutoff, setCutoff] = useState<string | null>(null);
-  const [indexDown, setIndexDown] = useState(false);
+  const [st, setSt] = useState<ActivityState | null>(kept ?? null);
   const [showHidden, setShowHidden] = useState(false);
-  const [reload, setReload] = useState(0);
+  const live = useRef(true);
 
   async function load(p: number) {
     const r = await run({ type: "activity", page: p });
-    if (r) show(r, p);
-  }
-
-  function show(r: ActivityPage, p: number) {
-    setItems((prev) => {
-      const seen = new Set((p === 1 ? [] : (prev ?? [])).map((a) => a.hash));
-      const all = [...(p === 1 ? [] : (prev ?? [])), ...r.items.filter((a) => !seen.has(a.hash))];
-      return all.sort((a, b) => (BigInt(b.height) > BigInt(a.height) ? 1 : BigInt(b.height) < BigInt(a.height) ? -1 : 0));
-    });
-    setTokens((prev) => ({ ...(p === 1 ? {} : prev), ...r.tokens }));
-    setValidators((prev) => ({ ...prev, ...(r.validators ?? {}) }));
-    setFilter(r.filter);
-    setPage(p);
-    setMore(r.more);
-    setCutoff(r.cutoff);
-    setIndexDown(r.evmIndexDown === true);
+    if (r && live.current) setSt((prev) => merge(prev, r, p, Date.now()));
   }
 
   useEffect(() => {
-    void load(1);
-  }, [network, reload]);
+    if (st) onKeep?.(st);
+  }, [st]);
 
-  // What the chain said last time, until it answers now.
+  // Shown at once; asked again only when it is old, or when something happened.
   useEffect(() => {
-    if (saved && items === null) show(saved, 1);
-  }, [saved]);
+    live.current = true;
+    if (!kept || Date.now() - kept.at > ACTIVITY_FRESH_MS) void load(1);
+    const off = backend.onRefresh?.(() => void load(1));
+    return () => {
+      live.current = false;
+      off?.();
+    };
+  }, [network]);
+
+  // A saved copy that arrives after the tab opened (the wallet reads it from disk at start).
+  useEffect(() => {
+    if (kept && st === null) setSt(kept);
+  }, [kept]);
+
+  const items = st?.items ?? null;
+  const tokens = st?.tokens ?? {};
+  const validators = st?.validators ?? {};
+  const filter = st?.filter ?? null;
+  const page = st?.page ?? 1;
+  const more = st?.more ?? false;
+  const cutoff = st?.cutoff ?? null;
+  const indexDown = st?.indexDown ?? false;
 
   const fee = NETWORKS[network].feeDenom;
   /** Junk: not signed here, and every token it moved is one the filter hides. Out counts
@@ -139,7 +139,7 @@ export function ActivityView({ network, tabs, saved }: { network: NetworkId; tab
       top={
         <>
           <span className="title">Activity</span>
-          <button className="icon-btn" aria-label="Refresh" disabled={busy} onClick={() => setReload((n) => n + 1)}>
+          <button className={busy ? "icon-btn busy" : "icon-btn"} aria-label="Refresh" disabled={busy} onClick={() => void load(1)}>
             <RefreshIcon />
           </button>
         </>

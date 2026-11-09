@@ -2,12 +2,14 @@
 // over them full screen (receive, a token, send, convert, manage tokens).
 
 import { formatShort, NETWORKS, shortDenom, usdValue } from "@choice-wallet/chain";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { AccountsView, isWatch } from "./Accounts";
 import { ApprovalsView } from "./Approvals";
 import { ContactsView, type Draft } from "./Contacts";
 import { ActivityView } from "./Activity";
+import { merge, type ActivityState } from "./activityState";
+import { Kept, KeptContext } from "./kept";
 import mark from "./assets/choice-mark.svg";
 import { useBackend } from "./backend";
 import { ActivityIcon, CheckIcon, ChevronDownIcon, ChevronRightIcon, CopyIcon, EyeOffIcon, LockIcon, ReceiveIcon, SendIcon, SettingsIcon, SwapIcon, WalletIcon } from "./icons";
@@ -102,6 +104,8 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
   /** The chain answered for this account: what's on disk is older. */
   const answered = useRef(false);
   const [savedActivity, setSavedActivity] = useState<ActivityPage | null>(null);
+  /** What the Activity tab showed, for the next visit while the popup is open. */
+  const activity = useRef<ActivityState | null>(null);
   const { run, error, setError } = useRequest();
 
   // The last filter save, so a refresh never reads the filter before it lands.
@@ -110,6 +114,14 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
   const account = status.accounts[status.active] ?? status.accounts[0];
   const address = account?.addresses[COSMOS] ?? "";
   const watch = isWatch(account);
+  /** What other screens read (NFTs, trading and liquidity, approvals, swap tokens), for this
+   *  account and network while the popup is open. */
+  const kept = useMemo(() => new Kept(), [address, status.network]);
+  /** Something happened (a send, the watcher's word): every screen asks again next time. */
+  const activityStale = () => {
+    if (activity.current) activity.current = { ...activity.current, at: 0 };
+    kept.stale();
+  };
   // Another account: its balances, never the last one's while they load. What it showed
   // last comes from disk at once, while the chain is asked.
   useEffect(() => {
@@ -117,6 +129,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
     setStaking(null);
     setReadAt(null);
     setSavedActivity(null);
+    activity.current = null;
     answered.current = false;
     setSwapDraft(newDraft(NETWORKS[status.network].feeDenom));
     let live = true;
@@ -149,7 +162,10 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
       if (document.visibilityState === "visible") setRefresh((n) => n + 1);
     };
     const timer = setInterval(again, REFRESH_MS);
-    const off = backend.onRefresh?.(again);
+    const off = backend.onRefresh?.(() => {
+      activityStale();
+      again();
+    });
     return () => {
       clearInterval(timer);
       off?.();
@@ -236,314 +252,323 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
     setView({ name: "home" });
   }
 
-  switch (view.name) {
-    case "accounts":
-      return <AccountsView status={status} onStatus={(s) => onStatus(s)} onBack={home} />;
-    case "receive":
-      return <Receive addresses={account?.addresses ?? {}} onBack={home} />;
-    case "tokens":
-      return (
-        <TokensView
-          balances={balances ?? []}
-          filter={filter}
-          network={status.network}
-          prices={prices}
-          onChange={changeFilter}
-          onAdd={addToken}
-          onBack={() => setView({ name: "home" })}
-        />
-      );
-    case "token": {
-      const t = balances?.find((b) => b.denom === view.denom);
-      if (!t) return null;
-      return (
-        <TokenView
-          token={t}
-          feeDenom={NETWORKS[status.network].feeDenom}
-          canSign={!watch}
-          onSend={() => setView({ name: "send", denom: t.denom })}
-          onConvert={() => setView({ name: "convert", denom: t.denom })}
-          onBack={home}
-        />
-      );
-    }
-    case "send":
-      return (
-        <SendForm
-          balances={sorted?.shown ?? []}
-          accounts={status.accounts.filter((_, i) => i !== status.active)}
-          denom={view.denom}
-          onReview={(review, entered, denom) => setView({ name: "review", review, entered, back: { name: "send", denom } })}
-          onBack={home}
-        />
-      );
-    case "convert": {
-      const t = balances?.find((b) => b.denom === view.denom);
-      if (!t) return null;
-      return (
-        <ConvertForm
-          token={t}
-          onReview={(review) => setView({ name: "review", review, entered: "", back: { name: "convert", denom: t.denom } })}
-          onBack={() => setView({ name: "token", denom: t.denom })}
-        />
-      );
-    }
-    case "staking":
-      return (
-        <StakingView
-          initial={staking}
-          canSign={!watch}
-          onReview={(review, validators, rewards) => setView({ name: "review", review, entered: "", back: { name: "staking" }, validators, rewards })}
-          onBack={home}
-        />
-      );
-    case "inventory":
-      return <InventoryScreen canSign={!watch} onReview={(review) => setView({ name: "review", review, entered: "", back: { name: "inventory" } })} onBack={() => setView({ name: "home" })} />;
-    case "rescue":
-      return <RescueView status={status} onReview={(review) => setView({ name: "review", review, entered: "", back: { name: "rescue" } })} onBack={() => setView({ name: "home" })} />;
-    case "approvals":
-      return <ApprovalsView canSign={!watch} onReview={(review) => setView({ name: "review", review, entered: "", back: { name: "approvals" } })} onBack={() => setView({ name: "home" })} />;
-    case "review":
-      return (
-        <Review
-          review={view.review}
-          entered={view.entered}
-          network={status.network}
-          {...(view.validators ? { validators: view.validators } : {})}
-          {...(view.rewards ? { rewards: view.rewards } : {})}
-          onSent={(sent) => {
-            const back = view.back;
-            // What a conversion makes is what the user asked for: show it, like a token added by hand.
-            const made = back.name === "convert" ? balances?.find((b) => b.denom === back.denom)?.convertsTo : undefined;
-            if (made && !filter.shown.includes(made)) changeFilter({ ...filter, shown: [...filter.shown, made], hidden: filter.hidden.filter((x) => x !== made) });
-            // A send to an address the review didn't name (no contact, not an account here): offer to save it.
-            const sentTo = back.name === "send" ? shown(view.review.display, status.network) : null;
-            const named = view.review.risk.findings.some((f) => f.rule === "address_book");
-            const save = sentTo && sentTo.sends.length === 1 && !named ? { address: sentTo.sends[0]!.to, memo: sentTo.memo } : undefined;
-            const step = view.review.swap;
-            setView({
-              name: "sent",
-              sent,
-              converting: back.name === "convert",
-              ...(back.name === "staking" || back.name === "approvals" || back.name === "rescue" || back.name === "inventory" ? { done: "Confirmed" } : {}),
-              ...(step ? { done: step.step === "swap" ? "Swapped" : "Approved" } : {}),
-              ...(step && step.left > 0 && view.quote ? { next: view.quote } : {}),
-              ...(save ? { save } : {}),
-            });
-          }}
-          onCancel={() => setView(view.back)}
-        />
-      );
-    case "sent":
-      return (
-        <SentView
-          sent={view.sent}
-          onDone={home}
-          onSave={view.save ? () => setView({ name: "contacts", prefill: view.save! }) : undefined}
-          onNext={view.next ? () => void nextSwapStep(view.next!) : undefined}
-          converting={view.converting}
-          {...(view.done ? { done: view.done } : {})}
-        />
-      );
-    case "contacts":
-      return <ContactsView prefill={view.prefill} onBack={home} />;
-    case "nfts":
-      return <NftsView canSign={!watch} onOpen={(collection, nft) => setView({ name: "nft", collection, nft })} onBack={home} />;
-    case "nft":
-      return (
-        <NftView
-          collection={view.collection}
-          nft={view.nft}
-          canSign={!watch}
-          accounts={status.accounts}
-          onReview={(review, entered) => setView({ name: "review", review, entered, back: { name: "nft", collection: view.collection, nft: view.nft } })}
-          onBack={() => setView({ name: "nfts" })}
-        />
-      );
-    case "home": {
-      if (tab === "activity") return <ActivityView key={address} network={status.network} tabs={tabs} saved={savedActivity} />;
-      if (tab === "swap") {
-        return (
-          <SwapView
-            key={`${address} ${status.network}`}
-            network={status.network}
-            canSign={!watch}
-            draft={swapDraft}
-            onDraft={setSwapDraft}
-            note={swapNote}
-            onReview={(review, quote) => {
-              setSwapNote(null);
-              setView({ name: "review", review, entered: "", back: { name: "home" }, quote: quote.id });
-            }}
-            tabs={tabs}
-          />
-        );
-      }
-      if (tab === "settings") {
-        return (
-          <SettingsView
-            status={status}
-            onStatus={(s) => onStatus(s)}
-            tabs={tabs}
-            onLock={onLock}
-            onApprovals={() => setView({ name: "approvals" })}
-            onRescue={() => setView({ name: "rescue" })}
-            onContacts={() => setView({ name: "contacts" })}
-            onDone={() => {
-              onStatus();
-              home();
-            }}
-          />
-        );
-      }
-      const inj = balances?.find((b) => b.denom === "inj");
-      return (
-        <Screen
-          tabs={tabs}
-          top={
-            <>
-              <span className="brand">
-                <img src={mark} alt="" />
-              </span>
-              <button className="title account-switch" aria-label={`Account: ${account?.name ?? ""}. Switch accounts`} onClick={() => setView({ name: "accounts" })}>
-                <span className="account-name">{account?.name}</span>
-                <ChevronDownIcon size={16} />
-              </button>
-              <button className="pill" onClick={() => setTab("settings")} aria-label={`Network: ${status.network}`}>
-                <span className={status.network === "testnet" ? "dot testnet" : "dot"} />
-                {status.network === "testnet" ? "Testnet" : "Mainnet"}
-              </button>
-              <button className="icon-btn" aria-label="Lock" onClick={onLock}>
-                <LockIcon />
-              </button>
-            </>
-          }
-        >
-          <div className="plate-warm">
-            {/* The USD total when Choice can price something here; otherwise the INJ balance. */}
-            <div className="eyebrow">
-              {totalUsd === undefined ? "INJ balance" : "Total"}
-              {watch && <span className="flag quiet">Watch-only</span>}
-            </div>
-            {balances === null ? (
-              <div className="skeleton" style={{ width: 140, height: 36, margin: "6px 0 4px" }} />
-            ) : totalUsd === undefined ? (
-              <div className="hero" style={{ margin: "4px 0 2px" }}>
-                {formatShort(inj?.amount ?? "0", 18, 4)}
-                <span className="unit">INJ</span>
-              </div>
-            ) : (
-              <>
-                <div className="hero" style={{ margin: "4px 0 0" }}>
-                  {formatUsd(totalUsd)}
-                </div>
-                <div className="meta num" style={{ marginBottom: 8 }}>
-                  {formatShort(inj?.amount ?? "0", 18, 4)} INJ
-                </div>
-              </>
-            )}
-            <CopyPill address={address} />
-            <div className="actions" style={{ marginTop: 14 }}>
-              <button className="action" disabled={watch || !sorted?.shown.length} onClick={() => setView({ name: "send" })}>
-                <SendIcon /> Send
-              </button>
-              <button className="action plain" onClick={() => setView({ name: "receive" })}>
-                <ReceiveIcon /> Receive
-              </button>
-            </div>
-          </div>
+  return <KeptContext.Provider value={kept}>{screen()}</KeptContext.Provider>;
 
-          <div className="section-head">
-            <span className="eyebrow">Tokens{sorted?.shown.length ? ` · ${sorted.shown.length}` : ""}</span>
-            {balances !== null && balances.length > 0 && (
-              <button className="link" onClick={() => setView({ name: "tokens" })}>
-                Manage
-              </button>
-            )}
-          </div>
-          {error && balances !== null && readAt !== null ? (
-            <p className="meta warn">Couldn&apos;t update. Showing balances from {ago(readAt)}.</p>
-          ) : (
-            error && <Callout level="amber">{error}</Callout>
-          )}
-          {sorted === null ? (
-            !error && [0, 1, 2].map((i) => <div key={i} className="skeleton" style={{ height: 40 }} />)
-          ) : sorted.shown.length === 0 && sorted.hidden.length === 0 ? (
-            <p className="empty">No tokens yet. Use Receive to get your address.</p>
-          ) : (
-            <div className="token-list">
-              {sorted.shown.map((b) => (
-                <button
-                  key={b.denom}
-                  className="token"
-                  title={b.denom}
-                  onClick={() => setView({ name: "token", denom: b.denom })}
-                >
-                  <TokenMark denom={b.denom} symbol={b.symbol} known={b.known} />
-                  <span className="name">
-                    <span className="symbol">{b.symbol}</span>
-                    <span className={b.known ? "sub" : "sub denom"}>{tokenSub(b)}</span>
-                  </span>
-                  <span className="value">
-                    <span className="amount">{formatShort(b.amount, b.decimals)}</span>
-                    {b.usd !== undefined && <span className="usd">{formatUsd(b.usd)}</span>}
-                  </span>
+  function screen() {
+    switch (view.name) {
+      case "accounts":
+        return <AccountsView status={status} onStatus={(s) => onStatus(s)} onBack={home} />;
+      case "receive":
+        return <Receive addresses={account?.addresses ?? {}} onBack={home} />;
+      case "tokens":
+        return (
+          <TokensView
+            balances={balances ?? []}
+            filter={filter}
+            network={status.network}
+            prices={prices}
+            onChange={changeFilter}
+            onAdd={addToken}
+            onBack={() => setView({ name: "home" })}
+          />
+        );
+      case "token": {
+        const t = balances?.find((b) => b.denom === view.denom);
+        if (!t) return null;
+        return (
+          <TokenView
+            token={t}
+            feeDenom={NETWORKS[status.network].feeDenom}
+            canSign={!watch}
+            onSend={() => setView({ name: "send", denom: t.denom })}
+            onConvert={() => setView({ name: "convert", denom: t.denom })}
+            onBack={home}
+          />
+        );
+      }
+      case "send":
+        return (
+          <SendForm
+            balances={sorted?.shown ?? []}
+            accounts={status.accounts.filter((_, i) => i !== status.active)}
+            denom={view.denom}
+            onReview={(review, entered, denom) => setView({ name: "review", review, entered, back: { name: "send", denom } })}
+            onBack={home}
+          />
+        );
+      case "convert": {
+        const t = balances?.find((b) => b.denom === view.denom);
+        if (!t) return null;
+        return (
+          <ConvertForm
+            token={t}
+            onReview={(review) => setView({ name: "review", review, entered: "", back: { name: "convert", denom: t.denom } })}
+            onBack={() => setView({ name: "token", denom: t.denom })}
+          />
+        );
+      }
+      case "staking":
+        return (
+          <StakingView
+            initial={staking}
+            canSign={!watch}
+            onReview={(review, validators, rewards) => setView({ name: "review", review, entered: "", back: { name: "staking" }, validators, rewards })}
+            onBack={home}
+          />
+        );
+      case "inventory":
+        return <InventoryScreen canSign={!watch} onReview={(review) => setView({ name: "review", review, entered: "", back: { name: "inventory" } })} onBack={() => setView({ name: "home" })} />;
+      case "rescue":
+        return <RescueView status={status} onReview={(review) => setView({ name: "review", review, entered: "", back: { name: "rescue" } })} onBack={() => setView({ name: "home" })} />;
+      case "approvals":
+        return <ApprovalsView canSign={!watch} onReview={(review) => setView({ name: "review", review, entered: "", back: { name: "approvals" } })} onBack={() => setView({ name: "home" })} />;
+      case "review":
+        return (
+          <Review
+            review={view.review}
+            entered={view.entered}
+            network={status.network}
+            {...(view.validators ? { validators: view.validators } : {})}
+            {...(view.rewards ? { rewards: view.rewards } : {})}
+            onSent={(sent) => {
+              activityStale();
+              const back = view.back;
+              // What a conversion makes is what the user asked for: show it, like a token added by hand.
+              const made = back.name === "convert" ? balances?.find((b) => b.denom === back.denom)?.convertsTo : undefined;
+              if (made && !filter.shown.includes(made)) changeFilter({ ...filter, shown: [...filter.shown, made], hidden: filter.hidden.filter((x) => x !== made) });
+              // A send to an address the review didn't name (no contact, not an account here): offer to save it.
+              const sentTo = back.name === "send" ? shown(view.review.display, status.network) : null;
+              const named = view.review.risk.findings.some((f) => f.rule === "address_book");
+              const save = sentTo && sentTo.sends.length === 1 && !named ? { address: sentTo.sends[0]!.to, memo: sentTo.memo } : undefined;
+              const step = view.review.swap;
+              setView({
+                name: "sent",
+                sent,
+                converting: back.name === "convert",
+                ...(back.name === "staking" || back.name === "approvals" || back.name === "rescue" || back.name === "inventory" ? { done: "Confirmed" } : {}),
+                ...(step ? { done: step.step === "swap" ? "Swapped" : "Approved" } : {}),
+                ...(step && step.left > 0 && view.quote ? { next: view.quote } : {}),
+                ...(save ? { save } : {}),
+              });
+            }}
+            onCancel={() => setView(view.back)}
+          />
+        );
+      case "sent":
+        return (
+          <SentView
+            sent={view.sent}
+            onDone={home}
+            onSave={view.save ? () => setView({ name: "contacts", prefill: view.save! }) : undefined}
+            onNext={view.next ? () => void nextSwapStep(view.next!) : undefined}
+            converting={view.converting}
+            {...(view.done ? { done: view.done } : {})}
+          />
+        );
+      case "contacts":
+        return <ContactsView prefill={view.prefill} onBack={home} />;
+      case "nfts":
+        return <NftsView canSign={!watch} onOpen={(collection, nft) => setView({ name: "nft", collection, nft })} onBack={home} />;
+      case "nft":
+        return (
+          <NftView
+            collection={view.collection}
+            nft={view.nft}
+            canSign={!watch}
+            accounts={status.accounts}
+            onReview={(review, entered) => setView({ name: "review", review, entered, back: { name: "nft", collection: view.collection, nft: view.nft } })}
+            onBack={() => setView({ name: "nfts" })}
+          />
+        );
+      case "home": {
+        if (tab === "activity") {
+          // This session's, or else the copy saved on disk (shown, then read again).
+          const kept = activity.current ?? (savedActivity ? merge(null, savedActivity, 1, 0) : null);
+          return <ActivityView key={address} network={status.network} tabs={tabs} kept={kept} onKeep={(s) => (activity.current = s)} />;
+        }
+        if (tab === "swap") {
+          return (
+            <SwapView
+              key={`${address} ${status.network}`}
+              network={status.network}
+              canSign={!watch}
+              draft={swapDraft}
+              onDraft={setSwapDraft}
+              note={swapNote}
+              onReview={(review, quote) => {
+                setSwapNote(null);
+                setView({ name: "review", review, entered: "", back: { name: "home" }, quote: quote.id });
+              }}
+              tabs={tabs}
+            />
+          );
+        }
+        if (tab === "settings") {
+          return (
+            <SettingsView
+              status={status}
+              onStatus={(s) => onStatus(s)}
+              tabs={tabs}
+              onLock={onLock}
+              onApprovals={() => setView({ name: "approvals" })}
+              onRescue={() => setView({ name: "rescue" })}
+              onContacts={() => setView({ name: "contacts" })}
+              onDone={() => {
+                onStatus();
+                home();
+              }}
+            />
+          );
+        }
+        const inj = balances?.find((b) => b.denom === "inj");
+        return (
+          <Screen
+            tabs={tabs}
+            top={
+              <>
+                <span className="brand">
+                  <img src={mark} alt="" />
+                </span>
+                <button className="title account-switch" aria-label={`Account: ${account?.name ?? ""}. Switch accounts`} onClick={() => setView({ name: "accounts" })}>
+                  <span className="account-name">{account?.name}</span>
+                  <ChevronDownIcon size={16} />
                 </button>
-              ))}
-              {sorted.hidden.length > 0 && (
-                <button className="hidden-row" onClick={() => setView({ name: "tokens" })}>
-                  <EyeOffIcon size={16} />
-                  {sorted.hidden.length} hidden {sorted.hidden.length === 1 ? "token" : "tokens"}
-                  <ChevronRightIcon size={16} />
+                <button className="pill" onClick={() => setTab("settings")} aria-label={`Network: ${status.network}`}>
+                  <span className={status.network === "testnet" ? "dot testnet" : "dot"} />
+                  {status.network === "testnet" ? "Testnet" : "Mainnet"}
+                </button>
+                <button className="icon-btn" aria-label="Lock" onClick={onLock}>
+                  <LockIcon />
+                </button>
+              </>
+            }
+          >
+            <div className="plate-warm">
+              {/* The USD total when Choice can price something here; otherwise the INJ balance. */}
+              <div className="eyebrow">
+                {totalUsd === undefined ? "INJ balance" : "Total"}
+                {watch && <span className="flag quiet">Watch-only</span>}
+              </div>
+              {balances === null ? (
+                <div className="skeleton" style={{ width: 140, height: 36, margin: "6px 0 4px" }} />
+              ) : totalUsd === undefined ? (
+                <div className="hero" style={{ margin: "4px 0 2px" }}>
+                  {formatShort(inj?.amount ?? "0", 18, 4)}
+                  <span className="unit">INJ</span>
+                </div>
+              ) : (
+                <>
+                  <div className="hero" style={{ margin: "4px 0 0" }}>
+                    {formatUsd(totalUsd)}
+                  </div>
+                  <div className="meta num" style={{ marginBottom: 8 }}>
+                    {formatShort(inj?.amount ?? "0", 18, 4)} INJ
+                  </div>
+                </>
+              )}
+              <CopyPill address={address} />
+              <div className="actions" style={{ marginTop: 14 }}>
+                <button className="action" disabled={watch || !sorted?.shown.length} onClick={() => setView({ name: "send" })}>
+                  <SendIcon /> Send
+                </button>
+                <button className="action plain" onClick={() => setView({ name: "receive" })}>
+                  <ReceiveIcon /> Receive
+                </button>
+              </div>
+            </div>
+
+            <div className="section-head">
+              <span className="eyebrow">Tokens{sorted?.shown.length ? ` · ${sorted.shown.length}` : ""}</span>
+              {balances !== null && balances.length > 0 && (
+                <button className="link" onClick={() => setView({ name: "tokens" })}>
+                  Manage
                 </button>
               )}
             </div>
-          )}
-          {staking && (stakedAll > 0n || !watch) && (
-            <>
-              <div className="section-head">
-                <span className="eyebrow">Staking</span>
+            {error && balances !== null && readAt !== null ? (
+              <p className="meta warn">Couldn&apos;t update. Showing balances from {ago(readAt)}.</p>
+            ) : (
+              error && <Callout level="amber">{error}</Callout>
+            )}
+            {sorted === null ? (
+              !error && [0, 1, 2].map((i) => <div key={i} className="skeleton" style={{ height: 40 }} />)
+            ) : sorted.shown.length === 0 && sorted.hidden.length === 0 ? (
+              <p className="empty">No tokens yet. Use Receive to get your address.</p>
+            ) : (
+              <div className="token-list">
+                {sorted.shown.map((b) => (
+                  <button
+                    key={b.denom}
+                    className="token"
+                    title={b.denom}
+                    onClick={() => setView({ name: "token", denom: b.denom })}
+                  >
+                    <TokenMark denom={b.denom} symbol={b.symbol} known={b.known} />
+                    <span className="name">
+                      <span className="symbol">{b.symbol}</span>
+                      <span className={b.known ? "sub" : "sub denom"}>{tokenSub(b)}</span>
+                    </span>
+                    <span className="value">
+                      <span className="amount">{formatShort(b.amount, b.decimals)}</span>
+                      {b.usd !== undefined && <span className="usd">{formatUsd(b.usd)}</span>}
+                    </span>
+                  </button>
+                ))}
+                {sorted.hidden.length > 0 && (
+                  <button className="hidden-row" onClick={() => setView({ name: "tokens" })}>
+                    <EyeOffIcon size={16} />
+                    {sorted.hidden.length} hidden {sorted.hidden.length === 1 ? "token" : "tokens"}
+                    <ChevronRightIcon size={16} />
+                  </button>
+                )}
               </div>
-              <button className="token" onClick={() => setView({ name: "staking" })}>
-                <TokenMark denom="inj" symbol="INJ" known />
-                <span className="name">
-                  <span className="symbol">{stakedAll > 0n ? "Staked INJ" : "Stake INJ"}</span>
-                  <span className="sub">{BigInt(staking.rewards) > 0n ? `Rewards ${formatShort(staking.rewards, 18, 4)} INJ` : "Earn staking rewards"}</span>
-                </span>
-                <span className="value">
-                  {stakedAll > 0n && <span className="amount">{formatShort(stakedAll, 18, 4)}</span>}
-                  {stakedAll > 0n && injPrice && prices && <span className="usd">{formatUsd(usdValue(stakedAll.toString(), 18, injPrice))}</span>}
-                </span>
-              </button>
-            </>
-          )}
-          <div className="section-head">
-            <span className="eyebrow">More</span>
-          </div>
-          <button className="token" onClick={() => setView({ name: "inventory" })}>
-            <span className="nft-tile small" aria-hidden="true">
-              LP
-            </span>
-            <span className="name">
-              <span className="symbol">Trading and liquidity</span>
-              <span className="sub">Orderbook accounts, Choice pools</span>
-            </span>
-            <ChevronRightIcon size={16} />
-          </button>
-          <button className="token" onClick={() => setView({ name: "nfts" })}>
-            <span className="nft-tile small" aria-hidden="true">
-              NFT
-            </span>
-            <span className="name">
-              <span className="symbol">NFTs</span>
-              <span className="sub">CW721 and ERC721</span>
-            </span>
-            <ChevronRightIcon size={16} />
-          </button>
-          {evmDown && <p className="meta warn">EVM tokens may be missing: no EVM endpoint answered.</p>}
-          <p className="footnote">{totalUsd === undefined ? "Pre-alpha. Not for real funds." : "Prices from Choice. Pre-alpha. Not for real funds."}</p>
-        </Screen>
-      );
+            )}
+            {staking && (stakedAll > 0n || !watch) && (
+              <>
+                <div className="section-head">
+                  <span className="eyebrow">Staking</span>
+                </div>
+                <button className="token" onClick={() => setView({ name: "staking" })}>
+                  <TokenMark denom="inj" symbol="INJ" known />
+                  <span className="name">
+                    <span className="symbol">{stakedAll > 0n ? "Staked INJ" : "Stake INJ"}</span>
+                    <span className="sub">{BigInt(staking.rewards) > 0n ? `Rewards ${formatShort(staking.rewards, 18, 4)} INJ` : "Earn staking rewards"}</span>
+                  </span>
+                  <span className="value">
+                    {stakedAll > 0n && <span className="amount">{formatShort(stakedAll, 18, 4)}</span>}
+                    {stakedAll > 0n && injPrice && prices && <span className="usd">{formatUsd(usdValue(stakedAll.toString(), 18, injPrice))}</span>}
+                  </span>
+                </button>
+              </>
+            )}
+            <div className="section-head">
+              <span className="eyebrow">More</span>
+            </div>
+            <button className="token" onClick={() => setView({ name: "inventory" })}>
+              <span className="nft-tile small" aria-hidden="true">
+                LP
+              </span>
+              <span className="name">
+                <span className="symbol">Trading and liquidity</span>
+                <span className="sub">Orderbook accounts, Choice pools</span>
+              </span>
+              <ChevronRightIcon size={16} />
+            </button>
+            <button className="token" onClick={() => setView({ name: "nfts" })}>
+              <span className="nft-tile small" aria-hidden="true">
+                NFT
+              </span>
+              <span className="name">
+                <span className="symbol">NFTs</span>
+                <span className="sub">CW721 and ERC721</span>
+              </span>
+              <ChevronRightIcon size={16} />
+            </button>
+            {evmDown && <p className="meta warn">EVM tokens may be missing: no EVM endpoint answered.</p>}
+            <p className="footnote">{totalUsd === undefined ? "Pre-alpha. Not for real funds." : "Prices from Choice. Pre-alpha. Not for real funds."}</p>
+          </Screen>
+        );
+      }
     }
   }
 }

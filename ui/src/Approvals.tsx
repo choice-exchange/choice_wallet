@@ -3,11 +3,11 @@
 // one transaction; each ERC20 allowance is its own.
 
 import { formatShort } from "@choice-wallet/chain";
-import { useEffect, useState } from "react";
 
+import { useKept } from "./kept";
 import { BackBar, Callout, Screen, shortAddress } from "./kit";
 import { canMoveFunds, permissionName } from "./permissions";
-import type { ApprovalsSummary, Coin, RevokeItem, SendReview } from "./protocol";
+import type { Coin, RevokeItem, SendReview } from "./protocol";
 import { useRequest } from "./request";
 
 /** Allowances from 2^128 up read as unlimited, as in Activity. */
@@ -16,12 +16,9 @@ const UNLIMITED = 2n ** 128n;
 const until = (iso: string | null) => (iso ? `until ${new Date(iso).toLocaleDateString()}` : "no end date");
 
 export function ApprovalsView({ canSign, onReview, onBack }: { canSign: boolean; onReview: (review: SendReview) => void; onBack: () => void }) {
-  const { run, error, busy } = useRequest();
-  const [s, setS] = useState<ApprovalsSummary | null>(null);
-
-  useEffect(() => {
-    void run({ type: "approvals" }).then((r) => r && setS(r));
-  }, []);
+  const { run, error: actError, busy } = useRequest();
+  const { value: s, error: loadError } = useKept({ type: "approvals" });
+  const error = actError ?? (s ? null : loadError);
 
   const revoke = async (items: RevokeItem[]) => {
     const r = await run({ type: "prepare_revoke", items });
