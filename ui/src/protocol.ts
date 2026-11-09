@@ -73,6 +73,8 @@ export type UiRequest =
   /** Convert `amount` (base units, or "max") of a token into its other form (`convertsTo`):
    *  a CW20 into its bank denom through the CW20 adapter, or back. Confirmed like a send. */
   | { type: "prepare_convert"; denom: string; amount: string }
+  | { type: "staking" }
+  | ({ type: "prepare_stake" } & StakeRequest)
   /** Sign and broadcast the prepared send whose review showed `digest`. `confirm` is the
    *  word the review asked for, if any. */
   | { type: "confirm_send"; digest: string; confirm?: string }
@@ -188,6 +190,45 @@ export type SendReview = {
 };
 
 export type Sent = { hash: string; explorer: string };
+
+/** A staking action. Amounts are base units of INJ, or "max". `validator` is where the
+ *  stake is (for "move", where it leaves; for "claim", absent to claim from every one). */
+export type StakeRequest =
+  | { action: "stake"; validator: string; amount: string }
+  | { action: "unstake"; validator: string; amount: string }
+  | { action: "move"; validator: string; to: string; amount: string }
+  | { action: "claim"; validator?: string; amount?: undefined }
+  | { action: "cancel"; validator: string; height: string; amount?: undefined };
+
+export type ValidatorInfo = {
+  address: string;
+  /** Written by the validator: not proof of who runs it. */
+  moniker: string;
+  website: string;
+  /** 0 to 1. */
+  commission: number;
+  tokens: string;
+  jailed: boolean;
+  /** In the active set (earning rewards). */
+  active: boolean;
+  /** Place in the active set by voting power, 1 first. */
+  rank: number | null;
+};
+
+export type StakingSummary = {
+  network: NetworkId;
+  denom: string;
+  staked: string;
+  unbondingTotal: string;
+  /** Unclaimed, rounded down. */
+  rewards: string;
+  stakes: { validator: string; amount: string; rewards: string }[];
+  /** Soonest first. */
+  unbonding: { validator: string; amount: string; height: string; completes: string }[];
+  /** The active set by voting power, then any other validator a stake is with. */
+  validators: ValidatorInfo[];
+  unbondingDays: number;
+};
 
 export type ActivityKind =
   | "send"
@@ -317,6 +358,8 @@ export type Replies = {
   activity: ActivityPage;
   prepare_send: SendReview;
   prepare_convert: SendReview;
+  staking: StakingSummary;
+  prepare_stake: SendReview;
   confirm_send: Sent;
   tx_status: TxState;
   dapp_request: DappRequest;

@@ -15,6 +15,7 @@ import { DEFAULT_FILTER } from "@choice-wallet/ui/token-filter";
 
 import { createDapps, type DappReply } from "./dapp";
 import { createSender } from "./send";
+import { createStaking } from "./staking";
 import { createWallets, isWatch } from "./wallets";
 
 type UiResponse<T = unknown> = Result<T>;
@@ -119,6 +120,7 @@ export function createService(d: Deps) {
   }
 
   const sender = createSender({ vault: d.vault, fetch: d.fetch, local: d.local, session: d.session, endpoints, evmEndpoints, evmIndexEndpoints, prices: showPrices });
+  const staking = createStaking(sender);
 
   const wallets = createWallets({
     vault: d.vault,
@@ -328,11 +330,13 @@ export function createService(d: Deps) {
       case "activity":
       case "prepare_send":
       case "prepare_convert":
+      case "staking":
+      case "prepare_stake":
       case "confirm_send":
       case "tx_status": {
         const a = await active();
         if ("ok" in a) return a;
-        if ((r.type === "prepare_send" || r.type === "prepare_convert") && isWatch(a.account)) {
+        if ((r.type === "prepare_send" || r.type === "prepare_convert" || r.type === "prepare_stake") && isWatch(a.account)) {
           return err("watch_only", "This account is watch-only. Switch to one that can sign.");
         }
         if (r.type === "balances") {
@@ -347,6 +351,8 @@ export function createService(d: Deps) {
         }
         if (r.type === "prepare_send") return sender.prepare(a.net, a.account, r);
         if (r.type === "prepare_convert") return sender.prepareConvert(a.net, a.account, r);
+        if (r.type === "staking") return staking.summary(a.net, a.account);
+        if (r.type === "prepare_stake") return staking.prepare(a.net, a.account, r);
         if (r.type === "confirm_send") return sender.confirm(a.key, wallets.signer, r);
         return sender.status(a.net, r.hash);
       }

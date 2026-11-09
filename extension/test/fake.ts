@@ -120,6 +120,20 @@ export const CW20: Record<string, { symbol: string; name: string; decimals: numb
 };
 
 /** A fake mainnet LCD and EVM JSON-RPC. `balances`, `evm` and `account` can be changed per test. */
+/** Test validators (addresses of fixed bytes, not real ones). */
+export const VAL_A = "injvaloper1qyqszqgpqyqszqgpqyqszqgpqyqszqgp0url7q";
+export const VAL_B = "injvaloper1qgpqyqszqgpqyqszqgpqyqszqgpqyqsz7c964k";
+/** Jailed, out of the active set. */
+export const VAL_JAILED = "injvaloper1qvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrlgymlh";
+const validatorJson = (address: string, moniker: string, tokens: bigint, jailed = false) => ({
+  operator_address: address,
+  jailed,
+  status: jailed ? "BOND_STATUS_UNBONDING" : "BOND_STATUS_BONDED",
+  tokens: tokens.toString(),
+  description: { moniker, website: "" },
+  commission: { commission_rates: { rate: "0.050000000000000000" } },
+});
+
 export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<string, bigint>; cw20?: Record<string, bigint>; account?: boolean; gasUsed?: string; pricesDown?: boolean } = {}) {
   const state = {
     balances: opts.balances ?? { inj: 5n * INJ },
@@ -153,6 +167,10 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
     unhandled: [] as string[],
     /** Other accounts (inj1…) that exist and hold 5 INJ. */
     funded: new Set<string>(),
+    /** ME's stakes, unbonding entries and rewards (chain decimals) by validator. */
+    delegations: {} as Record<string, bigint>,
+    unbonding: [] as { validator: string; amount: bigint; height: number; completes: string }[],
+    rewards: {} as Record<string, string>,
   };
   const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status });
   type Rpc = { id: number; method: string; params: { to: string; data: string }[] };
@@ -261,6 +279,36 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
       const denom = url.searchParams.get("denom");
       if (denom === SCAM) return json(200, { metadata: { base: SCAM, display: "USDT", symbol: "USDT", name: "Tether USD", decimals: 6, denom_units: [] } });
       return json(404, { code: 5, message: "client metadata for denom", details: [] });
+    }
+    if (p === "/cosmos/staking/v1beta1/validators") {
+      return json(200, { validators: [validatorJson(VAL_B, "Bravo", 900n * INJ), validatorJson(VAL_A, "Alpha", 100n * INJ)], pagination: { next_key: null } });
+    }
+    if (p === `/cosmos/staking/v1beta1/validators/${VAL_JAILED}`) return json(200, { validator: validatorJson(VAL_JAILED, "Jailed", 5n * INJ, true) });
+    if (p === "/cosmos/staking/v1beta1/params") return json(200, { params: { unbonding_time: "1814400s", bond_denom: "inj" } });
+    const stakingOf = /^\/cosmos\/(?:staking\/v1beta1\/delegations|staking\/v1beta1\/delegators|distribution\/v1beta1\/delegators)\/(inj1[0-9a-z]+)/.exec(p)?.[1];
+    if (stakingOf && stakingOf !== ME) {
+      // Anyone else has nothing staked.
+      return json(200, { delegation_responses: [], unbonding_responses: [], rewards: [], total: [] });
+    }
+    if (p === `/cosmos/staking/v1beta1/delegations/${ME}`) {
+      return json(200, {
+        delegation_responses: Object.entries(state.delegations).map(([v, a]) => ({
+          delegation: { delegator_address: ME, validator_address: v, shares: `${a}.000000000000000000` },
+          balance: { denom: "inj", amount: a.toString() },
+        })),
+      });
+    }
+    if (p === `/cosmos/staking/v1beta1/delegators/${ME}/unbonding_delegations`) {
+      return json(200, {
+        unbonding_responses: state.unbonding.map((u) => ({
+          delegator_address: ME,
+          validator_address: u.validator,
+          entries: [{ creation_height: String(u.height), completion_time: u.completes, initial_balance: u.amount.toString(), balance: u.amount.toString() }],
+        })),
+      });
+    }
+    if (p === `/cosmos/distribution/v1beta1/delegators/${ME}/rewards`) {
+      return json(200, { rewards: Object.entries(state.rewards).map(([v, a]) => ({ validator_address: v, reward: [{ denom: "inj", amount: a }] })), total: [] });
     }
     if (p === "/cosmos/tx/v1beta1/simulate") {
       state.simulations++;

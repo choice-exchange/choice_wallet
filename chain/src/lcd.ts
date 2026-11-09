@@ -225,6 +225,16 @@ export class Lcd {
     throw new ChainError(-1, "too many validator pages");
   }
 
+  /** One validator, whatever its status (a stake can stay with one that left the active
+   *  set), or null if there is none at that address. */
+  async validator(address: string): Promise<Validator | null> {
+    const body = await this.#empty(`/cosmos/staking/v1beta1/validators/${encodeURIComponent(address)}`, null);
+    if (!isObject(body)) return null;
+    const [v] = parseValidators({ validators: [body["validator"]] });
+    if (v?.address !== address) throw new ChainError(-1, "the node returned another validator");
+    return v;
+  }
+
   /** `address`'s stakes in the bond denom. */
   async delegations(address: string): Promise<Delegation[]> {
     const body = await this.#empty(`/cosmos/staking/v1beta1/delegations/${encodeURIComponent(address)}?pagination.limit=500`, { delegation_responses: [] });

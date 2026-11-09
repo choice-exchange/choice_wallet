@@ -539,12 +539,20 @@ export function createSender(d: SendDeps) {
        *  don't apply, so the spent token's balance is left out of the risk context. The
        *  amount was checked against it here. */
       returned?: boolean;
+      /** The amount comes from somewhere other than this account's balance of `denom` (a
+       *  stake being unstaked or moved): how much is there, and what to call it when there
+       *  isn't enough. The fee is still paid from the balance. */
+      source?: { available: bigint; short: string };
+      /** Kept back from the balance on "max", for later fees. */
+      reserve?: bigint;
+      /** There is no amount (claiming rewards); `amount` is ignored. */
+      noAmount?: boolean;
     },
   ): Promise<Result<SendReview>> {
     const net = NETWORKS[network];
     const client = await lcd(network);
-    const max = spec.amount === "max";
-    if (!max && !(typeof spec.amount === "string" && /^[0-9]+$/.test(spec.amount) && BigInt(spec.amount) > 0n)) {
+    const max = !spec.noAmount && spec.amount === "max";
+    if (!spec.noAmount && !max && !(typeof spec.amount === "string" && /^[0-9]+$/.test(spec.amount) && BigInt(spec.amount) > 0n)) {
       return fail("invalid_amount", "Enter an amount above zero.");
     }
     const cw20 = cw20Address(spec.denom);
@@ -561,10 +569,16 @@ export function createSender(d: SendDeps) {
       const held = (denom: string) => (cw20 && denom === spec.denom ? cw20Held! : BigInt(coins.find((c) => c.denom === denom)?.amount ?? "0"));
       const symbol = (await token(network, client, spec.denom)).symbol;
       const feeSymbol = (await token(network, client, net.feeDenom)).symbol;
-      const sameDenom = spec.denom === net.feeDenom;
-      const amountFor = (fee: bigint) => (max ? held(spec.denom) - (sameDenom ? fee : 0n) : BigInt(spec.amount));
+      // Whether the amount leaves the balance the fee is paid from.
+      const fromBalance = !spec.source && !spec.noAmount;
+      const sameDenom = fromBalance && spec.denom === net.feeDenom;
+      const available = () => spec.source?.available ?? held(spec.denom);
+      const amountFor = (fee: bigint) =>
+        spec.noAmount ? 0n : max ? (spec.source ? spec.source.available : held(spec.denom) - (sameDenom ? fee + (spec.reserve ?? 0n) : 0n)) : BigInt(spec.amount);
       const check = (amount: bigint, fee: bigint): Result<never> | null => {
-        if (amount <= 0n || amount > held(spec.denom)) return fail("insufficient", `Not enough ${symbol}.`);
+        if (!spec.noAmount && (amount <= 0n || amount > available())) {
+          return fail("insufficient", spec.source ? `That's more than ${spec.source.short}.` : `Not enough ${symbol}.`);
+        }
         if ((sameDenom ? amount : 0n) + fee > held(net.feeDenom)) return fail("insufficient", `Not enough ${feeSymbol} for the fee.`);
         return null;
       };
@@ -786,7 +800,7 @@ export function createSender(d: SendDeps) {
     }
   }
 
-  return { balances, activity, inspectToken, prepare, prepareConvert, confirm, status, lcd, evm, tokensFor, chainFailure };
+  return { balances, activity, inspectToken, prepare, prepareConvert, prepareCosmos, confirm, status, lcd, evm, tokensFor, chainFailure, token };
 }
 
 /** Every token a decoded Cosmos transaction moves, by the wallet's keys: the fee, coins
