@@ -30,14 +30,16 @@ const info = (v: Validator, rank: number | null): ValidatorInfo => ({
 });
 
 export function createStaking(sender: Sender) {
-  const validatorCache = new Map<NetworkId, { at: number; list: Promise<Validator[]> }>();
+  // By client: a new endpoint list makes a new client, so a set read from other endpoints
+  // is never reused.
+  const validatorCache = new WeakMap<Lcd, { at: number; list: Promise<Validator[]> }>();
 
-  function activeSet(network: NetworkId, client: Lcd): Promise<Validator[]> {
-    const hit = validatorCache.get(network);
+  function activeSet(client: Lcd): Promise<Validator[]> {
+    const hit = validatorCache.get(client);
     if (hit && Date.now() - hit.at < VALIDATORS_TTL_MS) return hit.list;
     const list = client.validators();
-    validatorCache.set(network, { at: Date.now(), list });
-    list.catch(() => validatorCache.delete(network));
+    validatorCache.set(client, { at: Date.now(), list });
+    list.catch(() => validatorCache.delete(client));
     return list;
   }
 
@@ -48,7 +50,7 @@ export function createStaking(sender: Sender) {
     try {
       const client = await sender.lcd(network);
       const [set, stakes, unbonding, rewards, seconds] = await Promise.all([
-        activeSet(network, client),
+        activeSet(client),
         client.delegations(address),
         client.unbonding(address),
         client.rewards(address),
@@ -90,7 +92,7 @@ export function createStaking(sender: Sender) {
     try {
       const client = await sender.lcd(network);
       const usable = async (v: unknown): Promise<Result<never> | null> => {
-        const set = await activeSet(network, client);
+        const set = await activeSet(client);
         const found = set.find((x) => x.address === v);
         if (!found) return fail("bad_request", "Pick a validator in the active set.");
         if (found.jailed) return fail("bad_request", "That validator is jailed.");

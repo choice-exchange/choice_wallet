@@ -59,6 +59,8 @@ const indexed = (hash, height, time, from, to, amount) => ({
 // USDT "transfer" out of the wallet to a look-alike (address poisoning), which must not show.
 let me0x = ""; // the wallet's 0x address, once the e2e has read it
 const ROUTER = "0x4444444444444444444444444444444444444444";
+const VAL_A = "injvaloper1qyqszqgpqyqszqgpqyqszqgpqyqszqgp0url7q";
+const VAL_B = "injvaloper1qgpqyqszqgpqyqszqgpqyqszqgpqyqsz7c964k";
 const LUMA = "0xb0d94f200998997cf8175ae7ddf039927a8b3ef4";
 const USDT_ERC20 = "0x88f7f2b685f9692caf8c478f5badf09ee9b1cc13";
 const SENDER_EVM = "0x9d8a62f656a8d1615c1294fd71e9cfb3e4855a4f";
@@ -130,6 +132,21 @@ const lcd = createServer((req, res) => {
       if (url.searchParams.get("denom") === SCAM) return reply(200, { metadata: { base: SCAM, display: "USDT", symbol: "USDT", name: "Tether USD", decimals: 6, denom_units: [] } });
       return reply(404, { code: 5, message: "client metadata for denom", details: [] });
     }
+    // Staking: two test validators (addresses of fixed bytes), 2 INJ staked with the first,
+    // rewards waiting, and 1 INJ unstaking.
+    const val = (address, moniker, tokens) => ({ operator_address: address, jailed: false, status: "BOND_STATUS_BONDED", tokens, description: { moniker, website: "" }, commission: { commission_rates: { rate: "0.050000000000000000" } } });
+    if (p === "/cosmos/staking/v1beta1/validators") {
+      return reply(200, { validators: [val(VAL_B, "Bravo Validator", "900000000000000000000000"), val(VAL_A, "Alpha Validator", "100000000000000000000000")], pagination: { next_key: null } });
+    }
+    if (p === "/cosmos/staking/v1beta1/params") return reply(200, { params: { unbonding_time: "1814400s", bond_denom: "inj" } });
+    if (p.startsWith("/cosmos/staking/v1beta1/delegations/")) {
+      return reply(200, { delegation_responses: [{ delegation: { delegator_address: tail, validator_address: VAL_A, shares: "2.0" }, balance: { denom: "inj", amount: "2000000000000000000" } }] });
+    }
+    if (p.endsWith("/unbonding_delegations")) {
+      const who = p.split("/")[5];
+      return reply(200, { unbonding_responses: [{ delegator_address: who, validator_address: VAL_B, entries: [{ creation_height: "190000000", completion_time: "2026-11-30T08:00:00Z", initial_balance: "1000000000000000000", balance: "1000000000000000000" }] }] });
+    }
+    if (p.endsWith("/rewards")) return reply(200, { rewards: [{ validator_address: VAL_A, reward: [{ denom: "inj", amount: "50000000000000000.25" }] }], total: [] });
     if (p === "/cosmos/tx/v1beta1/simulate") return reply(200, { gas_info: { gas_wanted: "150000000", gas_used: "82771" } });
     if (p === "/cosmos/tx/v1beta1/txs" && req.method === "POST") {
       const { tx_bytes } = JSON.parse(body);
@@ -229,7 +246,7 @@ try {
           if (await page.eval(`document.body.innerText.includes(${JSON.stringify(text)})`)) return;
           await sleep(100);
         }
-        throw new Error(`timed out waiting for "${text}"; page: ${await page.eval("document.body.innerText")}`);
+        throw new Error(`timed out waiting for "${text}"; page: ${await page.eval("document.body.innerText")}${problems.length ? `\nproblems so far:\n${problems.join("\n")}` : ""}`);
       },
       async click(text) {
         // By its text, or by its accessible name for an icon button.
@@ -516,6 +533,49 @@ try {
   await p.click("Wallet");
   await p.waitText("1 hidden token");
   console.log("tabs: Activity (send, receive, EVM approval, LUMA found through Blockscout; junk hidden, poisoning dropped), Settings, back to Wallet");
+
+  // 7b. Staking: the home row counts staked, unstaking and unclaimed INJ (2 + 1 + 0.05); the
+  // Staking screen; staking with a validator from the picker, reviewed as staking (the
+  // validator's name, the unbonding note, no "most of your balance"), signed and broadcast.
+  const stakingAnswer = await p.eval(`chrome.runtime.sendMessage({ type: "staking" }).then((r) => JSON.stringify(r).slice(0, 600))`);
+  if (!stakingAnswer.startsWith('{"ok":true')) throw new Error(`staking summary: ${stakingAnswer}`);
+  await p.waitText("Staked INJ", 15000);
+  const stakingRow = () => p.eval(`[...document.querySelectorAll(".token")].find((b) => b.innerText.includes("Staked INJ"))?.innerText.replace(/\\s+/g, " ")`);
+  if (!(await stakingRow()).includes("3.05")) throw new Error(`staking row: ${await stakingRow()}`);
+  await p.shot("16b-home-staking");
+  await p.eval(`[...document.querySelectorAll(".token")].find((b) => b.innerText.includes("Staked INJ")).click()`);
+  await p.waitText("YOUR VALIDATORS");
+  await p.waitText("Alpha Validator");
+  await p.waitText("Unstaking takes 21 days.");
+  await p.waitText("Bravo Validator · back");
+  await p.shot("16c-staking");
+  await p.click("Stake");
+  await p.waitText("Pick a validator");
+  const picked = await p.eval(`[...document.querySelectorAll(".token .symbol")].map((e) => e.textContent).join(",")`);
+  if (picked !== "Bravo Validator,Alpha Validator") throw new Error(`picker: ${picked}`);
+  await p.fill('input[aria-label="Search validators"]', 0, "brav");
+  await p.waitText("5% commission · 90% of stake");
+  await p.shot("16d-validator-picker");
+  await p.eval(`document.querySelector(".token").click()`);
+  await p.waitText("With Bravo Validator");
+  await p.click("Max");
+  await p.waitText("Keeps 0.01 INJ for fees.");
+  await p.click("Review");
+  await p.waitText("Review staking", 15000);
+  await p.waitText("YOU STAKE");
+  await p.waitText("Bravo Validator");
+  await p.waitText("Unstaking it later takes the unbonding period.");
+  if (await p.eval(`document.body.innerText.includes("more than half")`)) throw new Error("staking all you have shouldn't warn about your balance");
+  await p.shot("16e-review-stake");
+  await p.click("Confirm");
+  await p.waitText("Confirmed", 15000);
+  if (broadcasts.length !== 2) throw new Error(`expected the stake broadcast, got ${broadcasts.length}`);
+  if (!Buffer.from(broadcasts[1], "base64").includes(Buffer.from("/cosmos.staking.v1beta1.MsgDelegate"))) throw new Error("the broadcast isn't a delegation");
+  if (!Buffer.from(broadcasts[1], "base64").includes(Buffer.from(VAL_B))) throw new Error("the delegation isn't to the reviewed validator");
+  await p.shot("16f-staked");
+  await p.click("Done");
+  await p.waitText("Account 1");
+  console.log("staking: home row 3.05 INJ, screen, picker search, stake max with Bravo reviewed and broadcast");
 
   // 8. A site: finds the wallet through EIP-6963 (window.ethereum untouched), connects
   // through an approval window (rejected once, then approved), gets a message signed, and

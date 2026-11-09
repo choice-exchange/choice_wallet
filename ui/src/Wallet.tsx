@@ -219,7 +219,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
             // What a conversion makes is what the user asked for: show it, like a token added by hand.
             const made = back.name === "convert" ? balances?.find((b) => b.denom === back.denom)?.convertsTo : undefined;
             if (made && !filter.shown.includes(made)) changeFilter({ ...filter, shown: [...filter.shown, made], hidden: filter.hidden.filter((x) => x !== made) });
-            setView({ name: "sent", sent, converting: back.name === "convert", ...(back.name === "staking" ? { done: "Done" } : {}) });
+            setView({ name: "sent", sent, converting: back.name === "convert", ...(back.name === "staking" ? { done: "Confirmed" } : {}) });
           }}
           onCancel={() => setView(view.back)}
         />

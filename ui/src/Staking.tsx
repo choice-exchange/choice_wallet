@@ -11,7 +11,7 @@ import { useRequest } from "./request";
 
 const DECIMALS = 18;
 const inj = (a: string | bigint) => `${formatShort(a, DECIMALS, 4)} INJ`;
-const pct = (n: number) => `${(n * 100).toFixed(n * 100 < 10 ? 1 : 0)}%`;
+const pct = (n: number) => `${Number((n * 100).toFixed(1))}%`;
 
 type Sub =
   | { name: "main" }
