@@ -283,6 +283,19 @@ export class Lcd {
   }
 
   /** Where `delegator`'s staking rewards go (itself unless it set another address). */
+  /** Who Injective lets a stake be given to at once (`MsgTransferDelegation`): a list
+   *  governance sets. Empty where the chain has none, or can't say. */
+  async delegationTransferReceivers(): Promise<string[]> {
+    try {
+      const body = await this.#call("/cosmos/staking/v1beta1/allowed_delegation_transfer_receivers");
+      const list = isObject(body) ? body["addresses"] : null;
+      return Array.isArray(list) ? list.filter((a): a is string => typeof a === "string" && /^inj1[02-9ac-hj-np-z]{38,58}$/.test(a)) : [];
+    } catch {
+      // Not knowing means unstaking, which works for any address.
+      return [];
+    }
+  }
+
   async withdrawAddress(delegator: string): Promise<string> {
     return parseWithdrawAddress(await this.#call(`/cosmos/distribution/v1beta1/delegators/${encodeURIComponent(delegator)}/withdraw_address`));
   }

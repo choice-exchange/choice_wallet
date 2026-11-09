@@ -9,7 +9,7 @@ import type { Coin, CosmosDisplay, EvmDisplay, EvmSwapCall, NetworkId, SendRevie
 export type Conversion = { from: Coin; to: Coin; recipient: string };
 
 /** A staking action by the signer. */
-export type StakeLine = { kind: "stake" | "unstake" | "move" | "claim" | "cancel"; validator: string; to?: string; amount?: Coin };
+export type StakeLine = { kind: "stake" | "unstake" | "move" | "claim" | "cancel" | "give"; validator: string; to?: string; amount?: Coin };
 
 const STAKE_KINDS: Record<string, StakeLine["kind"]> = {
   delegate: "stake",
@@ -17,6 +17,7 @@ const STAKE_KINDS: Record<string, StakeLine["kind"]> = {
   redelegate: "move",
   withdraw_rewards: "claim",
   cancel_unbonding: "cancel",
+  transfer_delegation: "give",
 };
 
 /** A permission the signer takes back. */
@@ -141,6 +142,14 @@ export function shown(display: SendReview["display"], network: NetworkId, swap?:
       out.revokes.push({ kind: "rewards" });
       continue;
     }
+    if (m["type"] === "fee_grant" && m["granter"] === c.signer && text(m["grantee"])) {
+      out.others.push(`Gas for ${text(m["grantee"])}: this account pays its fees, up to the limit, for the listed messages`);
+      continue;
+    }
+    if (m["type"] === "set_withdraw_address" && m["delegator"] === c.signer && text(m["withdraw_address"])) {
+      out.others.push(`Staking rewards go to ${text(m["withdraw_address"])} from now on`);
+      continue;
+    }
     const decrease = obj(m["call"]);
     if (m["type"] === "execute_contract" && m["sender"] === c.signer && decrease?.["type"] === "cw20_decrease_allowance" && text(m["contract"]) && text(decrease["spender"])) {
       out.revokes.push({ kind: "allowance", token: cw20Denom(text(m["contract"])!), spender: text(decrease["spender"])! });
@@ -148,7 +157,7 @@ export function shown(display: SendReview["display"], network: NetworkId, swap?:
     }
     if (kind && validator && m["delegator"] === c.signer) {
       const [amount] = coins([m["amount"]]);
-      const to = text(m["to_validator"]);
+      const to = text(m["to_validator"]) ?? text(m["receiver"]);
       out.stakes.push({ kind, validator, ...(to ? { to } : {}), ...(amount ? { amount } : {}) });
       continue;
     }

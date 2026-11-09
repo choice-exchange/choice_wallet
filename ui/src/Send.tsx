@@ -280,6 +280,7 @@ export function Review({
   const converting = view.converts.length > 0 && view.sends.length === 0;
   const staking = view.stakes.length > 0 && view.sends.length === 0 && view.converts.length === 0;
   const revoking = view.revokes.length > 0 && view.sends.length === 0 && view.converts.length === 0 && view.stakes.length === 0;
+  const gasGrant = review.display.kind !== "evm_transaction" && ((review.display as { messages?: { type?: string }[] }).messages ?? []).some((m) => m.type === "fee_grant");
   const symbol = (key: string) => tokens[key]?.symbol ?? shortDenom(key);
   const named = (v: string) => validators[v] || shortAddress(v);
   const [typed, setTyped] = useState("");
@@ -321,7 +322,7 @@ export function Review({
     <Screen
       top={
         <BackBar
-          title={swapping ? "Review swap" : approving ? "Review approval" : revoking ? "Review revoke" : staking ? "Review staking" : converting ? "Review conversion" : "Review send"}
+          title={review.rescue ? "Review rescue" : gasGrant ? "Review gas" : swapping ? "Review swap" : approving ? "Review approval" : revoking ? "Review revoke" : staking ? "Review staking" : converting ? "Review conversion" : "Review send"}
           onBack={onCancel}
         />
       }
@@ -363,6 +364,11 @@ export function Review({
         )
       }
     >
+      {review.rescue && (
+        <Callout level="amber">
+          Everything below goes to your rescue address.{review.rescue.rest > 0 ? ` ${review.rescue.rest} more ${review.rescue.rest === 1 ? "message didn't" : "messages didn't"} fit: rescue again after this one.` : ""}
+        </Callout>
+      )}
       {/* What the risk rules found comes first: it must never sit below the fold. */}
       {risk.findings.map((f, i) => (
         <Callout key={i} level={f.level}>
@@ -644,6 +650,7 @@ const STAKE_VERB: Record<StakeLine["kind"], string> = {
   move: "You move",
   claim: "You claim",
   cancel: "You stake again",
+  give: "You give stake",
 };
 
 const POLL_MS = 1500;

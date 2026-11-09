@@ -580,6 +580,12 @@ export function createSender(d: SendDeps) {
       memo?: string;
       /** Who receives the amount, for the address book and the memo check. */
       recipient?: string;
+      /** Who pays the fee through a fee allowance (a rescue's gas): the fee isn't taken from
+       *  the balance, so "max" sends all of it. */
+      feeGranter?: string;
+      /** A "max" that comes to nothing is fine (a rescue with no INJ left still moves the
+       *  rest). */
+      allowZero?: boolean;
     },
   ): Promise<Result<SendReview>> {
     const net = NETWORKS[network];
@@ -607,15 +613,16 @@ export function createSender(d: SendDeps) {
       const feeSymbol = (await token(network, client, net.feeDenom)).symbol;
       // Whether the amount leaves the balance the fee is paid from.
       const fromBalance = !spec.source && !spec.noAmount;
-      const sameDenom = fromBalance && spec.denom === net.feeDenom;
+      const sameDenom = fromBalance && spec.denom === net.feeDenom && !spec.feeGranter;
+      const ownFee = (fee: bigint) => (spec.feeGranter ? 0n : fee);
       const available = () => spec.source?.available ?? held(spec.denom);
       const amountFor = (fee: bigint) =>
         spec.noAmount ? 0n : max ? (spec.source ? spec.source.available : held(spec.denom) - (sameDenom ? fee + (spec.reserve ?? 0n) : 0n)) : BigInt(spec.amount);
       const check = (amount: bigint, fee: bigint): Result<never> | null => {
-        if (!spec.noAmount && (amount <= 0n || amount > available())) {
+        if (!spec.noAmount && (amount < 0n || (amount === 0n && !spec.allowZero) || amount > available())) {
           return fail("insufficient", spec.source ? `That's more than ${spec.source.short}.` : `Not enough ${symbol}.`);
         }
-        if ((sameDenom ? amount : 0n) + fee > held(net.feeDenom)) return fail("insufficient", `Not enough ${feeSymbol} for the fee.`);
+        if ((sameDenom ? amount : 0n) + ownFee(fee) > held(net.feeDenom)) return fail("insufficient", `Not enough ${feeSymbol} for the fee.`);
         return null;
       };
       const build = (amount: bigint, gas: bigint) =>
@@ -625,7 +632,7 @@ export function createSender(d: SendDeps) {
           messages: spec.messages(amount),
           account_number: acct.accountNumber.toString(),
           sequence: acct.sequence.toString(),
-          fee: { amount: [{ denom: net.feeDenom, amount: (gas * price).toString() }], gas_limit: gas.toString() },
+          fee: { amount: [{ denom: net.feeDenom, amount: (gas * price).toString() }], gas_limit: gas.toString(), ...(spec.feeGranter ? { granter: spec.feeGranter } : {}) },
           memo: spec.memo ?? "",
           // Ledger's Cosmos app signs amino JSON only.
           ...(isLedger(account) ? { sign_mode: "amino_json" } : {}),

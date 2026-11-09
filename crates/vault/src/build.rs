@@ -62,6 +62,20 @@ pub(crate) enum OwnMsg {
     FeeRevoke { grantee: String },
     /// Send staking rewards to the signer itself again.
     ResetWithdrawAddress {},
+    /// Send staking rewards to `to` from now on (a rescue moves them to the rescue address).
+    SetWithdrawAddress { to: String },
+    /// Injective: give `amount` of the stake with `validator` to `to`, at once.
+    TransferDelegation {
+        validator: String,
+        to: String,
+        amount: Coin,
+    },
+    /// A fee allowance for `grantee`: up to `spend_limit`, for `allowed_messages` only.
+    FeeGrant {
+        grantee: String,
+        spend_limit: Vec<Coin>,
+        allowed_messages: Vec<String>,
+    },
     /// CW20 `decrease_allowance` of `spender` by `amount` on the token at `contract`.
     Cw20DecreaseAllowance {
         contract: String,
@@ -166,6 +180,15 @@ pub(crate) fn cosmos(p: CosmosParams) -> Result<Value, VaultError> {
             }
             OwnMsg::FeeRevoke { grantee } => builder::fee_revoke(chain, &from, &addr(&grantee)?)?,
             OwnMsg::ResetWithdrawAddress {} => builder::reset_withdraw_address(chain, &from)?,
+            OwnMsg::SetWithdrawAddress { to } => builder::set_withdraw_address(chain, &from, &addr(&to)?)?,
+            OwnMsg::TransferDelegation { validator, to, amount } => {
+                builder::transfer_delegation(chain, &from, &validator, &addr(&to)?, &amount)?
+            }
+            OwnMsg::FeeGrant {
+                grantee,
+                spend_limit,
+                allowed_messages,
+            } => builder::fee_grant(chain, &from, &addr(&grantee)?, &spend_limit, &allowed_messages)?,
             OwnMsg::Cw20DecreaseAllowance {
                 contract,
                 spender,

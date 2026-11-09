@@ -27,7 +27,7 @@ const MEMO_CHECK_MS = 4000;
 const fail = (code: string, message: string): Result<never> => ({ ok: false, error: { code, message } });
 
 /** What the risk rules take: `Contact` and `memo_addresses` in `choice-wallet-policy`. */
-export type RiskFacts = { address_book: { address: string; name: string; memo?: string; mine?: true }[]; memo_addresses: string[] };
+export type RiskFacts = { address_book: { address: string; name: string; memo?: string; mine?: true; rescue?: true }[]; memo_addresses: string[] };
 
 export interface ContactDeps {
   vault<T>(method: string, params?: unknown): Promise<Result<T>>;
@@ -35,6 +35,8 @@ export interface ContactDeps {
   lcd(network: NetworkId): Promise<Lcd>;
   /** The user's own accounts. */
   accounts(): Promise<AccountInfo[]>;
+  /** The rescue address set for the account in use (inj1), if any. */
+  rescue?(): Promise<string | null>;
 }
 
 /** A memo as the user typed it: trimmed, with no control characters, short enough for the chain. */
@@ -154,6 +156,13 @@ export function createContacts(d: ContactDeps) {
     for (const a of await d.accounts()) {
       const addr = a.addresses[net.cosmos];
       if (addr) address_book.push({ address: addr, name: a.name, ...(isWatch(a) ? {} : { mine: true as const }) });
+    }
+    // The rescue address: the user's, even when it isn't an account here.
+    const rescue = await d.rescue?.();
+    if (rescue) {
+      const known = address_book.find((c) => c.address === rescue);
+      if (known) known.rescue = true;
+      else address_book.push({ address: rescue, name: "", rescue: true });
     }
     const memo_addresses: string[] = [];
     if (recipient) {

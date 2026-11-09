@@ -342,7 +342,55 @@ fn render_msg(m: &Msg) -> Result<Value, Error> {
             insert_nonempty(&mut v, "validator_address", validator);
             Ok(json!({ "type": "cosmos-sdk/MsgWithdrawDelegationReward", "value": v }))
         }
+        Msg::TransferDelegation {
+            delegator,
+            validator,
+            receiver,
+            amount,
+        } => {
+            let mut v = Map::new();
+            v.insert("amount".into(), coin_json(amount));
+            insert_nonempty(&mut v, "delegator_address", delegator);
+            insert_nonempty(&mut v, "receiver_address", receiver);
+            insert_nonempty(&mut v, "validator_address", validator);
+            Ok(json!({ "type": "cosmos-sdk/MsgTransferDelegation", "value": v }))
+        }
+        Msg::FeeGrant {
+            granter,
+            grantee,
+            allowance,
+        } => {
+            let mut v = Map::new();
+            v.insert("allowance".into(), allowance_json(allowance)?);
+            insert_nonempty(&mut v, "grantee", grantee);
+            insert_nonempty(&mut v, "granter", granter);
+            Ok(json!({ "type": "cosmos-sdk/MsgGrantAllowance", "value": v }))
+        }
         other => Err(Error::Amino(format!("no amino JSON encoding for {}", other.type_url()))),
+    }
+}
+
+/// A fee allowance as amino JSON writes an interface: `{"type", "value"}`. Only the shapes
+/// the wallet builds (a basic allowance with a limit and no end, restricted to message
+/// types); anything else is refused rather than guessed.
+fn allowance_json(a: &crate::msg::Allowance) -> Result<Value, Error> {
+    use crate::msg::Allowance;
+    match a {
+        Allowance::Basic {
+            spend_limit,
+            expiration: None,
+        } if !spend_limit.is_empty() => Ok(json!({
+            "type": "cosmos-sdk/BasicAllowance",
+            "value": { "spend_limit": coins_json(spend_limit) },
+        })),
+        Allowance::AllowedMsgs {
+            allowed_messages,
+            inner,
+        } => Ok(json!({
+            "type": "cosmos-sdk/AllowedMsgAllowance",
+            "value": { "allowance": allowance_json(inner)?, "allowed_messages": allowed_messages },
+        })),
+        _ => Err(Error::Amino("no amino JSON encoding for this fee allowance".into())),
     }
 }
 

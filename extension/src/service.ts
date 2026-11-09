@@ -17,6 +17,7 @@ import { createDapps, type DappReply } from "./dapp";
 import { createSender } from "./send";
 import { createApprovals } from "./approvals";
 import { createNfts } from "./nfts";
+import { createRescue } from "./rescue";
 import { createContacts } from "./contacts";
 import { createStaking } from "./staking";
 import { createSwaps } from "./swap";
@@ -51,7 +52,7 @@ export const AUTO_LOCK_MINUTES = 15;
 const LOCK_CHOICES = [5, 15, 60, 240];
 /** Local storage that belongs to the wallet, not the device: removing the wallet clears it.
  *  Endpoints, the network and other settings stay. */
-const WALLET_KEYS = ["vault", "wallets", "keystore", "kind", "accounts", "active_account", "connections", "custom_tokens", "custom_nfts", "token_filter", "address_book"];
+const WALLET_KEYS = ["vault", "wallets", "keystore", "kind", "accounts", "active_account", "connections", "custom_tokens", "custom_nfts", "rescue", "token_filter", "address_book"];
 /** The shortest password, as the keystore takes it. */
 const MIN_PASSWORD = 8;
 
@@ -158,7 +159,17 @@ export function createService(d: Deps) {
   });
   const status = wallets.status;
   const nfts = createNfts({ sender, local: d.local, vault: d.vault });
-  const contacts = createContacts({ vault: d.vault, local: d.local, lcd: sender.lcd, accounts: async () => (await wallets.stored()).accounts });
+  const rescue = createRescue({ sender, local: d.local, vault: d.vault, accounts: async () => (await wallets.stored()).accounts });
+  const contacts = createContacts({
+    vault: d.vault,
+    local: d.local,
+    lcd: sender.lcd,
+    accounts: async () => (await wallets.stored()).accounts,
+    rescue: async () => {
+      const u = await wallets.inUse();
+      return u ? rescue.addressFor(u.account) : null;
+    },
+  });
 
   const dapps = createDapps({
     vault: d.vault,
@@ -369,6 +380,10 @@ export function createService(d: Deps) {
       case "prepare_swap":
       case "prepare_revoke":
       case "prepare_revoke_erc20":
+      case "rescue":
+      case "set_rescue":
+      case "prepare_rescue_grant":
+      case "prepare_rescue":
       case "nfts":
       case "add_nft_collection":
       case "prepare_nft_send":
@@ -377,7 +392,7 @@ export function createService(d: Deps) {
       case "tx_status": {
         const a = await active();
         if ("ok" in a) return a;
-        if ((r.type === "prepare_send" || r.type === "prepare_convert" || r.type === "prepare_stake" || r.type === "prepare_revoke" || r.type === "prepare_revoke_erc20" || r.type === "prepare_swap" || r.type === "prepare_nft_send") && isWatch(a.account)) {
+        if ((r.type === "prepare_send" || r.type === "prepare_convert" || r.type === "prepare_stake" || r.type === "prepare_revoke" || r.type === "prepare_revoke_erc20" || r.type === "prepare_swap" || r.type === "prepare_nft_send" || r.type === "prepare_rescue" || r.type === "prepare_rescue_grant") && isWatch(a.account)) {
           return err("watch_only", "This account is watch-only. Switch to one that can sign.");
         }
         if (r.type === "balances") {
@@ -401,6 +416,10 @@ export function createService(d: Deps) {
         if (r.type === "prepare_swap") return swaps.prepare(a.net, a.account, r.quote);
         if (r.type === "prepare_revoke") return approvals.prepare(a.net, a.account, r.items);
         if (r.type === "prepare_revoke_erc20") return approvals.prepareErc20(a.net, a.account, r.token, r.spender);
+        if (r.type === "rescue") return rescue.summary(a.net, a.account);
+        if (r.type === "set_rescue") return rescue.set(a.account, r.address);
+        if (r.type === "prepare_rescue_grant") return rescue.prepareGrant(a.net, a.account);
+        if (r.type === "prepare_rescue") return rescue.prepare(a.net, a.account);
         if (r.type === "nfts") return nfts.list(a.net, a.account);
         if (r.type === "add_nft_collection") return nfts.add(a.net, a.account, r.address);
         if (r.type === "prepare_nft_send") return nfts.prepare(a.net, a.account, r);

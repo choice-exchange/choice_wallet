@@ -208,6 +208,86 @@ pub fn reset_withdraw_address(chain: &Chain, delegator: &str) -> Result<Any, Err
     }))
 }
 
+/// Send `delegator`'s staking rewards to `to` from now on.
+pub fn set_withdraw_address(chain: &Chain, delegator: &str, to: &str) -> Result<Any, Error> {
+    chain.check_address(delegator)?;
+    chain.check_address(to)?;
+    Ok(Any::pack(&MsgSetWithdrawAddress {
+        delegator_address: delegator.into(),
+        withdraw_address: to.into(),
+    }))
+}
+
+/// Injective's `MsgTransferDelegation`: give `amount` of the stake with `validator` to
+/// `receiver`, at once (no unbonding period).
+pub fn transfer_delegation(
+    chain: &Chain,
+    delegator: &str,
+    validator: &str,
+    receiver: &str,
+    amount: &Coin,
+) -> Result<Any, Error> {
+    chain.check_address(delegator)?;
+    chain.check_validator(validator)?;
+    chain.check_address(receiver)?;
+    if receiver == delegator {
+        return Err(Error::Address(receiver.into()));
+    }
+    check_amount(amount.amount())?;
+    Ok(Any::pack(&staking::MsgTransferDelegation {
+        delegator_address: delegator.into(),
+        validator_address: validator.into(),
+        receiver_address: receiver.into(),
+        amount: Some(amount.to_proto()),
+    }))
+}
+
+/// A fee allowance from `granter` to `grantee`: up to `spend_limit` in all, with no end
+/// date, for `allowed_messages` only (`AllowedMsgAllowance` around a `BasicAllowance`).
+pub fn fee_grant(
+    chain: &Chain,
+    granter: &str,
+    grantee: &str,
+    spend_limit: &[Coin],
+    allowed_messages: &[String],
+) -> Result<Any, Error> {
+    chain.check_address(granter)?;
+    chain.check_address(grantee)?;
+    if granter == grantee {
+        return Err(Error::Address(grantee.into()));
+    }
+    // A limit, and a list of messages: an allowance without either could pay for anything.
+    if spend_limit.is_empty() || allowed_messages.is_empty() || allowed_messages.len() > 16 {
+        return Err(Error::Decode("fee allowance"));
+    }
+    for c in spend_limit {
+        check_amount(c.amount())?;
+    }
+    for m in allowed_messages {
+        let ok = m.len() <= 128
+            && m.starts_with('/')
+            && m[1..]
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_');
+        if !ok {
+            return Err(Error::Decode("allowed message type"));
+        }
+    }
+    let basic = feegrant::BasicAllowance {
+        spend_limit: spend_limit.iter().map(Coin::to_proto).collect(),
+        expiration: None,
+    };
+    let allowed = feegrant::AllowedMsgAllowance {
+        allowance: Some(Any::pack(&basic)),
+        allowed_messages: allowed_messages.to_vec(),
+    };
+    Ok(Any::pack(&feegrant::MsgGrantAllowance {
+        granter: granter.into(),
+        grantee: grantee.into(),
+        allowance: Some(Any::pack(&allowed)),
+    }))
+}
+
 /// CW20 `decrease_allowance` of `spender` by `amount` on the token at `cw20`.
 pub fn cw20_decrease_allowance(
     chain: &Chain,

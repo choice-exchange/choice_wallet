@@ -1177,3 +1177,44 @@ fn own_nft_sends_build_decode_and_sign() {
     assert_eq!(d["risk"]["findings"][0]["rule"], "nft_send");
     assert!(approve_and_sign(&request, account(0))["raw"].is_string());
 }
+
+#[test]
+fn rescue_messages_build_decode_and_sign_both_ways() {
+    let accounts = vectors("direct")["accounts"].clone();
+    let rescue = accounts[1]["inj"].clone();
+    let inj = |a: &str| json!({ "denom": "inj", "amount": a });
+    let sweep = json!([
+        { "type": "set_withdraw_address", "to": rescue },
+        { "type": "withdraw_rewards", "validator": VAL_A },
+        { "type": "transfer_delegation", "validator": VAL_A, "to": rescue, "amount": inj("2000000000000000000") },
+        { "type": "bank_send", "to": rescue, "amount": [inj("1000")] },
+    ]);
+    let grant = json!([{
+        "type": "fee_grant", "grantee": rescue, "spend_limit": [inj("500000000000000000")],
+        "allowed_messages": ["/cosmos.bank.v1beta1.MsgSend", "/cosmos.staking.v1beta1.MsgTransferDelegation"],
+    }]);
+    let mine = json!({ "address_book": [{ "address": rescue, "name": "Vault", "mine": true }] });
+    for mode in ["direct", "amino_json"] {
+        let request = build_staking(sweep.clone(), mode).unwrap()["request"].clone();
+        let d = ok("decode", json!({ "request": request, "context": mine }));
+        let types: Vec<&str> = d["display"]["messages"].as_array().unwrap().iter().map(|m| m["type"].as_str().unwrap()).collect();
+        assert_eq!(types, ["set_withdraw_address", "withdraw_rewards", "transfer_delegation", "bank_send"], "{mode}");
+        let rules: Vec<&str> = d["risk"]["findings"].as_array().unwrap().iter().map(|f| f["rule"].as_str().unwrap()).collect();
+        assert!(rules.contains(&"withdraw_address_own") && rules.contains(&"transfer_stake_own"), "{mode}: {rules:?}");
+        assert!(approve_and_sign(&request, account(0))["tx_raw"].is_string(), "{mode}");
+
+        let request = build_staking(grant.clone(), mode).unwrap()["request"].clone();
+        let d = ok("decode", json!({ "request": request, "context": mine }));
+        assert_eq!(d["risk"]["findings"][0]["rule"], "fee_grant_own", "{mode}");
+        assert!(d["risk"]["confirm"].is_null(), "{mode}");
+        assert!(approve_and_sign(&request, account(0))["tx_raw"].is_string(), "{mode}");
+    }
+    // A grant without a limit or a message list isn't built.
+    for bad in [
+        json!([{ "type": "fee_grant", "grantee": rescue, "spend_limit": [], "allowed_messages": ["/cosmos.bank.v1beta1.MsgSend"] }]),
+        json!([{ "type": "fee_grant", "grantee": rescue, "spend_limit": [inj("1")], "allowed_messages": [] }]),
+        json!([{ "type": "transfer_delegation", "validator": VAL_A, "to": accounts[0]["inj"], "amount": inj("1") }]),
+    ] {
+        assert!(build_staking(bad.clone(), "direct").is_err(), "{bad}");
+    }
+}

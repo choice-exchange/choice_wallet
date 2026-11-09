@@ -17,7 +17,9 @@
 // With `approvals` (recipient ignored), a site grants a keyless address three permissions,
 // and the Approvals screen takes them back along with the account's ERC20 allowances.
 // With `nfts`, it lists the account's test NFT collections and sends one CW721 and one
-// ERC721 to the recipient. Otherwise it sends `amount` INJ.
+// ERC721 to the recipient. With `rescue`, it sets a second account as the rescue address,
+// empties this account's INJ into it, gives gas from it, rescues everything else to it
+// (stakes unstaked) on that gas and checks the chain; the INJ goes back at the end. Otherwise it sends `amount` INJ.
 //
 // The phrase is read from the file and typed into the import screen. It is never printed
 // and that screen is never captured. The browser profile, with the encrypted keystore in
@@ -161,7 +163,7 @@ try {
       if ((await text()).includes(t)) return;
       await sleep(200);
     }
-    throw new Error(`timed out waiting for "${t}"`);
+    throw new Error(`timed out waiting for "${t}"; page: ${(await text()).slice(-600)}`);
   };
   const click = async (t) => {
     const ok = await evalIn(`(() => { const t = ${JSON.stringify(t)}; const b = [...document.querySelectorAll("button")].find((b) => (b.textContent.trim() === t || b.getAttribute("aria-label") === t) && !b.disabled); if (b) b.click(); return !!b; })()`);
@@ -559,6 +561,126 @@ try {
     if (tx.tx.body.memo !== MEMO) throw new Error("the chain has another memo");
     if (got !== BigInt(Math.round(Number(amount) * 1e6)) * 10n ** 12n) throw new Error("the recipient got the wrong amount");
     console.log("LIVE CONTACTS OK");
+  } else if (tokenContract === "rescue") {
+    // 3a. The rescue address. A second account of the same phrase is the rescue address; all
+    // of this account's INJ goes there first, so a rescue has to run on gas the rescue
+    // account gave ahead of time. Then "Rescue now": the stake (at once), rewards, every bank
+    // token, all to the rescue address, the fee paid by its allowance; each checked on chain.
+    // At the end the rescue account sends the INJ back. `recipient` and `amount` are ignored.
+    const me = await evalIn(`document.querySelector("[aria-label='Copy address']").title`);
+    const name = (await evalIn(`document.querySelector(".account-switch").getAttribute("aria-label")`)).match(/^Account: (.+)\. Switch accounts$/)[1];
+    await evalIn(`document.querySelector(".account-switch").click()`);
+    await waitText("Accounts");
+    await evalIn(`[...document.querySelectorAll("button")].find((b) => (b.getAttribute("aria-label") ?? "").startsWith("Add an account to")).click()`);
+    await waitText("Manage", 20000);
+    const rescuer = await evalIn(`document.querySelector("[aria-label='Copy address']").title`);
+    const rescuerName = (await evalIn(`document.querySelector(".account-switch").getAttribute("aria-label")`)).match(/^Account: (.+)\. Switch accounts$/)[1];
+    console.log(`rescue address: ${rescuerName} ${rescuer}`);
+    const switchTo = async (n) => {
+      await evalIn(`document.querySelector(".account-switch").click()`);
+      await waitText("Accounts");
+      await evalIn(`[...document.querySelectorAll(".account-row")].find((b) => b.textContent.includes(${JSON.stringify(n)})).click()`);
+      await waitText("Manage", 20000);
+    };
+    await switchTo(name);
+    // All of this account's INJ to the rescue account: a thief took it. (Already gone if a
+    // run before this one stopped part way.)
+    if ((await injOf(me)) > 0n) {
+    await click("Send");
+    await waitText("Balance");
+    await fill('input[placeholder^="inj1"]', 0, rescuer);
+    await click("Max");
+    await click("Review");
+    await waitText("Review send", 30000);
+    if (!(await text()).includes("Injective testnet")) throw new Error("the review is not for Injective testnet; stopping");
+    await click("Confirm and send");
+    await landed();
+    await click("Done");
+    await waitText("Manage", 20000);
+    }
+    const injLeft = await injOf(me);
+    console.log(`after "the theft": ${injLeft} inj left`);
+
+    // The rescue address, and gas from it.
+    await click("Settings");
+    await click("Rescue address");
+    await waitText("If this account's key is ever lost or stolen");
+    await evalIn(`[...document.querySelectorAll("button.token")].find((b) => b.textContent.includes(${JSON.stringify(rescuerName)})).click()`);
+    await waitText("Gas for a rescue", 20000);
+    await shot("live-r1-rescue-address");
+    // Gas from the rescue account: given, or renewed if gas given before doesn't cover
+    // every rescue message.
+    const gasButton = await evalIn(`[...document.querySelectorAll("button")].map((b) => b.textContent.trim()).find((t) => t === ${JSON.stringify(`Give gas from ${rescuerName}`)} || t === ${JSON.stringify(`Renew gas from ${rescuerName}`)}) ?? ""`);
+    if (gasButton) {
+      await click(gasButton);
+      await waitText("Review gas", 30000);
+      await waitText(`Lets your account ${name} pay its fees from this account`);
+      await shot("live-r2-review-gas");
+      await evalIn(`[...document.querySelectorAll("button")].find((b) => /^Confirm/.test(b.textContent.trim()) && !b.disabled).click()`);
+      await landed();
+    } else {
+      await click("Back");
+    }
+    const grant = (await lcd(`/cosmos/feegrant/v1beta1/allowance/${rescuer}/${me}`)).allowance;
+    console.log(`gas: ${JSON.stringify(grant?.allowance?.allowance?.spend_limit)} for ${grant?.allowance?.allowed_messages?.length} message types`);
+    if (!grant || grant.allowance["@type"] !== "/cosmos.feegrant.v1beta1.AllowedMsgAllowance") throw new Error("no rescue allowance on chain");
+    if (await evalIn(`[...document.querySelectorAll("button")].some((b) => b.textContent.trim() === "Done")`)) await click("Done");
+
+    // Rescue now.
+    const before = {
+      stake: (await lcd(`/cosmos/staking/v1beta1/delegations/${me}`)).delegation_responses ?? [],
+      bank: (await lcd(`/cosmos/bank/v1beta1/spendable_balances/${me}`)).balances,
+      rescuerStake: (await lcd(`/cosmos/staking/v1beta1/delegations/${rescuer}`)).delegation_responses ?? [],
+    };
+    console.log(`to rescue: stakes ${JSON.stringify(before.stake.map((d) => d.balance.amount))}, bank ${JSON.stringify(before.bank.map((c) => `${c.amount} ${c.denom.slice(0, 20)}`))}`);
+    await click("Settings");
+    await click("Rescue address");
+    await waitText("Rescue now", 20000);
+    await click("Rescue now");
+    try {
+      await waitText("Review rescue", 30000);
+    } catch (e) {
+      throw new Error(`no rescue review; page: ${await text()}`);
+    }
+    await waitText("Everything below goes to your rescue address.");
+    if (!(await text()).includes("Injective testnet")) throw new Error("the review is not for Injective testnet; stopping");
+    await shot("live-r3-review-rescue");
+    await click("Confirm and send");
+    const hash = await landed();
+    await shot("live-r4-rescued");
+    const { tx } = await cosmosTx(hash);
+    const types = tx.tx.body.messages.map((m) => m["@type"].split(".").pop());
+    console.log(`rescue tx ${hash}: ${types.join(", ")}; fee paid by ${tx.tx.auth_info.fee.granter || "the account"}`);
+    if (tx.tx.auth_info.fee.granter !== rescuer) throw new Error("the rescue's fee wasn't paid by the rescue allowance");
+    const after = {
+      stake: (await lcd(`/cosmos/staking/v1beta1/delegations/${me}`)).delegation_responses ?? [],
+      bank: (await lcd(`/cosmos/bank/v1beta1/spendable_balances/${me}`)).balances,
+      withdraw: (await lcd(`/cosmos/distribution/v1beta1/delegators/${me}/withdraw_address`)).withdraw_address,
+      rescuerStake: (await lcd(`/cosmos/staking/v1beta1/delegations/${rescuer}`)).delegation_responses ?? [],
+    };
+    const total = (l) => l.reduce((n, d) => n + BigInt(d.balance.amount), 0n);
+    // Injective gives a stake away at once only to addresses governance lists; otherwise the
+    // rescue unstakes it, and it shows as unbonding here.
+    const movable = ((await lcd("/cosmos/staking/v1beta1/allowed_delegation_transfer_receivers")).addresses ?? []).includes(rescuer);
+    const unbonding = ((await lcd(`/cosmos/staking/v1beta1/delegators/${me}/unbonding_delegations`)).unbonding_responses ?? []).flatMap((u) => u.entries).reduce((n, e) => n + BigInt(e.balance), 0n);
+    console.log(`after: stakes left ${after.stake.length}, unbonding ${unbonding}, bank left ${JSON.stringify(after.bank)}, rewards go to ${after.withdraw}, rescue stake +${total(after.rescuerStake) - total(before.rescuerStake)}`);
+    if (after.stake.length !== 0 || after.bank.length !== 0) throw new Error("something was left behind");
+    if (after.withdraw !== rescuer) throw new Error("rewards don't go to the rescue address");
+    if (movable ? total(after.rescuerStake) - total(before.rescuerStake) !== total(before.stake) : unbonding < total(before.stake)) throw new Error("the stake wasn't moved or unstaked whole");
+
+    // Clean up: the rescue account sends the INJ back.
+    await click("Done");
+    await switchTo(rescuerName);
+    await click("Send");
+    await waitText("Balance");
+    await fill('input[placeholder^="inj1"]', 0, me);
+    await click("Max");
+    await click("Review");
+    await waitText("Review send", 30000);
+    await click("Confirm and send");
+    await landed();
+    console.log(`INJ back: ${await injOf(me)}`);
+    console.log("LIVE RESCUE OK");
   } else if (tokenContract === "nfts") {
     // 3a. NFTs: the account's CW721 (found from the tx index) and ERC721 (found through
     // Blockscout) test collections listed; one of each sent to the recipient (or a keyless

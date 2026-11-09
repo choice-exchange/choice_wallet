@@ -5,7 +5,7 @@ use choice_wallet_cosmos::msg::{Allowance, Authorization, Coin, Msg};
 use choice_wallet_evm::U256;
 use serde_json::json;
 
-use crate::addresses::{known_contract, recipient, same};
+use crate::addresses::{known_contract, own_name, recipient, same};
 use crate::amounts::{Outflows, UNLIMITED, balance};
 use crate::text::{date, msg_name, short};
 use crate::{Assessment, Context, Finding, Level, finding, site};
@@ -290,6 +290,17 @@ fn message(
         )),
         Msg::FeeGrant { grantee, allowance, .. } => {
             let (limit, expiration) = describe_allowance(allowance);
+            if let Some(own) = own_name(ctx, grantee) {
+                // Gas for the user's own account (a rescue setup): it spends this account's
+                // INJ, so it's said, but it's not someone else's hand in it.
+                out.push(finding(
+                    "fee_grant_own",
+                    Level::Amber,
+                    format!("Lets {own} pay its fees from this account{limit}{}.", until(expiration)),
+                    json!({ "grantee": grantee }),
+                ));
+                return;
+            }
             out.push(grant_finding(
                 "fee_grant",
                 format!(
@@ -310,7 +321,16 @@ fn message(
             delegator,
             withdraw_address,
         } => {
-            if !same(delegator, withdraw_address) {
+            if same(delegator, withdraw_address) {
+                // Rewards to the account itself: nothing to say.
+            } else if let Some(own) = own_name(ctx, withdraw_address) {
+                out.push(finding(
+                    "withdraw_address_own",
+                    Level::Info,
+                    format!("Your staking rewards go to {own} from now on."),
+                    json!({ "withdraw_address": withdraw_address }),
+                ));
+            } else {
                 out.push(finding(
                     "withdraw_address",
                     Level::Red,
@@ -342,7 +362,17 @@ fn message(
             receiver,
             amount,
         } => {
-            if !same(delegator, receiver) {
+            if let Some(own) = own_name(ctx, receiver) {
+                out.push(finding(
+                    "transfer_stake_own",
+                    Level::Info,
+                    format!(
+                        "Moves {} of your stake to {own}, at once.",
+                        ctx.token_name(amount.denom())
+                    ),
+                    json!({ "validator": validator, "receiver": receiver, "amount": amount }),
+                ));
+            } else if !same(delegator, receiver) {
                 out.push(finding(
                     "transfer_stake",
                     Level::Red,
@@ -605,6 +635,68 @@ mod tests {
             a.findings[0].message,
             "inj1d7…z8h8 could spend your tokens on fees with no limit, until 2026-11-08."
         );
+    }
+
+    #[test]
+    fn a_rescue_to_your_own_addresses_is_named_not_red() {
+        let ctx = |rescue: bool| Context {
+            address_book: vec![crate::Contact {
+                address: OTHER.into(),
+                name: if rescue { String::new() } else { "Vault".into() },
+                mine: !rescue,
+                rescue,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let msgs = [
+            Msg::SetWithdrawAddress {
+                delegator: ME.into(),
+                withdraw_address: OTHER.into(),
+            },
+            Msg::TransferDelegation {
+                delegator: ME.into(),
+                validator: "injvaloper1qyqszqgpqyqszqgpqyqszqgpqyqszqgp0url7q".into(),
+                receiver: OTHER.into(),
+                amount: Coin::new("inj", "5").unwrap(),
+            },
+        ];
+        let a = cosmos(&msgs, ME, "", CosmosFee::default(), &ctx(true));
+        assert_eq!(a.level, Level::Info);
+        let rules: Vec<_> = a.findings.iter().map(|f| f.rule).collect();
+        assert_eq!(rules, ["withdraw_address_own", "transfer_stake_own"]);
+        assert_eq!(
+            a.findings[0].message,
+            "Your staking rewards go to your rescue address from now on."
+        );
+        // Gas for your own account: said, amber, no word to type.
+        let g = cosmos(
+            &[Msg::FeeGrant {
+                granter: ME.into(),
+                grantee: OTHER.into(),
+                allowance: Allowance::Basic {
+                    spend_limit: vec![Coin::new("inj", "500000000000000000").unwrap()],
+                    expiration: None,
+                },
+            }],
+            ME,
+            "",
+            CosmosFee::default(),
+            &ctx(false),
+        );
+        assert_eq!(
+            (g.level, g.confirm, g.findings[0].rule),
+            (Level::Amber, None, "fee_grant_own")
+        );
+        assert!(
+            g.findings[0]
+                .message
+                .starts_with("Lets your account Vault pay its fees from this account"),
+            "{}",
+            g.findings[0].message
+        );
+        // Anyone else: still red.
+        assert_eq!(grade(&msgs[..1]).level, Level::Red);
     }
 
     #[test]

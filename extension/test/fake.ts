@@ -212,6 +212,8 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
      *  what each (token spender) allowance is now. */
     grants: [] as Record<string, unknown>[],
     feeGrants: [] as Record<string, unknown>[],
+    /** Fee allowances other accounts gave, by granter (a rescue address's gas). */
+    issuedBy: {} as Record<string, Record<string, unknown>[]>,
     rewardsTo: null as string | null,
     cw20Allowances: {} as Record<string, { spender: string; allowance: string }[]>,
     approvalLogs: [] as { token: string; spender: string }[],
@@ -382,7 +384,9 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
     if (p === `/cosmos/authz/v1beta1/grants/granter/${ME}`) return json(200, { grants: state.grants.map((g) => ({ granter: ME, ...g })), pagination: { next_key: null } });
     if (p.startsWith("/cosmos/authz/v1beta1/grants/granter/")) return json(200, { grants: [], pagination: { next_key: null } });
     if (p.startsWith("/cosmos/feegrant/v1beta1/issued/")) {
-      return json(200, { allowances: p.endsWith(ME) ? state.feeGrants.map((g) => ({ granter: ME, ...g })) : [], pagination: { next_key: null } });
+      const granter = p.split("/").pop()!;
+      const list = granter === ME ? state.feeGrants : (state.issuedBy[granter] ?? []);
+      return json(200, { allowances: list.map((g) => ({ granter, ...g })), pagination: { next_key: null } });
     }
     if (p === `/cosmos/distribution/v1beta1/delegators/${ME}/withdraw_address`) return json(200, { withdraw_address: state.rewardsTo ?? ME });
     if (p === `/cosmos/staking/v1beta1/delegations/${ME}`) {

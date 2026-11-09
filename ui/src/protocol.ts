@@ -114,6 +114,12 @@ export type UiRequest =
   | { type: "approvals" }
   | { type: "prepare_revoke"; items: RevokeItem[] }
   | { type: "prepare_revoke_erc20"; token: string; spender: string }
+  /** The rescue address: what's set, set or clear it, the rescue account's gas for this
+   *  one, and the rescue itself. */
+  | { type: "rescue" }
+  | { type: "set_rescue"; address: string | null }
+  | { type: "prepare_rescue_grant" }
+  | { type: "prepare_rescue" }
   /** NFTs the account holds; a collection added by its contract; one NFT sent. */
   | { type: "nfts" }
   | { type: "add_nft_collection"; address: string }
@@ -272,6 +278,21 @@ export type SendReview = {
   /** An NFT send: which NFT, as the host checked it is held (the vault's decode says
    *  where it goes). */
   nft?: { collection: string; tokenId: string; standard: NftStandard };
+  /** A rescue: where everything goes, and how many messages didn't fit (run it again). */
+  rescue?: { to: string; rest: number };
+};
+
+/** The rescue address set for the account in use, its name if it is one of the wallet's
+ *  accounts, whether that account can sign here (to give gas), and the gas it gave. */
+export type RescueSummary = {
+  address: string | null;
+  name?: string;
+  canGrant?: boolean;
+  /** `current`: it covers every message a rescue sends (else it can be renewed). */
+  gas?: { limit: Coin[]; current: boolean } | null;
+  /** The rescue address is on Injective's list of who a stake can be given to at once;
+   *  otherwise a rescue unstakes. */
+  stakesMove?: boolean;
 };
 
 /** What a swap step's review needs beyond the vault's reading. */
@@ -518,6 +539,10 @@ export type Replies = {
   approvals: ApprovalsSummary;
   prepare_revoke: SendReview;
   prepare_revoke_erc20: SendReview;
+  rescue: RescueSummary;
+  set_rescue: RescueSummary;
+  prepare_rescue_grant: SendReview;
+  prepare_rescue: SendReview;
   nfts: NftList;
   add_nft_collection: NftList;
   prepare_nft_send: SendReview;

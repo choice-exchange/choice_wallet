@@ -42,6 +42,18 @@ fn contact<'a>(ctx: &'a Context, addr: &str) -> Option<&'a Contact> {
     ctx.address_book.iter().find(|c| same(&c.address, addr))
 }
 
+/// How the user knows `addr` if it is theirs: one of their accounts, or their rescue
+/// address. Rewards, stakes and fee allowances going there stay in the user's hands.
+pub(crate) fn own_name(ctx: &Context, addr: &str) -> Option<String> {
+    let c = contact(ctx, addr).filter(|c| c.mine || c.rescue)?;
+    Some(match (c.rescue, c.name.is_empty()) {
+        (true, true) => "your rescue address".into(),
+        (true, false) => format!("your rescue address ({})", c.name),
+        (false, true) => format!("your account {}", short(addr)),
+        (false, false) => format!("your account {}", c.name),
+    })
+}
+
 fn lookalike<'a>(ctx: &'a Context, addr: &str) -> Option<&'a Contact> {
     let mine = forms(addr);
     ctx.address_book.iter().find(|c| {
@@ -60,7 +72,9 @@ pub(crate) fn recipient(ctx: &Context, to: &str, memo: Option<&str>, out: &mut V
         out.push(finding(
             "address_book",
             Level::Info,
-            if c.mine {
+            if c.rescue {
+                format!("To {}.", own_name(ctx, to).unwrap_or_default())
+            } else if c.mine {
                 format!("To your account {name}.")
             } else {
                 format!("To {name} from your address book.")

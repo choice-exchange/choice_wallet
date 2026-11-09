@@ -13,6 +13,7 @@ import { useBackend } from "./backend";
 import { ActivityIcon, CheckIcon, ChevronDownIcon, ChevronRightIcon, CopyIcon, EyeOffIcon, LockIcon, ReceiveIcon, SendIcon, SettingsIcon, SwapIcon, WalletIcon } from "./icons";
 import { BackBar, Callout, formatUsd, Screen, Segmented, shortAddress, tokenSub } from "./kit";
 import { NftsView, NftView } from "./Nfts";
+import { RescueView } from "./Rescue";
 import type { Balance, Nft, NftCollection, SendReview, Sent, StakingSummary, Status, TokenFilter } from "./protocol";
 import { newDraft, SwapView, type SwapDraft } from "./Swap";
 import { QrCode } from "./QrCode";
@@ -40,6 +41,7 @@ type View =
   | { name: "sent"; sent: Sent; converting: boolean; done?: string; save?: Draft; next?: string }
   | { name: "staking" }
   | { name: "approvals" }
+  | { name: "rescue" }
   | { name: "contacts"; prefill?: Draft }
   | { name: "nfts" }
   | { name: "nft"; collection: NftCollection; nft: Nft }
@@ -233,6 +235,8 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
           onBack={home}
         />
       );
+    case "rescue":
+      return <RescueView status={status} onReview={(review) => setView({ name: "review", review, entered: "", back: { name: "rescue" } })} onBack={() => setView({ name: "home" })} />;
     case "approvals":
       return <ApprovalsView canSign={!watch} onReview={(review) => setView({ name: "review", review, entered: "", back: { name: "approvals" } })} onBack={() => setView({ name: "home" })} />;
     case "review":
@@ -257,7 +261,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
               name: "sent",
               sent,
               converting: back.name === "convert",
-              ...(back.name === "staking" || back.name === "approvals" ? { done: "Confirmed" } : {}),
+              ...(back.name === "staking" || back.name === "approvals" || back.name === "rescue" ? { done: "Confirmed" } : {}),
               ...(step ? { done: step.step === "swap" ? "Swapped" : "Approved" } : {}),
               ...(step && step.left > 0 && view.quote ? { next: view.quote } : {}),
               ...(save ? { save } : {}),
@@ -319,6 +323,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
             tabs={tabs}
             onLock={onLock}
             onApprovals={() => setView({ name: "approvals" })}
+            onRescue={() => setView({ name: "rescue" })}
             onContacts={() => setView({ name: "contacts" })}
             onDone={() => {
               onStatus();

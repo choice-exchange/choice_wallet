@@ -106,6 +106,9 @@ pub struct Contact {
     /// One of the user's own accounts rather than a saved contact.
     #[serde(default)]
     pub mine: bool,
+    /// The address the user set to rescue this account to.
+    #[serde(default)]
+    pub rescue: bool,
 }
 
 /// What the host knows that the request doesn't say. Everything is optional; rules that

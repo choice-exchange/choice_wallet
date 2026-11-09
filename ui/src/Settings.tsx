@@ -23,6 +23,7 @@ export function SettingsView({
   onLock,
   onApprovals,
   onContacts,
+  onRescue,
   tabs,
 }: {
   status: Status;
@@ -33,6 +34,8 @@ export function SettingsView({
   onApprovals: () => void;
   /** Open the address book. */
   onContacts: () => void;
+  /** Open the rescue address. */
+  onRescue: () => void;
   tabs: ReactNode;
 }) {
   const { run, error, busy } = useRequest();
@@ -244,6 +247,10 @@ export function SettingsView({
           Approvals and grants
         </button>
         <span className="meta">Who can spend your tokens or act for you. Revoke any of it.</span>
+        <button type="button" className="btn" onClick={onRescue}>
+          Rescue address
+        </button>
+        <span className="meta">Where this account&apos;s funds go if its key is lost or stolen.</span>
         <div className="eyebrow" style={{ marginTop: 8 }}>
           Security
         </div>

@@ -135,7 +135,8 @@ test("revokes: grants, fee allowances, the rewards address and allowances taken 
     { kind: "rewards" },
     { kind: "allowance", token: `cw20:${CW}`, spender: THEM },
   ]);
-  assert.deepEqual(v.others, ["set_withdraw_address"]);
+  // Rewards sent somewhere else aren't a revoke: named in full, never dropped.
+  assert.deepEqual(v.others, [`Staking rewards go to ${THEM} from now on`]);
   const spender = "4444444444444444444444444444444444444444";
   const evm = shown(
     {
