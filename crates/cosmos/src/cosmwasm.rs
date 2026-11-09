@@ -45,6 +45,14 @@ pub enum ContractCall {
         /// `{"at_time": …}`, `{"never": {}}`); `None` when not given, which means never.
         expires: Option<String>,
     },
+    /// CW20 `decrease_allowance`: lower `spender`'s allowance by `amount` (to none when it is
+    /// at least the allowance).
+    Cw20DecreaseAllowance {
+        /// Whose allowance.
+        spender: String,
+        /// How much less, in base units.
+        amount: String,
+    },
     /// CW20 adapter `redeem_and_transfer`: burn the attached adapter denom and send the CW20
     /// to `recipient`, or to the sender when `None`.
     AdapterRedeem {
@@ -78,6 +86,11 @@ enum Known {
         #[serde(default)]
         expires: Option<serde_json::Value>,
     },
+    /// Without `expires`: a decrease that also sets an expiry isn't a plain decrease.
+    DecreaseAllowance {
+        spender: String,
+        amount: String,
+    },
 }
 
 /// Parse a `MsgExecuteContract.msg`. The bytes must be UTF-8 JSON, as wasmd requires.
@@ -100,6 +113,9 @@ pub fn parse(msg: &[u8]) -> Result<ContractCall, Error> {
             amount,
             expires: expires.map(|e| e.to_string()),
         },
+        Ok(Known::DecreaseAllowance { spender, amount }) if is_canonical_amount(&amount) => {
+            ContractCall::Cw20DecreaseAllowance { spender, amount }
+        }
         _ => ContractCall::Other,
     };
     Ok(call)
@@ -126,6 +142,14 @@ pub fn send(contract: &str, amount: &str, msg: &str) -> Vec<u8> {
 pub fn redeem_and_transfer(recipient: &str) -> Vec<u8> {
     to_json(&Known::RedeemAndTransfer {
         recipient: Some(recipient.into()),
+    })
+}
+
+/// CW20 `{"decrease_allowance": {"spender", "amount"}}`.
+pub fn decrease_allowance(spender: &str, amount: &str) -> Vec<u8> {
+    to_json(&Known::DecreaseAllowance {
+        spender: spender.into(),
+        amount: amount.into(),
     })
 }
 
@@ -183,6 +207,17 @@ mod tests {
         assert!(
             matches!(with_expiry.unwrap(), ContractCall::Cw20IncreaseAllowance { expires: Some(e), .. } if e == r#"{"at_height":9}"#)
         );
+        assert_eq!(
+            parse(&decrease_allowance("inj1a", "5")).unwrap(),
+            ContractCall::Cw20DecreaseAllowance {
+                spender: "inj1a".into(),
+                amount: "5".into()
+            }
+        );
+        assert_eq!(
+            decrease_allowance("inj1a", "5"),
+            br#"{"decrease_allowance":{"spender":"inj1a","amount":"5"}}"#
+        );
     }
 
     #[test]
@@ -194,7 +229,8 @@ mod tests {
             r#"{"transfer":{"recipient":"inj1a","amount":"05"}}"#,
             r#"{"transfer":{"recipient":"inj1a","amount":5}}"#,
             r#"{"increase_allowance":{"spender":"inj1a","amount":"5","memo":"x"}}"#,
-            r#"{"decrease_allowance":{"spender":"inj1a","amount":"5"}}"#,
+            r#"{"decrease_allowance":{"spender":"inj1a","amount":"5","expires":{"never":{}}}}"#,
+            r#"{"decrease_allowance":{"spender":"inj1a","amount":"-5"}}"#,
         ] {
             assert_eq!(parse(json.as_bytes()).unwrap(), ContractCall::Other, "{json}");
         }

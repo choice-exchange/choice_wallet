@@ -50,6 +50,18 @@ pub(crate) enum OwnMsg {
     },
     /// Claim the rewards of the stake with `validator`.
     WithdrawRewards { validator: String },
+    /// Take back the authz permission for `msg_type_url` given to `grantee`.
+    AuthzRevoke { grantee: String, msg_type_url: String },
+    /// Take back the fee allowance given to `grantee`.
+    FeeRevoke { grantee: String },
+    /// Send staking rewards to the signer itself again.
+    ResetWithdrawAddress {},
+    /// CW20 `decrease_allowance` of `spender` by `amount` on the token at `contract`.
+    Cw20DecreaseAllowance {
+        contract: String,
+        spender: String,
+        amount: String,
+    },
 }
 
 #[derive(Deserialize)]
@@ -140,6 +152,16 @@ pub(crate) fn cosmos(p: CosmosParams) -> Result<Value, VaultError> {
                 builder::cancel_unbonding(chain, &from, &validator, &amount, h)?
             }
             OwnMsg::WithdrawRewards { validator } => builder::withdraw_rewards(chain, &from, &validator)?,
+            OwnMsg::AuthzRevoke { grantee, msg_type_url } => {
+                builder::authz_revoke(chain, &from, &addr(&grantee)?, &msg_type_url)?
+            }
+            OwnMsg::FeeRevoke { grantee } => builder::fee_revoke(chain, &from, &addr(&grantee)?)?,
+            OwnMsg::ResetWithdrawAddress {} => builder::reset_withdraw_address(chain, &from)?,
+            OwnMsg::Cw20DecreaseAllowance {
+                contract,
+                spender,
+                amount,
+            } => builder::cw20_decrease_allowance(chain, &from, &addr(&contract)?, &addr(&spender)?, &amount)?,
         });
     }
     let opts = TxOptions {
@@ -181,6 +203,10 @@ pub(crate) struct EvmParams {
     /// The ERC20 contract, for a token transfer; absent for the native coin.
     #[serde(default)]
     token: Option<String>,
+    /// Instead of a transfer: take back this spender's allowance of `token` (`approve(spender,
+    /// 0)`). `to` must be the token and `amount` "0".
+    #[serde(default)]
+    revoke: Option<String>,
     amount: String,
     nonce: U64,
     gas_limit: U64,
@@ -196,9 +222,17 @@ pub(crate) fn evm(p: EvmParams) -> Result<Value, VaultError> {
     };
     let amount = U256::from_dec_str(&p.amount)?;
     let to = address(&p.to)?;
-    let mut tx = match &p.token {
-        Some(token) => Eip1559Tx::erc20_transfer(chain_id, address(token)?, &to, amount)?,
-        None => Eip1559Tx::native_transfer(chain_id, to, amount)?,
+    let mut tx = match (&p.token, &p.revoke) {
+        (Some(token), Some(spender)) => {
+            let token = address(token)?;
+            if token != to || !amount.is_zero() {
+                return Err(VaultError::bad("a revoke goes to the token, with amount 0"));
+            }
+            Eip1559Tx::erc20_revoke(chain_id, token, &address(spender)?)
+        }
+        (None, Some(_)) => return Err(VaultError::bad("a revoke needs the token")),
+        (Some(token), None) => Eip1559Tx::erc20_transfer(chain_id, address(token)?, &to, amount)?,
+        (None, None) => Eip1559Tx::native_transfer(chain_id, to, amount)?,
     };
     tx.nonce = p.nonce.0;
     tx.gas_limit = p.gas_limit.0;

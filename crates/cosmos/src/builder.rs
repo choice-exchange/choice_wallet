@@ -18,9 +18,10 @@ use crate::direct::Request;
 use crate::msg::{Coin, is_canonical_amount};
 use crate::proto::cosmos::bank::v1beta1::MsgSend;
 use crate::proto::cosmos::crypto::secp256k1::PubKey;
-use crate::proto::cosmos::distribution::v1beta1::MsgWithdrawDelegatorReward;
+use crate::proto::cosmos::distribution::v1beta1::{MsgSetWithdrawAddress, MsgWithdrawDelegatorReward};
 use crate::proto::cosmos::tx::signing::v1beta1::SignMode;
 use crate::proto::cosmos::tx::v1beta1::{AuthInfo, Fee as ProtoFee, ModeInfo, SignerInfo, TxBody, mode_info};
+use crate::proto::cosmos::{authz::v1beta1 as authz, feegrant::v1beta1 as feegrant};
 use crate::proto::cosmwasm::wasm::v1::MsgExecuteContract;
 use crate::staking;
 use crate::wkt::Any;
@@ -155,6 +156,57 @@ pub fn withdraw_rewards(chain: &Chain, delegator: &str, validator: &str) -> Resu
         delegator_address: delegator.into(),
         validator_address: validator.into(),
     }))
+}
+
+/// Take back every permission of one message type that `granter` gave `grantee` (authz).
+pub fn authz_revoke(chain: &Chain, granter: &str, grantee: &str, msg_type_url: &str) -> Result<Any, Error> {
+    chain.check_address(granter)?;
+    chain.check_address(grantee)?;
+    let ok = msg_type_url.len() <= 128
+        && msg_type_url.starts_with('/')
+        && msg_type_url[1..]
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_');
+    if !ok {
+        return Err(Error::Decode("msg_type_url"));
+    }
+    Ok(Any::pack(&authz::MsgRevoke {
+        granter: granter.into(),
+        grantee: grantee.into(),
+        msg_type_url: msg_type_url.into(),
+    }))
+}
+
+/// Take back the fee allowance `granter` gave `grantee`.
+pub fn fee_revoke(chain: &Chain, granter: &str, grantee: &str) -> Result<Any, Error> {
+    chain.check_address(granter)?;
+    chain.check_address(grantee)?;
+    Ok(Any::pack(&feegrant::MsgRevokeAllowance {
+        granter: granter.into(),
+        grantee: grantee.into(),
+    }))
+}
+
+/// Send `delegator`'s staking rewards to `delegator` itself again.
+pub fn reset_withdraw_address(chain: &Chain, delegator: &str) -> Result<Any, Error> {
+    chain.check_address(delegator)?;
+    Ok(Any::pack(&MsgSetWithdrawAddress {
+        delegator_address: delegator.into(),
+        withdraw_address: delegator.into(),
+    }))
+}
+
+/// CW20 `decrease_allowance` of `spender` by `amount` on the token at `cw20`.
+pub fn cw20_decrease_allowance(
+    chain: &Chain,
+    owner: &str,
+    cw20: &str,
+    spender: &str,
+    amount: &str,
+) -> Result<Any, Error> {
+    check_amount(amount)?;
+    chain.check_address(spender)?;
+    execute_contract(chain, owner, cw20, cosmwasm::decrease_allowance(spender, amount), &[])
 }
 
 /// `MsgExecuteContract` calling `contract` with the JSON `msg`, attaching `funds`.

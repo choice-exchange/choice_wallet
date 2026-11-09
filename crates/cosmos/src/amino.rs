@@ -298,6 +298,32 @@ fn render_msg(m: &Msg) -> Result<Value, Error> {
             insert_nonempty(&mut v, "validator_address", validator);
             Ok(json!({ "type": "cosmos-sdk/MsgCancelUnbondingDelegation", "value": v }))
         }
+        Msg::AuthzRevoke {
+            granter,
+            grantee,
+            msg_type_url,
+        } => {
+            let mut v = Map::new();
+            insert_nonempty(&mut v, "grantee", grantee);
+            insert_nonempty(&mut v, "granter", granter);
+            insert_nonempty(&mut v, "msg_type_url", msg_type_url);
+            Ok(json!({ "type": "cosmos-sdk/MsgRevoke", "value": v }))
+        }
+        Msg::FeeRevoke { granter, grantee } => {
+            let mut v = Map::new();
+            insert_nonempty(&mut v, "grantee", grantee);
+            insert_nonempty(&mut v, "granter", granter);
+            Ok(json!({ "type": "cosmos-sdk/MsgRevokeAllowance", "value": v }))
+        }
+        Msg::SetWithdrawAddress {
+            delegator,
+            withdraw_address,
+        } => {
+            let mut v = Map::new();
+            insert_nonempty(&mut v, "delegator_address", delegator);
+            insert_nonempty(&mut v, "withdraw_address", withdraw_address);
+            Ok(json!({ "type": "cosmos-sdk/MsgModifyWithdrawAddress", "value": v }))
+        }
         Msg::WithdrawRewards { delegator, validator } => {
             let mut v = Map::new();
             insert_nonempty(&mut v, "delegator_address", delegator);

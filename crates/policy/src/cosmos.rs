@@ -125,6 +125,12 @@ fn message(m: &Msg, signer: &str, ctx: &Context, mut outflows: Option<&mut Outfl
                 } => {
                     out.push(allowance(ctx, contract, spender, amount, expires.as_deref()));
                 }
+                ContractCall::Cw20DecreaseAllowance { spender, amount } => out.push(finding(
+                    "allowance_decrease",
+                    Level::Info,
+                    format!("Lowers {}'s allowance for this token.", short(spender)),
+                    json!({ "token": contract, "spender": spender, "amount": amount }),
+                )),
                 ContractCall::AdapterRedeem { .. } => {}
                 ContractCall::Other => {
                     if !known_contract(ctx, contract) {

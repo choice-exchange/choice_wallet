@@ -1,4 +1,4 @@
-//! ERC20 `transfer(address,uint256)` calldata.
+//! ERC20 `transfer(address,uint256)` and `approve(address,uint256)` calldata.
 
 use choice_wallet_core::EthAddress;
 
@@ -7,12 +7,24 @@ use crate::U256;
 /// `bytes4(keccak256("transfer(address,uint256)"))`.
 pub const TRANSFER_SELECTOR: [u8; 4] = [0xa9, 0x05, 0x9c, 0xbb];
 
+/// `bytes4(keccak256("approve(address,uint256)"))`.
+pub const APPROVE_SELECTOR: [u8; 4] = [0x09, 0x5e, 0xa7, 0xb3];
+
 /// Calldata for `transfer(to, amount)`.
 pub fn transfer_calldata(to: &EthAddress, amount: &U256) -> Vec<u8> {
+    address_amount(TRANSFER_SELECTOR, to, amount)
+}
+
+/// Calldata for `approve(spender, amount)`.
+pub fn approve_calldata(spender: &EthAddress, amount: &U256) -> Vec<u8> {
+    address_amount(APPROVE_SELECTOR, spender, amount)
+}
+
+fn address_amount(selector: [u8; 4], address: &EthAddress, amount: &U256) -> Vec<u8> {
     let mut data = Vec::with_capacity(68);
-    data.extend_from_slice(&TRANSFER_SELECTOR);
+    data.extend_from_slice(&selector);
     data.extend_from_slice(&[0; 12]);
-    data.extend_from_slice(to.as_bytes());
+    data.extend_from_slice(address.as_bytes());
     data.extend_from_slice(&amount.to_be_bytes());
     data
 }
@@ -37,6 +49,7 @@ mod tests {
     #[test]
     fn selector_is_the_keccak_prefix() {
         assert_eq!(keccak256(b"transfer(address,uint256)")[..4], TRANSFER_SELECTOR);
+        assert_eq!(keccak256(b"approve(address,uint256)")[..4], APPROVE_SELECTOR);
     }
 
     #[test]

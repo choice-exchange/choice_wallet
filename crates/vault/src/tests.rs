@@ -694,3 +694,66 @@ fn own_staking_builds_decodes_and_signs_both_ways() {
         assert!(build_staking(bad.clone(), "direct").is_err(), "{bad}");
     }
 }
+
+#[test]
+fn own_revokes_build_decode_and_sign() {
+    let v = vectors("direct");
+    let them = v["accounts"][1]["inj"].as_str().unwrap();
+    // SHROOM's CW20 (a published contract).
+    let cw20 = "inj1300xcg9naqy00fujsr9r8alwk7dh65uqu87xm8";
+    let messages = json!([
+        { "type": "authz_revoke", "grantee": them, "msg_type_url": "/cosmos.bank.v1beta1.MsgSend" },
+        { "type": "fee_revoke", "grantee": them },
+        { "type": "reset_withdraw_address" },
+        { "type": "cw20_decrease_allowance", "contract": cw20, "spender": them, "amount": "5" },
+    ]);
+    for mode in ["direct", "amino_json"] {
+        let request = build_staking(messages.clone(), mode).unwrap()["request"].clone();
+        let d = ok("decode", json!({ "request": request }));
+        let m = &d["display"]["messages"];
+        let types: Vec<&str> = m.as_array().unwrap().iter().map(|x| x["type"].as_str().unwrap()).collect();
+        assert_eq!(types, ["authz_revoke", "fee_revoke", "set_withdraw_address", "execute_contract"], "{mode}");
+        assert_eq!(m[2]["withdraw_address"], m[2]["delegator"], "{mode}");
+        assert_eq!(m[3]["call"]["type"], "cw20_decrease_allowance", "{mode}");
+        let rules: Vec<&str> = d["risk"]["findings"].as_array().unwrap().iter().map(|f| f["rule"].as_str().unwrap()).collect();
+        assert_eq!(rules, ["authz_revoke", "fee_revoke", "allowance_decrease"], "{mode}");
+        assert_eq!(d["risk"]["level"], "info", "{mode}");
+        assert!(approve_and_sign(&request, account(0))["tx_raw"].is_string(), "{mode}");
+    }
+    for bad in [
+        json!([{ "type": "authz_revoke", "grantee": them, "msg_type_url": "cosmos.bank.v1beta1.MsgSend" }]),
+        json!([{ "type": "authz_revoke", "grantee": them, "msg_type_url": "/a b" }]),
+        json!([{ "type": "reset_withdraw_address", "to": them }]),
+        json!([{ "type": "cw20_decrease_allowance", "contract": cw20, "spender": them, "amount": "0" }]),
+    ] {
+        assert!(build_staking(bad.clone(), "direct").is_err(), "{bad}");
+    }
+
+    // ERC20: approve(spender, 0) on the token, read back as taking the allowance away.
+    let e = vectors("eip1559");
+    let token = "0x88f7F2b685F9692caf8c478f5BADF09eE9B1Cc13";
+    let spender = "0x4444444444444444444444444444444444444444";
+    let params = |to: &str, amount: &str, revoke: Option<&str>, token: Option<&str>| {
+        let mut p = json!({
+            "chain": "eip155:1776", "from": e["from"], "to": to, "amount": amount,
+            "nonce": 3, "gas_limit": 60000, "max_fee_per_gas": "1160000000", "max_priority_fee_per_gas": "1000000000",
+        });
+        if let Some(t) = token {
+            p["token"] = t.into();
+        }
+        if let Some(s) = revoke {
+            p["revoke"] = s.into();
+        }
+        p
+    };
+    let request = ok("build_evm", params(token, "0", Some(spender), Some(token)))["request"].clone();
+    assert_eq!(request["evm_transaction"]["tx"]["data"], format!("0x095ea7b3{:0>64}{}", spender[2..].to_lowercase(), "0".repeat(64)));
+    let d = ok("decode", json!({ "request": request }));
+    let rules: Vec<&str> = d["risk"]["findings"].as_array().unwrap().iter().map(|f| f["rule"].as_str().unwrap()).collect();
+    assert!(rules.contains(&"allowance_revoke"), "{rules:?}");
+    assert!(approve_and_sign(&request, account(0))["raw"].is_string());
+    // Only to the token itself, only for 0, only with a token.
+    assert_eq!(code("build_evm", params(spender, "0", Some(spender), Some(token))), "bad_request");
+    assert_eq!(code("build_evm", params(token, "1", Some(spender), Some(token))), "bad_request");
+    assert_eq!(code("build_evm", params(token, "0", Some(spender), None)), "bad_request");
+}

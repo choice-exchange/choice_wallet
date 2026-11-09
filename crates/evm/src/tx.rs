@@ -55,6 +55,17 @@ impl Eip1559Tx {
         ))
     }
 
+    /// An ERC20 `approve(spender, 0)` on the token contract `token`: takes back `spender`'s
+    /// allowance. The wallet builds no other approvals.
+    pub fn erc20_revoke(chain_id: u64, token: EthAddress, spender: &EthAddress) -> Self {
+        Self::call(
+            chain_id,
+            token,
+            U256::ZERO,
+            erc20::approve_calldata(spender, &U256::ZERO),
+        )
+    }
+
     fn call(chain_id: u64, to: EthAddress, value: U256, data: Vec<u8>) -> Self {
         Self {
             chain_id,
