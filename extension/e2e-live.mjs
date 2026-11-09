@@ -22,8 +22,9 @@
 // (stakes unstaked) on that gas and checks the chain; the INJ goes back at the end. With
 // `notify`, it times a reopen (the saved balances), watches every account, sends `amount`
 // INJ to the phrase's second account, and checks the notifications the service worker made:
-// the send confirmed, the receive on the other account, each once. Otherwise it sends
-// `amount` INJ.
+// the send confirmed, the receive on the other account, each once; then the same for 1 of
+// each token in NOTIFY_TOKENS (comma-separated: a CW20 inj1… and an ERC20 0x… this account
+// holds), added by contract. Otherwise it sends `amount` INJ.
 //
 // The phrase is read from the file and typed into the import screen. It is never printed
 // and that screen is never captured. The browser profile, with the encrypted keystore in
@@ -285,7 +286,38 @@ try {
   console.log("sender", from, "holds", before.from.toString(), "inj");
   await shot("live-1-home");
 
-  if (tokenContract === "notify") {
+  if (tokenContract === "speed") {
+    // 3s. How fast the wallet opens on what it saved: with the service worker running, and
+    // with it stopped first (as Chrome stops it 30 s after the popup closes, so most opens).
+    // Sends nothing. `recipient` and `amount` are ignored.
+    await sleep(1500);
+    const swTarget = async () => (await send("Target.getTargets")).targetInfos.find((x) => x.type === "service_worker" && x.url === `chrome-extension://${extId}/background.js`);
+    const time = async (cold) => {
+      if (cold) {
+        const t = await swTarget();
+        if (t) await send("Target.closeTarget", { targetId: t.targetId });
+        for (let n = 0; (await swTarget()) && n < 5000; n += 100) await sleep(100);
+        if (await swTarget()) throw new Error("the service worker didn't stop");
+      }
+      const t0 = Date.now();
+      await send("Page.reload", {}, sessionId);
+      for (;;) {
+        const n = await evalIn(`document.querySelectorAll(".token-list .token").length`).catch(() => 0);
+        if (n > 0) return Date.now() - t0;
+        if (Date.now() - t0 > 30000) throw new Error("no balances after a reopen");
+        await sleep(10);
+      }
+    };
+    const warm = [];
+    const cold = [];
+    for (let i = 0; i < 3; i++) {
+      warm.push(await time(false));
+      await sleep(1000);
+      cold.push(await time(true));
+      await sleep(1000);
+    }
+    console.log(`open on saved balances: worker running ${warm.join(", ")} ms; worker stopped ${cold.join(", ")} ms`);
+  } else if (tokenContract === "notify") {
     // 3n. Notifications and opening fast, on the live chain. Reopening the wallet draws the
     // saved balances at once (timed). Every account is watched; `amount` INJ goes from this
     // account to the phrase's second account. The send is notified once it lands, within
@@ -304,7 +336,9 @@ try {
       }
     };
     await sleep(1500);
-    console.log(`reopen: balances on screen in ${await timeToTokens()} ms (saved), ${await timeToTokens()} ms again`);
+    const times = [];
+    for (let i = 0; i < 3; i++) times.push(await timeToTokens());
+    console.log(`reopen: balances on screen in ${times.join(", ")} ms (saved)`);
     await waitText("Manage", 20000);
 
     const me = await evalIn(`document.querySelector("[aria-label='Copy address']").title`);
@@ -375,6 +409,8 @@ try {
     if (!(await text()).includes("Injective testnet")) throw new Error("the review is not for Injective testnet; stopping");
     await click("Confirm and send");
     const hash = await landed();
+    await click("Done");
+    await waitText("Manage", 20000);
     if ((await injOf(second)) - was !== sent) throw new Error("the second account didn't get the amount");
     const notes = () => inSw(`globalThis.__notes`);
     for (let n = 0; !(await notes()).some((x) => x.id === `testnet|${hash}|${me}`); n += 500) {
@@ -398,6 +434,51 @@ try {
     // Nothing more on the next check: each is shown once.
     await fire();
     if ((await notes()).length !== all.length) throw new Error(`shown again: ${JSON.stringify(await notes())}`);
+
+    // Tokens outside the bank (NOTIFY_TOKENS: a CW20 inj1… and an EVM-only ERC20 0x…, held
+    // by this account): each added by contract, 1 sent to the second account; the send is
+    // notified once it lands, the receive on the next checks (a CW20 by its contract's
+    // events, an ERC20 through Blockscout, which may take a check or two to see it).
+    for (const contract of (process.env.NOTIFY_TOKENS ?? "").split(",").filter(Boolean)) {
+      const evm = contract.startsWith("0x");
+      const denom = evm ? `evm:${contract.toLowerCase()}` : `cw20:${contract}`;
+      await click("Manage");
+      await waitText("Hidden tokens stay in your account.");
+      await click("Add a token by contract");
+      await fill('input[aria-label="Token contract"]', 0, contract);
+      await click("Add");
+      await waitText(evm ? `${contract.toLowerCase().slice(0, 6)}…${contract.toLowerCase().slice(-4)}` : `CW20 · ${contract.slice(0, 8)}…${contract.slice(-4)}`, 20000);
+      await click("Back");
+      await waitText("Manage", 20000);
+      await openToken(denom);
+      const symbol = await evalIn(`document.querySelector(".unit")?.textContent ?? ""`);
+      await click("Send");
+      await waitText("Balance");
+      await fill('input[placeholder^="inj1"]', 0, second);
+      await fill("input[inputmode=decimal]", 0, "1");
+      await click("Review");
+      await waitText("Review send", 30000);
+      if (!(await text()).includes("Injective testnet")) throw new Error("the review is not for Injective testnet; stopping");
+      await click("Confirm and send");
+      const h = await landed();
+      await click("Done");
+      await waitText("Manage", 20000);
+      for (let n = 0; !(await notes()).some((x) => x.id === `testnet|${h}|${me}`); n += 500) {
+        if (n > 30000) throw new Error(`no notification for the ${symbol} send: ${JSON.stringify(await notes())}`);
+        await sleep(500);
+      }
+      let got;
+      for (let tries = 0; tries < 4 && !got; tries++) {
+        await fire();
+        got = (await notes()).find((x) => x.message.startsWith(otherName) && (x.id === `testnet|${h}|${second}` || x.id.startsWith("testnet|balance ")));
+      }
+      if (!got) throw new Error(`no notification for the ${symbol} receive: ${JSON.stringify(await notes())}`);
+      const sentNote = (await notes()).find((x) => x.id === `testnet|${h}|${me}`);
+      console.log(`${evm ? "ERC20" : "CW20"} ${symbol}: ${sentNote.title} | ${sentNote.message}`);
+      console.log(`${evm ? "ERC20" : "CW20"} ${symbol}: ${got.title} | ${got.message}${got.id.startsWith("testnet|balance ") ? " (as a balance change: the index didn't name it in time)" : ""}`);
+      if (sentNote.title !== `Sent 1 ${symbol}` || !sentNote.message.endsWith("confirmed")) throw new Error(`send notification: ${JSON.stringify(sentNote)}`);
+      if (!got.id.startsWith("testnet|balance ") && (got.title !== `Received 1 ${symbol}` || got.message !== `${otherName} · from ${name}`)) throw new Error(`receive notification: ${JSON.stringify(got)}`);
+    }
     console.log("LIVE NOTIFY OK");
   } else if (tokenContract === "staking") {
     // 3k. Staking through the Staking screen; each step checked on chain.

@@ -8,7 +8,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { callVault, chain, code, handle, INJ, ok, PASSWORD, PHRASE, THEM, wallet } from "./fake";
+import { callVault, chain, code, handle, INJ, LUMA, ok, PASSWORD, PHRASE, THEM, THEM_EVM, wallet } from "./fake";
 
 const SITE = "https://app.example";
 type Reply = { result?: unknown; error?: { code: number; message: string } };
@@ -100,6 +100,19 @@ test("a Ledger send: amino JSON for the Cosmos app, its signature checked before
   assert.ok(Buffer.from(net.state.broadcasts[0]!, "base64").includes(Buffer.from(dev.publicKey, "hex")));
   // Used once.
   assert.equal(code(await service.handle({ type: "ledger_signed", digest: review.digest, signature: sig, format: "der" })), "not_approved");
+});
+
+test("a Ledger's EVM-only token send goes to its Ethereum app, never a software key", async () => {
+  const net = chain({ balances: { inj: 5n * INJ }, evm: { [LUMA]: 3n * INJ } });
+  const { service } = await wallet(net);
+  const dev = device();
+  net.state.funded.add(dev.address);
+  net.state.evmAlso.push(dev.evm);
+  ok(await service.handle({ type: "add_ledger", accounts: [{ path: PATH, public_key: dev.publicKey }] }));
+  const review = ok<{ digest: string; display: { kind: string } }>(await service.handle({ type: "prepare_send", denom: `evm:${LUMA}`, to: THEM_EVM, amount: INJ.toString() }));
+  const r = ok<{ device: Device }>(await service.handle({ type: "confirm_send", digest: review.digest }));
+  assert.deepEqual([r.device.app, r.device.path], ["ethereum", PATH]);
+  assert.equal(net.state.evmSent.length, 0);
 });
 
 test("a site's request on a Ledger: the device gets the message, the page gets its checked signature", async () => {

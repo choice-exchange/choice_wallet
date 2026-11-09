@@ -218,12 +218,13 @@ export function createSender(d: SendDeps) {
   /** Choice's view of these denoms (mainnet only): the price to show, where it has one
    *  now, and whether it priced the token within `SEEN_MS` (for the token filter). Never
    *  an error: with no prices the wallet shows amounts alone. With USD values off, Choice
-   *  isn't asked, and only what it said before counts. */
-  async function choiceFor(network: NetworkId, client: Lcd, denoms: Iterable<string>): Promise<ChoiceView> {
+   *  isn't asked, and only what it said before counts; the same with `ask` false (the
+   *  background watcher, which never asks Choice). */
+  async function choiceFor(network: NetworkId, client: Lcd, denoms: Iterable<string>, askChoice = true): Promise<ChoiceView> {
     const out: ChoiceView = { prices: new Map(), onChoice: new Set(), seen: new Set(), priceOf: () => undefined };
     if (network !== "mainnet") return out;
     const now = Date.now();
-    const ask = await d.prices();
+    const ask = askChoice && (await d.prices());
     // When Choice last priced each address, kept a week.
     const stored = ((await d.local.get(["choice_seen"]))["choice_seen"] ?? {}) as Record<string, number>;
     const seen: Record<string, number> = {};
@@ -434,10 +435,10 @@ export function createSender(d: SendDeps) {
   /** How to show each denom in a list of what happened (Activity's rows, the watcher's
    *  notices): its token, and whether Choice priced it this week (for the token filter). An
    *  EVM-only token is read from its contract; one that can't be is left out. */
-  async function labels(network: NetworkId, denoms: Iterable<string>): Promise<Record<string, Token & { onChoice?: true }>> {
+  async function labels(network: NetworkId, denoms: Iterable<string>, askChoice = true): Promise<Record<string, Token & { onChoice?: true }>> {
     const client = await lcd(network);
     const list = [...new Set(denoms)];
-    const choice = await choiceFor(network, client, list);
+    const choice = await choiceFor(network, client, list, askChoice);
     const described = await Promise.all(
       list.map(async (dn) => {
         const a = evmAddress(dn);
@@ -460,11 +461,12 @@ export function createSender(d: SendDeps) {
 
   /** Every balance, sorted: INJ, the wallet's known tokens, then by USD value, then the rest
    *  by symbol. The UI filters. */
-  async function balances(network: NetworkId, account: AccountInfo): Promise<Result<{ network: NetworkId; balances: Balance[]; evmDown?: true }>> {
+  async function balances(network: NetworkId, account: AccountInfo, opts: { askChoice?: boolean } = {}): Promise<Result<{ network: NetworkId; balances: Balance[]; evmDown?: true }>> {
     const client = await lcd(network);
+    const ask = opts.askChoice ?? true;
     try {
       // Prices and pairs don't depend on the balances: they are asked beside them.
-      const prices = choiceFor(network, client, []);
+      const prices = choiceFor(network, client, [], ask);
       const [coins] = await Promise.all([client.balances(address(network, account)), pairsFor(network, client)]);
       const bank: Balance[] = await Promise.all(coins.map(async (c) => ({ ...(await token(network, client, c.denom)), amount: c.amount })));
       // EVM-only tokens, beside the CW20s: a failure here leaves the rest standing.
@@ -478,7 +480,7 @@ export function createSender(d: SendDeps) {
       })();
       evmSide.catch(() => {}); // awaited below; this only keeps an early failure from going unhandled
       const list = [...bank, ...(await cw20Holdings(network, client, account, bank))];
-      const choice = await choiceFor(network, client, list.map((b) => b.denom));
+      const choice = await choiceFor(network, client, list.map((b) => b.denom), ask);
       const out: Balance[] = list.map((b) => {
         const p = choice.prices.get(b.denom);
         const seen = choice.onChoice.has(b.denom) ? { onChoice: true } : {};
@@ -832,8 +834,9 @@ export function createSender(d: SendDeps) {
         network,
         digest,
         request: built.result.request,
-        account: account.account,
-        wallet: account.wallet,
+        // A Ledger signs this too: its key goes along, as on the other paths.
+        ...signerFields(account),
+        from: account.addresses[net.cosmos] ?? "",
         confirm: risk.confirm ?? null,
         blocked: risk.level === "blocked",
         evm: true,

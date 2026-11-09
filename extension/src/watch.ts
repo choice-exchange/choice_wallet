@@ -4,11 +4,18 @@
 // it asks the user's own LCD endpoints; no server of ours is involved, and nothing is sent
 // anywhere but there.
 //
-// - Each watched account's bank balances are asked (one request each) and compared with
-//   the last answer. The first answer is only kept: nothing is shown for it.
+// - Each watched account's balances are read as the wallet's list reads them (bank tokens,
+//   CW20s and EVM-only tokens, with token data from the disk caches, and without asking
+//   Choice for prices) and compared with the last answer. The first answer is only kept:
+//   nothing is shown for it. Like the list, it covers the tokens the wallet knows to ask
+//   about: CW20s held, added or priced, and EVM-only tokens priced this week or added.
 // - When they changed, the tx index says why: the latest transactions in which the account
-//   received or spent coins, after the last check. Each becomes a notification ("Received
-//   5 INJ · from Alice"), read like an Activity row (`summarize`).
+//   received or spent coins, after the last check, and for a CW20 the ones whose contract
+//   events moved it to or from the account (`wasm.to`, `wasm.from`). An EVM-only token's
+//   transfer is named only inside its log, which no index query matches, so Blockscout's
+//   latest transfers for the account are looked up on the LCD, as Activity does. Each
+//   becomes a notification ("Received 5 INJ · from Alice"), read like an Activity row
+//   (`summarize`).
 // - Junk stays quiet, as everywhere in the wallet: a transaction this account didn't sign,
 //   moving only tokens the token filter hides (spam airdrops, address poisoning), notifies
 //   nothing.
@@ -77,8 +84,12 @@ export interface WatchDeps {
 }
 
 /** An account's last balances and when they were read; `from`: when watching it began,
- *  the earliest a transaction can be and still be notified. */
-type Seen = { coins: Record<string, string>; at: number; from: number; misses?: number };
+ *  the earliest a transaction can be and still be notified. `v`: what the balances cover
+ *  (2: bank, CW20 and EVM-only); one from before is kept again, not compared. */
+type Seen = { coins: Record<string, string>; at: number; from: number; misses?: number; v?: number };
+const VERSION = 2;
+/** Blockscout transfers looked up on the LCD when an EVM-only token changed. */
+const EVM_LOOKBACK = 5;
 type Own = { network: NetworkId; hash: string; address: string; at: number; done?: boolean };
 /** `seen`: `<address> <hash>` of each transaction already notified for that account. */
 type State = { accounts: Record<string, Seen>; seen: string[]; badge: number };
@@ -159,31 +170,30 @@ export function createWatcher(d: WatchDeps) {
     const s = await state();
     notices.push(...(await ownResults(network, s)));
     const net = NETWORKS[network];
-    const client = await d.sender.lcd(network);
     let moved = false;
     for (const account of await watched(mode)) {
       const address = account.addresses[net.cosmos]!;
       const key = `${network} ${address}`;
-      let coins: Record<string, string>;
-      try {
-        coins = Object.fromEntries((await client.balances(address)).map((c) => [c.denom, c.amount]));
-      } catch {
-        continue; // offline or no endpoint: the next check tries again
-      }
+      const read = await d.sender.balances(network, account, { askChoice: false }).catch(() => null);
+      if (!read?.ok) continue; // offline or no endpoint: the next check tries again
+      let coins: Record<string, string> = Object.fromEntries(read.result.balances.map((b) => [b.denom, b.amount]));
       const before = s.accounts[key];
-      if (!before) {
-        s.accounts[key] = { coins, at: now(), from: now() };
+      if (!before || before.v !== VERSION) {
+        s.accounts[key] = { coins, at: now(), from: before?.from ?? now(), v: VERSION };
         continue;
       }
+      // No EVM endpoint answered: EVM-only tokens are as they were, not gone.
+      if (read.result.evmDown) coins = { ...Object.fromEntries(Object.entries(before.coins).filter(([dn]) => dn.startsWith("evm:"))), ...coins };
       const from = before.from ?? before.at;
       if (sameCoins(before.coins, coins)) {
-        s.accounts[key] = { coins, at: now(), from };
+        s.accounts[key] = { coins, at: now(), from, v: VERSION };
         continue;
       }
+      const changed = [...new Set([...Object.keys(before.coins), ...Object.keys(coins)])].filter((dn) => before.coins[dn] !== coins[dn]);
       let found: Awaited<ReturnType<typeof explain>>;
       try {
         // Never from before watching began: what happened then isn't news.
-        found = await explain(network, account, Math.max(before.at - SLACK_MS, from), s);
+        found = await explain(network, account, Math.max(before.at - SLACK_MS, from), s, changed);
       } catch {
         continue; // the index didn't answer: ask again next time, from the same point
       }
@@ -197,7 +207,7 @@ export function createWatcher(d: WatchDeps) {
         const n = await balanceNotice(network, account, before.coins, coins);
         if (n) notices.push(n);
       }
-      s.accounts[key] = { coins, at: now(), from };
+      s.accounts[key] = { coins, at: now(), from, v: VERSION };
     }
     await deliver(s, notices);
     await d.local.set({ [STATE]: s });
@@ -220,13 +230,29 @@ export function createWatcher(d: WatchDeps) {
    *  after `since`, that haven't been notified. `txs` counts every one found, notified
    *  before or not, so a change that one of the wallet's own sends explains isn't shown
    *  again as a bare balance change. */
-  async function explain(network: NetworkId, account: AccountInfo, since: number, s: State): Promise<{ notices: Notice[]; txs: number }> {
+  async function explain(network: NetworkId, account: AccountInfo, since: number, s: State, changed: readonly string[]): Promise<{ notices: Notice[]; txs: number }> {
     const net = NETWORKS[network];
     const me = account.addresses[net.cosmos]!;
     const client = await d.sender.lcd(network);
-    const pages = await Promise.all([`coin_received.receiver='${me}'`, `coin_spent.spender='${me}'`].map((q) => client.searchTxs(q, 1, LOOKBACK)));
+    const queries = [`coin_received.receiver='${me}'`, `coin_spent.spender='${me}'`];
+    // A CW20 moves in its contract's events: to the account, or from it (its own send, or
+    // someone with an allowance taking it).
+    if (changed.some((dn) => dn.startsWith("cw20:"))) queries.push(`wasm.to='${me}'`, `wasm.from='${me}'`);
+    const pages = await Promise.all(queries.map((q) => client.searchTxs(q, 1, LOOKBACK)));
     const byHash = new Map<string, IndexedTx>();
     for (const p of pages) for (const tx of p.txs) if (Date.parse(tx.time) >= since) byHash.set(tx.hash, tx);
+    // An EVM-only token: Blockscout names the transactions, the LCD has the say.
+    const me0x = account.addresses[net.evm];
+    const index = me0x && changed.some((dn) => dn.startsWith("evm:")) ? await d.sender.evmIndex(network) : null;
+    if (index && me0x) {
+      const have = new Set([...byHash.values()].map((tx) => tx.evm?.hash).filter(Boolean));
+      const named = await index.transfers(me0x, 1, EVM_LOOKBACK).catch(() => null);
+      for (const t of named?.txs ?? []) {
+        if (have.has(t.hash)) continue;
+        const tx = await client.txByEvmHash(t.hash).catch(() => null);
+        if (tx && Date.parse(tx.time) >= since) byHash.set(tx.hash, tx);
+      }
+    }
     const txs = [...byHash.values()].sort((a, b) => (a.height < b.height ? -1 : a.height > b.height ? 1 : 0));
     const fresh = txs.filter((tx) => !s.seen.includes(seenKey(me, tx.hash)));
     const view = await evmView(network, account);
@@ -276,7 +302,7 @@ export function createWatcher(d: WatchDeps) {
   /** Which of these denoms the user's token filter shows. */
   async function shownDenoms(network: NetworkId, denoms: string[]): Promise<Set<string>> {
     if (denoms.length === 0) return new Set();
-    const [info, filter] = await Promise.all([d.sender.labels(network, denoms), d.filter(network)]);
+    const [info, filter] = await Promise.all([d.sender.labels(network, denoms, false), d.filter(network)]);
     const fee = NETWORKS[network].feeDenom;
     return new Set(
       denoms.filter((dn) => {
@@ -289,7 +315,7 @@ export function createWatcher(d: WatchDeps) {
   /** "5 INJ, 2 USDT" (at most two, then how many more). */
   async function amounts(network: NetworkId, coins: { denom: string; amount: string }[]): Promise<string> {
     if (coins.length === 0) return "";
-    const info = await d.sender.labels(network, coins.map((c) => c.denom));
+    const info = await d.sender.labels(network, coins.map((c) => c.denom), false);
     const text = coins.slice(0, 2).map((c) => {
       const t = info[c.denom];
       const abs = c.amount.replace(/^-/, "");

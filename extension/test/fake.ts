@@ -174,6 +174,8 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
   const state = {
     balances: opts.balances ?? { inj: 5n * INJ },
     evm: opts.evm ?? {},
+    /** More 0x accounts that hold `evm` and may send, like ME (a Ledger's, say). */
+    evmAlso: [] as string[],
     cw20: opts.cw20 ?? {},
     /** CW20 contracts asked for a balance. */
     cw20Calls: [] as string[],
@@ -204,6 +206,8 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
     /** More indexed transactions in which ME received and spent coins (newest first). */
     receivedTxs: [] as unknown[],
     spentTxs: [] as unknown[],
+    /** Transactions whose CW20 events moved tokens to ME (`wasm.to`). */
+    cw20In: [] as unknown[],
     /** Other accounts' bank balances and received transactions, where set. */
     otherBalances: {} as Record<string, { denom: string; amount: string }[]>,
     otherReceived: {} as Record<string, unknown[]>,
@@ -247,7 +251,7 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
     if (r.method === "eth_getBalance") return answer(`0x${(state.balances["inj"] ?? 0n).toString(16)}`);
     if (r.method === "eth_estimateGas") {
       const tx = r.params[0] as unknown as { from: string; to: string; data: string };
-      assert.equal(tx.from.toLowerCase(), ME_EVM.toLowerCase());
+      assert.ok([ME_EVM, ...state.evmAlso].some((a) => a.toLowerCase() === tx.from.toLowerCase()), `estimate from ${tx.from}`);
       if (tx.data === "0xdeadbeef") return { jsonrpc: "2.0", id: r.id, error: { code: 3, message: "execution reverted" } };
       // 46,576 for an ERC20 transfer; approvals 46,000; a swap 250,000; 21,000 for a plain send.
       const est = tx.data.startsWith("0xa9059cbb") ? "0xb5f0" : /^0x(095ea7b3|87517c45)/.test(tx.data) ? "0xb3b0" : /^0x(ddab6e8d|3593564c)/.test(tx.data) ? "0x3d090" : "0x5208";
@@ -280,7 +284,7 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
     if (data.startsWith("0x70a08231")) {
       state.evmBalanceCalls.push(to.toLowerCase());
       // ME holds `evm`; any other account, none.
-      const mine = data.slice(34).toLowerCase() === ME_EVM.slice(2).toLowerCase();
+      const mine = [ME_EVM, ...state.evmAlso].some((a) => data.slice(34).toLowerCase() === a.slice(2).toLowerCase());
       return { jsonrpc: "2.0", id: r.id, result: `0x${(mine ? (state.evm[to.toLowerCase()] ?? 0n) : 0n).toString(16)}` };
     }
     const result = data === "0x95d89b41" ? abiString(t.symbol) : data === "0x06fdde03" ? abiString(t.name) : `0x${t.decimals.toString(16).padStart(64, "0")}`;
@@ -458,6 +462,7 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
       if (q === `message.sender='${ME}'`) return json(200, { tx_responses: [...SIGNED, ...state.signedEvm], total: "120" });
       if (q === `coin_received.receiver='${ME}'`) return json(200, { tx_responses: [...state.receivedTxs, ...RECEIVED], total: String(2 + state.receivedTxs.length) });
       if (q === `coin_spent.spender='${ME}'`) return json(200, { tx_responses: state.spentTxs, total: String(state.spentTxs.length) });
+      if (q === `wasm.to='${ME}'`) return json(200, { tx_responses: state.cw20In, total: String(state.cw20In.length) });
       const to = /^coin_received\.receiver='(inj1[0-9a-z]+)'$/.exec(q)?.[1];
       if (to && state.otherReceived[to]) return json(200, { tx_responses: state.otherReceived[to], total: String(state.otherReceived[to].length) });
       if (to) {

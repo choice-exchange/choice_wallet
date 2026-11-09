@@ -4,7 +4,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { chain, INJ, indexed, ME, PASSWORD, SCAM, sentTx, serviceOn, THEM, USDT, wallet } from "./fake";
+import { transferLog } from "../../chain/test/evm-fixture";
+import { attrs, chain, CW, evmHashAt, evmIndexed, INJ, indexed, LUMA, ME, ME_EVM, PASSWORD, SCAM, sentTx, serviceOn, THEM, THEM_EVM, USDT, wallet } from "./fake";
 
 type R<T> = { ok: true; result: T } | { ok: false; error: { code: string; message: string } };
 function ok<T>(r: unknown): T {
@@ -51,6 +52,40 @@ test("what happened before watching began isn't news", async () => {
   await service.watch();
   await service.watch();
   assert.deepEqual(ui.notices?.map((n) => n.title), ["Balance changed"]);
+});
+
+test("CW20s and EVM-only tokens: read like the list reads them, explained by their own events", async () => {
+  const net = chain({ balances: { inj: 5n * INJ } });
+  const { service, ui } = await wallet(net);
+  // The popup has read prices once: SHROOM (a CW20 with a priced bank form) and LUMA (an
+  // EVM-only token) are tokens the list shows.
+  ok(await service.handle({ type: "balances" }));
+  const prices = net.state.priceCalls;
+  await service.watch();
+
+  // 3 SHROOM in, in the CW20's own contract: no coin event names the account.
+  net.state.cw20[CW] = 3n * INJ;
+  net.state.cw20In.unshift(
+    now({
+      ...indexed(140, THEM, THEM, "1inj"),
+      events: [{ type: "wasm", attributes: attrs({ _contract_address: CW, action: "transfer", from: THEM, to: ME, amount: (3n * INJ).toString() }) }],
+    }),
+  );
+  // 2 LUMA in: only its log names the account; Blockscout finds it, the LCD has it.
+  net.state.evm[LUMA] = 2n * INJ;
+  net.state.blockscout = [{ hash: evmHashAt(141), blockNumber: 141 }];
+  net.state.byEvmHash[evmHashAt(141)] = now(evmIndexed(141, { from: THEM_EVM, fromInj: THEM, to: LUMA, logs: [transferLog(LUMA, THEM_EVM, ME_EVM, 2n * INJ)] }));
+  await service.watch();
+  assert.deepEqual(ui.notices?.map((n) => n.title).sort(), ["Received 2 LUMA", "Received 3 SHROOM"]);
+  assert.deepEqual(ui.notices?.find((n) => n.title === "Received 3 SHROOM")?.message, "Account 1 · from inj1nk9x…l55v");
+  // In the background, Choice is never asked.
+  assert.equal(net.state.priceCalls, prices);
+
+  // No EVM endpoint answering: LUMA isn't taken for gone.
+  net.state.evmDown = true;
+  await service.watch();
+  await service.watch();
+  assert.equal(ui.notices?.length, 2);
 });
 
 test("junk stays quiet: a token the filter hides, sent by someone else", async () => {
