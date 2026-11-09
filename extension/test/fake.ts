@@ -66,6 +66,34 @@ export const indexed = (height: number, from: string, to: string, amount: string
 });
 export const SIGNED = [indexed(100, ME, THEM, "1000000000000000000inj")];
 
+export const PERMIT2 = "0x000000000022D473030F116dDEE9F6B43aC78BA3";
+export const AGGREGATOR = "0xa705d0D5f549Af25024038dc575E3074B9Bd37c9";
+/** Choice's real /route answers (2026-11-09; they pay the test phrase's account 0, ME_EVM),
+ *  by `tokenIn tokenOut amountIn`, rebuilt from the vault's fixture of them. */
+export const CHOICE_ROUTES: Record<string, Record<string, unknown>> = (() => {
+  const v = JSON.parse(readFileSync(new URL("../../crates/injective/tests/choice_routes.json", import.meta.url), "utf8")) as {
+    cases: { name: string; network: string; to: string; value: string; data: string; api: Record<string, unknown> }[];
+  };
+  const out: Record<string, Record<string, unknown>> = {};
+  for (const c of v.cases) {
+    if (c.network !== "mainnet") continue;
+    const a = c.api;
+    out[`${String(a["tokenIn"]).toLowerCase()} ${String(a["tokenOut"]).toLowerCase()} ${String(a["amountIn"])}`] = {
+      tokenIn: a["tokenIn"],
+      tokenOut: a["tokenOut"],
+      amountIn: a["amountIn"],
+      amountOut: String((BigInt(String(a["amountOutMinimum"])) * 10_000n) / 9_950n + 1n),
+      amountOutMinimum: a["amountOutMinimum"],
+      executor: a["executor"],
+      fee: null,
+      gasEstimate: "245000",
+      legs: (a["legs"] as string[]).map((venue) => ({ venue, portionBps: 10000 })),
+      tx: { to: c.to, data: c.data, value: c.value },
+    };
+  }
+  return out;
+})();
+
 /** Deposits to an exchange's shared address: each from its own sender, with a memo. */
 export function exchangeDeposits(exchange: string, n = 12): unknown[] {
   return Array.from({ length: n }, (_, i) => {
@@ -191,6 +219,11 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
     /** What other accounts (inj1…) received, newest first (indexed txs), and whose were asked. */
     deposits: {} as Record<string, unknown[]>,
     depositChecks: [] as string[],
+    /** Choice's /route: the real answers recorded on 2026-11-09 (they pay ME_EVM), by
+     *  `tokenIn tokenOut amountIn`; the questions asked; and what Permit2 lets each (token spender) take. */
+    routes: CHOICE_ROUTES,
+    routeAsks: [] as URLSearchParams[],
+    permit2: {} as Record<string, { amount: bigint; expiration: number }>,
   };
   const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status });
   type Rpc = { id: number; method: string; params: { to: string; data: string }[] };
@@ -205,7 +238,9 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
       const tx = r.params[0] as unknown as { from: string; to: string; data: string };
       assert.equal(tx.from.toLowerCase(), ME_EVM.toLowerCase());
       if (tx.data === "0xdeadbeef") return { jsonrpc: "2.0", id: r.id, error: { code: 3, message: "execution reverted" } };
-      return answer(tx.data.startsWith("0xa9059cbb") ? "0xb5f0" : "0x5208"); // 46,576 for an ERC20 transfer; 21,000 for a plain send
+      // 46,576 for an ERC20 transfer; approvals 46,000; a swap 250,000; 21,000 for a plain send.
+      const est = tx.data.startsWith("0xa9059cbb") ? "0xb5f0" : /^0x(095ea7b3|87517c45)/.test(tx.data) ? "0xb3b0" : /^0x(ddab6e8d|3593564c)/.test(tx.data) ? "0x3d090" : "0x5208";
+      return answer(est);
     }
     if (r.method === "eth_blockNumber") return answer("0xb6137d8");
     if (r.method === "eth_sendRawTransaction") {
@@ -214,6 +249,14 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
     }
     if (r.method === "eth_getTransactionReceipt") return answer(state.evmSent.length ? { status: "0x1" } : null);
     const { to, data } = r.params[0]!;
+    if (r.method === "eth_call" && to.toLowerCase() === PERMIT2.toLowerCase() && data.startsWith("0x927da105")) {
+      // allowance(owner, token, spender): ME's, by token and spender.
+      const token = `0x${data.slice(98, 138)}`;
+      const spender = `0x${data.slice(162, 202)}`;
+      const a = data.slice(34, 74) === ME_EVM.slice(2).toLowerCase() ? state.permit2[`${token} ${spender}`] : undefined;
+      const w = (n: bigint | number) => BigInt(n).toString(16).padStart(64, "0");
+      return { jsonrpc: "2.0", id: r.id, result: `0x${w(a?.amount ?? 0n)}${w(a?.expiration ?? 0)}${w(0)}` };
+    }
     const t = ERC20[to.toLowerCase()];
     if (r.method !== "eth_call" || !t) return { jsonrpc: "2.0", id: r.id, error: { code: 3, message: "execution reverted" } };
     if (data.startsWith("0xdd62ed3e")) {
@@ -302,6 +345,11 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
       }
       const rows = state.blockscout.map((t) => ({ blockNumber: String(t.blockNumber), hash: t.hash, from: THEM_EVM.toLowerCase(), to: ME_EVM.toLowerCase(), value: "1" }));
       return json(200, rows.length ? { message: "OK", result: rows, status: "1" } : { message: "No token transfers found", result: [], status: "0" });
+    }
+    if (url.host === "evm-api.choice.exchange" && p === "/route") {
+      state.routeAsks.push(url.searchParams);
+      const r = state.routes[`${url.searchParams.get("tokenIn")?.toLowerCase()} ${url.searchParams.get("tokenOut")?.toLowerCase()} ${url.searchParams.get("amountIn")}`];
+      return r ? json(200, r) : json(404, { error: "no route" });
     }
     if (url.host === "evm-api.choice.exchange" && p === "/prices") {
       state.priceCalls++;

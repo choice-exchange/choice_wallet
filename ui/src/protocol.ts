@@ -79,6 +79,12 @@ export type UiRequest =
   /** What the wallet knows of a recipient before the review: a contact, one of the user's
    *  accounts, or an address whose deposits carry a memo (an exchange's). */
   | { type: "check_recipient"; to: string }
+  /** Tokens to swap into: held ones, the wallet's list, and ones added by address. */
+  | { type: "swap_tokens" }
+  /** A quote for `amount` (base units, or "max") of `from` into `to`. */
+  | { type: "swap_quote"; from: string; to: string; amount: string; slippageBps?: number }
+  /** The next step of a quoted swap, for review: an approval, or the swap itself. */
+  | { type: "prepare_swap"; quote: string }
   /** Convert `amount` (base units, or "max") of a token into its other form (`convertsTo`):
    *  a CW20 into its bank denom through the CW20 adapter, or back. Confirmed like a send. */
   | { type: "prepare_convert"; denom: string; amount: string }
@@ -195,7 +201,30 @@ export type EvmDisplay = {
   /** gas_limit × max_fee_per_gas: the most the fee can be. */
   max_gas_cost: string;
   data: string;
-  call: { type: "transfer" } | { type: "erc20_transfer"; to: string; amount: string } | { type: "contract"; selector: string | null };
+  call:
+    | { type: "transfer" }
+    | { type: "erc20_transfer"; to: string; amount: string }
+    | { type: "contract"; selector: string | null; unreadable_swap?: true }
+    | { type: "approve"; spender: string; amount: string }
+    | { type: "permit2_approve"; token: string; spender: string; amount: string; expiration: number }
+    | EvmSwapCall;
+};
+
+/** A swap through Choice's aggregator or router, as the vault reads its calldata. The zero
+ *  address is native INJ. */
+export type EvmSwapCall = {
+  type: "swap";
+  executor: "aggregator" | "router";
+  token_in: string;
+  token_out: string;
+  amount_in: string;
+  minimum_out: string;
+  recipient: string;
+  deadline: string | null;
+  fee_bps: number;
+  fee_recipient: string | null;
+  venues: { venue: string; contract?: string; hops?: number; market?: string }[];
+  permit: { token: string; spender: string; amount: string; expiration: number } | null;
 };
 
 export type SendReview = {
@@ -207,7 +236,44 @@ export type SendReview = {
   tokens: Record<string, TokenInfo>;
   /** The endpoint that simulated it (host name). */
   checkedBy: string;
+  /** One step of a swap: which tokens it trades (wallet keys, in `tokens`) and what
+   *  Choice expects it to return (display only; the minimum in `display` is the guard). */
+  swap?: SwapStepInfo;
 };
+
+/** What a swap step's review needs beyond the vault's reading. */
+export type SwapStepInfo = {
+  step: SwapStep;
+  /** Steps after this one. */
+  left: number;
+  from: string;
+  to: string;
+  expectedOut: string;
+};
+
+export type SwapStep = "approve" | "permit2" | "swap";
+
+/** A quote from Choice for the wallet's own swap. Amounts in base units. */
+export type SwapQuote = {
+  /** What `prepare_swap` builds from. */
+  id: string;
+  from: string;
+  to: string;
+  amountIn: string;
+  amountOut: string;
+  minimumOut: string;
+  slippageBps: number;
+  executor: "aggregator" | "router";
+  legs: { venue: string; portionBps: number }[];
+  /** Choice's fee, if it takes one; it comes out of `amountOut` and is in the calldata. */
+  fee: { bps: number } | null;
+  /** What it takes, in order: approvals first, when the token needs them. */
+  steps: SwapStep[];
+  tokens: Record<string, TokenInfo>;
+};
+
+/** A token the swap screen offers. */
+export type SwapToken = TokenInfo & { amount?: string };
 
 export type Sent = { hash: string; explorer: string };
 
@@ -411,6 +477,9 @@ export type Replies = {
   save_contact: Contact[];
   remove_contact: Contact[];
   check_recipient: RecipientCheck;
+  swap_tokens: SwapToken[];
+  swap_quote: SwapQuote;
+  prepare_swap: SendReview;
   prepare_convert: SendReview;
   staking: StakingSummary;
   approvals: ApprovalsSummary;

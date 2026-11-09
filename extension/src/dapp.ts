@@ -611,6 +611,13 @@ function reviewDenoms(network: NetworkId, display: DappReview["display"], change
   const d = display as Record<string, unknown>;
   if (d["kind"] === "cosmos_direct" || d["kind"] === "cosmos_amino") for (const dn of displayDenoms(network, display as CosmosDisplay)) out.add(dn);
   if (d["kind"] === "evm_transaction" && isObject(d["call"]) && d["call"]["type"] === "erc20_transfer" && typeof d["to"] === "string") out.add(`evm:${d["to"].toLowerCase()}`);
+  // A Choice swap's two tokens, and the token an approval is for, as the review keys them.
+  if (d["kind"] === "evm_transaction" && isObject(d["call"])) {
+    const c = d["call"];
+    const key = (a: unknown) => (typeof a === "string" && /^0x[0-9a-fA-F]{40}$/.test(a) && !/^0x0{40}$/.test(a) ? `evm:${a.toLowerCase()}` : null);
+    const keys = c["type"] === "swap" ? [key(c["token_in"]), key(c["token_out"])] : c["type"] === "approve" ? [key(d["to"])] : c["type"] === "permit2_approve" ? [key(c["token"])] : [];
+    for (const k of keys) if (k) out.add(k);
+  }
   const injTx = d["injective_tx"];
   if (isObject(injTx) && Array.isArray(injTx["messages"])) {
     const fee = isObject(injTx["fee"]) && Array.isArray(injTx["fee"]["amount"]) ? (injTx["fee"]["amount"] as Coin[]) : [];

@@ -94,6 +94,11 @@ const LOOKUP_PARALLEL = 6;
  *  (an ERC20 transfer uses about 35k to 60k). */
 const EVM_SIMULATION_GAS = 100_000n;
 const EVM_MAX_GAS = 1_000_000n;
+/** The most gas a contract call the wallet makes (a swap step) may take. */
+const EVM_MAX_CALL_GAS = 3_000_000n;
+
+/** The vault's display of an EVM transaction, as far as `prepareEvmCall`'s checks read it. */
+export type EvmDisplayLike = { kind: string; to: string; value: string; call: Record<string, unknown> };
 
 /** CW20 balance queries in flight at once (one smart query per token). */
 const CW20_PARALLEL = 6;
@@ -766,6 +771,94 @@ export function createSender(d: SendDeps) {
     }
   }
 
+  /** A contract call the wallet makes itself on the EVM side (a swap step): `call` is the
+   *  vault's own-call spec (`build_evm`), `amount` the INJ sent or the allowance given. Gas
+   *  is the larger of the node's estimate and `gasHint`, with half again on top: Injective
+   *  charges the whole limit, but `eth_estimateGas` can come in low there, and a swap that
+   *  runs out of gas fails after costing its fee. `expect` checks the vault's reading
+   *  against what the host asked for; any difference stops it. */
+  async function prepareEvmCall(
+    network: NetworkId,
+    account: AccountInfo,
+    spec: {
+      to: string;
+      amount: bigint;
+      call: unknown;
+      gasHint?: bigint | null;
+      tokens: string[];
+      expect: (display: EvmDisplayLike) => string | null;
+      extra?: Partial<SendReview>;
+    },
+  ): Promise<Result<SendReview>> {
+    const net = NETWORKS[network];
+    const from = account.addresses[net.evm];
+    if (!from) return fail("bad_request", "This account has no EVM address.");
+    try {
+      const rpc = await evm(network);
+      const [nonce, block, tip, native] = await rpc.batch([
+        { method: "eth_getTransactionCount", params: [from, "pending"] },
+        { method: "eth_getBlockByNumber", params: ["latest", false] },
+        { method: "eth_maxPriorityFeePerGas", params: [] },
+        { method: "eth_getBalance", params: [from, "latest"] },
+      ]);
+      const quantity = (v: unknown, what: string): bigint => {
+        if (typeof v !== "string" || !/^0x[0-9a-fA-F]{1,64}$/.test(v)) throw new ChainError(-1, `the node returned no ${what}`);
+        return BigInt(v);
+      };
+      const injHeld = quantity(native, "balance");
+      const base = isObject(block) ? quantity(block["baseFeePerGas"], "base fee") : MIN_GAS_PRICE;
+      const baseFee = base < MIN_GAS_PRICE ? MIN_GAS_PRICE : base > MIN_GAS_PRICE * 1000n ? MIN_GAS_PRICE * 1000n : base;
+      const tipped = typeof tip === "string" ? quantity(tip, "tip") : 0n;
+      const priority = tipped > baseFee ? baseFee : tipped;
+      const maxFee = baseFee + priority;
+      const build = (gas: bigint) =>
+        d.vault<{ request: { evm_transaction: { tx: { to: string; data: string; value: string } } } }>("build_evm", {
+          chain: net.evm,
+          from,
+          to: spec.to,
+          amount: spec.amount.toString(),
+          call: spec.call,
+          nonce: Number(quantity(nonce, "nonce")),
+          gas_limit: Number(gas),
+          max_fee_per_gas: maxFee.toString(),
+          max_priority_fee_per_gas: priority.toString(),
+        });
+      const sim = await build(EVM_MAX_CALL_GAS);
+      if (!sim.ok) return sim;
+      const t = sim.result.request.evm_transaction.tx;
+      let used: bigint;
+      try {
+        used = quantity(await rpc.call("eth_estimateGas", [{ from, to: t.to, data: t.data, value: t.value }]), "gas estimate");
+      } catch (e) {
+        if (e instanceof ChainError && /revert/i.test(e.message)) return fail("reverts", "This would fail on chain now. Get a new quote and try again.");
+        throw e;
+      }
+      const checkedBy = new URL(rpc.pool.current).host;
+      const hint = spec.gasHint ?? 0n;
+      let gas = ((used > hint ? used : hint) * 3n) / 2n;
+      if (gas < 60_000n) gas = 60_000n;
+      if (gas > EVM_MAX_CALL_GAS) return fail("chain", "The gas estimate looks wrong. Try another endpoint.");
+      if (gas * maxFee + quantity(t.value, "value") > injHeld) return fail("insufficient", "Not enough INJ for this and its fee.");
+      const built = await build(gas);
+      if (!built.ok) return built;
+      const decoded = await d.vault<Pick<SendReview, "digest" | "display" | "risk">>("decode", {
+        request: built.result.request,
+        context: { balances: { native: injHeld.toString() }, ...(await d.riskFacts(network, null)) },
+      });
+      if (!decoded.ok) return decoded;
+      const { digest, display, risk } = decoded.result;
+      const wrong = spec.expect(display as unknown as EvmDisplayLike);
+      if (wrong) return fail("mismatch", wrong);
+      await d.session.set({
+        pending_send: { network, digest, request: built.result.request, account: account.account, wallet: account.wallet, confirm: risk.confirm ?? null, blocked: risk.level === "blocked", evm: true } satisfies Pending,
+      });
+      const tokens = await tokensFor(network, [...spec.tokens, net.feeDenom]);
+      return { ok: true, result: { digest, display, risk: risk as Risk, tokens, checkedBy, ...spec.extra } };
+    } catch (e) {
+      return chainFailure(e);
+    }
+  }
+
   /** Sign the send the review showed, with the wallet that prepared it, then broadcast. */
   async function confirm(
     unlockKey: string,
@@ -835,6 +928,8 @@ export function createSender(d: SendDeps) {
     prepareConvert,
     prepareCosmos,
     prepareEvm,
+    prepareEvmCall,
+    pairs: async (network: NetworkId) => pairsFor(network, await lcd(network)),
     confirm,
     status,
     lcd,

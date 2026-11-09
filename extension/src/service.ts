@@ -18,6 +18,7 @@ import { createSender } from "./send";
 import { createApprovals } from "./approvals";
 import { createContacts } from "./contacts";
 import { createStaking } from "./staking";
+import { createSwaps } from "./swap";
 import { createWallets, isWatch } from "./wallets";
 
 type UiResponse<T = unknown> = Result<T>;
@@ -133,6 +134,7 @@ export function createService(d: Deps) {
     riskFacts: (n, recipient) => contacts.facts(n, recipient),
   });
   const staking = createStaking(sender);
+  const swaps = createSwaps(sender, d.session, d.fetch, async (net) => (await tokenFilter(net)).shown);
   const approvals = createApprovals(sender);
 
   const wallets = createWallets({
@@ -358,13 +360,16 @@ export function createService(d: Deps) {
       case "staking":
       case "prepare_stake":
       case "approvals":
+      case "swap_tokens":
+      case "swap_quote":
+      case "prepare_swap":
       case "prepare_revoke":
       case "prepare_revoke_erc20":
       case "confirm_send":
       case "tx_status": {
         const a = await active();
         if ("ok" in a) return a;
-        if ((r.type === "prepare_send" || r.type === "prepare_convert" || r.type === "prepare_stake" || r.type === "prepare_revoke" || r.type === "prepare_revoke_erc20") && isWatch(a.account)) {
+        if ((r.type === "prepare_send" || r.type === "prepare_convert" || r.type === "prepare_stake" || r.type === "prepare_revoke" || r.type === "prepare_revoke_erc20" || r.type === "prepare_swap") && isWatch(a.account)) {
           return err("watch_only", "This account is watch-only. Switch to one that can sign.");
         }
         if (r.type === "balances") {
@@ -383,6 +388,9 @@ export function createService(d: Deps) {
         if (r.type === "staking") return staking.summary(a.net, a.account);
         if (r.type === "prepare_stake") return staking.prepare(a.net, a.account, r);
         if (r.type === "approvals") return approvals.summary(a.net, a.account);
+        if (r.type === "swap_tokens") return swaps.tokens(a.net, a.account);
+        if (r.type === "swap_quote") return swaps.quote(a.net, a.account, r);
+        if (r.type === "prepare_swap") return swaps.prepare(a.net, a.account, r.quote);
         if (r.type === "prepare_revoke") return approvals.prepare(a.net, a.account, r.items);
         if (r.type === "prepare_revoke_erc20") return approvals.prepareErc20(a.net, a.account, r.token, r.spender);
         if (r.type === "confirm_send") return sender.confirm(a.key, wallets.signer, r);
