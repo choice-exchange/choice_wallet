@@ -40,8 +40,12 @@ export type SwapLine = {
 /** An allowance a swap needs first, for its amount. */
 export type ApprovalLine = { token: string; spender: string; amount: string; via: "token" | "permit2"; until?: number };
 
+/** One NFT the signer gives away. */
+export type NftLine = { collection: string; tokenId: string; to: string };
+
 export type Shown = {
   sends: { coins: Coin[]; to: string }[];
+  nfts: NftLine[];
   swaps: SwapLine[];
   approvals: ApprovalLine[];
   converts: Conversion[];
@@ -75,7 +79,7 @@ export function shown(display: SendReview["display"], network: NetworkId, swap?:
   const net = NETWORKS[network];
   if (display.kind === "evm_transaction") {
     const d = display as EvmDisplay;
-    const base = { fee: [{ denom: net.feeDenom, amount: d.max_gas_cost }], memo: "", evm: true, converts: [], stakes: [], revokes: [], swaps: [], approvals: [] };
+    const base = { fee: [{ denom: net.feeDenom, amount: d.max_gas_cost }], memo: "", evm: true, converts: [], stakes: [], revokes: [], swaps: [], approvals: [], nfts: [] };
     // An address as a wallet key: INJ, or the swap's own tokens, or an EVM token.
     const key = (a: string, side?: "from" | "to") => {
       if (a.toLowerCase() === NATIVE) return net.feeDenom;
@@ -108,6 +112,10 @@ export function shown(display: SendReview["display"], network: NetworkId, swap?:
       const c = d.call;
       return { ...base, sends: [], others: [], approvals: [{ token: key(c.token, "from"), spender: c.spender, amount: c.amount, via: "permit2", until: c.expiration }] };
     }
+    const call = d.call as Record<string, unknown>;
+    if (call["type"] === "nft_transfer" && text(call["from"])?.toLowerCase() === d.from.toLowerCase() && text(call["to"]) && text(call["token_id"])) {
+      return { ...base, sends: [], others: [], nfts: [{ collection: d.to, tokenId: text(call["token_id"])!, to: text(call["to"])! }] };
+    }
     if (d.call.type === "erc20_transfer") return { ...base, sends: [{ coins: [{ denom: evmDenom(d.to), amount: d.call.amount }], to: d.call.to }], others: [] };
     if (d.call.type === "transfer") return { ...base, sends: [{ coins: [{ denom: net.feeDenom, amount: d.value }], to: d.to }], others: [] };
     // approve(spender, 0): an allowance taken back.
@@ -116,7 +124,7 @@ export function shown(display: SendReview["display"], network: NetworkId, swap?:
     return { ...base, sends: [], others: [`Contract call to ${d.to}`] };
   }
   const c = display as CosmosDisplay;
-  const out: Shown = { sends: [], swaps: [], approvals: [], converts: [], stakes: [], revokes: [], others: [], fee: c.fee.amount, memo: c.memo, evm: false };
+  const out: Shown = { sends: [], nfts: [], swaps: [], approvals: [], converts: [], stakes: [], revokes: [], others: [], fee: c.fee.amount, memo: c.memo, evm: false };
   for (const msg of c.messages) {
     const m = msg as Record<string, unknown>;
     const kind = STAKE_KINDS[String(m["type"])];
@@ -153,6 +161,11 @@ export function shown(display: SendReview["display"], network: NetworkId, swap?:
     if (m["type"] === "execute_contract" && contract && isContractAddress(contract) && call) {
       const funds = coins(m["funds"]);
       const amount = text(call["amount"]);
+      // A CW721 transfer gives one of the signer's NFTs away.
+      if (call["type"] === "nft_transfer" && m["sender"] === c.signer && text(call["recipient"]) && text(call["token_id"]) && funds.length === 0) {
+        out.nfts.push({ collection: contract, tokenId: text(call["token_id"])!, to: text(call["recipient"])! });
+        continue;
+      }
       // A CW20 transfer moves the token held in `contract`.
       if (call["type"] === "cw20_transfer" && amount && text(call["recipient"]) && funds.length === 0) {
         out.sends.push({ coins: [{ denom: cw20Denom(contract), amount }], to: text(call["recipient"])! });

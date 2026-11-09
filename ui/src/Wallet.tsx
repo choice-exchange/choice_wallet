@@ -12,7 +12,8 @@ import mark from "./assets/choice-mark.svg";
 import { useBackend } from "./backend";
 import { ActivityIcon, CheckIcon, ChevronDownIcon, ChevronRightIcon, CopyIcon, EyeOffIcon, LockIcon, ReceiveIcon, SendIcon, SettingsIcon, SwapIcon, WalletIcon } from "./icons";
 import { BackBar, Callout, formatUsd, Screen, Segmented, shortAddress, tokenSub } from "./kit";
-import type { Balance, SendReview, Sent, StakingSummary, Status, TokenFilter } from "./protocol";
+import { NftsView, NftView } from "./Nfts";
+import type { Balance, Nft, NftCollection, SendReview, Sent, StakingSummary, Status, TokenFilter } from "./protocol";
 import { newDraft, SwapView, type SwapDraft } from "./Swap";
 import { QrCode } from "./QrCode";
 import { useRequest } from "./request";
@@ -40,6 +41,8 @@ type View =
   | { name: "staking" }
   | { name: "approvals" }
   | { name: "contacts"; prefill?: Draft }
+  | { name: "nfts" }
+  | { name: "nft"; collection: NftCollection; nft: Nft }
   | { name: "tokens" };
 
 const COSMOS = "cosmos:injective-1";
@@ -276,6 +279,19 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
       );
     case "contacts":
       return <ContactsView prefill={view.prefill} onBack={home} />;
+    case "nfts":
+      return <NftsView canSign={!watch} onOpen={(collection, nft) => setView({ name: "nft", collection, nft })} onBack={home} />;
+    case "nft":
+      return (
+        <NftView
+          collection={view.collection}
+          nft={view.nft}
+          canSign={!watch}
+          accounts={status.accounts}
+          onReview={(review, entered) => setView({ name: "review", review, entered, back: { name: "nft", collection: view.collection, nft: view.nft } })}
+          onBack={() => setView({ name: "nfts" })}
+        />
+      );
     case "home": {
       if (tab === "activity") return <ActivityView key={address} network={status.network} tabs={tabs} />;
       if (tab === "swap") {
@@ -428,6 +444,19 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
               </button>
             </>
           )}
+          <div className="section-head">
+            <span className="eyebrow">Collectibles</span>
+          </div>
+          <button className="token" onClick={() => setView({ name: "nfts" })}>
+            <span className="nft-tile small" aria-hidden="true">
+              NFT
+            </span>
+            <span className="name">
+              <span className="symbol">NFTs</span>
+              <span className="sub">CW721 and ERC721</span>
+            </span>
+            <ChevronRightIcon size={16} />
+          </button>
           {evmDown && <p className="meta warn">EVM tokens may be missing: no EVM endpoint answered.</p>}
           <p className="footnote">{totalUsd === undefined ? "Pre-alpha. Not for real funds." : "Prices from Choice. Pre-alpha. Not for real funds."}</p>
         </Screen>

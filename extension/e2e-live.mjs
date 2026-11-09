@@ -16,7 +16,8 @@
 // another validator, claims rewards, and reads Activity back; each step checked on chain.
 // With `approvals` (recipient ignored), a site grants a keyless address three permissions,
 // and the Approvals screen takes them back along with the account's ERC20 allowances.
-// Otherwise it sends `amount` INJ.
+// With `nfts`, it lists the account's test NFT collections and sends one CW721 and one
+// ERC721 to the recipient. Otherwise it sends `amount` INJ.
 //
 // The phrase is read from the file and typed into the import screen. It is never printed
 // and that screen is never captured. The browser profile, with the encrypted keystore in
@@ -106,6 +107,24 @@ proc.stdio[4].on("data", (chunk) => {
     if (m.method === "Log.entryAdded" && m.params.entry.level === "error") problems.push("log: " + m.params.entry.text);
   }
 });
+
+/** The 20 (or 32) bytes of a bech32 address. */
+function bech32Words(addr) {
+  const CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+  const data = addr.slice(addr.lastIndexOf("1") + 1, -6).split("").map((c) => CHARSET.indexOf(c));
+  const out = [];
+  let acc = 0;
+  let bits = 0;
+  for (const v of data) {
+    acc = (acc << 5) | v;
+    bits += 5;
+    if (bits >= 8) {
+      bits -= 8;
+      out.push((acc >> bits) & 0xff);
+    }
+  }
+  return out;
+}
 
 async function lcd(path) {
   const r = await fetch(`${LCD}${path}`);
@@ -540,6 +559,71 @@ try {
     if (tx.tx.body.memo !== MEMO) throw new Error("the chain has another memo");
     if (got !== BigInt(Math.round(Number(amount) * 1e6)) * 10n ** 12n) throw new Error("the recipient got the wrong amount");
     console.log("LIVE CONTACTS OK");
+  } else if (tokenContract === "nfts") {
+    // 3a. NFTs: the account's CW721 (found from the tx index) and ERC721 (found through
+    // Blockscout) test collections listed; one of each sent to the recipient (or a keyless
+    // address, 0x44…44), each checked on chain with its contract. `amount` is ignored.
+    const to = recipient !== "-" ? recipient : "inj1g3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyfc6zmu";
+    const to0x = `0x${Buffer.from(bech32Words(to)).toString("hex")}`;
+    const openNfts = async () => {
+      await click("Wallet");
+      await waitText("Manage", 20000);
+      await evalIn(`[...document.querySelectorAll("button.token")].find((b) => b.textContent.includes("CW721 and ERC721")).click()`);
+      // Collection names sit in upper-cased labels: look in the text, not as rendered.
+      for (const name of ["Choice Wallet Test NFTs ·", "Choice Wallet Test EVM NFTs ·"]) {
+        for (let n = 0; !(await evalIn(`document.body.textContent.includes(${JSON.stringify(name)})`)); n += 500) {
+          if (n > 90000) throw new Error(`no collection ${name}; page: ${await text()}`);
+          await sleep(500);
+        }
+      }
+    };
+    /** Open the first NFT of the collection named exactly `name`: its contract and ID. */
+    const openFirst = async (name) => {
+      const title = await evalIn(`(() => { const g = [...document.querySelectorAll(".wallet-group")].find((x) => x.querySelector(".eyebrow")?.textContent.startsWith(${JSON.stringify(name + " ·")})); const b = g?.querySelector("button.token"); if (b) b.click(); return b?.title ?? ""; })()`);
+      const [contract, id] = title.split(" #");
+      if (!contract || !id) throw new Error(`no NFT in ${name}`);
+      return { contract, id };
+    };
+    await openNfts();
+    await shot("live-n1-nfts");
+    const cw = await openFirst("Choice Wallet Test NFTs");
+    console.log(`CW721 ${cw.contract} #${cw.id}`);
+    await waitText("Token ID");
+    await shot("live-n2-nft");
+    await fill('input[aria-label="Recipient"]', 0, to);
+    await click("Review");
+    await waitText("YOU SEND AN NFT", 30000);
+    if (!(await text()).includes("Injective testnet")) throw new Error("the review is not for Injective testnet; stopping");
+    await shot("live-n3-review-cw721");
+    await click("Confirm and send");
+    for (let n = 0; !(await text()).includes("It's in a block."); n += 500) {
+      if (n > 90000) throw new Error("timed out waiting for the block");
+      await sleep(500);
+    }
+    const cwOwner = (await smart(cw.contract, { owner_of: { token_id: cw.id } })).owner;
+    console.log(`CW721 #${cw.id} owner now ${cwOwner}`);
+    if (cwOwner !== to) throw new Error("the CW721 didn't reach the recipient");
+    await click("Done");
+
+    await openNfts();
+    const evm = await openFirst("Choice Wallet Test EVM NFTs");
+    console.log(`ERC721 ${evm.contract} #${evm.id}`);
+    await waitText("Token ID");
+    await fill('input[aria-label="Recipient"]', 0, to);
+    await click("Review");
+    await waitText("YOU SEND AN NFT", 30000);
+    if (!(await text()).includes("Injective testnet")) throw new Error("the review is not for Injective testnet; stopping");
+    await shot("live-n4-review-erc721");
+    await click("Confirm and send");
+    for (let n = 0; !(await text()).includes("It's in a block."); n += 1000) {
+      if (n > 240000) throw new Error("timed out waiting for the receipt");
+      await sleep(1000);
+    }
+    await shot("live-n5-sent");
+    const evmOwner = `0x${(await evmRpc("eth_call", [{ to: evm.contract, data: `0x6352211e${BigInt(evm.id).toString(16).padStart(64, "0")}` }, "latest"])).slice(-40)}`;
+    console.log(`ERC721 #${evm.id} owner now ${evmOwner}`);
+    if (evmOwner.toLowerCase() !== to0x.toLowerCase()) throw new Error("the ERC721 didn't reach the recipient");
+    console.log("LIVE NFTS OK");
   } else if (tokenContract === "swap") {
     // 3a. A swap through Choice on testnet, where only its router runs (Choice's own pools,
     // an ERC20 at both ends): a site wraps 0.01 INJ into wINJ through the wallet; testnet

@@ -79,6 +79,18 @@ pub fn cw20_transfer(chain: &Chain, from: &str, cw20: &str, recipient: &str, amo
     execute_contract(chain, from, cw20, cosmwasm::transfer(recipient, amount), &[])
 }
 
+/// CW721 `transfer_nft` of NFT `token_id` in the collection at `cw721` to `recipient`.
+pub fn nft_transfer(chain: &Chain, from: &str, cw721: &str, recipient: &str, token_id: &str) -> Result<Any, Error> {
+    if !cosmwasm::is_token_id(token_id) {
+        return Err(Error::ContractJson);
+    }
+    chain.check_address(recipient)?;
+    if recipient == from {
+        return Err(Error::Address(recipient.into()));
+    }
+    execute_contract(chain, from, cw721, cosmwasm::transfer_nft(recipient, token_id), &[])
+}
+
 /// CW20 `send` of `amount` base units of the token at `cw20` to the contract `to`, calling
 /// its receive hook with `msg` (base64; empty for none).
 pub fn cw20_send(chain: &Chain, from: &str, cw20: &str, to: &str, amount: &str, msg: &str) -> Result<Any, Error> {

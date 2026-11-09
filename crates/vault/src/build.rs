@@ -27,6 +27,12 @@ pub(crate) enum OwnMsg {
         to: String,
         amount: String,
     },
+    /// CW721 `transfer_nft` of NFT `token_id` in the collection at `contract`.
+    NftTransfer {
+        contract: String,
+        to: String,
+        token_id: String,
+    },
     /// Injective: CW20 → its bank denom, through the network's CW20 adapter.
     Cw20ToBank { contract: String, amount: String },
     /// Injective: adapter bank denom → the CW20 at `contract`, to `to` (default: the signer).
@@ -129,6 +135,9 @@ pub(crate) fn cosmos(p: CosmosParams) -> Result<Value, VaultError> {
             OwnMsg::BankSend { to, amount } => builder::bank_send(chain, &from, &addr(&to)?, &amount)?,
             OwnMsg::Cw20Transfer { contract, to, amount } => {
                 builder::cw20_transfer(chain, &from, &addr(&contract)?, &addr(&to)?, &amount)?
+            }
+            OwnMsg::NftTransfer { contract, to, token_id } => {
+                builder::nft_transfer(chain, &from, &addr(&contract)?, &addr(&to)?, &token_id)?
             }
             OwnMsg::Cw20ToBank { contract, amount } => {
                 adapter::cw20_to_bank(network()?, &from, &addr(&contract)?, adapter()?, &amount)?
@@ -235,6 +244,9 @@ pub(crate) enum OwnCall {
         spender: String,
         expiration: U64,
     },
+    /// ERC721 `safeTransferFrom(from, to, token_id)` on `collection`, to the recipient `to`.
+    /// `amount` is "0".
+    NftTransfer { collection: String, token_id: String },
 }
 
 fn own_call(
@@ -296,6 +308,7 @@ fn own_call(
                 choice_wallet_evm::erc20::approve_calldata(&c.permit2(), &amount),
             ))
         }
+        OwnCall::NftTransfer { .. } => unreachable!("built in evm()"),
         OwnCall::Permit2Approve {
             token,
             spender,
@@ -327,6 +340,21 @@ pub(crate) fn evm(p: EvmParams) -> Result<Value, VaultError> {
     let to = address(&p.to)?;
     let from = address(&p.from)?;
     let mut tx = match (&p.token, &p.revoke, &p.call) {
+        (None, None, Some(OwnCall::NftTransfer { collection, token_id })) => {
+            if !amount.is_zero() {
+                return Err(VaultError::bad("an NFT transfer sends no INJ"));
+            }
+            if to == from {
+                return Err(VaultError::bad("that NFT is already this account's"));
+            }
+            let id = U256::from_dec_str(token_id)?;
+            Eip1559Tx::contract_call(
+                chain_id,
+                address(collection)?,
+                U256::ZERO,
+                choice_wallet_evm::erc20::nft_transfer_calldata(&from, &to, &id),
+            )
+        }
         (None, None, Some(call)) => own_call(entry, chain_id, &from, to, amount, call)?,
         (_, _, Some(_)) => return Err(VaultError::bad("a call takes no token or revoke")),
         (Some(token), Some(spender), None) => {

@@ -435,6 +435,12 @@ fn contract_display(entry: &Entry, r: &TxRequest, selector: Option<[u8; 4]>) -> 
         });
     }
     let args = tx.data.get(4..).unwrap_or_default();
+    if selector == Some(choice_wallet_evm::erc20::SAFE_TRANSFER_FROM_SELECTOR)
+        && let Ok(v) = abi::decode(&[Ty::Word, Ty::Word, Ty::Word], args)
+        && let (Ok(from), Ok(to), Ok(id)) = (v[0].address(), v[1].address(), v[2].uint())
+    {
+        return json!({ "type": "nft_transfer", "from": hex_addr(&from), "to": hex_addr(&to), "token_id": id.to_string() });
+    }
     match selector {
         Some(choice_wallet_evm::erc20::APPROVE_SELECTOR) => {
             if let Ok(v) = abi::decode(&[Ty::Word, Ty::Word], args)

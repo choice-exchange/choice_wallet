@@ -32,6 +32,12 @@ export type AccountInfo = {
 
 export type NewSecret = { mnemonic: string } | { private_key: string };
 
+export type { Nft, NftCollection, NftStandard } from "@choice-wallet/chain";
+import type { NftCollection, NftStandard } from "@choice-wallet/chain";
+/** The account's NFTs by collection; `evmDown`: no EVM endpoint answered, so ERC721s may be
+ *  missing. */
+export type NftList = { collections: NftCollection[]; evmDown?: true };
+
 /** What a hardware wallet signs, as the vault gave it: the app (Ledger's Cosmos or Ethereum
  *  app), what kind of thing it is, the exact bytes (hex), and the account's path. */
 export type DeviceRequest = { app: "cosmos" | "ethereum"; kind: "amino" | "transaction" | "message"; payload: string; path: string };
@@ -108,6 +114,10 @@ export type UiRequest =
   | { type: "approvals" }
   | { type: "prepare_revoke"; items: RevokeItem[] }
   | { type: "prepare_revoke_erc20"; token: string; spender: string }
+  /** NFTs the account holds; a collection added by its contract; one NFT sent. */
+  | { type: "nfts" }
+  | { type: "add_nft_collection"; address: string }
+  | { type: "prepare_nft_send"; standard: NftStandard; collection: string; tokenId: string; to: string }
   | ({ type: "prepare_stake" } & StakeRequest)
   /** Sign and broadcast the prepared send whose review showed `digest`. `confirm` is the
    *  word the review asked for, if any. */
@@ -259,6 +269,9 @@ export type SendReview = {
   /** One step of a swap: which tokens it trades (wallet keys, in `tokens`) and what
    *  Choice expects it to return (display only; the minimum in `display` is the guard). */
   swap?: SwapStepInfo;
+  /** An NFT send: which NFT, as the host checked it is held (the vault's decode says
+   *  where it goes). */
+  nft?: { collection: string; tokenId: string; standard: NftStandard };
 };
 
 /** What a swap step's review needs beyond the vault's reading. */
@@ -505,6 +518,9 @@ export type Replies = {
   approvals: ApprovalsSummary;
   prepare_revoke: SendReview;
   prepare_revoke_erc20: SendReview;
+  nfts: NftList;
+  add_nft_collection: NftList;
+  prepare_nft_send: SendReview;
   prepare_stake: SendReview;
   /** Sent, or (for a Ledger account) what the device must sign first. */
   confirm_send: Sent | { device: DeviceRequest };

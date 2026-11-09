@@ -11,7 +11,7 @@
 // Its Etherscan-style API pages by number, like the tx index: page `n` of `limit`
 // transfers, newest first (checked on both networks' instances, 2026-11-09).
 
-import { ChainError, Down, isObject, Pool, type Fetch } from "./pool.ts";
+import { ChainError, Down, isObject, Pool, Unreachable, type Fetch } from "./pool.ts";
 
 /** `keccak256("Approval(address,address,uint256)")`. */
 const APPROVAL = "0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925";
@@ -78,5 +78,33 @@ export class EvmIndex {
       }
       return { txs: [...seen].map(([hash, height]) => ({ hash, height })), done: result.length < limit };
     })) as { txs: { hash: string; height: bigint }[]; done: boolean };
+  }
+
+  /** ERC721 tokens Blockscout says came to `holder` (its latest `limit` NFT transfers):
+   *  places to look. Whether each is still held is for `ownerOf` to say. */
+  async nftTransfers(holder: string, limit = 200): Promise<{ contract: string; tokenId: string }[]> {
+    if (!/^0x[0-9a-fA-F]{40}$/.test(holder)) throw new RangeError(`not an address: ${holder}`);
+    const q = new URLSearchParams({ module: "account", action: "tokennfttx", address: holder, page: "1", offset: String(limit), sort: "desc" });
+    try {
+      return (await this.pool.run(async (base) => {
+        const { status, body } = await this.pool.json(`${base}/api?${q}`);
+        if (status !== 200 || !isObject(body)) throw new Down(`HTTP ${status}`);
+        const result = body["result"];
+        if (!Array.isArray(result)) throw new Down(`index: ${String(body["message"] ?? "no result").slice(0, 80)}`);
+        const me = holder.toLowerCase();
+        const out = new Map<string, { contract: string; tokenId: string }>();
+        for (const t of result.slice(0, limit)) {
+          if (!isObject(t) || typeof t["contractAddress"] !== "string" || typeof t["tokenID"] !== "string" || typeof t["to"] !== "string") continue;
+          if (t["to"].toLowerCase() !== me || !/^0x[0-9a-fA-F]{40}$/.test(t["contractAddress"]) || !/^[0-9]{1,78}$/.test(t["tokenID"])) continue;
+          const key = `${t["contractAddress"].toLowerCase()} ${t["tokenID"]}`;
+          if (!out.has(key)) out.set(key, { contract: t["contractAddress"].toLowerCase(), tokenId: t["tokenID"] });
+        }
+        return [...out.values()];
+      })) as { contract: string; tokenId: string }[];
+    } catch (e) {
+      // An index that's down or rate-limited leaves the rest to show.
+      if (e instanceof Down || e instanceof ChainError || e instanceof Unreachable) return [];
+      throw e;
+    }
   }
 }

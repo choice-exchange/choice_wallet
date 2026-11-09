@@ -16,6 +16,7 @@ import { DEFAULT_FILTER } from "@choice-wallet/ui/token-filter";
 import { createDapps, type DappReply } from "./dapp";
 import { createSender } from "./send";
 import { createApprovals } from "./approvals";
+import { createNfts } from "./nfts";
 import { createContacts } from "./contacts";
 import { createStaking } from "./staking";
 import { createSwaps } from "./swap";
@@ -50,7 +51,7 @@ export const AUTO_LOCK_MINUTES = 15;
 const LOCK_CHOICES = [5, 15, 60, 240];
 /** Local storage that belongs to the wallet, not the device: removing the wallet clears it.
  *  Endpoints, the network and other settings stay. */
-const WALLET_KEYS = ["vault", "wallets", "keystore", "kind", "accounts", "active_account", "connections", "custom_tokens", "token_filter", "address_book"];
+const WALLET_KEYS = ["vault", "wallets", "keystore", "kind", "accounts", "active_account", "connections", "custom_tokens", "custom_nfts", "token_filter", "address_book"];
 /** The shortest password, as the keystore takes it. */
 const MIN_PASSWORD = 8;
 
@@ -156,6 +157,7 @@ export function createService(d: Deps) {
     },
   });
   const status = wallets.status;
+  const nfts = createNfts({ sender, local: d.local, vault: d.vault });
   const contacts = createContacts({ vault: d.vault, local: d.local, lcd: sender.lcd, accounts: async () => (await wallets.stored()).accounts });
 
   const dapps = createDapps({
@@ -367,12 +369,15 @@ export function createService(d: Deps) {
       case "prepare_swap":
       case "prepare_revoke":
       case "prepare_revoke_erc20":
+      case "nfts":
+      case "add_nft_collection":
+      case "prepare_nft_send":
       case "confirm_send":
       case "ledger_signed":
       case "tx_status": {
         const a = await active();
         if ("ok" in a) return a;
-        if ((r.type === "prepare_send" || r.type === "prepare_convert" || r.type === "prepare_stake" || r.type === "prepare_revoke" || r.type === "prepare_revoke_erc20" || r.type === "prepare_swap") && isWatch(a.account)) {
+        if ((r.type === "prepare_send" || r.type === "prepare_convert" || r.type === "prepare_stake" || r.type === "prepare_revoke" || r.type === "prepare_revoke_erc20" || r.type === "prepare_swap" || r.type === "prepare_nft_send") && isWatch(a.account)) {
           return err("watch_only", "This account is watch-only. Switch to one that can sign.");
         }
         if (r.type === "balances") {
@@ -396,6 +401,9 @@ export function createService(d: Deps) {
         if (r.type === "prepare_swap") return swaps.prepare(a.net, a.account, r.quote);
         if (r.type === "prepare_revoke") return approvals.prepare(a.net, a.account, r.items);
         if (r.type === "prepare_revoke_erc20") return approvals.prepareErc20(a.net, a.account, r.token, r.spender);
+        if (r.type === "nfts") return nfts.list(a.net, a.account);
+        if (r.type === "add_nft_collection") return nfts.add(a.net, a.account, r.address);
+        if (r.type === "prepare_nft_send") return nfts.prepare(a.net, a.account, r);
         if (r.type === "confirm_send") return sender.confirm(a.key, wallets.signer, r);
         if (r.type === "ledger_signed") return sender.deviceSigned(r);
         return sender.status(a.net, r.hash);

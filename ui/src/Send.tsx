@@ -400,6 +400,27 @@ export function Review({
           )}
         </div>
       ))}
+      {view.nfts.map((n, i) => (
+        <div className="surface-hero" key={`n${i}`}>
+          <div className="eyebrow">You send an NFT</div>
+          <div className="hero num" style={{ fontSize: 24, wordBreak: "break-all" }}>
+            #{n.tokenId}
+          </div>
+          <div className="meta mono" style={{ marginTop: 4, wordBreak: "break-all" }}>
+            Collection {n.collection}
+          </div>
+          <hr className="divider" style={{ margin: "14px 0 12px" }} />
+          <div className="eyebrow">To</div>
+          <code className="mono recipient" style={{ display: "block", marginTop: 6, fontSize: 14, lineHeight: "21px" }}>
+            {n.to}
+          </code>
+          {entered && entered.toLowerCase() !== n.to.toLowerCase() && (
+            <div className="meta" style={{ marginTop: 4, wordBreak: "break-all" }}>
+              You entered {entered}
+            </div>
+          )}
+        </div>
+      ))}
       {view.converts.map((cv, i) => (
         <div className="surface-hero" key={`c${i}`}>
           <div className="eyebrow">You convert · {formName(cv.from.denom)}</div>

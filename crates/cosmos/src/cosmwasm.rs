@@ -1,13 +1,15 @@
 //! The CosmWasm contract messages the wallet builds and recognises.
 //!
 //! - CW20 `transfer` and `send`.
+//! - CW721 (NFT) `transfer_nft`, `send_nft`, `approve`, `approve_all`, `revoke` and
+//!   `revoke_all`.
 //! - The CW20 adapter's `redeem_and_transfer` (the adapter runs on Injective). Sending a
 //!   CW20 to the adapter (`send` with an empty `msg`) mints the bank denom
 //!   `factory/{adapter}/{cw20}` to the sender; redeeming burns that denom and returns the
 //!   CW20.
 //!
 //! Recognition is by message shape only. Whether the contract really is a CW20 or the
-//! adapter is for the caller to check against its token list.
+//! adapter is for the caller to check against its token list; a CW721's for its NFT list.
 
 use serde::{Deserialize, Serialize};
 
@@ -59,6 +61,45 @@ pub enum ContractCall {
         /// Who receives the CW20.
         recipient: Option<String>,
     },
+    /// CW721 `transfer_nft`: give NFT `token_id` to `recipient`.
+    NftTransfer {
+        /// Receiving account.
+        recipient: String,
+        /// The NFT's ID in its collection.
+        token_id: String,
+    },
+    /// CW721 `send_nft`: give NFT `token_id` to `contract` and call its receive hook.
+    NftSend {
+        /// Receiving contract.
+        contract: String,
+        /// The NFT's ID in its collection.
+        token_id: String,
+        /// Base64 message passed to the receiving contract.
+        msg: String,
+    },
+    /// CW721 `approve`: let `spender` take NFT `token_id`.
+    NftApprove {
+        /// Who may take it.
+        spender: String,
+        /// The NFT.
+        token_id: String,
+        /// When the approval ends, as the contract's JSON; `None` for never.
+        expires: Option<String>,
+    },
+    /// CW721 `approve_all`: let `operator` take every NFT the sender holds in the collection.
+    NftApproveAll {
+        /// Who may take them.
+        operator: String,
+        /// When the approval ends, as the contract's JSON; `None` for never.
+        expires: Option<String>,
+    },
+    /// CW721 `revoke` / `revoke_all`: take an approval back.
+    NftRevoke {
+        /// Whose approval.
+        spender: String,
+        /// The NFT, or `None` for every NFT (`revoke_all`).
+        token_id: Option<String>,
+    },
     /// Any other call. Shown raw.
     Other,
 }
@@ -91,6 +132,39 @@ enum Known {
         spender: String,
         amount: String,
     },
+    TransferNft {
+        recipient: String,
+        token_id: String,
+    },
+    SendNft {
+        contract: String,
+        token_id: String,
+        msg: String,
+    },
+    Approve {
+        spender: String,
+        token_id: String,
+        #[serde(default)]
+        expires: Option<serde_json::Value>,
+    },
+    ApproveAll {
+        operator: String,
+        #[serde(default)]
+        expires: Option<serde_json::Value>,
+    },
+    Revoke {
+        spender: String,
+        token_id: String,
+    },
+    RevokeAll {
+        operator: String,
+    },
+}
+
+/// A CW721 token ID the wallet will name: 1 to 256 characters, none of them control
+/// characters. (CW721 allows any string; one built to mislead is shown raw elsewhere.)
+pub fn is_token_id(id: &str) -> bool {
+    !id.is_empty() && id.chars().count() <= 256 && !id.chars().any(char::is_control)
 }
 
 /// Parse a `MsgExecuteContract.msg`. The bytes must be UTF-8 JSON, as wasmd requires.
@@ -116,6 +190,39 @@ pub fn parse(msg: &[u8]) -> Result<ContractCall, Error> {
         Ok(Known::DecreaseAllowance { spender, amount }) if is_canonical_amount(&amount) => {
             ContractCall::Cw20DecreaseAllowance { spender, amount }
         }
+        Ok(Known::TransferNft { recipient, token_id }) if is_token_id(&token_id) => {
+            ContractCall::NftTransfer { recipient, token_id }
+        }
+        Ok(Known::SendNft {
+            contract,
+            token_id,
+            msg,
+        }) if is_token_id(&token_id) => ContractCall::NftSend {
+            contract,
+            token_id,
+            msg,
+        },
+        Ok(Known::Approve {
+            spender,
+            token_id,
+            expires,
+        }) if is_token_id(&token_id) => ContractCall::NftApprove {
+            spender,
+            token_id,
+            expires: expires.map(|e| e.to_string()),
+        },
+        Ok(Known::ApproveAll { operator, expires }) => ContractCall::NftApproveAll {
+            operator,
+            expires: expires.map(|e| e.to_string()),
+        },
+        Ok(Known::Revoke { spender, token_id }) if is_token_id(&token_id) => ContractCall::NftRevoke {
+            spender,
+            token_id: Some(token_id),
+        },
+        Ok(Known::RevokeAll { operator }) => ContractCall::NftRevoke {
+            spender: operator,
+            token_id: None,
+        },
         _ => ContractCall::Other,
     };
     Ok(call)
@@ -150,6 +257,14 @@ pub fn decrease_allowance(spender: &str, amount: &str) -> Vec<u8> {
     to_json(&Known::DecreaseAllowance {
         spender: spender.into(),
         amount: amount.into(),
+    })
+}
+
+/// CW721 `{"transfer_nft": {"recipient", "token_id"}}`.
+pub fn transfer_nft(recipient: &str, token_id: &str) -> Vec<u8> {
+    to_json(&Known::TransferNft {
+        recipient: recipient.into(),
+        token_id: token_id.into(),
     })
 }
 
@@ -218,6 +333,46 @@ mod tests {
             decrease_allowance("inj1a", "5"),
             br#"{"decrease_allowance":{"spender":"inj1a","amount":"5"}}"#
         );
+    }
+
+    #[test]
+    fn recognises_nft_calls() {
+        assert_eq!(
+            transfer_nft("inj1a", "7"),
+            br#"{"transfer_nft":{"recipient":"inj1a","token_id":"7"}}"#
+        );
+        assert_eq!(
+            parse(&transfer_nft("inj1a", "7")).unwrap(),
+            ContractCall::NftTransfer {
+                recipient: "inj1a".into(),
+                token_id: "7".into()
+            }
+        );
+        assert_eq!(
+            parse(br#"{"approve_all":{"operator":"inj1m"}}"#).unwrap(),
+            ContractCall::NftApproveAll {
+                operator: "inj1m".into(),
+                expires: None
+            }
+        );
+        assert!(matches!(
+            parse(br#"{"approve":{"spender":"inj1m","token_id":"7","expires":{"never":{}}}}"#).unwrap(),
+            ContractCall::NftApprove { expires: Some(_), .. }
+        ));
+        assert_eq!(
+            parse(br#"{"revoke_all":{"operator":"inj1m"}}"#).unwrap(),
+            ContractCall::NftRevoke {
+                spender: "inj1m".into(),
+                token_id: None
+            }
+        );
+        for bad in [
+            r#"{"transfer_nft":{"recipient":"inj1a","token_id":""}}"#,
+            r#"{"transfer_nft":{"recipient":"inj1a","token_id":"a\u0000b"}}"#,
+            r#"{"transfer_nft":{"recipient":"inj1a","token_id":7}}"#,
+        ] {
+            assert_eq!(parse(bad.as_bytes()).unwrap(), ContractCall::Other, "{bad}");
+        }
     }
 
     #[test]

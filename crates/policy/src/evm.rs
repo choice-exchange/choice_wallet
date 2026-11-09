@@ -190,6 +190,11 @@ const STAKING_METHODS: &[Method] = &[
 const APPROVE: [u8; 4] = 0x095ea7b3u32.to_be_bytes();
 const INCREASE_ALLOWANCE: [u8; 4] = 0x39509351u32.to_be_bytes();
 const SET_APPROVAL_FOR_ALL: [u8; 4] = 0xa22cb465u32.to_be_bytes();
+/// ERC721 `safeTransferFrom(address,address,uint256)` and its `bytes` form.
+pub(crate) const SAFE_TRANSFER_FROM: [u8; 4] = 0x42842e0eu32.to_be_bytes();
+const SAFE_TRANSFER_FROM_DATA: [u8; 4] = 0xb88d4fdeu32.to_be_bytes();
+/// `transferFrom(address,address,uint256)`: ERC20's and ERC721's alike.
+const TRANSFER_FROM: [u8; 4] = 0x23b872ddu32.to_be_bytes();
 /// Permit2 `approve(address token, address spender, uint160 amount, uint48 expiration)`.
 const PERMIT2_APPROVE: [u8; 4] = 0x87517c45u32.to_be_bytes();
 
@@ -293,6 +298,40 @@ fn contract_call(
                     amount,
                     sel == APPROVE,
                 ));
+                return;
+            }
+        }
+        SAFE_TRANSFER_FROM | SAFE_TRANSFER_FROM_DATA | TRANSFER_FROM
+            if data.len() == 4 + 3 * 32 || (sel == SAFE_TRANSFER_FROM_DATA && data.len() >= 4 + 4 * 32) =>
+        {
+            if let (Some(from), Some(dest), Some(id)) = (address_arg(data, 0), address_arg(data, 1), uint_arg(data, 2))
+            {
+                let dest_hex = dest.to_checksum_hex();
+                let what = if sel == TRANSFER_FROM {
+                    format!("tokens or NFT #{id} of contract {}", short(&to))
+                } else {
+                    format!("NFT #{id} of collection {}", short(&to))
+                };
+                let params = json!({ "collection": to, "from": from.to_checksum_hex(), "to": dest_hex, "token_id": id.to_string() });
+                if from == req.from {
+                    recipient(ctx, &dest_hex, None, out);
+                    out.push(finding(
+                        "nft_send",
+                        Level::Info,
+                        format!("Gives {what} to {}.", short(&dest_hex)),
+                        params,
+                    ));
+                } else {
+                    out.push(finding(
+                        "transfer_from_other",
+                        Level::Amber,
+                        format!(
+                            "Moves {what} out of {}, using its approval.",
+                            short(&from.to_checksum_hex())
+                        ),
+                        params,
+                    ));
+                }
                 return;
             }
         }

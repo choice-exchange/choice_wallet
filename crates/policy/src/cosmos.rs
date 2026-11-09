@@ -139,6 +139,70 @@ fn message(
                     format!("Lowers {}'s allowance for this token.", short(spender)),
                     json!({ "token": contract, "spender": spender, "amount": amount }),
                 )),
+                ContractCall::NftTransfer {
+                    recipient: to,
+                    token_id,
+                } => {
+                    recipient(ctx, to, Some(memo), out);
+                    out.push(finding(
+                        "nft_send",
+                        Level::Info,
+                        format!(
+                            "Gives NFT {} of collection {} to {}.",
+                            nft_name(token_id),
+                            short(contract),
+                            short(to)
+                        ),
+                        json!({ "collection": contract, "token_id": token_id, "to": to }),
+                    ));
+                }
+                ContractCall::NftSend {
+                    contract: to, token_id, ..
+                } => out.push(finding(
+                    "nft_send_contract",
+                    Level::Info,
+                    format!(
+                        "Gives NFT {} to contract {}, which runs its own code with it.",
+                        nft_name(token_id),
+                        short(to)
+                    ),
+                    json!({ "collection": contract, "token_id": token_id, "to": to }),
+                )),
+                ContractCall::NftApprove {
+                    spender,
+                    token_id,
+                    expires,
+                } => out.push(finding(
+                    "nft_approval",
+                    Level::Amber,
+                    format!(
+                        "{} could take NFT {} of this collection{}.",
+                        short(spender),
+                        nft_name(token_id),
+                        cw_until(expires.as_deref())
+                    ),
+                    json!({ "collection": contract, "spender": spender, "token_id": token_id, "expires": expires }),
+                )),
+                ContractCall::NftApproveAll { operator, expires } => out.push(finding(
+                    "nft_approval_all",
+                    Level::Red,
+                    format!(
+                        "{} could take ALL your NFTs in collection {}{}.",
+                        short(operator),
+                        short(contract),
+                        cw_until(expires.as_deref())
+                    ),
+                    json!({ "collection": contract, "operator": operator, "expires": expires }),
+                )),
+                ContractCall::NftRevoke { spender, token_id } => out.push(finding(
+                    "nft_approval_revoke",
+                    Level::Info,
+                    match token_id {
+                        Some(id) => format!("Takes back {}'s approval for NFT {}.", short(spender), nft_name(id)),
+                        None => format!("Takes back {}'s approval for this whole collection.", short(spender)),
+                    },
+                    json!({ "collection": contract, "spender": spender, "token_id": token_id }),
+                )),
                 ContractCall::AdapterRedeem { .. } => {}
                 ContractCall::Other => {
                     if !known_contract(ctx, contract) {
@@ -369,6 +433,34 @@ fn describe_allowance(a: &Allowance) -> (&'static str, Option<i64>) {
 }
 
 /// CW20 `increase_allowance`.
+/// An NFT's ID as a sentence names it: `#7`, or a long one cut short.
+fn nft_name(id: &str) -> String {
+    let short: String = id.chars().take(24).collect();
+    if short.len() < id.len() {
+        format!("#{short}…")
+    } else {
+        format!("#{short}")
+    }
+}
+
+/// The end of a CosmWasm approval (`{"at_time":"<ns>"}`, `{"at_height":n}`, `{"never":{}}`),
+/// as a sentence ends with it.
+fn cw_until(expires: Option<&str>) -> String {
+    let v = expires.and_then(|e| serde_json::from_str::<serde_json::Value>(e).ok());
+    if let Some(ns) = v
+        .as_ref()
+        .and_then(|v| v["at_time"].as_str())
+        .and_then(|t| t.parse::<u128>().ok())
+    {
+        return i64::try_from(ns / 1_000_000_000)
+            .map_or_else(|_| ", with no end date".into(), |t| format!(", until {}", date(t)));
+    }
+    if let Some(h) = v.as_ref().and_then(|v| v["at_height"].as_u64()) {
+        return format!(", until block {h}");
+    }
+    ", with no end date".into()
+}
+
 fn allowance(ctx: &Context, token: &str, spender: &str, amount: &str, expires: Option<&str>) -> Finding {
     let amount_u = U256::from_dec_str(amount).unwrap_or(U256::MAX);
     let params = json!({ "token": token, "spender": spender, "amount": amount, "expires": expires });
@@ -408,6 +500,66 @@ mod tests {
 
     fn grade(msgs: &[Msg]) -> Assessment {
         cosmos(msgs, ME, "", CosmosFee::default(), &Context::default())
+    }
+
+    fn exec(contract: &str, call: ContractCall) -> Msg {
+        Msg::ExecuteContract {
+            sender: ME.into(),
+            contract: contract.into(),
+            funds: vec![],
+            json: String::new(),
+            call,
+        }
+    }
+
+    #[test]
+    fn nfts() {
+        let give = grade(&[exec(
+            ADAPTER,
+            ContractCall::NftTransfer {
+                recipient: OTHER.into(),
+                token_id: "7".into(),
+            },
+        )]);
+        assert_eq!((give.level, give.findings[0].rule), (Level::Info, "nft_send"));
+        assert_eq!(
+            give.findings[0].message,
+            "Gives NFT #7 of collection inj14e…neuk to inj1d7…z8h8."
+        );
+        let all = grade(&[exec(
+            ADAPTER,
+            ContractCall::NftApproveAll {
+                operator: OTHER.into(),
+                expires: None,
+            },
+        )]);
+        assert_eq!((all.level, all.findings[0].rule), (Level::Red, "nft_approval_all"));
+        assert!(
+            all.findings[0].message.ends_with("with no end date."),
+            "{}",
+            all.findings[0].message
+        );
+        let one = grade(&[exec(
+            ADAPTER,
+            ContractCall::NftApprove {
+                spender: OTHER.into(),
+                token_id: "7".into(),
+                expires: Some(r#"{"at_height":100}"#.into()),
+            },
+        )]);
+        assert_eq!((one.level, one.findings[0].rule), (Level::Amber, "nft_approval"));
+        assert!(one.findings[0].message.ends_with("until block 100."));
+        let back = grade(&[exec(
+            ADAPTER,
+            ContractCall::NftRevoke {
+                spender: OTHER.into(),
+                token_id: None,
+            },
+        )]);
+        assert_eq!(
+            (back.level, back.findings[0].rule),
+            (Level::Info, "nft_approval_revoke")
+        );
     }
 
     fn rules(a: &Assessment) -> Vec<&'static str> {

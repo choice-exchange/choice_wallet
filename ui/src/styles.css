@@ -553,3 +553,10 @@ details.raw summary {
 .ledger-row { display: flex; align-items: center; gap: 8px; }
 .ledger-pick { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; cursor: pointer; }
 .ledger-pick input { width: 18px; height: 18px; accent-color: var(--gold, #c9a227); }
+
+/* NFTs: a tile of letters stands in for an image (none is loaded). */
+.nft-tile { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 36px; height: 36px; border-radius: 10px; background: var(--raised); border: 1px solid var(--hairline); color: var(--gold); font-weight: 600; font-size: 13px; letter-spacing: 0.02em; }
+.nft-tile.small { width: 36px; height: 36px; font-size: 11px; }
+.nft-hero { display: flex; align-items: center; gap: 14px; }
+.nft-hero .nft-tile { width: 56px; height: 56px; font-size: 18px; border-radius: 14px; }
+.nft-hero .symbol { font-size: 18px; font-weight: 600; word-break: break-all; }

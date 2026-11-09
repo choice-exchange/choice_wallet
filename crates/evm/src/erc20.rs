@@ -41,6 +41,21 @@ pub fn parse_transfer(data: &[u8]) -> Option<(EthAddress, U256)> {
     Some((to, amount))
 }
 
+/// `bytes4(keccak256("safeTransferFrom(address,address,uint256)"))`: ERC721.
+pub const SAFE_TRANSFER_FROM_SELECTOR: [u8; 4] = [0x42, 0x84, 0x2e, 0x0e];
+
+/// Calldata for ERC721 `safeTransferFrom(from, to, token_id)`.
+pub fn nft_transfer_calldata(from: &EthAddress, to: &EthAddress, token_id: &U256) -> Vec<u8> {
+    let mut data = Vec::with_capacity(100);
+    data.extend_from_slice(&SAFE_TRANSFER_FROM_SELECTOR);
+    for a in [from, to] {
+        data.extend_from_slice(&[0; 12]);
+        data.extend_from_slice(a.as_bytes());
+    }
+    data.extend_from_slice(&token_id.to_be_bytes());
+    data
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

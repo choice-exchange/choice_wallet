@@ -1133,3 +1133,47 @@ fn a_ledger_signs_arbitrary_messages_in_the_cosmos_app() {
     );
     assert_eq!(signed["signature"], approve_and_sign(&request, LEDGER_0())["signature"]);
 }
+
+#[test]
+fn own_nft_sends_build_decode_and_sign() {
+    // A CW721 (test-phrase account 2's address stands in for the collection: only its shape
+    // matters) in both sign modes, and an ERC721 on Injective EVM.
+    let accounts = vectors("direct")["accounts"].clone();
+    let collection = accounts[2]["inj"].clone();
+    let to = accounts[1]["inj"].clone();
+    for mode in ["direct", "amino_json"] {
+        let request = build_staking(
+            json!([{ "type": "nft_transfer", "contract": collection, "to": to, "token_id": "42" }]),
+            mode,
+        )
+        .unwrap()["request"]
+            .clone();
+        let d = ok("decode", json!({ "request": request }));
+        let m = &d["display"]["messages"][0];
+        assert_eq!((&m["call"]["type"], &m["call"]["token_id"], &m["call"]["recipient"]), (&json!("nft_transfer"), &json!("42"), &to), "{mode}");
+        assert_eq!(d["risk"]["findings"][0]["rule"], "nft_send", "{mode}");
+        assert!(approve_and_sign(&request, account(0))["tx_raw"].is_string(), "{mode}");
+    }
+    // To itself, or a token ID with a control character: refused.
+    let me = accounts[0]["inj"].clone();
+    assert!(build_staking(json!([{ "type": "nft_transfer", "contract": collection, "to": me, "token_id": "1" }]), "direct").is_err());
+    assert!(build_staking(json!([{ "type": "nft_transfer", "contract": collection, "to": to, "token_id": "a\u{7}" }]), "direct").is_err());
+
+    let checksum = |a: &Value| ok("addresses", json!({ "address": a }))["addresses"]["eip155:1776"].clone();
+    let from = checksum(&accounts[0]["eth"]);
+    let dest = checksum(&accounts[1]["eth"]);
+    let request = ok(
+        "build_evm",
+        json!({
+            "chain": "eip155:1776", "from": from, "to": dest, "amount": "0",
+            "call": { "type": "nft_transfer", "collection": "0x1111111111111111111111111111111111111111", "token_id": "7" },
+            "nonce": 1, "gas_limit": 90000, "max_fee_per_gas": "160000000", "max_priority_fee_per_gas": "0",
+        }),
+    )["request"]
+        .clone();
+    let d = ok("decode", json!({ "request": request }));
+    assert_eq!(d["display"]["to"], "0x1111111111111111111111111111111111111111");
+    assert_eq!(d["display"]["call"], json!({ "type": "nft_transfer", "from": from, "to": dest, "token_id": "7" }));
+    assert_eq!(d["risk"]["findings"][0]["rule"], "nft_send");
+    assert!(approve_and_sign(&request, account(0))["raw"].is_string());
+}
