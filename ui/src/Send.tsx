@@ -4,9 +4,10 @@ import { cw20Address, evmAddress, formatShort, formatUnits, parseUnits, shortDen
 import { useEffect, useState, type FormEvent } from "react";
 
 import { useBackend } from "./backend";
+import { RecipientPicker } from "./Contacts";
 import { ArrowDownIcon, CheckIcon, ChevronDownIcon, ClockIcon, CloseIcon, ExternalIcon } from "./icons";
 import { BackBar, Callout, formatUsd, Screen, shortAddress, tokenSub } from "./kit";
-import type { Balance, Coin, NetworkId, SendReview, Sent, TokenInfo, TxState } from "./protocol";
+import type { AccountInfo, Balance, Coin, Contact, NetworkId, RecipientCheck, SendReview, Sent, TokenInfo, TxState } from "./protocol";
 import { useRequest } from "./request";
 import { permissionName } from "./permissions";
 import { shown, type StakeLine } from "./review";
@@ -26,24 +27,74 @@ export function parseEntered(amount: string, max: boolean, token: Balance): { pa
   }
 }
 
+/** An address worth asking the host about. */
+const ADDRESS = /^(inj1[02-9ac-hj-np-z]{38}|0x[0-9a-fA-F]{40})$/;
+
 export function SendForm({
   balances,
+  accounts,
   denom: initial,
   onReview,
   onBack,
 }: {
   balances: Balance[];
+  /** The user's other accounts, to send to. */
+  accounts: AccountInfo[];
   denom?: string | undefined;
   onReview: (review: SendReview, entered: string, denom: string) => void;
   onBack: () => void;
 }) {
+  const backend = useBackend();
   const [denom, setDenom] = useState(initial ?? balances[0]?.denom ?? "");
   const [picking, setPicking] = useState(false);
+  const [choosing, setChoosing] = useState(false);
   const [to, setTo] = useState("");
+  const [memo, setMemo] = useState("");
   const [amount, setAmount] = useState("");
   const [max, setMax] = useState(false);
+  const [contacts, setContacts] = useState<Contact[] | null>(null);
+  const [check, setCheck] = useState<RecipientCheck | null>(null);
   const { run, error, busy } = useRequest();
   const token = balances.find((b) => b.denom === denom);
+
+  useEffect(() => {
+    void backend.send({ type: "contacts" }).then((r) => setContacts(r.ok ? r.result : []));
+  }, []);
+  // What the wallet knows of the recipient, once it looks like an address: a contact (with
+  // its memo), one of the user's accounts, or an exchange's deposit address.
+  useEffect(() => {
+    const entered = to.trim();
+    setCheck(null);
+    if (!ADDRESS.test(entered)) return;
+    let live = true;
+    const timer = setTimeout(() => {
+      void backend.send({ type: "check_recipient", to: entered }).then((r) => {
+        if (!live || !r.ok) return;
+        setCheck(r.result);
+        const saved = r.result.contact?.memo;
+        if (saved) setMemo((m) => m || saved);
+      });
+    }, 300);
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+  }, [to]);
+
+  if (choosing) {
+    return (
+      <RecipientPicker
+        accounts={accounts}
+        contacts={contacts}
+        onBack={() => setChoosing(false)}
+        onPick={(address, m) => {
+          setTo(address);
+          setMemo(m);
+          setChoosing(false);
+        }}
+      />
+    );
+  }
 
   if (picking || !token) {
     return (
@@ -74,12 +125,14 @@ export function SendForm({
   }
 
   const { parsed, problem } = parseEntered(amount, max, token);
+  // An EVM-only token moves in an EVM transaction, which has no memo.
+  const evmOnly = evmAddress(token.denom) !== null;
 
   async function submit(e: FormEvent) {
     e.preventDefault();
     if (!parsed || !token) return;
     const entered = to.trim();
-    const review = await run({ type: "prepare_send", denom: token.denom, to: entered, amount: parsed });
+    const review = await run({ type: "prepare_send", denom: token.denom, to: entered, amount: parsed, ...(evmOnly || !memo.trim() ? {} : { memo: memo.trim() }) });
     if (review) onReview(review, entered, token.denom);
   }
 
@@ -126,17 +179,46 @@ export function SendForm({
           {!token.known && <div className="meta mono" style={{ marginTop: 4 }}>{token.denom}</div>}
         </div>
         {problem && <p className="error">{problem}</p>}
-        <label className="field">
-          <span className="eyebrow">To</span>
+        <div className="field">
+          <div className="section-head" style={{ marginTop: 0 }}>
+            <span className="eyebrow">To</span>
+            <button type="button" className="link" onClick={() => setChoosing(true)}>
+              Contacts
+            </button>
+          </div>
           <input
             className="input mono"
             placeholder="inj1… or 0x…"
+            aria-label="To"
             autoComplete="off"
             spellCheck={false}
             value={to}
             onChange={(e) => setTo(e.target.value)}
           />
-        </label>
+          {check?.mine && <span className="meta">Your account {check.mine}</span>}
+          {check?.contact && <span className="meta">{check.contact.name}, from your address book</span>}
+        </div>
+        {check?.takesMemo && evmOnly && (
+          <Callout level="red">This address needs a memo, which an EVM-only token&apos;s send can&apos;t carry.</Callout>
+        )}
+        {check?.takesMemo && !evmOnly && !check.contact?.memo && !memo.trim() && (
+          <Callout level="amber">This looks like an exchange: its deposits carry a memo. Add yours below.</Callout>
+        )}
+        {!evmOnly && (
+          <label className="field">
+            <span className="eyebrow">Memo</span>
+            <input
+              className="input mono"
+              placeholder="Optional"
+              aria-label="Memo"
+              autoComplete="off"
+              spellCheck={false}
+              value={memo}
+              onChange={(e) => setMemo(e.target.value)}
+            />
+            {check?.contact?.memo && memo.trim() === check.contact.memo && <span className="meta">The memo saved for {check.contact.name}.</span>}
+          </label>
+        )}
       </Screen>
     </form>
   );
@@ -410,7 +492,20 @@ const STAKE_VERB: Record<StakeLine["kind"], string> = {
 const POLL_MS = 1500;
 const POLL_TRIES = 40;
 
-export function SentView({ sent, onDone, converting = false, done }: { sent: Sent; onDone: () => void; converting?: boolean; done?: string }) {
+export function SentView({
+  sent,
+  onDone,
+  onSave,
+  converting = false,
+  done,
+}: {
+  sent: Sent;
+  onDone: () => void;
+  /** Offered when the recipient isn't saved yet: save it to the address book. */
+  onSave?: (() => void) | undefined;
+  converting?: boolean;
+  done?: string;
+}) {
   const backend = useBackend();
   const [state, setState] = useState<TxState | { state: "slow" }>({ state: "pending" });
 
@@ -456,6 +551,11 @@ export function SentView({ sent, onDone, converting = false, done }: { sent: Sen
           <button className="btn btn-gold" onClick={onDone}>
             Done
           </button>
+          {onSave && s !== "failed" && (
+            <button className="btn btn-quiet" onClick={onSave}>
+              Save address
+            </button>
+          )}
         </>
       }
     >

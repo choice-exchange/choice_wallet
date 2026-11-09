@@ -36,6 +36,10 @@ const sha = (b64) => createHash("sha256").update(Buffer.from(b64, "base64")).dig
 const FRIEND = "inj1nk9x9ajk4rgkzhqjjn7hr6w0k0jg2kj0knl55v";
 const SENT_TO = "inj1nk9x9ajk4rgkzhqjjn7hr6w0k0jg2kj0knl55v"; // the EIP-155 example key's address, the e2e's recipient
 const FEE_COLLECTOR = "inj17xpfvakm2amg962yls6f84z3kell8c5l6s5ye9";
+// Exchanges, at test addresses of one repeated byte: one saved with its memo (0x77…77), and
+// one the wallet reads from its deposits, which carry memos from many senders (0x88…88).
+const EXCHANGE = "inj1wamhwamhwamhwamhwamhwamhwamhwamhx9lynt";
+const FOUND_EXCHANGE = "inj13zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg257t5p";
 const attrs = (o) => Object.entries(o).map(([key, value]) => ({ key, value, index: true }));
 const moved = (from, to, amount) => [
   { type: "coin_spent", attributes: attrs({ spender: from, amount }) },
@@ -181,6 +185,17 @@ const lcd = createServer((req, res) => {
         return reply(200, { tx_responses: t ? [t] : [], total: t ? "1" : "0" });
       }
       const me = /'([a-z0-9]+)'$/.exec(q)?.[1] ?? "";
+      if (q.startsWith("coin_received.receiver=") && [SENT_TO, EXCHANGE, FOUND_EXCHANGE].includes(me)) {
+        // A recipient, asked about before a send: what it received.
+        const list =
+          me === FOUND_EXCHANGE
+            ? Array.from({ length: 12 }, (_, i) => {
+                const t = indexed(`${(i + 1).toString(16)}`.padStart(64, "C"), 600 - i, new Date(now - i * 60_000), `inj1sender${i}`, me, "1000000000000000000inj");
+                return { ...t, tx: { ...t.tx, body: { ...t.tx.body, memo: `10${i}234567` } } };
+              })
+            : [];
+        return reply(200, { tx_responses: list, total: String(list.length) });
+      }
       meInj = me;
       const list =
         q.startsWith("message.sender=") || q.startsWith("coin_spent.spender=")
@@ -629,6 +644,82 @@ try {
   await p.click("Done");
   await p.waitText("Account 1");
   console.log("approvals: rewards address, send grant, fee allowance and CW20 allowance listed, all revoked in one tx");
+
+  // 7d. The address book and exchange memos. A contact saved with its memo: picked in Send,
+  // the memo comes with it and the review names the contact; without the memo, red. An
+  // exchange the wallet finds from its deposits: amber until a memo is typed; sent with it,
+  // and saved from the sent screen.
+  await p.click("Settings");
+  await p.click("Address book");
+  await p.waitText("No contacts yet.");
+  await p.click("Add contact");
+  await p.fill('input[aria-label="Contact name"]', 0, "My exchange");
+  await p.fill('input[aria-label="Contact address"]', 0, EXCHANGE);
+  await p.fill('input[aria-label="Contact memo"]', 0, "101234567");
+  await p.shot("16j-contact-new");
+  await p.click("Save");
+  await p.waitText("memo 101234567");
+  await p.shot("16k-address-book");
+  await p.click("Back");
+  await p.click("Wallet");
+  await p.waitText("Manage", 15000);
+  await p.click("Send");
+  await p.waitText("Balance");
+  await p.click("Contacts");
+  await p.waitText("ADDRESS BOOK");
+  await p.shot("16l-send-to");
+  await p.eval(`[...document.querySelectorAll(".token")].find((b) => b.textContent.includes("My exchange")).click()`);
+  await p.waitText("My exchange, from your address book");
+  if ((await p.eval(`document.querySelector('input[aria-label="Memo"]').value`)) !== "101234567") throw new Error("the contact's memo didn't come with it");
+  await p.fill("input[inputmode=decimal]", 0, "0.5");
+  await p.click("Review");
+  await p.waitText("To My exchange from your address book.", 15000);
+  await p.waitText("101234567");
+  await p.shot("16m-review-contact");
+  await p.click("Cancel");
+  await p.waitText("Balance");
+  // Pasting a contact's address brings its memo too; clear it.
+  await p.fill('input[placeholder^="inj1"]', 0, EXCHANGE);
+  await p.waitText("My exchange, from your address book");
+  for (let t = 0; t < 3000 && (await p.eval(`document.querySelector('input[aria-label="Memo"]').value`)) !== "101234567"; t += 100) await sleep(100);
+  await p.fill('input[aria-label="Memo"]', 0, "");
+  await p.fill("input[inputmode=decimal]", 0, "0.5");
+  await p.click("Review");
+  await p.waitText("My exchange needs memo 101234567. This send has none.", 15000);
+  if (!(await p.eval(`!!document.querySelector(".btn-danger")`))) throw new Error("a send missing its memo isn't red");
+  await p.shot("16n-review-no-memo");
+  await p.click("Cancel");
+  await p.waitText("Balance");
+  await p.fill('input[placeholder^="inj1"]', 0, FOUND_EXCHANGE);
+  await p.fill('input[aria-label="Memo"]', 0, "");
+  await p.waitText("This looks like an exchange: its deposits carry a memo. Add yours below.");
+  await p.shot("16o-send-found-exchange");
+  await p.fill('input[aria-label="Memo"]', 0, "555");
+  await p.fill("input[inputmode=decimal]", 0, "0.5");
+  if (await p.eval(`document.body.innerText.includes("This looks like an exchange")`)) throw new Error("the memo note stayed after a memo was typed");
+  await p.click("Review");
+  await p.waitText("Review send", 15000);
+  await p.waitText("555");
+  if (await p.eval(`document.querySelectorAll(".callout").length`)) throw new Error("a send with a memo to the exchange still has findings");
+  const before = broadcasts.length;
+  await p.click("Confirm and send");
+  await p.waitText("Save address", 15000);
+  if (broadcasts.length !== before + 1 || !Buffer.from(broadcasts[before], "base64").includes(Buffer.from("555"))) throw new Error("the send didn't carry its memo");
+  await p.click("Save address");
+  await p.waitText("New contact");
+  if ((await p.eval(`document.querySelector('input[aria-label="Contact address"]').value`)) !== FOUND_EXCHANGE) throw new Error("the sent-to address wasn't filled in");
+  if ((await p.eval(`document.querySelector('input[aria-label="Contact memo"]').value`)) !== "555") throw new Error("the memo wasn't filled in");
+  await p.fill('input[aria-label="Contact name"]', 0, "Other exchange");
+  await p.click("Save");
+  await p.waitText("Manage", 15000);
+  await p.click("Settings");
+  await p.click("Address book");
+  await p.waitText("Other exchange");
+  await p.waitText("memo 555");
+  await p.click("Back");
+  await p.click("Wallet");
+  await p.waitText("Manage", 15000);
+  console.log("address book: a contact with its memo picked in Send and named in the review, red without the memo; an exchange found from its deposits, sent with a memo and saved");
 
   // 8. A site: finds the wallet through EIP-6963 (window.ethereum untouched), connects
   // through an approval window (rejected once, then approved), gets a message signed, and

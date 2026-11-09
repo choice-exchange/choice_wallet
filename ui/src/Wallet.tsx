@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { AccountsView, isWatch } from "./Accounts";
 import { ApprovalsView } from "./Approvals";
+import { ContactsView, type Draft } from "./Contacts";
 import { ActivityView } from "./Activity";
 import mark from "./assets/choice-mark.svg";
 import { useBackend } from "./backend";
@@ -18,6 +19,7 @@ import { Review, SendForm, SentView } from "./Send";
 import { SettingsView } from "./Settings";
 import { StakingView } from "./Staking";
 import { ConvertForm, TokenView } from "./Token";
+import { shown } from "./review";
 import { applyFilter, DEFAULT_FILTER } from "./tokenFilter";
 import { TokenMark } from "./TokenMark";
 import { TokensView } from "./Tokens";
@@ -33,9 +35,10 @@ type View =
   | { name: "send"; denom?: string }
   | { name: "convert"; denom: string }
   | { name: "review"; review: SendReview; entered: string; back: View; validators?: Record<string, string>; rewards?: Record<string, string> }
-  | { name: "sent"; sent: Sent; converting: boolean; done?: string }
+  | { name: "sent"; sent: Sent; converting: boolean; done?: string; save?: Draft }
   | { name: "staking" }
   | { name: "approvals" }
+  | { name: "contacts"; prefill?: Draft }
   | { name: "tokens" };
 
 const COSMOS = "cosmos:injective-1";
@@ -184,6 +187,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
       return (
         <SendForm
           balances={sorted?.shown ?? []}
+          accounts={status.accounts.filter((_, i) => i !== status.active)}
           denom={view.denom}
           onReview={(review, entered, denom) => setView({ name: "review", review, entered, back: { name: "send", denom } })}
           onBack={home}
@@ -224,13 +228,33 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
             // What a conversion makes is what the user asked for: show it, like a token added by hand.
             const made = back.name === "convert" ? balances?.find((b) => b.denom === back.denom)?.convertsTo : undefined;
             if (made && !filter.shown.includes(made)) changeFilter({ ...filter, shown: [...filter.shown, made], hidden: filter.hidden.filter((x) => x !== made) });
-            setView({ name: "sent", sent, converting: back.name === "convert", ...(back.name === "staking" || back.name === "approvals" ? { done: "Confirmed" } : {}) });
+            // A send to an address the review didn't name (no contact, not an account here): offer to save it.
+            const sentTo = back.name === "send" ? shown(view.review.display, status.network) : null;
+            const named = view.review.risk.findings.some((f) => f.rule === "address_book");
+            const save = sentTo && sentTo.sends.length === 1 && !named ? { address: sentTo.sends[0]!.to, memo: sentTo.memo } : undefined;
+            setView({
+              name: "sent",
+              sent,
+              converting: back.name === "convert",
+              ...(back.name === "staking" || back.name === "approvals" ? { done: "Confirmed" } : {}),
+              ...(save ? { save } : {}),
+            });
           }}
           onCancel={() => setView(view.back)}
         />
       );
     case "sent":
-      return <SentView sent={view.sent} onDone={home} converting={view.converting} {...(view.done ? { done: view.done } : {})} />;
+      return (
+        <SentView
+          sent={view.sent}
+          onDone={home}
+          onSave={view.save ? () => setView({ name: "contacts", prefill: view.save! }) : undefined}
+          converting={view.converting}
+          {...(view.done ? { done: view.done } : {})}
+        />
+      );
+    case "contacts":
+      return <ContactsView prefill={view.prefill} onBack={home} />;
     case "home": {
       if (tab === "activity") return <ActivityView key={address} network={status.network} tabs={tabs} />;
       if (tab === "settings") {
@@ -241,6 +265,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
             tabs={tabs}
             onLock={onLock}
             onApprovals={() => setView({ name: "approvals" })}
+            onContacts={() => setView({ name: "contacts" })}
             onDone={() => {
               onStatus();
               home();

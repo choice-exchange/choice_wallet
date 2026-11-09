@@ -22,6 +22,7 @@ export function SettingsView({
   onDone,
   onLock,
   onApprovals,
+  onContacts,
   tabs,
 }: {
   status: Status;
@@ -30,6 +31,8 @@ export function SettingsView({
   onLock: () => void;
   /** Open Approvals and grants. */
   onApprovals: () => void;
+  /** Open the address book. */
+  onContacts: () => void;
   tabs: ReactNode;
 }) {
   const { run, error, busy } = useRequest();
@@ -227,6 +230,13 @@ export function SettingsView({
             ))}
           </div>
         )}
+        <div className="eyebrow" style={{ marginTop: 8 }}>
+          Recipients
+        </div>
+        <button type="button" className="btn" onClick={onContacts}>
+          Address book
+        </button>
+        <span className="meta">Saved recipients, with the memo an exchange needs.</span>
         <div className="eyebrow" style={{ marginTop: 8 }}>
           Approvals
         </div>
