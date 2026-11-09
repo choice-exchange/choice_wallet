@@ -509,3 +509,25 @@ details.raw summary {
 .wallet-head { margin: 4px 0 2px; }
 .wallet-edit { display: flex; flex-direction: column; gap: 8px; margin-bottom: 4px; }
 .pill.danger { color: var(--negative); }
+
+/* Staking */
+.validator-name {
+  margin-top: 6px;
+  font-size: 16px;
+  line-height: 22px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.amount-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.amount-row .input {
+  flex: 1;
+  min-width: 0;
+}
+.pill.active {
+  border-color: var(--gold);
+  color: var(--gold);
+}

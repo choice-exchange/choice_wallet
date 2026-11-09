@@ -8,7 +8,7 @@ import { ArrowDownIcon, CheckIcon, ChevronDownIcon, ClockIcon, CloseIcon, Extern
 import { BackBar, Callout, formatUsd, Screen, shortAddress, tokenSub } from "./kit";
 import type { Balance, Coin, NetworkId, SendReview, Sent, TokenInfo, TxState } from "./protocol";
 import { useRequest } from "./request";
-import { shown } from "./review";
+import { shown, type StakeLine } from "./review";
 import { TokenMark } from "./TokenMark";
 
 /** An amount typed into a form: base units (or "max"), or what's wrong with it. */
@@ -176,16 +176,21 @@ export function Review({
   network,
   onSent,
   onCancel,
+  validators = {},
 }: {
   review: SendReview;
   entered: string;
   network: NetworkId;
   onSent: (sent: Sent) => void;
   onCancel: () => void;
+  /** Validator names by address, for a staking review. */
+  validators?: Record<string, string>;
 }) {
   const { risk, tokens } = review;
   const view = shown(review.display, network);
   const converting = view.converts.length > 0 && view.sends.length === 0;
+  const staking = view.stakes.length > 0 && view.sends.length === 0 && view.converts.length === 0;
+  const named = (v: string) => validators[v] || shortAddress(v);
   const [typed, setTyped] = useState("");
   const { run, error, busy } = useRequest();
   const coin = (c: Coin) => {
@@ -212,7 +217,7 @@ export function Review({
 
   return (
     <Screen
-      top={<BackBar title={converting ? "Review conversion" : "Review send"} onBack={onCancel} />}
+      top={<BackBar title={staking ? "Review staking" : converting ? "Review conversion" : "Review send"} onBack={onCancel} />}
       foot={
         <>
           {error && <Callout level="red">{error}</Callout>}
@@ -221,7 +226,7 @@ export function Review({
             disabled={busy || blocked || needsWord}
             onClick={() => void confirm()}
           >
-            {converting ? (busy ? "Converting…" : "Confirm and convert") : busy ? "Sending…" : "Confirm and send"}
+            {staking ? (busy ? "Sending…" : "Confirm") : converting ? (busy ? "Converting…" : "Confirm and convert") : busy ? "Sending…" : "Confirm and send"}
           </button>
           <button className="btn btn-quiet" onClick={onCancel} disabled={busy}>
             Cancel
@@ -289,6 +294,28 @@ export function Review({
           </p>
         </div>
       ))}
+      {view.stakes.map((st, i) => (
+        <div className="surface-hero" key={`s${i}`}>
+          <div className="eyebrow">{STAKE_VERB[st.kind]}</div>
+          {st.amount && <Figure coin={st.amount} t={tokens[st.amount.denom]} />}
+          {st.amount && usd([st.amount]) && <div className="meta num" style={{ marginTop: 4, marginLeft: 46 }}>{usd([st.amount])}</div>}
+          <hr className="divider" style={{ margin: "14px 0 12px" }} />
+          <div className="eyebrow">{st.to ? "From" : st.kind === "claim" ? "Rewards from" : "Validator"}</div>
+          <div className="validator-name" title={st.validator}>
+            {named(st.validator)}
+          </div>
+          {st.to && (
+            <>
+              <div className="eyebrow" style={{ marginTop: 10 }}>
+                To
+              </div>
+              <div className="validator-name" title={st.to}>
+                {named(st.to)}
+              </div>
+            </>
+          )}
+        </div>
+      ))}
       {view.others.map((o, i) => (
         <div className="surface" key={`o${i}`}>
           <div className="eyebrow">Other message</div>
@@ -331,10 +358,18 @@ export function Review({
   );
 }
 
+const STAKE_VERB: Record<StakeLine["kind"], string> = {
+  stake: "You stake",
+  unstake: "You unstake",
+  move: "You move",
+  claim: "You claim",
+  cancel: "You stake again",
+};
+
 const POLL_MS = 1500;
 const POLL_TRIES = 40;
 
-export function SentView({ sent, onDone, converting = false }: { sent: Sent; onDone: () => void; converting?: boolean }) {
+export function SentView({ sent, onDone, converting = false, done }: { sent: Sent; onDone: () => void; converting?: boolean; done?: string }) {
   const backend = useBackend();
   const [state, setState] = useState<TxState | { state: "slow" }>({ state: "pending" });
 
@@ -363,7 +398,7 @@ export function SentView({ sent, onDone, converting = false }: { sent: Sent; onD
   }, [sent.hash]);
 
   const s = state.state;
-  const title = { pending: converting ? "Converting" : "Sending", slow: "Not confirmed yet", success: converting ? "Converted" : "Sent", failed: "Failed" }[s];
+  const title = { pending: converting ? "Converting" : "Sending", slow: "Not confirmed yet", success: done ?? (converting ? "Converted" : "Sent"), failed: "Failed" }[s];
   const lead = {
     pending: "Waiting for the next block.",
     slow: "Check the explorer for its status.",

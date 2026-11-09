@@ -95,3 +95,24 @@ test("EVM: the fee is gas limit × max fee, an ERC20 transfer is a send", () => 
   assert.deepEqual(v.fee, [{ denom: "inj", amount: "8942720000000" }]);
   assert.equal(v.evm, true);
 });
+
+test("staking: the signer's own actions are staking lines; someone else's are named", () => {
+  const A = "injvaloper1qyqszqgpqyqszqgpqyqszqgpqyqszqgp0url7q";
+  const B = "injvaloper1qgpqyqszqgpqyqszqgpqyqszqgpqyqsz7c964k";
+  const coin = { denom: "inj", amount: "5" };
+  const v = shown(
+    tx([
+      { type: "delegate", delegator: ME, validator: A, amount: coin },
+      { type: "redelegate", delegator: ME, from_validator: A, to_validator: B, amount: coin },
+      { type: "withdraw_rewards", delegator: ME, validator: B },
+      { type: "undelegate", delegator: THEM, validator: A, amount: coin },
+    ]),
+    "mainnet",
+  );
+  assert.deepEqual(v.stakes, [
+    { kind: "stake", validator: A, amount: coin },
+    { kind: "move", validator: A, to: B, amount: coin },
+    { kind: "claim", validator: B },
+  ]);
+  assert.deepEqual(v.others, ["undelegate"]);
+});

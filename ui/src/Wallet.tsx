@@ -1,7 +1,7 @@
 // The unlocked wallet: three tabs (Wallet, Activity, Settings), and the flows that open
 // over them full screen (receive, a token, send, convert, manage tokens).
 
-import { formatShort, NETWORKS, shortDenom } from "@choice-wallet/chain";
+import { formatShort, NETWORKS, shortDenom, usdValue } from "@choice-wallet/chain";
 import { useEffect, useRef, useState } from "react";
 
 import { AccountsView, isWatch } from "./Accounts";
@@ -10,11 +10,12 @@ import mark from "./assets/choice-mark.svg";
 import { useBackend } from "./backend";
 import { ActivityIcon, CheckIcon, ChevronDownIcon, ChevronRightIcon, CopyIcon, EyeOffIcon, LockIcon, ReceiveIcon, SendIcon, SettingsIcon, WalletIcon } from "./icons";
 import { BackBar, Callout, formatUsd, Screen, Segmented, shortAddress, tokenSub } from "./kit";
-import type { Balance, SendReview, Sent, Status, TokenFilter } from "./protocol";
+import type { Balance, SendReview, Sent, StakingSummary, Status, TokenFilter } from "./protocol";
 import { QrCode } from "./QrCode";
 import { useRequest } from "./request";
 import { Review, SendForm, SentView } from "./Send";
 import { SettingsView } from "./Settings";
+import { StakingView } from "./Staking";
 import { ConvertForm, TokenView } from "./Token";
 import { applyFilter, DEFAULT_FILTER } from "./tokenFilter";
 import { TokenMark } from "./TokenMark";
@@ -30,8 +31,9 @@ type View =
   | { name: "token"; denom: string }
   | { name: "send"; denom?: string }
   | { name: "convert"; denom: string }
-  | { name: "review"; review: SendReview; entered: string; back: View }
-  | { name: "sent"; sent: Sent; converting: boolean }
+  | { name: "review"; review: SendReview; entered: string; back: View; validators?: Record<string, string> }
+  | { name: "sent"; sent: Sent; converting: boolean; done?: string }
+  | { name: "staking" }
   | { name: "tokens" };
 
 const COSMOS = "cosmos:injective-1";
@@ -65,6 +67,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
   const [prices, setPrices] = useState(true);
   const [evmDown, setEvmDown] = useState(false);
   const [refresh, setRefresh] = useState(0);
+  const [staking, setStaking] = useState<StakingSummary | null>(null);
   const { run, error, setError } = useRequest();
 
   // The last filter save, so a refresh never reads the filter before it lands.
@@ -74,11 +77,16 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
   const address = account?.addresses[COSMOS] ?? "";
   const watch = isWatch(account);
   // Another account: its balances, never the last one's while they load.
-  useEffect(() => setBalances(null), [address]);
+  useEffect(() => {
+    setBalances(null);
+    setStaking(null);
+  }, [address]);
 
   useEffect(() => {
     if (view.name !== "home" || tab !== "wallet") return;
     let live = true;
+    // Staking loads beside the balances; if it fails the wallet still shows.
+    void backend.send({ type: "staking" }).then((r) => live && setStaking(r.ok ? r.result : null));
     void saving.current.then(() => run({ type: "balances" })).then((r) => {
       if (live && r) {
         setBalances(r.balances);
@@ -134,7 +142,10 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
     return null;
   };
   const sorted = balances ? applyFilter(balances, filter, NETWORKS[status.network].feeDenom) : null;
-  const totalUsd = sorted?.totalUsd;
+  const injPrice = balances?.find((b) => b.denom === "inj")?.priceUsd;
+  // Staked, unstaking and unclaimed INJ are still yours: they count in the total.
+  const stakedAll = staking ? BigInt(staking.staked) + BigInt(staking.unbondingTotal) + BigInt(staking.rewards) : 0n;
+  const totalUsd = sorted?.totalUsd === undefined ? undefined : sorted.totalUsd + (injPrice && prices ? usdValue(stakedAll.toString(), 18, injPrice) : 0);
 
   switch (view.name) {
     case "accounts":
@@ -187,24 +198,34 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
         />
       );
     }
+    case "staking":
+      return staking ? (
+        <StakingView
+          summary={staking}
+          canSign={!watch}
+          onReview={(review, validators) => setView({ name: "review", review, entered: "", back: { name: "staking" }, validators })}
+          onBack={home}
+        />
+      ) : null;
     case "review":
       return (
         <Review
           review={view.review}
           entered={view.entered}
           network={status.network}
+          {...(view.validators ? { validators: view.validators } : {})}
           onSent={(sent) => {
             const back = view.back;
             // What a conversion makes is what the user asked for: show it, like a token added by hand.
             const made = back.name === "convert" ? balances?.find((b) => b.denom === back.denom)?.convertsTo : undefined;
             if (made && !filter.shown.includes(made)) changeFilter({ ...filter, shown: [...filter.shown, made], hidden: filter.hidden.filter((x) => x !== made) });
-            setView({ name: "sent", sent, converting: back.name === "convert" });
+            setView({ name: "sent", sent, converting: back.name === "convert", ...(back.name === "staking" ? { done: "Done" } : {}) });
           }}
           onCancel={() => setView(view.back)}
         />
       );
     case "sent":
-      return <SentView sent={view.sent} onDone={home} converting={view.converting} />;
+      return <SentView sent={view.sent} onDone={home} converting={view.converting} {...(view.done ? { done: view.done } : {})} />;
     case "home": {
       if (tab === "activity") return <ActivityView key={address} network={status.network} tabs={tabs} />;
       if (tab === "settings") {
@@ -319,6 +340,24 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
                 </button>
               )}
             </div>
+          )}
+          {staking && (stakedAll > 0n || !watch) && (
+            <>
+              <div className="section-head">
+                <span className="eyebrow">Staking</span>
+              </div>
+              <button className="token" onClick={() => setView({ name: "staking" })}>
+                <TokenMark denom="inj" symbol="INJ" known />
+                <span className="name">
+                  <span className="symbol">{stakedAll > 0n ? "Staked INJ" : "Stake INJ"}</span>
+                  <span className="sub">{BigInt(staking.rewards) > 0n ? `Rewards ${formatShort(staking.rewards, 18, 4)} INJ` : "Earn staking rewards"}</span>
+                </span>
+                <span className="value">
+                  {stakedAll > 0n && <span className="amount">{formatShort(stakedAll, 18, 4)}</span>}
+                  {stakedAll > 0n && injPrice && prices && <span className="usd">{formatUsd(usdValue(stakedAll.toString(), 18, injPrice))}</span>}
+                </span>
+              </button>
+            </>
           )}
           {evmDown && <p className="meta warn">EVM tokens may be missing: no EVM endpoint answered.</p>}
           <p className="footnote">{totalUsd === undefined ? "Pre-alpha. Not for real funds." : "Prices from Choice. Pre-alpha. Not for real funds."}</p>

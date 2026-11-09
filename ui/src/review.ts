@@ -8,9 +8,21 @@ import type { Coin, CosmosDisplay, EvmDisplay, NetworkId, SendReview } from "./p
 /** A token turned into its other form by the CW20 adapter, one for one. */
 export type Conversion = { from: Coin; to: Coin; recipient: string };
 
+/** A staking action by the signer. */
+export type StakeLine = { kind: "stake" | "unstake" | "move" | "claim" | "cancel"; validator: string; to?: string; amount?: Coin };
+
+const STAKE_KINDS: Record<string, StakeLine["kind"]> = {
+  delegate: "stake",
+  undelegate: "unstake",
+  redelegate: "move",
+  withdraw_rewards: "claim",
+  cancel_unbonding: "cancel",
+};
+
 export type Shown = {
   sends: { coins: Coin[]; to: string }[];
   converts: Conversion[];
+  stakes: StakeLine[];
   /** One line each for anything else. */
   others: string[];
   /** For EVM: gas limit × max fee per gas, which is what Injective charges (no refund of
@@ -28,15 +40,23 @@ export function shown(display: SendReview["display"], network: NetworkId): Shown
   const net = NETWORKS[network];
   if (display.kind === "evm_transaction") {
     const d = display as EvmDisplay;
-    const base = { fee: [{ denom: net.feeDenom, amount: d.max_gas_cost }], memo: "", evm: true, converts: [] };
+    const base = { fee: [{ denom: net.feeDenom, amount: d.max_gas_cost }], memo: "", evm: true, converts: [], stakes: [] };
     if (d.call.type === "erc20_transfer") return { ...base, sends: [{ coins: [{ denom: evmDenom(d.to), amount: d.call.amount }], to: d.call.to }], others: [] };
     if (d.call.type === "transfer") return { ...base, sends: [{ coins: [{ denom: net.feeDenom, amount: d.value }], to: d.to }], others: [] };
     return { ...base, sends: [], others: [`Contract call to ${d.to}`] };
   }
   const c = display as CosmosDisplay;
-  const out: Shown = { sends: [], converts: [], others: [], fee: c.fee.amount, memo: c.memo, evm: false };
+  const out: Shown = { sends: [], converts: [], stakes: [], others: [], fee: c.fee.amount, memo: c.memo, evm: false };
   for (const msg of c.messages) {
     const m = msg as Record<string, unknown>;
+    const kind = STAKE_KINDS[String(m["type"])];
+    const validator = text(m["validator"]) ?? text(m["from_validator"]);
+    if (kind && validator && m["delegator"] === c.signer) {
+      const [amount] = coins([m["amount"]]);
+      const to = text(m["to_validator"]);
+      out.stakes.push({ kind, validator, ...(to ? { to } : {}), ...(amount ? { amount } : {}) });
+      continue;
+    }
     if (m["type"] === "bank_send" && text(m["to"])) {
       out.sends.push({ coins: coins(m["amount"]), to: text(m["to"])! });
       continue;
