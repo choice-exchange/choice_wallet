@@ -2,17 +2,16 @@
 // over them full screen (receive, a token, send, convert, manage tokens).
 
 import { formatShort, NETWORKS, shortDenom, usdValue } from "@choice-wallet/chain";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
-import { AccountsView, isWatch } from "./Accounts";
+import { AccountMark, AccountsView, isWatch } from "./Accounts";
 import { ApprovalsView } from "./Approvals";
 import { ContactsView, type Draft } from "./Contacts";
 import { ActivityView } from "./Activity";
 import { merge, type ActivityState } from "./activityState";
 import { Kept, KeptContext } from "./kept";
-import mark from "./assets/choice-mark.svg";
 import { useBackend } from "./backend";
-import { ActivityIcon, CheckIcon, ChevronDownIcon, ChevronRightIcon, CopyIcon, EyeOffIcon, LockIcon, ReceiveIcon, SendIcon, SettingsIcon, SwapIcon, WalletIcon } from "./icons";
+import { ActivityIcon, CheckIcon, ChevronDownIcon, ChevronRightIcon, CopyIcon, EyeOffIcon, LockIcon, ReceiveIcon, SendIcon, SettingsIcon, StakeIcon, SwapIcon, WalletIcon } from "./icons";
 import { BackBar, Callout, formatUsd, Screen, Segmented, shortAddress, tokenSub } from "./kit";
 import { NftsView, NftView } from "./Nfts";
 import { InventoryScreen } from "./Inventory";
@@ -421,18 +420,25 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
           );
         }
         const inj = balances?.find((b) => b.denom === "inj");
+        const openAccounts = () => setView({ name: "accounts" });
         return (
           <Screen
             tabs={tabs}
             top={
               <>
-                <span className="brand">
-                  <img src={mark} alt="" />
-                </span>
-                <button className="title account-switch" aria-label={`Account: ${account?.name ?? ""}. Switch accounts`} onClick={() => setView({ name: "accounts" })}>
-                  <span className="account-name">{account?.name}</span>
-                  <ChevronDownIcon size={16} />
-                </button>
+                <div className="account-head">
+                  {account && (
+                    // The mark opens the accounts too; the name beside it is the button screen readers get.
+                    <span className="account-head-mark" aria-hidden="true" onClick={openAccounts}>
+                      <AccountMark a={account} index={status.active} />
+                    </span>
+                  )}
+                  <button className="account-switch" aria-label={`Account: ${account?.name ?? ""}. Switch accounts`} onClick={openAccounts}>
+                    <span className="account-name">{account?.name}</span>
+                    <ChevronDownIcon size={16} />
+                  </button>
+                  <CopyAddress address={address} />
+                </div>
                 <button className="pill" onClick={() => setTab("settings")} aria-label={`Network: ${status.network}`}>
                   <span className={status.network === "testnet" ? "dot testnet" : "dot"} />
                   {status.network === "testnet" ? "Testnet" : "Mainnet"}
@@ -443,38 +449,36 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
               </>
             }
           >
-            <div className="plate-warm">
-              {/* The USD total when Choice can price something here; otherwise the INJ balance. */}
-              <div className="eyebrow">
-                {totalUsd === undefined ? "INJ balance" : "Total"}
-                {watch && <span className="flag quiet">Watch-only</span>}
-              </div>
+            {/* Everything the account holds, staking included: in USD when Choice prices
+                something here, otherwise in INJ. */}
+            <section className="balance-head" aria-label="Total balance">
               {balances === null ? (
-                <div className="skeleton" style={{ width: 140, height: 36, margin: "6px 0 4px" }} />
+                <div className="skeleton" style={{ width: 168, height: 40, margin: "3px auto" }} />
               ) : totalUsd === undefined ? (
-                <div className="hero" style={{ margin: "4px 0 2px" }}>
-                  {formatShort(inj?.amount ?? "0", 18, 4)}
-                  <span className="unit">INJ</span>
-                </div>
+                <Figure text={formatShort((BigInt(inj?.amount ?? "0") + stakedAll).toString(), 18, 4)} unit="INJ" />
               ) : (
-                <>
-                  <div className="hero" style={{ margin: "4px 0 0" }}>
-                    {formatUsd(totalUsd)}
-                  </div>
-                  <div className="meta num" style={{ marginBottom: 8 }}>
-                    {formatShort(inj?.amount ?? "0", 18, 4)} INJ
-                  </div>
-                </>
+                <Figure text={formatUsd(totalUsd)} />
               )}
-              <CopyPill address={address} />
-              <div className="actions" style={{ marginTop: 14 }}>
-                <button className="action" disabled={watch || !sorted?.shown.length} onClick={() => setView({ name: "send" })}>
-                  <SendIcon /> Send
-                </button>
-                <button className="action plain" onClick={() => setView({ name: "receive" })}>
-                  <ReceiveIcon /> Receive
-                </button>
+              <div className="balance-sub">
+                {watch && <span className="flag quiet">Watch-only</span>}
+                {balances !== null && stakedAll > 0n && (
+                  <span>Includes {totalUsd !== undefined && injPrice && prices ? formatUsd(usdValue(stakedAll.toString(), 18, injPrice)) : `${formatShort(stakedAll, 18, 4)} INJ`} staked</span>
+                )}
               </div>
+            </section>
+            <div className="quick-actions">
+              <QuickAction label="Send" gold disabled={watch || !sorted?.shown.length} onClick={() => setView({ name: "send" })}>
+                <SendIcon size={20} />
+              </QuickAction>
+              <QuickAction label="Receive" onClick={() => setView({ name: "receive" })}>
+                <ReceiveIcon size={20} />
+              </QuickAction>
+              <QuickAction label="Swap" onClick={() => setTab("swap")}>
+                <SwapIcon size={20} />
+              </QuickAction>
+              <QuickAction label="Stake" onClick={() => setView({ name: "staking" })}>
+                <StakeIcon size={20} />
+              </QuickAction>
             </div>
 
             <div className="section-head">
@@ -508,10 +512,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
                       <span className="symbol">{b.symbol}</span>
                       <span className={b.known ? "sub" : "sub denom"}>{tokenSub(b)}</span>
                     </span>
-                    <span className="value">
-                      <span className="amount">{formatShort(b.amount, b.decimals)}</span>
-                      {b.usd !== undefined && <span className="usd">{formatUsd(b.usd)}</span>}
-                    </span>
+                    <HoldingValue amount={formatShort(b.amount, b.decimals)} symbol={b.symbol} usd={b.usd} />
                   </button>
                 ))}
                 {sorted.hidden.length > 0 && (
@@ -523,7 +524,8 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
                 )}
               </div>
             )}
-            {staking && (stakedAll > 0n || !watch) && (
+            {/* Staked, unstaking and unclaimed INJ. Nothing staked: the Stake button above. */}
+            {staking && stakedAll > 0n && (
               <>
                 <div className="section-head">
                   <span className="eyebrow">Staking</span>
@@ -531,13 +533,10 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
                 <button className="token" onClick={() => setView({ name: "staking" })}>
                   <TokenMark denom="inj" symbol="INJ" known />
                   <span className="name">
-                    <span className="symbol">{stakedAll > 0n ? "Staked INJ" : "Stake INJ"}</span>
-                    <span className="sub">{BigInt(staking.rewards) > 0n ? `Rewards ${formatShort(staking.rewards, 18, 4)} INJ` : "Earn staking rewards"}</span>
+                    <span className="symbol">Staked INJ</span>
+                    <span className="sub">{BigInt(staking.rewards) > 0n ? `Rewards ${formatShort(staking.rewards, 18, 4)} INJ` : "Earning rewards"}</span>
                   </span>
-                  <span className="value">
-                    {stakedAll > 0n && <span className="amount">{formatShort(stakedAll, 18, 4)}</span>}
-                    {stakedAll > 0n && injPrice && prices && <span className="usd">{formatUsd(usdValue(stakedAll.toString(), 18, injPrice))}</span>}
-                  </span>
+                  <HoldingValue amount={formatShort(stakedAll, 18, 4)} symbol="INJ" usd={injPrice && prices ? usdValue(stakedAll.toString(), 18, injPrice) : undefined} />
                 </button>
               </>
             )}
@@ -573,12 +572,56 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
   }
 }
 
-function CopyPill({ address }: { address: string }) {
+/** The headline figure: dollars with their cents dimmed, or an amount and its unit. Long
+ *  figures step down a size so they stay on one line. */
+function Figure({ text, unit }: { text: string; unit?: string }) {
+  const dot = unit ? -1 : text.lastIndexOf(".");
+  const size = text.length > 13 ? "smaller" : text.length > 10 ? "small" : "";
+  return (
+    <div className={`hero balance-figure ${size}`}>
+      {dot < 0 ? text : text.slice(0, dot)}
+      {dot >= 0 && <span className="cents">{text.slice(dot)}</span>}
+      {unit && <span className="unit">{unit}</span>}
+    </div>
+  );
+}
+
+/** A holding's value column: its USD value first, the amount under it; the amount alone
+ *  when nothing prices it. */
+function HoldingValue({ amount, symbol, usd }: { amount: string; symbol: string; usd: number | undefined }) {
+  if (usd === undefined) {
+    return (
+      <span className="value">
+        <span className="amount">{amount}</span>
+      </span>
+    );
+  }
+  return (
+    <span className="value">
+      <span className="amount">{formatUsd(usd)}</span>
+      <span className="usd">
+        {amount} {symbol}
+      </span>
+    </span>
+  );
+}
+
+function QuickAction({ label, gold, disabled, onClick, children }: { label: string; gold?: boolean; disabled?: boolean; onClick: () => void; children: ReactNode }) {
+  return (
+    <button className={gold ? "quick-action gold" : "quick-action"} disabled={disabled} onClick={onClick}>
+      <span className="quick-icon">{children}</span>
+      {label}
+    </button>
+  );
+}
+
+/** The account's address under its name: copies on a click. */
+function CopyAddress({ address }: { address: string }) {
   const backend = useBackend();
   const [copied, setCopied] = useState(false);
   return (
     <button
-      className="pill"
+      className={copied ? "address-copy copied" : "address-copy"}
       title={address}
       aria-label="Copy address"
       onClick={() =>
@@ -588,10 +631,8 @@ function CopyPill({ address }: { address: string }) {
         })
       }
     >
-      <span className="mono" style={{ fontSize: 12 }}>
-        {shortAddress(address)}
-      </span>
-      {copied ? <CheckIcon size={14} /> : <CopyIcon size={14} />}
+      <span className="mono">{copied ? "Copied" : shortAddress(address)}</span>
+      {copied ? <CheckIcon size={12} /> : <CopyIcon size={12} />}
     </button>
   );
 }

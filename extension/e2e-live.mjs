@@ -488,11 +488,11 @@ try {
     const near = (a, b) => (a > b ? a - b : b - a) <= 1000n; // share rounding
     const openStaking = async () => {
       for (let n = 0; n < 30000; n += 300) {
-        const ok = await evalIn(`(() => { const b = [...document.querySelectorAll(".token")].find((t) => /^Stake(d)? INJ$/.test(t.querySelector(".symbol")?.textContent ?? "")); if (b) b.click(); return !!b; })()`);
+        const ok = await evalIn(`(() => { const b = [...document.querySelectorAll("button.quick-action")].find((t) => t.textContent.trim() === "Stake"); if (b) b.click(); return !!b; })()`);
         if (ok) return waitText("Unstaking takes");
         await sleep(300);
       }
-      throw new Error("no Staking row on the home screen");
+      throw new Error("no Stake button on the home screen");
     };
     /** Click the first element matching `selector` once it shows (the summary refreshes). */
     const clickWhen = async (selector) => {

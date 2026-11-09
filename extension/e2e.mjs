@@ -1090,7 +1090,7 @@ try {
   await p.click("Watch");
   await p.waitText("Watch-only");
   if ((await pill()) !== SENT_TO) throw new Error("the watched address isn't the one in use");
-  if (!(await p.eval(`[...document.querySelectorAll("button.action")].find((b) => b.textContent.includes("Send")).disabled`))) throw new Error("a watch-only account can send");
+  if (!(await p.eval(`[...document.querySelectorAll("button.quick-action")].find((b) => b.textContent.trim() === "Send").disabled`))) throw new Error("a watch-only account can send");
   await p.shot("20-watch-only");
   await p.click("Account: Watching 1. Switch accounts");
   await p.waitText("Trading");

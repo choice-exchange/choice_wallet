@@ -213,6 +213,33 @@ button.pill:hover { color: var(--text); border-color: #2a2b33; }
 .action.plain:hover { background: #25262d; }
 .action:disabled { color: var(--dim); background: rgba(255, 255, 255, 0.04); border-color: transparent; }
 
+/* ── The wallet's home: the account in the top bar, the total, four round actions ── */
+.account-head { flex: 1; min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: auto auto; column-gap: 10px; align-items: center; }
+.account-head-mark { grid-row: 1 / span 2; cursor: pointer; display: inline-flex; }
+.account-head .mark { width: 34px; height: 34px; font-size: 13px; }
+.account-head .account-switch { justify-self: start; max-width: 100%; font-size: 15px; line-height: 19px; }
+.address-copy { justify-self: start; display: inline-flex; align-items: center; gap: 5px; border: 0; background: transparent; padding: 0; color: var(--dim); }
+.address-copy .mono { font-size: 11.5px; line-height: 16px; }
+.address-copy:hover, .address-copy.copied { color: var(--gold); }
+.balance-head { display: flex; flex-direction: column; align-items: center; text-align: center; padding: 14px 0 2px; }
+.balance-figure { font-size: 40px; line-height: 46px; letter-spacing: -0.03em; white-space: nowrap; }
+.balance-figure.small { font-size: 34px; line-height: 46px; }
+.balance-figure.smaller { font-size: 28px; line-height: 46px; }
+.balance-figure .cents { color: var(--muted); }
+.balance-figure > span { line-height: 1; }
+.balance-figure .unit { font-size: 20px; }
+.balance-sub { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 18px; margin-top: 4px; font-size: 12.5px; line-height: 18px; color: var(--dim); font-variant-numeric: tabular-nums; }
+.quick-actions { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 6px 0 -2px; }
+.quick-action { display: flex; flex-direction: column; align-items: center; gap: 7px; border: 0; background: transparent; padding: 4px 0; color: var(--muted); font-size: 12px; line-height: 15px; font-weight: 600; border-radius: var(--radius-control); }
+.quick-icon { width: 48px; height: 48px; border-radius: 99px; display: inline-flex; align-items: center; justify-content: center; color: var(--text); background: var(--control); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06); transition: background-color 150ms ease, transform 150ms ease; }
+.quick-action.gold .quick-icon { color: var(--gold); background: rgba(253, 199, 12, 0.12); box-shadow: inset 0 0 0 1px rgba(253, 199, 12, 0.34), 0 0 22px -6px rgba(253, 199, 12, 0.35); }
+.quick-action:hover:not(:disabled) { color: var(--text); }
+.quick-action:hover:not(:disabled) .quick-icon { background: #25262d; }
+.quick-action.gold:hover:not(:disabled) .quick-icon { background: rgba(253, 199, 12, 0.2); }
+.quick-action:active:not(:disabled) .quick-icon { transform: translateY(1px); }
+.quick-action:disabled { color: var(--dim); }
+.quick-action:disabled .quick-icon { color: var(--dim); background: rgba(255, 255, 255, 0.04); box-shadow: none; }
+
 /* ── Segmented control ── */
 .segmented { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 4px; padding: 4px; border-radius: 99px; background: var(--inner); border: 1px solid var(--hairline); }
 .segmented button { height: 32px; border: 0; border-radius: 99px; background: transparent; color: var(--muted); font-size: 13px; font-weight: 600; }
