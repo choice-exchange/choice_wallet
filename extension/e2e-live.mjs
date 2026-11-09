@@ -482,6 +482,64 @@ try {
     } finally {
       server.close();
     }
+  } else if (tokenContract === "contacts") {
+    // 3a. The address book: a contact saved with a memo (the recipient given, or a keyless
+    // address of 20 bytes of 0x44), picked in Send; the review names it and shows the memo;
+    // without the memo it is red and nothing is sent; with it, the chain has the memo.
+    const to = recipient !== "-" ? recipient : "inj1g3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyfc6zmu";
+    const MEMO = "choice-wallet-live-memo";
+    await click("Settings");
+    await click("Address book");
+    await waitText("Add contact");
+    await click("Add contact");
+    await fill('input[aria-label="Contact name"]', 0, "Live contact");
+    await fill('input[aria-label="Contact address"]', 0, to);
+    await fill('input[aria-label="Contact memo"]', 0, MEMO);
+    await click("Save");
+    await waitText(`memo ${MEMO}`);
+    await shot("live-c1-address-book");
+    await click("Back");
+    await click("Wallet");
+    await waitText("Manage", 20000);
+    const send = async (memo) => {
+      await click("Send");
+      await waitText("Balance");
+      await click("Contacts");
+      await waitText("Live contact");
+      await evalIn(`[...document.querySelectorAll(".token")].find((b) => b.textContent.includes("Live contact")).click()`);
+      await waitText("Live contact, from your address book");
+      await fill('input[aria-label="Memo"]', 0, memo);
+      await fill("input[inputmode=decimal]", 0, amount);
+      await click("Review");
+      await waitText("Review send", 30000);
+      if (!(await text()).includes("Injective testnet")) throw new Error("the review is not for Injective testnet; stopping");
+    };
+    await send("");
+    await waitText(`Live contact needs memo ${MEMO}. This send has none.`);
+    await shot("live-c2-review-no-memo");
+    await click("Cancel");
+    await click("Back");
+    await waitText("Manage", 20000);
+    await send(MEMO);
+    await waitText("To Live contact from your address book.");
+    await waitText(MEMO);
+    await shot("live-c3-review");
+    const before = await injOf(to);
+    await click("Confirm and send");
+    for (let n = 0; !(await text()).includes("It's in a block."); n += 500) {
+      if (n > 90000) throw new Error("timed out waiting for the block");
+      await sleep(500);
+    }
+    if (await evalIn(`[...document.querySelectorAll("button")].some((b) => b.textContent === "Save address")`)) throw new Error("offered to save a saved contact");
+    const hash = await evalIn(`document.querySelector("[data-hash]").dataset.hash`);
+    await shot("live-c4-sent");
+    const tx = (await lcd(`/cosmos/tx/v1beta1/txs/${hash}`)).tx_response;
+    const got = (await injOf(to)) - before;
+    console.log(`tx ${hash}: code ${tx.code}, height ${tx.height}, memo ${JSON.stringify(tx.tx.body.memo)}, recipient +${got} inj`);
+    if (tx.code !== 0) throw new Error(`tx failed: ${tx.raw_log}`);
+    if (tx.tx.body.memo !== MEMO) throw new Error("the chain has another memo");
+    if (got !== BigInt(Math.round(Number(amount) * 1e6)) * 10n ** 12n) throw new Error("the recipient got the wrong amount");
+    console.log("LIVE CONTACTS OK");
   } else if (tokenContract === "activity") {
     // 3a. Activity, read back from testnet's own endpoints and Blockscout.
     await click("Activity");
