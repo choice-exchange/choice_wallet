@@ -24,6 +24,7 @@ mod bridge;
 mod cosmos;
 mod evm;
 mod message;
+mod solana;
 mod swap;
 mod text;
 mod typed;
@@ -36,7 +37,8 @@ use serde_json::Value;
 pub use bridge::source_transaction;
 pub use cosmos::{CosmosFee, cosmos};
 pub use evm::evm_transaction;
-pub use message::{arbitrary_message, personal_message};
+pub use message::{arbitrary_message, personal_message, solana_message};
+pub use solana::solana_transaction;
 pub use typed::typed_data;
 
 /// How risky something is. Ordered: `Info < Amber < Red < Blocked`.
@@ -146,6 +148,21 @@ pub struct Context {
     /// `balances`. A token without one is named by its key.
     #[serde(default)]
     pub symbols: BTreeMap<String, String>,
+    /// Solana token accounts the host looked up, by address: the owner and token its RPC
+    /// says they hold. The rules call an owner checked only when the address derives from
+    /// it.
+    #[serde(default)]
+    pub solana_token_accounts: BTreeMap<String, SolanaTokenAccount>,
+}
+
+/// A Solana token account as the host's RPC describes it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SolanaTokenAccount {
+    /// The wallet that owns it, base58.
+    pub owner: String,
+    /// The token (mint), base58.
+    pub mint: String,
 }
 
 impl Context {

@@ -84,7 +84,40 @@ pub struct Cctp {
     pub domains: &'static [Domain],
     /// The EVM chains USDC may come from.
     pub sources: &'static [Source],
+    /// Solana on this network: USDC comes from there too, signed with the account's Solana
+    /// key. Circle's programs have the same IDs on mainnet and devnet
+    /// (`choice_wallet_solana::program`).
+    pub solana: SolanaSide,
 }
+
+/// Solana, as one Injective network bridges with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SolanaSide {
+    /// The chain's name.
+    pub name: &'static str,
+    /// CAIP-2 ID (`solana:` and the genesis hash's first 32 characters).
+    pub caip2: &'static str,
+    /// Native USDC's mint there, base58.
+    pub usdc_mint: &'static str,
+}
+
+impl SolanaSide {
+    /// Native USDC's mint.
+    pub fn usdc_mint(&self) -> [u8; 32] {
+        choice_wallet_core::base58::decode32(self.usdc_mint).expect("pinned mints are valid")
+    }
+}
+
+/// Solana's CCTP domain.
+pub const SOLANA_DOMAIN: u32 = 5;
+
+/// Injective as a destination, for burns that start elsewhere (Solana).
+pub const INJECTIVE: Domain = Domain {
+    id: INJECTIVE_DOMAIN,
+    name: "Injective",
+    kind: AddressKind::Evm,
+    forwarding: false,
+};
 
 /// Injective's own domain: a burn can't go there from Injective.
 pub const INJECTIVE_DOMAIN: u32 = 29;
@@ -185,6 +218,11 @@ pub const MAINNET: Cctp = Cctp {
         evm(33, "Plasma", false),
         evm(21, "Ink", true),
     ],
+    solana: SolanaSide {
+        name: "Solana",
+        caip2: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+        usdc_mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    },
 };
 
 /// CCTP on Injective testnet (Circle's sandbox).
@@ -220,7 +258,19 @@ pub const TESTNET: Cctp = Cctp {
         evm(0, "Sepolia", true),
         evm(6, "Base Sepolia", true),
         evm(3, "Arbitrum Sepolia", true),
+        // Circle's sandbox forwards there (Iris quoted a forwarding fee, 2026-11-10).
+        Domain {
+            id: SOLANA_DOMAIN,
+            name: "Solana Devnet",
+            kind: AddressKind::Solana,
+            forwarding: true,
+        },
     ],
+    solana: SolanaSide {
+        name: "Solana Devnet",
+        caip2: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+        usdc_mint: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+    },
 };
 
 fn pinned(s: &str) -> EthAddress {
@@ -256,6 +306,16 @@ impl Cctp {
     /// The source chain with this EIP-155 chain ID.
     pub fn source(&self, chain_id: u64) -> Option<&'static Source> {
         self.sources.iter().find(|s| s.chain_id == chain_id)
+    }
+
+    /// A destination for a burn that starts on Solana: Injective, or a chain Injective sends
+    /// to (CCTP domains are the same everywhere), but not Solana itself.
+    pub fn from_solana(&self, id: u32) -> Option<&'static Domain> {
+        match id {
+            INJECTIVE_DOMAIN => Some(&INJECTIVE),
+            SOLANA_DOMAIN => None,
+            _ => self.domain(id),
+        }
     }
 
     /// The source chain with this CCTP domain.
@@ -423,7 +483,8 @@ fn read_burn(value: U256, data: &[u8]) -> Result<Burn, CctpError> {
     })
 }
 
-fn read_hook(h: &[u8]) -> Hook {
+/// Read hook data (any chain's burn: Solana's carries the same bytes).
+pub fn read_hook(h: &[u8]) -> Hook {
     if h.is_empty() {
         return Hook::None;
     }
@@ -758,26 +819,7 @@ pub fn burn_calldata(b: &Burn) -> Vec<u8> {
 
 /// Bitcoin's base58 alphabet, as Solana spells accounts.
 pub fn base58(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 58] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
-    let zeros = bytes.iter().take_while(|&&b| b == 0).count();
-    // Base-58 digits, least significant first.
-    let mut digits: Vec<u8> = Vec::new();
-    for &b in &bytes[zeros..] {
-        let mut carry = u32::from(b);
-        for d in &mut digits {
-            carry += u32::from(*d) << 8;
-            *d = (carry % 58) as u8;
-            carry /= 58;
-        }
-        while carry > 0 {
-            digits.push((carry % 58) as u8);
-            carry /= 58;
-        }
-    }
-    let mut out = String::with_capacity(zeros + digits.len());
-    out.extend(std::iter::repeat_n('1', zeros));
-    out.extend(digits.iter().rev().map(|&d| ALPHABET[d as usize] as char));
-    out
+    choice_wallet_core::base58::encode(bytes)
 }
 
 #[cfg(test)]

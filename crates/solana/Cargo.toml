@@ -1,0 +1,15 @@
+[package]
+name = "choice-wallet-solana"
+description = "Solana transactions as Choice Wallet reads them: messages, program-derived addresses and the instructions it names"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+choice-wallet-core.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+hex.workspace = true

@@ -1,14 +1,15 @@
 //! The vault (one password, one vault key), each wallet's sealed secret, and accounts.
 
+use choice_wallet_core::ed25519::{self, Ed25519Key};
 use choice_wallet_core::envelope;
-use choice_wallet_core::hd::{derive, injective_path, ledger_live_path};
+use choice_wallet_core::hd::{derive, injective_path, ledger_live_path, solana_ledger_live_path, solana_path};
 use choice_wallet_core::keystore::{KdfParams, Secret, UnlockKey};
 use choice_wallet_core::{Mnemonic, PrivateKey, PublicKey, hexutil};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use zeroize::Zeroizing;
 
-use crate::chains::CHAINS;
+use crate::chains::{CHAINS, SOLANA};
 use crate::error::{KEYSTORE, VaultError};
 use crate::util::hex;
 
@@ -77,6 +78,48 @@ pub(crate) fn key(secret_hex: &str, wallet: &str, unlock_key_hex: &str, account:
     account_key(secret, account)
 }
 
+/// The Solana key for `account` of wallet `wallet`: a recovery phrase's account has one at
+/// the matching Solana path; one imported key has none.
+pub(crate) fn solana_key(secret_hex: &str, wallet: &str, unlock_key_hex: &str, account: Account) -> Result<Ed25519Key, VaultError> {
+    let secret = envelope::open_secret(&unlock_key(unlock_key_hex)?, wallet, &hex(secret_hex, "secret")?)?;
+    account_solana_key(&secret, account)?.ok_or_else(|| {
+        VaultError::new(
+            KEYSTORE,
+            "this account is one imported key, which has no Solana account",
+        )
+    })
+}
+
+/// Both keys of `account`, from one opening of the secret.
+pub(crate) fn keys(
+    secret_hex: &str,
+    wallet: &str,
+    unlock_key_hex: &str,
+    account: Account,
+) -> Result<(PrivateKey, Option<Ed25519Key>), VaultError> {
+    let secret = envelope::open_secret(&unlock_key(unlock_key_hex)?, wallet, &hex(secret_hex, "secret")?)?;
+    let solana = account_solana_key(&secret, account)?;
+    Ok((account_key(secret, account)?, solana))
+}
+
+/// A recovery phrase's Solana key for `account`: Phantom's path for the default layout,
+/// Ledger Live's for Ledger Live's. `None` for an imported key (secp256k1 can't sign there).
+fn account_solana_key(secret: &Secret, account: Account) -> Result<Option<Ed25519Key>, VaultError> {
+    match (secret, account) {
+        (Secret::Mnemonic(m), Account::Default { index }) if index <= MAX_INDEX => {
+            Ok(Some(ed25519::derive(m, &solana_path(index))?))
+        }
+        (Secret::Mnemonic(m), Account::LedgerLive { index }) if index <= MAX_INDEX => {
+            Ok(Some(ed25519::derive(m, &solana_ledger_live_path(index))?))
+        }
+        (Secret::Mnemonic(_), Account::Default { index } | Account::LedgerLive { index }) => Err(VaultError::new(
+            KEYSTORE,
+            format!("account index {index} out of range"),
+        )),
+        _ => Ok(None),
+    }
+}
+
 /// What the user asked to see, after their password: a wallet's recovery phrase (or its one
 /// imported key), or one account's private key. Never with the vault key alone, so a host
 /// that holds it while unlocked can't show a secret without asking.
@@ -86,7 +129,18 @@ pub(crate) fn reveal(vault_hex: &str, password: &str, secret_hex: &str, wallet: 
     Ok(match (secret, account) {
         (Secret::Mnemonic(m), None) => serde_json::json!({ "phrase": m.phrase().as_str() }),
         (Secret::PrivateKey(k), None) => serde_json::json!({ "private_key": k.export_hex().as_str() }),
-        (secret, Some(a)) => serde_json::json!({ "private_key": account_key(secret, a)?.export_hex().as_str() }),
+        (secret, Some(a)) => {
+            let solana = account_solana_key(&secret, a)?.map(|k| {
+                let mut pair = Zeroizing::new([0u8; 64]);
+                pair[..32].copy_from_slice(&k.export()[..]);
+                pair[32..].copy_from_slice(&k.public_key());
+                Zeroizing::new(choice_wallet_core::base58::encode(&pair[..]))
+            });
+            serde_json::json!({
+                "private_key": account_key(secret, a)?.export_hex().as_str(),
+                "solana_private_key": solana.as_ref().map(|s| s.as_str()),
+            })
+        }
     })
 }
 
@@ -139,13 +193,21 @@ pub(crate) struct AccountInfo {
     addresses: Map<String, Value>,
 }
 
-pub(crate) fn info(account: Account, key: &PublicKey) -> AccountInfo {
+/// `solana` is the account's Solana key, if it has one: its address joins the others under
+/// each Solana cluster's ID.
+pub(crate) fn info(account: Account, key: &PublicKey, solana: Option<&Ed25519Key>) -> AccountInfo {
+    let mut addresses: Map<String, Value> = CHAINS
+        .iter()
+        .map(|c| (c.id.to_owned(), Value::String(c.address(key))))
+        .collect();
+    if let Some(k) = solana {
+        for c in SOLANA {
+            addresses.insert(c.id.to_owned(), Value::String(k.address()));
+        }
+    }
     AccountInfo {
         account,
         public_key: hexutil::encode(&key.compressed()),
-        addresses: CHAINS
-            .iter()
-            .map(|c| (c.id.to_owned(), Value::String(c.address(key))))
-            .collect(),
+        addresses,
     }
 }

@@ -1,4 +1,5 @@
-//! Rules for signed messages: `personal_sign`, and ADR-036 `signArbitrary`.
+//! Rules for signed messages: `personal_sign`, ADR-036 `signArbitrary`, and Solana's
+//! `signMessage`.
 
 use choice_wallet_core::EthAddress;
 use serde_json::json;
@@ -7,6 +8,8 @@ use crate::{Assessment, Context, Level, finding, site};
 
 /// The first line of a Sign-In with Ethereum (EIP-4361) message ends with this.
 const SIWE_SUFFIX: &str = " wants you to sign in with your Ethereum account:";
+/// The first line of a Sign-In with Solana message (the same format) ends with this.
+const SIWS_SUFFIX: &str = " wants you to sign in with your Solana account:";
 
 /// The host of an origin: `https://app.example.org:8443` → `app.example.org:8443`.
 fn host(origin: &str) -> &str {
@@ -175,46 +178,68 @@ fn binary(message: &[u8], out: &mut Vec<crate::Finding>) {
     });
 }
 
+/// Sign-in rules for a message in the EIP-4361 format (Ethereum's, and Solana's with its own
+/// first line): the site it names must be the one asking, and the account the signer.
+fn sign_in(text: &str, suffix: &str, is_signer: impl Fn(&str) -> bool, ctx: &Context, out: &mut Vec<crate::Finding>) {
+    let mut lines = text.lines();
+    let Some(domain) = lines.next().and_then(|l| l.strip_suffix(suffix)) else {
+        return;
+    };
+    let domain = host(domain);
+    let address = lines.next().unwrap_or("");
+    let params = json!({ "domain": domain, "address": address, "origin": ctx.origin });
+    if !is_signer(address) {
+        out.push(finding(
+            "sign_in_wrong_account",
+            Level::Red,
+            "This sign-in message names a different account.".into(),
+            params,
+        ));
+    } else if let Some(origin) = &ctx.origin
+        && host(origin) != domain
+    {
+        out.push(finding(
+            "sign_in_wrong_site",
+            Level::Red,
+            format!(
+                "This signs you in to {domain}, but the request came from {}.",
+                host(origin)
+            ),
+            params,
+        ));
+    } else {
+        out.push(finding(
+            "sign_in",
+            Level::Info,
+            format!("Signs you in to {domain}."),
+            params,
+        ));
+    }
+}
+
 /// Grade a `personal_sign` message.
 pub fn personal_message(message: &[u8], signer: &EthAddress, ctx: &Context) -> Assessment {
     let mut out = site(ctx);
     match as_text(message) {
         None => binary(message, &mut out),
-        Some(t) => {
-            let mut lines = t.lines();
-            if let Some(domain) = lines.next().and_then(|l| l.strip_suffix(SIWE_SUFFIX)) {
-                let domain = host(domain);
-                let address = lines.next().unwrap_or("");
-                let params = json!({ "domain": domain, "address": address, "origin": ctx.origin });
-                if EthAddress::parse_hex(address).ok() != Some(*signer) {
-                    out.push(finding(
-                        "sign_in_wrong_account",
-                        Level::Red,
-                        "This sign-in message names a different account.".into(),
-                        params,
-                    ));
-                } else if let Some(origin) = &ctx.origin
-                    && host(origin) != domain
-                {
-                    out.push(finding(
-                        "sign_in_wrong_site",
-                        Level::Red,
-                        format!(
-                            "This signs you in to {domain}, but the request came from {}.",
-                            host(origin)
-                        ),
-                        params,
-                    ));
-                } else {
-                    out.push(finding(
-                        "sign_in",
-                        Level::Info,
-                        format!("Signs you in to {domain}."),
-                        params,
-                    ));
-                }
-            }
-        }
+        Some(t) => sign_in(
+            t,
+            SIWE_SUFFIX,
+            |a| EthAddress::parse_hex(a).ok() == Some(*signer),
+            ctx,
+            &mut out,
+        ),
+    }
+    Assessment::from(out)
+}
+
+/// Grade a Solana `signMessage` message, signed by `signer` (base58). The vault refuses bytes
+/// that are a Solana transaction this key signs before they get here.
+pub fn solana_message(message: &[u8], signer: &str, ctx: &Context) -> Assessment {
+    let mut out = site(ctx);
+    match as_text(message) {
+        None => binary(message, &mut out),
+        Some(t) => sign_in(t, SIWS_SUFFIX, |a| a == signer, ctx, &mut out),
     }
     Assessment::from(out)
 }
@@ -291,6 +316,14 @@ mod tests {
             rule(other.as_bytes(), Some("https://example.org")),
             Some("sign_in_wrong_account")
         );
+        let siws = |address: &str| format!("example.org{SIWS_SUFFIX}\n{address}\n\nURI: https://example.org");
+        let solana = |m: String, origin: &str| {
+            let ctx = Context { origin: Some(origin.into()), origin_known: true, ..Default::default() };
+            solana_message(m.as_bytes(), "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk", &ctx).findings[0].rule
+        };
+        assert_eq!(solana(siws("HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk"), "https://example.org"), "sign_in");
+        assert_eq!(solana(siws("hagk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk"), "https://example.org"), "sign_in_wrong_account");
+        assert_eq!(solana(siws("HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk"), "https://evil.example"), "sign_in_wrong_site");
         let with_scheme = siwe("https://example.org", ME);
         assert_eq!(
             rule(with_scheme.as_bytes(), Some("https://example.org")),

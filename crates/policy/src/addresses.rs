@@ -13,8 +13,15 @@ use crate::{Contact, Context, Finding, Level, finding};
 fn forms(addr: &str) -> Vec<String> {
     match parse_injective(addr) {
         Ok(a) => vec![a.to_inj(), a.to_checksum_hex().to_lowercase()],
+        // Base58 is case-sensitive: two Solana addresses that differ only in case differ.
+        Err(_) if solana(addr) => vec![addr.trim().to_owned()],
         Err(_) => vec![addr.trim().to_lowercase()],
     }
+}
+
+/// A Solana address (32 bytes in base58).
+fn solana(addr: &str) -> bool {
+    choice_wallet_core::base58::decode32(addr.trim()).is_some()
 }
 
 /// One canonical form, for equality.
@@ -26,8 +33,11 @@ pub(crate) fn same(a: &str, b: &str) -> bool {
     canonical(a) == canonical(b)
 }
 
-/// The part after `0x` or after a bech32 prefix's `1`.
+/// The part after `0x` or after a bech32 prefix's `1`; all of a Solana address.
 fn body(form: &str) -> &str {
+    if solana(form) {
+        return form;
+    }
     form.strip_prefix("0x")
         .or_else(|| form.rfind('1').map(|i| &form[i + 1..]))
         .unwrap_or(form)

@@ -22,6 +22,20 @@ pub fn ledger_live_path(index: u32) -> String {
     format!("m/44'/{INJECTIVE_COIN_TYPE}'/{index}'/0/0")
 }
 
+/// SLIP-44 coin type for Solana.
+pub const SOLANA_COIN_TYPE: u32 = 501;
+
+/// Solana account `index` as Phantom, Solflare and Backpack derive it from a phrase:
+/// `m/44'/501'/{index}'/0'` (ed25519, SLIP-0010; see [`crate::ed25519`]).
+pub fn solana_path(index: u32) -> String {
+    format!("m/44'/{SOLANA_COIN_TYPE}'/{index}'/0'")
+}
+
+/// Solana account `index` as Ledger Live derives it: `m/44'/501'/{index}'`.
+pub fn solana_ledger_live_path(index: u32) -> String {
+    format!("m/44'/{SOLANA_COIN_TYPE}'/{index}'")
+}
+
 /// Derive the secp256k1 private key at `path` from a recovery phrase.
 pub fn derive(mnemonic: &Mnemonic, path: &str) -> Result<PrivateKey, Error> {
     let path: DerivationPath = path.parse().map_err(|_| Error::InvalidPath)?;

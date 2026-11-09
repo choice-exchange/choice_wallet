@@ -230,12 +230,7 @@ pub fn source_transaction(req: &TxRequest, c: &Cctp, source: &Source, call: &Sou
                 }),
             ));
             match d.delivery {
-                Delivery::Anyone => out.push(finding(
-                    "bridge_in_delivery",
-                    Level::Info,
-                    "Choice's bridge service completes it on Injective; anyone can, this wallet too.".into(),
-                    json!({}),
-                )),
+                Delivery::Anyone => out.push(crate::solana::delivery_on_injective(c)),
                 Delivery::GasDrop { max_drop_fee } => out.push(finding(
                     "bridge_gas_drop",
                     Level::Info,

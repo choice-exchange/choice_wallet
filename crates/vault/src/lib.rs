@@ -42,7 +42,11 @@
 //! exactly those bytes, for the request that was approved.
 //!
 //! A sign request is one of `cosmos_direct`, `cosmos_amino_tx`, `cosmos_amino`,
-//! `cosmos_arbitrary` (ADR-036), `evm_transaction`, `evm_typed_data`, `evm_personal_sign`. `decode` grades it with the
+//! `cosmos_arbitrary` (ADR-036), `evm_transaction`, `evm_typed_data`, `evm_personal_sign`,
+//! `solana_transaction`, `solana_message`. Solana requests are signed with the account's
+//! ed25519 key (SLIP-0010, Phantom's path; its address joins `accounts`' under each Solana
+//! cluster's ID), a Ledger's through its Solana app (`device_sign` takes the 32-byte key).
+//! `decode` grades it with the
 //! risk rules (`choice-wallet-policy`) against the host's `context`. `sign` decodes it again
 //! and signs only if its digest is the one `decode` returned and the user approved.
 //!
@@ -285,10 +289,8 @@ fn call(request: &str) -> Result<Value, VaultError> {
             let list = accounts
                 .into_iter()
                 .map(|a| {
-                    Ok(keys::info(
-                        a,
-                        &keys::key(&secret, &wallet, &unlock_key, a)?.public_key(),
-                    ))
+                    let (key, solana) = keys::keys(&secret, &wallet, &unlock_key, a)?;
+                    Ok(keys::info(a, &key.public_key(), solana.as_ref()))
                 })
                 .collect::<Result<Vec<_>, VaultError>>()?;
             Ok(json!({ "accounts": list }))
@@ -343,6 +345,10 @@ fn call(request: &str) -> Result<Value, VaultError> {
                 digest,
             } = borrowed(p)?;
             let checked = request::decode(request)?;
+            if checked.solana() {
+                let key = keys::solana_key(&secret, &wallet, &unlock_key, account)?;
+                return request::sign_solana(checked, &digest, &key);
+            }
             let key = keys::key(&secret, &wallet, &unlock_key, account)?;
             request::sign(checked, &digest, &key)
         }
@@ -387,6 +393,13 @@ fn call(request: &str) -> Result<Value, VaultError> {
                 format,
             } = borrowed(p)?;
             let checked = request::decode(request)?;
+            if checked.solana() {
+                // A Solana device key: 32 bytes, hex.
+                let pk: [u8; 32] = util::hex(&public_key, "public_key")?
+                    .try_into()
+                    .map_err(|_| VaultError::bad("public_key is not an ed25519 public key"))?;
+                return request::device_sign_solana(checked, &digest, &pk, &util::hex(&signature, "signature")?);
+            }
             let pk = device_key(&public_key)?;
             request::device_sign(checked, &digest, &pk, &util::hex(&signature, "signature")?, format)
         }

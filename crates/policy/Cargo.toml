@@ -12,6 +12,7 @@ choice-wallet-core.workspace = true
 choice-wallet-cosmos.workspace = true
 choice-wallet-evm.workspace = true
 choice-wallet-injective.workspace = true
+choice-wallet-solana.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 

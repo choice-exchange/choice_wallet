@@ -67,6 +67,37 @@ pub const CHAINS: [Entry; 4] = [
     },
 ];
 
+/// A Solana cluster the vault signs on, with each account's ed25519 key (SLIP-0010, the path
+/// Phantom uses). Not in [`CHAINS`]: its keys and requests are of their own kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SolanaChain {
+    /// CAIP-2 ID (`solana:` and the genesis hash's first 32 characters).
+    pub id: &'static str,
+    /// Display name.
+    pub name: &'static str,
+    /// The Injective network it bridges with (its USDC, and Circle's tables).
+    pub network: &'static Network,
+}
+
+/// Solana mainnet, and devnet beside Injective's testnet.
+pub const SOLANA: [SolanaChain; 2] = [
+    SolanaChain {
+        id: MAINNET.cctp.solana.caip2,
+        name: MAINNET.cctp.solana.name,
+        network: &MAINNET,
+    },
+    SolanaChain {
+        id: TESTNET.cctp.solana.caip2,
+        name: TESTNET.cctp.solana.name,
+        network: &TESTNET,
+    },
+];
+
+/// A Solana cluster by CAIP-2 ID.
+pub fn solana(id: &str) -> Option<&'static SolanaChain> {
+    SOLANA.iter().find(|c| c.id == id)
+}
+
 /// A chain USDC can come from into Injective, by CAIP-2 ID (`eip155:8453`), and the network
 /// it comes into. It isn't in [`CHAINS`]: the vault signs nothing there but what
 /// `cctp::source_call` reads as an exact USDC approval for Circle's bridge or a deposit into
@@ -211,6 +242,16 @@ mod tests {
             for s in n.cctp.sources {
                 assert!(find(&format!("eip155:{}", s.chain_id)).is_err());
             }
+        }
+    }
+
+    #[test]
+    fn solana_clusters() {
+        assert_eq!(solana("solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp").unwrap().network, &MAINNET);
+        assert_eq!(solana("solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1").unwrap().name, "Solana Devnet");
+        assert!(solana("solana:mainnet").is_none());
+        for c in SOLANA {
+            assert!(find(c.id).is_err());
         }
     }
 

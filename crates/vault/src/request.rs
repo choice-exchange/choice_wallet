@@ -9,8 +9,9 @@
 //! chain, the signer, and the exact bytes (or, for typed data, the EIP-712 hash) that get
 //! signed.
 
+use choice_wallet_core::ed25519::{self, Ed25519Key};
 use choice_wallet_core::secp256k1::keccak256;
-use choice_wallet_core::{EthAddress, PrivateKey, PublicKey, hexutil};
+use choice_wallet_core::{EthAddress, PrivateKey, PublicKey, base58, hexutil};
 use choice_wallet_cosmos::amino::{self, AminoTx};
 use choice_wallet_cosmos::direct::{self, Decoded, Request};
 use choice_wallet_evm::U256;
@@ -24,7 +25,7 @@ use serde::Deserialize;
 use serde_json::value::RawValue;
 use serde_json::{Value, json};
 
-use crate::chains::{self, Entry};
+use crate::chains::{self, Entry, SolanaChain};
 use crate::error::{BAD_SIGNATURE, DEVICE_UNSUPPORTED, INVALID, NOT_APPROVED, VaultError, WRONG_ACCOUNT};
 use crate::util::{U64, hex, json_text};
 
@@ -74,6 +75,29 @@ pub(crate) enum SignRequest<'a> {
         /// The data, hex.
         data: String,
     },
+    /// Solana `signTransaction` (and `signAndSendTransaction`), and the wallet's own Solana
+    /// transactions: the message bytes the signatures cover.
+    SolanaTransaction {
+        /// CAIP-2 ID of the cluster.
+        chain: String,
+        /// The signing account, base58.
+        signer: String,
+        /// The message, hex.
+        message: String,
+        /// The entries of each address lookup table a v0 message uses, as the host's RPC
+        /// read them.
+        #[serde(default)]
+        tables: Vec<LookupTable>,
+    },
+    /// Solana `signMessage`: bytes that aren't a transaction.
+    SolanaMessage {
+        /// CAIP-2 ID of the cluster.
+        chain: String,
+        /// The signing account, base58.
+        signer: String,
+        /// The message, hex.
+        message: String,
+    },
     /// `personal_sign`.
     EvmPersonalSign {
         /// CAIP-2 chain ID.
@@ -84,6 +108,14 @@ pub(crate) enum SignRequest<'a> {
         /// `personal_sign`'s first parameter).
         message: String,
     },
+}
+
+/// An address lookup table's entries, base58, as the host read them.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LookupTable {
+    address: String,
+    addresses: Vec<String>,
 }
 
 /// The parts of a Cosmos SignDoc.
@@ -138,6 +170,17 @@ enum Kind {
     Arbitrary {
         a: Box<choice_wallet_cosmos::adr36::Arbitrary>,
     },
+    SolanaTx {
+        read: Box<choice_wallet_solana::Read>,
+        /// The exact message bytes signed.
+        bytes: Vec<u8>,
+        signer: [u8; 32],
+        chain: &'static SolanaChain,
+    },
+    SolanaMessage {
+        message: Vec<u8>,
+        signer: [u8; 32],
+    },
 }
 
 impl Checked {
@@ -172,7 +215,18 @@ impl Checked {
             } => choice_wallet_policy::typed_data(td, injective_tx.as_deref(), signer, ctx),
             Kind::Personal { message, signer } => choice_wallet_policy::personal_message(message, signer, ctx),
             Kind::Arbitrary { a } => choice_wallet_policy::arbitrary_message(a.data(), ctx),
+            Kind::SolanaTx { read, signer, chain, .. } => {
+                choice_wallet_policy::solana_transaction(read, signer, &chain.network.cctp, ctx)
+            }
+            Kind::SolanaMessage { message, signer } => {
+                choice_wallet_policy::solana_message(message, &base58::encode(signer), ctx)
+            }
         }
+    }
+
+    /// Signed with the account's Solana key rather than its secp256k1 one.
+    pub(crate) fn solana(&self) -> bool {
+        matches!(self.kind, Kind::SolanaTx { .. } | Kind::SolanaMessage { .. })
     }
 }
 
@@ -290,6 +344,36 @@ pub(crate) fn decode(req: SignRequest) -> Result<Checked, VaultError> {
                 display,
                 digest: digest("cosmos_arbitrary", entry.id, &pk.compressed(), a.sign_bytes()),
                 kind: Kind::Arbitrary { a: Box::new(a) },
+            })
+        }
+        SignRequest::SolanaTransaction {
+            chain,
+            signer,
+            message,
+            tables,
+        } => solana_tx(&chain, &signer, &message, &tables),
+        SignRequest::SolanaMessage { chain, signer, message } => {
+            let cluster = solana_chain(&chain)?;
+            let signer = solana_key_of(&signer)?;
+            let bytes = hex(&message, "message")?;
+            // A transaction's message is never a message to sign: its signature would send it.
+            if choice_wallet_solana::message::parse(&bytes).is_ok() {
+                return Err(VaultError::new(
+                    INVALID,
+                    "This is a Solana transaction, not a message. The wallet won't sign it as one.",
+                ));
+            }
+            let display = json!({
+                "kind": "solana_message",
+                "chain": cluster.id,
+                "signer": base58::encode(&signer),
+                "text": std::str::from_utf8(&bytes).ok(),
+                "hex": format!("0x{}", hexutil::encode(&bytes)),
+            });
+            Ok(Checked {
+                display,
+                digest: digest("solana_message", cluster.id, &signer, &bytes),
+                kind: Kind::SolanaMessage { message: bytes, signer },
             })
         }
         SignRequest::EvmPersonalSign { chain, signer, message } => {
@@ -696,6 +780,9 @@ pub(crate) fn sign(checked: Checked, approved: &str, key: &PrivateKey) -> Result
                 "signed_doc": String::from_utf8_lossy(a.sign_bytes()),
             }))
         }
+        Kind::SolanaTx { .. } | Kind::SolanaMessage { .. } => Err(VaultError::bad(
+            "a Solana request is signed with the account's Solana key",
+        )),
     }
 }
 
@@ -721,6 +808,11 @@ pub(crate) fn device_request(checked: &Checked, approved: &str) -> Result<Value,
         Kind::EvmTx { r, .. } => Ok(out("ethereum", "transaction", &r.tx.unsigned_bytes())),
         Kind::Personal { message, .. } => Ok(out("ethereum", "message", message)),
         Kind::Arbitrary { a } => Ok(out("cosmos", "amino", a.sign_bytes())),
+        Kind::SolanaTx { bytes, .. } => Ok(out("solana", "transaction", bytes)),
+        Kind::SolanaMessage { .. } => Err(VaultError::new(
+            DEVICE_UNSUPPORTED,
+            "A Ledger account can't sign Solana messages in Choice Wallet.",
+        )),
         Kind::Direct { .. } => Err(VaultError::new(
             DEVICE_UNSUPPORTED,
             "A Ledger signs Cosmos transactions as amino JSON, not this form.",
@@ -809,9 +901,12 @@ pub(crate) fn device_sign(
                 "signed_doc": String::from_utf8_lossy(a.sign_bytes()),
             }))
         }
-        Kind::Direct { .. } | Kind::TypedData { .. } => Err(VaultError::new(
+        Kind::Direct { .. } | Kind::TypedData { .. } | Kind::SolanaMessage { .. } => Err(VaultError::new(
             DEVICE_UNSUPPORTED,
             "A Ledger can't sign this kind of request here.",
+        )),
+        Kind::SolanaTx { .. } => Err(VaultError::bad(
+            "a Solana transaction is signed by the device's Solana key",
         )),
     }
 }
@@ -835,6 +930,258 @@ pub(crate) fn verify_arbitrary(
     };
     let a = choice_wallet_cosmos::adr36::Arbitrary::new(cosmos, public_key, data)?;
     Ok(a.check_signature(&sig).is_some())
+}
+
+fn solana_chain(id: &str) -> Result<&'static SolanaChain, VaultError> {
+    chains::solana(id).ok_or_else(|| VaultError::new(crate::error::UNKNOWN_CHAIN, format!("unknown chain {id:?}")))
+}
+
+fn solana_key_of(s: &str) -> Result<[u8; 32], VaultError> {
+    base58::decode32(s.trim()).ok_or_else(|| VaultError::bad(format!("invalid Solana address {s:?}")))
+}
+
+/// A Solana transaction: read, checked to be one this account signs, and described.
+fn solana_tx(chain: &str, signer: &str, message: &str, tables: &[LookupTable]) -> Result<Checked, VaultError> {
+    let cluster = solana_chain(chain)?;
+    let signer = solana_key_of(signer)?;
+    let bytes = hex(message, "message")?;
+    let tables = tables
+        .iter()
+        .map(|t| {
+            Ok((
+                solana_key_of(&t.address)?,
+                t.addresses.iter().map(|a| solana_key_of(a)).collect::<Result<Vec<_>, VaultError>>()?,
+            ))
+        })
+        .collect::<Result<Vec<_>, VaultError>>()?;
+    let read = choice_wallet_solana::read(&bytes, &tables)
+        .map_err(|e| VaultError::new(INVALID, format!("not a Solana transaction the wallet reads: {e}")))?;
+    if !read.signs(&signer) {
+        return Err(VaultError::new(WRONG_ACCOUNT, "this account doesn't sign this transaction"));
+    }
+    Ok(Checked {
+        display: solana_display(cluster, &read, &signer),
+        digest: digest("solana_transaction", cluster.id, &signer, &bytes),
+        kind: Kind::SolanaTx {
+            read: Box::new(read),
+            bytes,
+            signer,
+            chain: cluster,
+        },
+    })
+}
+
+fn solana_display(cluster: &SolanaChain, r: &choice_wallet_solana::Read, signer: &[u8; 32]) -> Value {
+    use choice_wallet_solana::message::Version;
+    let b58 = |k: &[u8; 32]| base58::encode(k);
+    json!({
+        "kind": "solana_transaction",
+        "chain": cluster.id,
+        "signer": b58(signer),
+        "fee_payer": b58(r.message.fee_payer()),
+        "signers": r.message.signers().iter().map(b58).collect::<Vec<_>>(),
+        "version": match r.message.version { Version::Legacy => "legacy", Version::V0 => "v0" },
+        "fee": {
+            "base": r.fee.base.to_string(),
+            "priority": r.fee.priority.to_string(),
+            "total": r.fee.total().to_string(),
+            "unit_limit": r.fee.unit_limit,
+            "unit_price": r.fee.unit_price.map(|p| p.to_string()),
+        },
+        "durable_nonce": r.durable_nonce,
+        "lookup_tables": r.message.lookups.iter().map(|l| b58(&l.table)).collect::<Vec<_>>(),
+        "instructions": r.steps.iter().map(|s| solana_step(cluster, r, s)).collect::<Vec<_>>(),
+    })
+}
+
+/// One instruction for the approval screen: what it does, in the chain's terms.
+fn solana_step(cluster: &SolanaChain, r: &choice_wallet_solana::Read, s: &choice_wallet_solana::Step) -> Value {
+    use choice_wallet_solana::program::{self, Instruction as I};
+    let b58 = |k: &[u8; 32]| base58::encode(k);
+    let opt = |k: &Option<[u8; 32]>| k.as_ref().map(b58);
+    let created_for = |account: &[u8; 32]| {
+        r.steps.iter().find_map(|o| match &o.instruction {
+            I::CreateTokenAccount { account: a, owner, .. } if a == account => Some(b58(owner)),
+            _ => None,
+        })
+    };
+    let mut v = match &s.instruction {
+        I::Transfer { from, to, lamports } => {
+            json!({ "type": "sol_transfer", "from": b58(from), "to": b58(to), "lamports": lamports.to_string() })
+        }
+        I::CreateAccount { from, account, lamports, space, owner } => json!({
+            "type": "create_account", "from": b58(from), "account": b58(account), "lamports": lamports.to_string(),
+            "space": space.to_string(), "owner": b58(owner), "owner_name": program::name(owner),
+        }),
+        I::Assign { account, owner } => {
+            json!({ "type": "assign", "account": b58(account), "owner": b58(owner), "owner_name": program::name(owner) })
+        }
+        I::AdvanceNonce { nonce, authority } => {
+            json!({ "type": "advance_nonce", "nonce": b58(nonce), "authority": b58(authority) })
+        }
+        I::ComputeUnitLimit(n) => json!({ "type": "compute_budget", "unit_limit": n }),
+        I::ComputeUnitPrice(p) => json!({ "type": "compute_budget", "unit_price": p.to_string() }),
+        I::TokenTransfer { source, destination, authority, amount, mint, decimals, .. } => json!({
+            "type": "token_transfer", "source": b58(source), "destination": b58(destination),
+            "destination_owner": created_for(destination), "authority": b58(authority),
+            "amount": amount.to_string(), "mint": opt(mint), "decimals": decimals,
+            "usdc": mint.is_some_and(|m| m == cluster.network.cctp.solana.usdc_mint()),
+        }),
+        I::TokenApprove { source, delegate, owner, amount, mint, decimals, .. } => json!({
+            "type": "token_approve", "source": b58(source), "delegate": b58(delegate), "owner": b58(owner),
+            "amount": amount.to_string(), "mint": opt(mint), "decimals": decimals,
+        }),
+        I::TokenRevoke { source, owner, .. } => json!({ "type": "token_revoke", "source": b58(source), "owner": b58(owner) }),
+        I::TokenSetAuthority { account, kind, new_authority, current, .. } => json!({
+            "type": "token_set_authority", "account": b58(account), "authority_kind": kind,
+            "new_authority": opt(new_authority), "current": b58(current),
+        }),
+        I::TokenClose { account, destination, owner, .. } => {
+            json!({ "type": "token_close", "account": b58(account), "destination": b58(destination), "owner": b58(owner) })
+        }
+        I::TokenBurn { account, mint, owner, amount, decimals, .. } => json!({
+            "type": "token_burn", "account": b58(account), "mint": b58(mint), "owner": b58(owner),
+            "amount": amount.to_string(), "decimals": decimals,
+        }),
+        I::TokenSyncNative { account } => json!({ "type": "token_sync_native", "account": b58(account) }),
+        I::TokenInitializeAccount { account, mint, owner, .. } => {
+            json!({ "type": "token_init", "account": b58(account), "mint": b58(mint), "owner": b58(owner) })
+        }
+        I::TokenOther { kind, .. } => json!({ "type": "token_other", "kind": kind }),
+        I::CreateTokenAccount { payer, account, owner, mint, idempotent, .. } => json!({
+            "type": "create_token_account", "payer": b58(payer), "account": b58(account), "owner": b58(owner),
+            "mint": b58(mint), "idempotent": idempotent,
+        }),
+        I::Memo(m) => json!({ "type": "memo", "text": std::str::from_utf8(m).ok(), "hex": hexutil::encode(m) }),
+        I::CctpBurn(b) => solana_bridge(&cluster.network.cctp, b),
+        I::CctpReclaim { payee, event_account } => {
+            json!({ "type": "bridge_reclaim", "payee": b58(payee), "event_account": b58(event_account) })
+        }
+        I::Unreadable { reason, .. } => json!({ "type": "unreadable", "reason": reason }),
+        I::Other { .. } => json!({
+            "type": "program",
+            "accounts": s.accounts.iter().map(|a| json!({
+                "address": b58(&a.key),
+                "signer": a.signer,
+                "writable": a.writable,
+                "table": a.table.map(|(t, i)| json!({ "address": b58(&t), "index": i })),
+            })).collect::<Vec<_>>(),
+            "data": hexutil::encode(&s.data),
+        }),
+    };
+    v["program"] = Value::String(b58(&s.program));
+    v["program_name"] = json!(program::name(&s.program));
+    v
+}
+
+/// A burn on Solana: where it goes, who gets it there, who delivers, and what Circle (and a
+/// gas drop) may keep.
+fn solana_bridge(c: &cctp::Cctp, b: &choice_wallet_solana::program::CctpBurn) -> Value {
+    use cctp::{AddressKind, Hook};
+    let hook = b.hook.as_deref().map_or(Hook::None, cctp::read_hook);
+    let domain = c.from_solana(b.domain);
+    let evm_in = |w: &[u8; 32]| {
+        w[..12]
+            .iter()
+            .all(|&x| x == 0)
+            .then(|| EthAddress::from_bytes(w[12..].try_into().expect("20 bytes")).to_checksum_hex())
+    };
+    let (recipient, delivery, drop) = match &hook {
+        Hook::GasDrop { recipient, max_drop_fee } => (Some(recipient.to_checksum_hex()), "gas_drop", Some(*max_drop_fee)),
+        _ => (
+            match domain.map(|d| d.kind) {
+                Some(AddressKind::Evm) => evm_in(&b.mint_recipient),
+                Some(AddressKind::Solana) => Some(base58::encode(&b.mint_recipient)),
+                None => None,
+            },
+            match (&hook, b.destination_caller == [0; 32]) {
+                (_, false) => "caller",
+                (Hook::None, true) => "anyone",
+                (Hook::Forward | Hook::ForwardWithAccount { .. }, true) => "circle",
+                _ => "hook",
+            },
+            None,
+        ),
+    };
+    let fees = U256::from_u128(b.max_fee.into())
+        .checked_add(&drop.unwrap_or(U256::ZERO))
+        .unwrap_or(U256::MAX);
+    let amount = U256::from_u128(b.amount.into());
+    json!({
+        "type": "bridge",
+        "amount": b.amount.to_string(),
+        "token": base58::encode(&b.mint),
+        "usdc": b.mint == c.solana.usdc_mint(),
+        "domain": b.domain,
+        "chain": domain.map(|d| d.name),
+        "recipient": recipient,
+        "max_fee": b.max_fee.to_string(),
+        "finality": b.min_finality,
+        "delivery": delivery,
+        "max_drop_fee": drop.map(|d| d.to_string()),
+        "least": amount.checked_sub(&fees).unwrap_or(U256::ZERO).to_string(),
+        "owner": base58::encode(&b.owner),
+        "event_account": base58::encode(&b.event_account),
+    })
+}
+
+/// Sign an approved Solana request with the account's Solana key.
+pub(crate) fn sign_solana(checked: Checked, approved: &str, key: &Ed25519Key) -> Result<Value, VaultError> {
+    check_approved(&checked, approved)?;
+    solana_signed(checked, &key.public_key(), |bytes| Ok(key.sign(bytes)))
+}
+
+/// An approved Solana transaction signed by a hardware wallet's Solana key: the signature
+/// must verify against `public_key` over the exact message, and that key must be the signer.
+pub(crate) fn device_sign_solana(
+    checked: Checked,
+    approved: &str,
+    public_key: &[u8; 32],
+    signature: &[u8],
+) -> Result<Value, VaultError> {
+    check_approved(&checked, approved)?;
+    let bad = || {
+        VaultError::new(
+            BAD_SIGNATURE,
+            "the device's signature isn't this account's, for this request",
+        )
+    };
+    let sig: [u8; 64] = signature.try_into().map_err(|_| bad())?;
+    solana_signed(checked, public_key, |bytes| {
+        ed25519::verify(public_key, bytes, &sig).then_some(sig).ok_or_else(bad)
+    })
+}
+
+fn solana_signed(
+    checked: Checked,
+    public_key: &[u8; 32],
+    sign: impl FnOnce(&[u8]) -> Result<[u8; 64], VaultError>,
+) -> Result<Value, VaultError> {
+    let wrong_account = || VaultError::new(WRONG_ACCOUNT, "this account is not the request's signer");
+    match checked.kind {
+        Kind::SolanaTx { read, bytes, signer, .. } => {
+            if *public_key != signer {
+                return Err(wrong_account());
+            }
+            let sig = sign(&bytes)?;
+            let signers = read.message.signers();
+            let index = signers.iter().position(|k| *k == signer).expect("decode checked that it signs");
+            let mut out = json!({ "signature": hexutil::encode(&sig), "index": index });
+            // The only signer: the transaction is complete.
+            if signers.len() == 1 {
+                let wire = [&[1u8][..], &sig, &bytes].concat();
+                out["transaction"] = Value::String(hexutil::encode(&wire));
+            }
+            Ok(out)
+        }
+        Kind::SolanaMessage { message, signer } => {
+            if *public_key != signer {
+                return Err(wrong_account());
+            }
+            Ok(json!({ "signature": hexutil::encode(&sign(&message)?) }))
+        }
+        _ => Err(VaultError::bad("not a Solana request")),
+    }
 }
 
 /// The messages of a checked Cosmos request, for tests.

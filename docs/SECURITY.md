@@ -43,7 +43,7 @@ We build and audit Choice Wallet in house, in the open. This file covers what we
 
 ## Rules for vault code
 
-The vault is `choice-wallet-core`, `choice-wallet-cosmos`, `choice-wallet-injective`, `choice-wallet-evm`, `choice-wallet-policy`, `choice-wallet-vault` and `choice-wallet-wasm`.
+The vault is `choice-wallet-core`, `choice-wallet-cosmos`, `choice-wallet-injective`, `choice-wallet-evm`, `choice-wallet-solana`, `choice-wallet-policy`, `choice-wallet-vault` and `choice-wallet-wasm`.
 
 - `#![forbid(unsafe_code)]` in every vault crate, except `choice-wallet-wasm`: the glue `#[wasm_bindgen]` generates uses `unsafe`. That crate is one function and contains no `unsafe` of its own.
 - Secrets are zeroized on drop (`Zeroizing`, `ZeroizeOnDrop`). `Debug` on secret types prints `<redacted>`.
@@ -54,7 +54,7 @@ The vault is `choice-wallet-core`, `choice-wallet-cosmos`, `choice-wallet-inject
 
 ### Known limits
 
-- `bip32` 0.6 wipes the private key on drop (through k256) but not the chain code. A chain code alone reveals no key.
+- `bip32` 0.6 wipes the private key on drop (through k256) but not the chain code. A chain code alone reveals no key. The ed25519 (SLIP-0010) derivation in `choice-wallet-core` wipes both.
 - Zeroize is best-effort once a secret crosses into JavaScript: passwords and pasted phrases arrive as JS strings, which can't be wiped.
 - Chrome doesn't write `chrome.storage.session` to disk, but the OS can swap or hibernate memory.
 
@@ -67,12 +67,14 @@ The vault is `choice-wallet-core`, `choice-wallet-cosmos`, `choice-wallet-inject
 | Mnemonic | `bip39` 3.0 (rust-bitcoin) |
 | HD derivation | `bip32` 0.6 (iqlusion) |
 | secp256k1 | `k256` 0.14 (RustCrypto) |
+| ed25519 (Solana keys and signatures; curve membership for program-derived addresses) | `ed25519-dalek` 3.0, `curve25519-dalek` 5.0 (dalek-cryptography), surveyed 2026-11-10, without precomputed tables. SLIP-0010 derivation is in-house over `hmac` 0.13 (RustCrypto, already there through `bip32`), checked against SLIP-0010's test vectors and noble |
 | Hashes | `sha2` 0.11, `sha3` 0.12 (RustCrypto) |
 | Keystore | `argon2` 0.6, `chacha20poly1305` 0.11 (RustCrypto) |
 | Encoding | `bech32` 0.12, `prost` 0.14 |
 | JSON inside transactions (CosmWasm messages, amino JSON, EIP-712) and the vault protocol | `serde` 1.0, `serde_json` 1.0 |
 | Hygiene | `zeroize` 1.9 (with its `serde` feature, so passwords deserialize straight into wiped buffers), `getrandom` 0.4, `thiserror` 2 |
 | WASM glue (WASM crate only) | `wasm-bindgen` 0.2.130, pinned exactly. Already in the lockfile through getrandom's browser backend |
+| Solana (Solana crate) | Nothing extra: messages (legacy and v0), program-derived addresses and the instructions it reads are in-house, checked against `@solana/web3.js` 1.98.4 vectors |
 | EVM (EVM crate) | Nothing extra: an in-house RLP writer, checked against viem. `alloy-dyn-abi` 1.7 later if ABI decoding needs it (`alloy-consensus` was measured at about 120 crates and left out) |
 
 Adding a vault dependency needs a written reason in the PR and a second reviewer. Test-only crates (`hex`) are fine as dev-dependencies.
