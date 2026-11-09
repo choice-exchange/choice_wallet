@@ -82,7 +82,7 @@ Every host talks to the vault the same way: `handle('{"method": …, "params": {
 - **Hosts add the secrets.** UI pages send requests without the keystore or unlock key; the host fills them in. On desktop and mobile they never reach the web view.
 - **Chains by CAIP-2 ID** (`cosmos:injective-1`, `eip155:1776`). Accounts list an address for every known chain, so adding a chain doesn't change the protocol.
 - **Approvals are bound to bytes.** `decode` returns what the approval screen shows and a digest over the request kind, chain, signer and the exact bytes (or EIP-712 hash) to be signed. `sign` decodes again and signs only if the digest matches the approved one, so an approval can't sign a different request or with a different account.
-- **The wallet's own sends get no shortcut.** `build_cosmos` and `build_evm` return a sign request in the same form a dapp's would take, which then goes through `decode` and `sign`. `build_cosmos` makes bank and CW20 sends, adapter conversions, and staking (`delegate`, `undelegate`, `redelegate`, `cancel_unbonding`, `withdraw_rewards`), in SIGN_MODE_DIRECT or amino JSON.
+- **The wallet's own sends get no shortcut.** `build_cosmos` and `build_evm` return a sign request in the same form a dapp's would take, which then goes through `decode` and `sign`. `build_cosmos` makes bank and CW20 sends, adapter conversions, staking (`delegate`, `undelegate`, `redelegate`, `cancel_unbonding`, `withdraw_rewards`) and revokes (`authz_revoke`, `fee_revoke`, `reset_withdraw_address` back to the signer only, `cw20_decrease_allowance`), in SIGN_MODE_DIRECT or amino JSON. `build_evm` makes native and ERC20 sends, and `approve(spender, 0)` as a revoke (to the token only, for 0 only).
 - EVM transaction requests are `eth_sendTransaction` objects after the host fills in nonce, gas and fees. Only EIP-1559; legacy gas prices, access lists, EIP-7702 authorizations and contract creation are refused.
 
 ### Keys at rest
@@ -150,6 +150,18 @@ How each kind of Injective token is held and moved (checked against the injectiv
 - **Actions.** Stake (only with an active, unjailed validator; "max" keeps 0.01 INJ for later fees), unstake, move to another validator, claim (every validator at once, up to 30 per tx), and cancel an unstaking. Each goes through the same prepare, review and confirm as a send, so the vault decodes and grades it; unstaking and moving draw on the stake and the fee on the balance. Watched accounts can look, not act.
 - **Messages.** cosmos-sdk's staking `tx.proto` imports validator records, which pull in cometbft's types and ABCI protos, so the five staking messages are written from the wire format in `crates/cosmos/src/staking.rs` (field numbers from v0.50.14-inj.11), and a test checks their encoding against protobufjs. Injective's `MsgTransferDelegation` gives a stake to another account; it is decoded so it can be graded red.
 - **Checked live** on testnet on 2026-11-09 through the extension: stake, unstake, cancel an unstaking, move, claim and Activity, each message, validator and amount checked on chain (`e2e-live.mjs … staking`).
+
+### Approvals and grants
+
+Settings → Approvals and grants lists what the account lets others do, and takes it back:
+
+- **Where staking rewards go**, when it isn't the account itself (red, with "Send them here again").
+- **Permissions (authz grants) it gave**, named for what they allow ("Send your tokens", "Trade on the INJ orderbook"), with the grantee and end date. Those that can move funds out are red. A revoke names the message type a grant covers: a generic grant says it, typed ones imply it (a send grant covers MsgSend; Injective's orderbook `…Authz` types cover their `Msg…`, from injective-core v1.20's `MsgTypeURL` methods). A grant whose type the wallet can't tell is listed without a revoke.
+- **Fee allowances it gave**, with their limit and end, unwrapped from periodic and message-limited allowances.
+- **CW20 allowances** on every CW20 the wallet lists for the account (each contract's `all_allowances`).
+- **ERC20 allowances.** Blockscout's `getLogs` finds every `Approval` the account ever made (over all blocks, which public EVM nodes won't search); what is left of each comes from the token's `allowance()` on the user's EVM endpoint, so spent and revoked ones drop out. Blockscout can leave one out but can't invent one.
+
+"Revoke all" takes back everything on the Cosmos side in one transaction (up to 30 messages); each ERC20 allowance is its own EVM transaction. Revokes go through the same prepare, review and confirm as a send; the review reads them as "You take back". Checked live on testnet on 2026-11-09 (`e2e-live.mjs … approvals`): a site's grant, fee allowance and rewards redirect, and a real unlimited ERC20 allowance, each listed, revoked and checked on chain.
 
 ### Sending
 
