@@ -4,7 +4,24 @@
 
 export { balanceChanges, mergeActivity, parseCoins, summarize, type Activity, type ActivityKind, type EvmView } from "./activity.ts";
 export { DEPOSITS_LOOKED_AT, takesMemos } from "./deposits.ts";
-export { bytesToHex, cosmosTxHash, hexToBase64, hexToBytes } from "./encoding.ts";
+export { base58ToBytes, base64ToBytes, bytesToBase58, bytesToBase64, bytesToHex, cosmosTxHash, hexToBase64, hexToBytes, isSolanaAddress } from "./encoding.ts";
+export {
+  CCTP_MESSAGE_TRANSMITTER,
+  CCTP_TOKEN_MESSENGER_MINTER,
+  isSolanaDenom,
+  LAMPORTS,
+  SOL,
+  SolanaRpc,
+  solanaBurn,
+  splDenom,
+  splMint,
+  summarizeSolana,
+  SYSTEM_PROGRAM,
+  TOKEN_2022_PROGRAM,
+  TOKEN_PROGRAM,
+  type SignatureInfo,
+  type SolanaTokenAccount,
+} from "./solana.ts";
 export { abiString, EvmRpc, word, type Call } from "./evm.ts";
 export { EvmIndex } from "./evmindex.ts";
 export { erc20Event, evmCall, evmResults, type Erc20Event, type EvmCall, type EvmLog } from "./evmtx.ts";

@@ -45,6 +45,20 @@ export interface Network {
    *  in (or Choice's BridgeReceiver, for a transfer that also buys INJ for gas). The vault
    *  pins the same addresses (`choice_wallet_injective::cctp`), as does injective-usdc-bridge. */
   cctp: { usdc: string; tokenMessenger: string; messageTransmitter: string; bridgeReceiver: string | null };
+  /** Solana beside this network: where each account's Solana key (its address is in the
+   *  account's `addresses` under `caip2`) holds SOL and tokens, and where USDC bridges with
+   *  Injective over CCTP (domain 5). The vault pins the same mint and Circle's programs
+   *  (`choice_wallet_injective::cctp::SolanaSide`). */
+  solana: {
+    caip2: string;
+    name: string;
+    /** The cluster's genesis hash: every endpoint must serve it. */
+    genesis: string;
+    rpc: readonly string[];
+    usdcMint: string;
+    /** Transaction page, `{hash}` replaced. */
+    explorerTx: string;
+  };
 }
 
 // Checked 2026-11-08: each answers with CORS for an extension origin, and serves the right
@@ -88,6 +102,16 @@ export const NETWORKS: Readonly<Record<NetworkId, Network>> = {
       messageTransmitter: "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",
       bridgeReceiver: "0xcA5A96ECF72B3656eF7cF60BDAA42FCdb218cd4A",
     },
+    // Checked 2026-11-10: publicnode answers extension origins (but refuses
+    // getTokenAccountsByOwner); Solana's own mainnet endpoint refuses browser origins.
+    solana: {
+      caip2: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+      name: "Solana",
+      genesis: "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+      rpc: ["https://solana-rpc.publicnode.com"],
+      usdcMint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      explorerTx: "https://explorer.solana.com/tx/{hash}",
+    },
   },
   testnet: {
     id: "testnet",
@@ -118,6 +142,15 @@ export const NETWORKS: Readonly<Record<NetworkId, Network>> = {
       tokenMessenger: "0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA",
       messageTransmitter: "0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275",
       bridgeReceiver: null,
+    },
+    // Devnet's own endpoint answers extension origins and every method (2026-11-10).
+    solana: {
+      caip2: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+      name: "Solana Devnet",
+      genesis: "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG",
+      rpc: ["https://api.devnet.solana.com"],
+      usdcMint: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+      explorerTx: "https://explorer.solana.com/tx/{hash}?cluster=devnet",
     },
   },
 };

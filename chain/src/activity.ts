@@ -60,6 +60,9 @@ export interface Activity {
    *  (bytes32 hex), as the signed call says; or, `incoming`, minted here from a burn on that
    *  domain (whoever submitted the mint). */
   bridge?: { domain: number; mintRecipient: string; incoming?: true };
+  /** A Solana transaction: its cluster's CAIP-2 ID. Its hash is the signature (base58), its
+   *  height the slot, and its denoms `sol` and `spl:<mint>`. */
+  chain?: string;
 }
 
 /** `depositForBurn` and `depositForBurnWithHook` (TokenMessengerV2). */
