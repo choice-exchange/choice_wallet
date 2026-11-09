@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { chain, code, INJ, ME_SOL, ME_SOL_USDC, ok, SOLANA_MAINNET, SOL_USDC, THEM_SOL, THEM_SOL_USDC, wallet } from "./fake";
+import { chain, code, INJ, ME_SOL, ME_SOL_USDC, ok, PASSWORD, SOLANA_MAINNET, SOL_USDC, THEM_SOL, THEM_SOL_USDC, wallet } from "./fake";
 
 type Review = {
   digest: string;
@@ -127,4 +127,18 @@ test("the chain Home shows, and the test networks, picked without touching endpo
   assert.deepEqual(ok<{ lcd: { mainnet: string[] } }>(await service.handle({ type: "settings" })).lcd.mainnet, ["https://my-lcd.example"]);
   assert.equal(code(await service.handle({ type: "pick_chain", chain: "ethereum" })), "bad_request");
   assert.equal(code(await service.handle({ type: "pick_chain", chain: "solana", network: "devnet" })), "bad_request");
+});
+
+test("an account saved before Solana keys gets its Solana addresses at the next unlock", async () => {
+  const net = chain({ balances: { inj: INJ } });
+  const { service, local } = await wallet(net);
+  type Acc = { addresses: Record<string, string> };
+  const { accounts } = (await local.get(["accounts"])) as { accounts: Acc[] };
+  const before = accounts[0]!.addresses;
+  const old = Object.fromEntries(Object.entries(before).filter(([k]) => !k.startsWith("solana:")));
+  await local.set({ accounts: [{ ...accounts[0], addresses: old }] });
+  ok(await service.handle({ type: "lock" }));
+  const s = ok<{ accounts: Acc[] }>(await service.handle({ type: "unlock", password: PASSWORD }));
+  assert.equal(s.accounts[0]!.addresses[SOLANA_MAINNET], ME_SOL);
+  assert.deepEqual(s.accounts[0]!.addresses, before);
 });

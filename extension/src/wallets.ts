@@ -199,12 +199,35 @@ export function createWallets(h: WalletsHost) {
     return { ok: true, result: await status() };
   }
 
+  /** Accounts saved before the vault derived Solana keys have no Solana address: their
+   *  phrase's accounts are read again from the vault and the missing addresses added (the
+   *  ones saved are kept, and must match). A failure leaves the list as it was. */
+  async function fillAddresses(s: Stored, key: string): Promise<void> {
+    const solana = (a: AccountInfo) => Object.keys(a.addresses).some((k) => k.startsWith("solana:"));
+    const stale = s.accounts.filter((a) => !isWatch(a) && !isLedger(a) && a.account.derivation !== "imported" && !solana(a) && s.wallets.some((w) => w.id === a.wallet && w.type === "mnemonic"));
+    if (stale.length === 0) return;
+    const accounts = [...s.accounts];
+    for (const w of s.wallets) {
+      const mine = stale.filter((a) => a.wallet === w.id);
+      if (mine.length === 0) continue;
+      const r = await derive(w, key, mine.map((a) => a.account));
+      if (!r.ok) continue;
+      mine.forEach((a, i) => {
+        const got = r.result.accounts[i]?.addresses ?? {};
+        if (Object.entries(a.addresses).some(([k, v]) => got[k] !== v)) return;
+        accounts[accounts.indexOf(a)] = { ...a, addresses: { ...got, ...a.addresses } };
+      });
+    }
+    await h.local.set({ accounts });
+  }
+
   async function unlock(password: string): Promise<UiResponse<Status>> {
     const s = await stored();
     if (s.vault) {
       const r = await h.vault<{ unlock_key: string }>("unlock", { vault: s.vault, password });
       if (!r.ok) return r;
       await h.session.set({ unlock_key: r.result.unlock_key });
+      await fillAddresses(s, r.result.unlock_key);
     } else if (s.keystore && s.kind) {
       // From before vaults: move the keystore into one, and read every account again from
       // the moved secret (so the list matches it, whatever it said before).
