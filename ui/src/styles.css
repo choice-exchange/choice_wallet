@@ -599,7 +599,7 @@ details.raw summary {
 .chain-pill-mark { position: relative; display: inline-flex; }
 .chain-pill-mark .mark.sm { width: 20px; height: 20px; }
 .chain-pill-mark .dot { position: absolute; right: -2px; bottom: -1px; box-shadow: 0 0 0 2px var(--inner); }
-.sheet-backdrop { position: absolute; inset: 0; z-index: 20; display: flex; align-items: flex-end; background: rgba(4, 5, 7, 0.62); animation: fade-in 120ms ease-out both; }
+.sheet-backdrop { position: absolute; inset: 0; z-index: 20; overflow: hidden; display: flex; align-items: flex-end; background: rgba(4, 5, 7, 0.62); animation: fade-in 120ms ease-out both; }
 .sheet { width: 100%; display: flex; flex-direction: column; gap: 10px; padding: 18px var(--gutter) 20px; border-radius: var(--radius-card) var(--radius-card) 0 0; background: var(--card); box-shadow: 0 -1px 0 var(--hairline), 0 -18px 40px rgba(0, 0, 0, 0.45); animation: sheet-up 160ms ease-out both; }
 .sheet:focus { outline: none; }
 .sheet-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }

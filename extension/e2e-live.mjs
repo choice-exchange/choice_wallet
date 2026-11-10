@@ -291,6 +291,9 @@ try {
   await click("Chain: Injective. Change chain");
   await waitText("Test networks");
   await sleep(1500);
+  // Opening the sheet leaves nothing scrolled (it slides up from below its place).
+  const scrolled = await evalIn(`[document.scrollingElement, ...document.querySelectorAll(".app, .body")].map((e) => e.scrollTop).join(",")`);
+  if (/[1-9]/.test(scrolled)) throw new Error(`the sheet scrolled the page: ${scrolled}`);
   await shot("live-0-chains-mainnet");
   await click("Test networks");
   await waitText("Test tokens only.");

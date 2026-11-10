@@ -63,7 +63,8 @@ export function ChainSheet({
 }) {
   const sheet = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    sheet.current?.focus();
+    // Without scrolling: the sheet starts below its place, and a scroll to it would stay.
+    sheet.current?.focus({ preventScroll: true });
     const key = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     document.addEventListener("keydown", key);
     return () => document.removeEventListener("keydown", key);
