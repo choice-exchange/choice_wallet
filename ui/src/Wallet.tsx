@@ -785,12 +785,12 @@ function HoldingValue({ amount, symbol, usd }: { amount: string; symbol: string;
 
 type SolanaHoldings = NonNullable<Replies["balances"]["solana"]>;
 
-/** What the account holds on Solana, in one figure: USD when everything held has a price,
- *  otherwise its SOL. */
+/** What the account holds on Solana, in one figure: the USD of what has a price (as
+ *  Injective's total), otherwise its SOL. */
 function solanaTotal(balances: Balance[], prices: boolean): { text: string; usd?: number } {
-  const held = balances.filter((b) => BigInt(b.amount) > 0n);
-  if (prices && held.length > 0 && held.every((b) => b.usd !== undefined)) {
-    const usd = held.reduce((t, b) => t + (b.usd ?? 0), 0);
+  const priced = balances.filter((b) => b.usd !== undefined);
+  if (prices && priced.length > 0) {
+    const usd = priced.reduce((t, b) => t + (b.usd ?? 0), 0);
     return { text: formatUsd(usd), usd };
   }
   return { text: `${formatShort(balances.find((b) => b.denom === "sol")?.amount ?? "0", 9, 4)} SOL` };

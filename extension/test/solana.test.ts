@@ -28,6 +28,11 @@ test("the account's Solana side: its address (Phantom's for the phrase), SOL and
       [`spl:${SOL_USDC}`, "USDC", "5000000", SOLANA_MAINNET],
     ],
   );
+  // SOL at the mark price of Injective's SOL/USDC perpetual; USDC unpriced (Choice has no
+  // price for it here).
+  const sol = b.solana?.balances.find((x) => x.denom === "sol") as { priceUsd?: string; usd?: number } | undefined;
+  assert.deepEqual([sol?.priceUsd, sol?.usd], ["150.000000", 300]);
+  assert.equal((b.solana?.balances[1] as { usd?: number }).usd, undefined);
   // The cluster down: Injective's side still stands.
   net.state.solana.down = true;
   const down = ok<{ balances: unknown[]; solana?: Holdings }>(await service.handle({ type: "balances" }));

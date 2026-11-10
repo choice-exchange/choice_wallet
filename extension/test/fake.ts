@@ -561,6 +561,10 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
         ],
       });
     }
+    // Injective's SOL/USDC perpetual: its mark price prices SOL (USDC base units per SOL).
+    if (p === "/injective/exchange/v1beta1/derivative/markets/0x291f404810c663e5fdd68b50454c1014760227842d420a2315f88311efe6ec41") {
+      return json(200, { market: { market: { ticker: "SOL/USDC PERP", status: "Active", quote_denom: "erc20:0xa00C59fF5a080D2b954d0c75e46E22a0c371235a" }, mark_price: "150000000.000000000000000000" } });
+    }
     if (p === "/cosmos/bank/v1beta1/denoms_metadata_by_query_string") {
       state.metadataCalls++;
       const denom = url.searchParams.get("denom");

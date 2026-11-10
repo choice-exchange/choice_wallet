@@ -9,8 +9,8 @@
 // - The vault is stateless: every call that needs a key gets the keystore and unlock key
 //   from here. UI pages never see either.
 
-import { cw20Address, evmAddress, isNetworkId, isSolanaDenom, NETWORKS, Pool, type Fetch, type NetworkId } from "@choice-wallet/chain";
-import type { AccountInfo, NotifyMode, Result, Settings, SnapshotView, Status, TokenFilter, UiRequest } from "@choice-wallet/ui/protocol";
+import { cw20Address, evmAddress, isNetworkId, isSolanaDenom, NETWORKS, Pool, usdValue, type Fetch, type NetworkId } from "@choice-wallet/chain";
+import type { AccountInfo, Balance, NotifyMode, Result, Settings, SnapshotView, Status, TokenFilter, UiRequest } from "@choice-wallet/ui/protocol";
 import { DEFAULT_FILTER } from "@choice-wallet/ui/token-filter";
 
 import { createDapps, type DappReply } from "./dapp";
@@ -545,8 +545,17 @@ export function createService(d: Deps) {
         }
         if (r.type === "snapshot") return { ok: true, result: await snapshot(a.net, a.account) };
         if (r.type === "balances") {
-          const [b, sol] = await Promise.all([sender.balances(a.net, a.account), solana.holdings(a.net, a.account)]);
+          const [b, held, prices] = await Promise.all([
+            sender.balances(a.net, a.account),
+            solana.holdings(a.net, a.account),
+            sender.solanaPrices(a.net).catch(() => new Map<string, string>()),
+          ]);
           if (!b.ok) return b;
+          const priced = (x: Balance) => {
+            const p = prices.get(x.denom);
+            return p ? { ...x, priceUsd: p, usd: usdValue(x.amount, x.decimals, p) } : x;
+          };
+          const sol = held ? { ...held, balances: held.balances.map(priced) } : null;
           const result = { ...b.result, ...(sol ? { solana: sol } : {}) };
           keep(a.net, a.account, "balances", result);
           return { ok: true, result: { ...result, filter: await tokenFilter(a.net), prices: await showPrices() } };
