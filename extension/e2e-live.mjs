@@ -27,7 +27,7 @@
 // holds), added by contract. With `solana`, the account's Solana side beside testnet (Solana
 // Devnet, its own key): Home and its Receive tab, then `amount` SOL to `recipient` (a Solana
 // address) through the review, checked on devnet. `contacts`, `inventory`, `swap`, `bridge`,
-// `speed` and `solsite` are described where each starts below. Otherwise it sends `amount`
+// `bridge-in`, `bridge-across`, `speed` and `solsite` are described where each starts below. Otherwise it sends `amount`
 // INJ.
 //
 // The phrase is read from the file and typed into the import screen. It is never printed
@@ -1208,7 +1208,7 @@ try {
 
     await waitText("Bridge USDC", 20000);
     await evalIn(`[...document.querySelectorAll(".token")].find((b) => b.querySelector(".symbol")?.textContent === "Bridge USDC").click()`);
-    await waitText("FROM INJECTIVE", 20000);
+    await waitText("Balance", 20000);
     // The chain button wakes once the chains are read.
     for (let n = 0; !(await evalIn(`!document.querySelector('[aria-label="Choose the chain"]').disabled`)); n += 300) {
       if (n > 30000) throw new Error(`the chains didn't load: ${await text()}`);
@@ -1274,9 +1274,6 @@ try {
 
     await waitText("Bridge USDC", 20000);
     await evalIn(`[...document.querySelectorAll(".token")].find((b) => b.querySelector(".symbol")?.textContent === "Bridge USDC").click()`);
-    await waitText("FROM INJECTIVE", 20000);
-    await click("To Injective");
-    await waitText("TO INJECTIVE", 20000);
     for (let n = 0; !(await evalIn(`!document.querySelector('[aria-label="Choose where it comes from"]').disabled`)); n += 300) {
       if (n > 30000) throw new Error(`the chains didn't load: ${await text()}`);
       await sleep(300);
@@ -1285,6 +1282,8 @@ try {
     await waitText("Bridge from");
     await evalIn(`[...document.querySelectorAll(".token")].find((b) => b.querySelector(".symbol")?.textContent === "Base Sepolia").click()`);
     await waitText("Balance", 30000);
+    // From another chain, the transfer goes to Injective unless told otherwise.
+    if (!(await evalIn(`document.querySelector("[aria-label='Choose the chain']")?.innerText ?? ""`)).includes("Injective")) throw new Error("the transfer doesn't go to Injective");
     await fill('input[aria-label="Amount of USDC"]', 0, amount);
     await waitText("Circle's fee", 30000);
     const lines = (await text()).split("\n");
@@ -1343,6 +1342,89 @@ try {
     if (before.base - after.base !== amountIn) throw new Error("USDC on Base Sepolia moved by another amount");
     if (after.inj - before.inj < minimum) throw new Error("less arrived on Injective than the minimum shown");
     console.log("LIVE BRIDGE IN OK");
+  } else if (tokenContract === "bridge-across") {
+    // 3d. USDC between two chains, neither of them Injective: `amount` USDC from this
+    // account's own address on Base Sepolia to its own address on Arbitrum Sepolia (Circle's
+    // sandbox delivers there). Picked from the chain sheet: Base Sepolia's Home, its Bridge.
+    // Checked on both chains: down by exactly the amount, up by at least the minimum shown.
+    const BASE_SEPOLIA_USDC = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
+    const ARB_SEPOLIA_USDC = "0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d";
+    const pad = (a) => a.slice(2).toLowerCase().padStart(64, "0");
+    const held = async (url, token, who) => {
+      const r = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_call", params: [{ to: token, data: `0x70a08231${pad(who)}` }, "latest"] }) });
+      return BigInt((await r.json()).result);
+    };
+    const amountIn = BigInt(Math.round(Number(amount) * 1e6));
+    const { server, approve, ask, reply } = await startSite();
+    let me;
+    try {
+      await ask("eth_requestAccounts");
+      await approve("wants to connect", "Connect", "live-x1-connect");
+      [me] = await reply();
+    } finally {
+      server.close();
+    }
+    const both = async () => ({ base: await held("https://sepolia.base.org", BASE_SEPOLIA_USDC, me), arb: await held("https://sepolia-rollup.arbitrum.io/rpc", ARB_SEPOLIA_USDC, me) });
+    const before = await both();
+    console.log(`USDC on Base Sepolia ${before.base}; on Arbitrum Sepolia ${before.arb}`);
+    if (before.base < amountIn) throw new Error("not enough USDC on Base Sepolia");
+    // Base Sepolia, from the chain sheet.
+    await click("Chain: Injective. Change chain");
+    await waitText("Base Sepolia");
+    await evalIn(`[...document.querySelectorAll(".chain-row")].find((b) => b.querySelector(".symbol")?.textContent === "Base Sepolia").click()`);
+    await waitText("USDC to another chain", 20000);
+    await shot("live-x2-home-base");
+    await evalIn(`[...document.querySelectorAll(".token")].find((b) => b.querySelector(".symbol")?.textContent === "USDC to another chain").click()`);
+    for (let n = 0; !(await evalIn(`!document.querySelector('[aria-label="Choose the chain"]').disabled`)); n += 300) {
+      if (n > 30000) throw new Error(`the chains didn't load: ${await text()}`);
+      await sleep(300);
+    }
+    await click("Choose the chain");
+    await waitText("Bridge to");
+    await evalIn(`[...document.querySelectorAll(".token")].find((b) => b.querySelector(".symbol")?.textContent === "Arbitrum Sepolia").click()`);
+    await fill('input[aria-label="Amount of USDC"]', 0, amount);
+    await waitText("Circle's fee", 30000);
+    const lines = (await text()).split("\n");
+    const leastShown = lines[lines.indexOf("Arrives") + 1] ?? "";
+    const minimum = BigInt(Math.round(Number(leastShown.replace(/[^0-9.]/g, "")) * 1e6));
+    console.log("quote:", leastShown, "|", lines[lines.indexOf("Circle's fee") + 1], "|", lines[lines.indexOf("Delivered by") + 1]);
+    await shot("live-x3-quote");
+    await evalIn(`[...document.querySelectorAll("button")].find((b) => b.textContent.startsWith("Review"))?.click()`);
+    for (let step = 1; ; step++) {
+      for (let n = 0; !/YOU ALLOW|YOU BRIDGE FROM/.test(await text()); n += 300) {
+        if (n > 30000) throw new Error(`no review for step ${step}: ${await text()}`);
+        await sleep(300);
+      }
+      const t = await text();
+      if (!t.includes("On Base Sepolia, its fee paid in ETH.")) throw new Error("the review isn't for Base Sepolia");
+      await shot(`live-x4-step${step}`);
+      const final = t.includes("YOU BRIDGE FROM");
+      if (final && !t.includes("TO ARBITRUM SEPOLIA")) throw new Error("the burn doesn't go to Arbitrum Sepolia");
+      console.log(`  step ${step}:`, final ? "the burn" : "approval");
+      await click(final ? "Confirm and bridge" : "Approve");
+      if (final) break;
+      for (let n = 0; !(await text()).includes("It's in a block."); n += 500) {
+        if (n > 90000 || /Failed|Not confirmed yet/.test(await text())) throw new Error(`step ${step} didn't land: ${await text()}`);
+        await sleep(500);
+      }
+      await click("Next step");
+    }
+    const t0 = Date.now();
+    for (let n = 0; !(await text()).includes("Arrived on Arbitrum Sepolia"); n += 2000) {
+      if (n > 1_200_000 || /Failed|Not delivered yet|Not minted yet/.test(await text())) throw new Error(`not delivered: ${await text()}`);
+      await sleep(2000);
+    }
+    console.log(`Circle delivered it ${Math.round((Date.now() - t0) / 1000)} s after the burn`);
+    await shot("live-x5-arrived");
+    let after = await both();
+    for (let n = 0; after.arb === before.arb && n < 30000; n += 2000) {
+      await sleep(2000);
+      after = await both();
+    }
+    console.log(`USDC on Base Sepolia -${before.base - after.base} (asked ${amountIn}); on Arbitrum Sepolia +${after.arb - before.arb} (at least ${minimum} shown)`);
+    if (before.base - after.base !== amountIn) throw new Error("USDC on Base Sepolia moved by another amount");
+    if (after.arb - before.arb < minimum) throw new Error("less arrived on Arbitrum Sepolia than the minimum shown");
+    console.log("LIVE BRIDGE ACROSS OK");
   } else if (tokenContract === "solana") {
     const sol = async (method, params) => {
       const r = await fetch("https://api.devnet.solana.com", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) });

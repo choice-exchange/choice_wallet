@@ -1,134 +1,118 @@
-// Bridge: native USDC between Injective and other chains, over Circle's CCTP.
+// Bridge: native USDC between any two chains the wallet holds an account on, over Circle's
+// CCTP. It starts on the chain picked on Home (or wherever the USDC is) and goes to Injective
+// unless another chain is picked, at the account's own address there unless another is
+// given (the same 0x on every EVM chain; its Solana key's address on Solana).
 //
-// Out: Circle delivers it there and keeps its fee out of it (the most is shown before
-// signing). On an EVM chain it arrives at this account's own address unless another is given
-// (the same key, so the same address); on Solana at a wallet's USDC account, which Circle
-// opens if there is none. Like a swap, a first transfer needs an approval for its amount.
-//
-// In: from this account's own address on another EVM chain (the same key), signed there and
-// paid for in that chain's coin, into this account. Choice's bridge service mints it on
-// Injective; if it hasn't, the account can (a little INJ). On mainnet the transfer can also
-// buy INJ for gas.
+// Signed on the chain the USDC is on and paid for in its coin: an exact approval first where
+// an EVM chain needs one, then the burn. Circle delivers where it forwards (opening a Solana
+// wallet's USDC account if it has none). Into Injective, Choice's bridge service mints it, or
+// Choice's contract when it also buys INJ for gas; where nobody delivers (Plasma), this
+// account mints it itself, with gas there.
 
 import { formatShort, formatUnits, parseUnits } from "@choice-wallet/chain";
 import { useEffect, useRef, useState } from "react";
 
 import { useBackend } from "./backend";
+import { ChainMark } from "./Chains";
 import { ArrowDownIcon, ChevronDownIcon } from "./icons";
 import { useKept } from "./kept";
 import { BackBar, Callout, Screen, Segmented, shortAddress, Switch } from "./kit";
-import type { BridgeChain, BridgeInBalance, BridgeInPending, BridgeInQuote, BridgeInStatus, BridgeInStepInfo, BridgeQuote, BridgeSource, BridgeStepInfo, Coin, NetworkId, SendReview, TokenInfo } from "./protocol";
+import type { BridgeEnd, BridgePending, BridgeQuote, BridgeStatus, BridgeStepInfo, Coin, NetworkId, SendReview, TokenInfo } from "./protocol";
 import { errorText, useRequest } from "./request";
-import type { BridgeInLine, BridgeLine, MintLine } from "./review";
+import type { BridgeLine, MintLine } from "./review";
 import { about, Figure } from "./Send";
 
-/** What the user has typed, kept while they review and come back. `dir` is the direction;
- *  out: `chain` and `recipient`; in: `from`, and `gasDrop` (null: on when the account has no
- *  INJ). */
+/** What the user has typed, kept while they review and come back. `from` and `to` are chain
+ *  keys (empty: not picked yet); `gasDrop` null is on when the account has no INJ. */
 export type BridgeDraft = {
-  dir: "out" | "in";
-  chain: string;
+  from: string;
+  to: string;
   amount: string;
   max: boolean;
   other: boolean;
   recipient: string;
-  from: string;
-  inAmount: string;
-  inMax: boolean;
   gasDrop: boolean | null;
 };
 
-export const newBridgeDraft = (): BridgeDraft => ({ dir: "out", chain: "", amount: "", max: false, other: false, recipient: "", from: "", inAmount: "", inMax: false, gasDrop: null });
-
-/** What a review was made from: the quote, and which way it goes. */
-export type BridgeReviewed = { id: string; dir: "out" | "in" };
+export const newBridgeDraft = (): BridgeDraft => ({ from: "", to: "", amount: "", max: false, other: false, recipient: "", gasDrop: null });
 
 type BridgeProps = {
   network: NetworkId;
   canSign: boolean;
   draft: BridgeDraft;
   onDraft: (d: BridgeDraft) => void;
-  onReview: (review: SendReview, quote: BridgeReviewed) => void;
+  onReview: (review: SendReview, quote: string) => void;
   onBack: () => void;
   /** Why the user is back here, if a transfer stopped part way. */
   note?: string | null;
-  /** Mint a transfer in that nobody has minted, from this account. */
-  onFinish: (chain: string, hash: string) => void;
+  /** Mint a transfer nobody has minted, from this account, on its destination. */
+  onFinish: (from: string, hash: string) => void;
 };
-
-function Direction({ value, onChange }: { value: "out" | "in"; onChange: (v: "out" | "in") => void }) {
-  return (
-    <Segmented
-      label="Direction"
-      options={[
-        ["out", "To another chain"],
-        ["in", "To Injective"],
-      ]}
-      value={value}
-      onChange={onChange}
-    />
-  );
-}
-
-export function BridgeView(props: BridgeProps) {
-  return props.draft.dir === "in" ? <BridgeInView {...props} /> : <BridgeOutView {...props} />;
-}
 
 /** A quote this old is asked for again before review (the host re-asks Circle at two minutes). */
 const FRESH_MS = 60_000;
 const USDC_DECIMALS = 6;
+/** Choice's bridge service gets this long to mint a transfer into Injective before this
+ *  account is offered to. */
+const RELAY_GRACE_MS = 3 * 60_000;
 
-/** A round tile with a chain's first letters: the wallet ships no chain logos. */
-export function ChainTile({ name, small }: { name: string; small?: boolean }) {
-  const letters = name.replace(/[^A-Za-z0-9 ]/g, "").split(" ").filter(Boolean);
-  const text = (letters.length > 1 ? letters[0]![0]! + letters[1]![0]! : name.slice(0, 2)).toUpperCase();
-  return (
-    <span className={small ? "nft-tile chain-tile small" : "nft-tile chain-tile"} aria-hidden="true">
-      {text}
-    </span>
-  );
-}
-
-function BridgeOutView({ canSign, draft, onDraft, onReview, onBack, note }: BridgeProps) {
+export function BridgeView({ network, canSign, draft, onDraft, onReview, onBack, note, onFinish }: BridgeProps) {
   const backend = useBackend();
   const { run, error, busy } = useRequest();
   const routes = useKept({ type: "bridge_routes" });
+  const pending = useKept({ type: "bridge_pending" });
+  /** Burns on Solana whose record's rent comes back to the account, 5 days on. */
+  const rent = useKept({ type: "bridge_reclaims" });
   const r = routes.value;
-  const [picking, setPicking] = useState(false);
+  const [picking, setPicking] = useState<"from" | "to" | null>(null);
   const [quote, setQuote] = useState<{ q: BridgeQuote; at: number } | null>(null);
   const [quoting, setQuoting] = useState(false);
   const [quoteError, setQuoteError] = useState<string | null>(null);
   const asked = useRef(0);
   const set = (p: Partial<BridgeDraft>) => onDraft({ ...draft, ...p });
 
-  const chain = r?.chains.find((c) => c.key === draft.chain);
-  const balance = BigInt(r?.balance ?? "0");
-  const evm = chain?.kind === "evm";
-  const recipient = chain ? (evm && !draft.other ? (r?.address ?? "") : draft.recipient.trim()) : "";
+  // Start where the USDC is (unless a chain was picked), and go to Injective.
+  useEffect(() => {
+    if (!r) return;
+    const usdcOf = (c: BridgeEnd) => (c.usdc ? BigInt(c.usdc) : 0n);
+    const from = draft.from || ([...r.chains].filter((c) => c.address && usdcOf(c) > 0n).sort((a, b) => (usdcOf(b) > usdcOf(a) ? 1 : -1))[0]?.key ?? "injective");
+    const to = draft.to && draft.to !== from ? draft.to : from !== "injective" ? "injective" : "";
+    if (from !== draft.from || to !== draft.to) set({ from, to });
+  }, [r]);
+
+  const from = r?.chains.find((c) => c.key === draft.from);
+  const to = r?.chains.find((c) => c.key === draft.to);
+  const balance = from?.usdc ? BigInt(from.usdc) : null;
+  // The account's own address there, unless another is given.
+  const mine = to?.address ?? "";
+  const recipient = to ? (!draft.other && mine ? mine : draft.recipient.trim()) : "";
+  const gasDrop = to?.kind === "injective" && r?.gasDrop === true && (draft.gasDrop ?? BigInt(r.inj) === 0n);
   let amount: string | null = null;
   let problem: string | null = null;
-  if (draft.max) amount = balance > 0n ? "max" : null;
+  if (draft.max) amount = balance !== null && balance > 0n ? "max" : null;
   else if (draft.amount.trim()) {
     try {
       const v = parseUnits(draft.amount, USDC_DECIMALS);
       if (v === 0n) problem = "Enter an amount above zero.";
-      else if (v > balance) problem = "That's more USDC than you have.";
+      else if (balance !== null && v > balance) problem = `That's more USDC than you have on ${from?.name ?? "that chain"}.`;
       else amount = v.toString();
     } catch (e) {
       problem = errorText(e);
     }
   }
 
-  // Ask Circle once the form is complete, after the typing stops.
+  // Ask Circle once the form is complete, after the typing stops. Any change makes an answer
+  // still on its way stale.
   useEffect(() => {
+    const n = ++asked.current;
     setQuote(null);
     setQuoteError(null);
-    if (!chain || !amount || !recipient) return;
-    const n = ++asked.current;
+    setQuoting(false);
+    if (!from || !to || !amount || !recipient) return;
     setQuoting(true);
     const t = setTimeout(() => {
       void backend
-        .send({ type: "bridge_quote", to: chain.key, amount, recipient })
+        .send({ type: "bridge_quote", from: from.key, to: to.key, amount, recipient, gasDrop })
         .then((x) => {
           if (n !== asked.current) return;
           if (x.ok) setQuote({ q: x.result, at: Date.now() });
@@ -138,37 +122,46 @@ function BridgeOutView({ canSign, draft, onDraft, onReview, onBack, note }: Brid
         .finally(() => n === asked.current && setQuoting(false));
     }, 450);
     return () => clearTimeout(t);
-  }, [chain?.key, amount, recipient]);
+  }, [from?.key, to?.key, amount, recipient, gasDrop]);
 
   async function review() {
-    if (!chain || !amount || !recipient) return;
+    if (!from || !to || !amount || !recipient) return;
     let q = quote?.q;
     // An old quote is asked for again first: the review must show today's fee.
     if (!q || Date.now() - (quote?.at ?? 0) > FRESH_MS) {
-      const fresh = await run({ type: "bridge_quote", to: chain.key, amount, recipient });
+      const fresh = await run({ type: "bridge_quote", from: from.key, to: to.key, amount, recipient, gasDrop });
       if (!fresh) return;
       setQuote({ q: fresh, at: Date.now() });
       q = fresh;
     }
     const x = await run({ type: "prepare_bridge", quote: q.id });
-    if (x) onReview(x, { id: q.id, dir: "out" });
+    if (x) onReview(x, q.id);
   }
 
   if (picking && r) {
+    const list = picking === "from" ? r.chains.filter((c) => c.address) : r.chains.filter((c) => c.key !== draft.from);
     return (
-      <ChainPicker
-        chains={r.chains}
+      <ChainList
+        title={picking === "from" ? "Bridge from" : "Bridge to"}
+        network={network}
+        chains={list}
+        side={picking}
         onPick={(c) => {
-          set({ chain: c.key, recipient: c.kind === (chain?.kind ?? c.kind) ? draft.recipient : "", other: c.kind === "solana" ? true : draft.other && chain?.kind === "evm" });
-          setPicking(false);
+          if (picking === "from") set({ from: c.key, max: false, ...(c.key === draft.to ? { to: draft.from } : {}) });
+          // Another kind of chain spells addresses differently: what was typed goes.
+          else set({ to: c.key, ...(to && to.kind !== "solana" && c.kind !== "solana" ? {} : { recipient: "" }), other: !c.address });
+          setPicking(null);
         }}
-        onBack={() => setPicking(false)}
+        onBack={() => setPicking(null)}
       />
     );
   }
 
   const q = quote?.q;
   const usdc = (v: string) => `${formatShort(v, USDC_DECIMALS, 6)} USDC`;
+  const coin = (v: string) => (q ? `${formatShort(v, q.gasDecimals, 6)} ${q.gasSymbol}` : v);
+  const short = q !== undefined && BigInt(q.gasHeld) < BigInt(q.gasNeed);
+  const deliveredBy = q ? { circle: "Circle", gas_drop: "Choice's bridge contract", anyone: q.to === "injective" ? "Choice's bridge service" : "You, with gas there" }[q.delivery] : "";
   return (
     <Screen
       top={<BackBar title="Bridge USDC" onBack={onBack} />}
@@ -181,13 +174,42 @@ function BridgeOutView({ canSign, draft, onDraft, onReview, onBack, note }: Brid
         </>
       }
     >
-      <Direction value="out" onChange={(dir) => set({ dir })} />
       {note && <Callout level="amber">{note}</Callout>}
       {routes.error && <Callout level="amber">{routes.error}</Callout>}
+      {(pending.value ?? []).map((p) => (
+        <PendingTransfer key={p.hash} item={p} network={network} onFinish={() => onFinish(p.from, p.hash)} onArrived={() => void pending.reload()} />
+      ))}
+      {(rent.value ?? []).map((x) => (
+        <div className="surface" key={x.hash} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <ChainMark chain="solana" network={network} small />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div className="num">Rent from a transfer</div>
+            <div className="meta">{x.ready ? "About 0.004 SOL, yours to take back" : `Yours to take back from ${new Date(x.at + 5 * 86_400_000).toLocaleDateString()}`}</div>
+          </div>
+          {x.ready && canSign && (
+            <button
+              type="button"
+              className="pill pill-gold"
+              disabled={busy}
+              onClick={() =>
+                void run({ type: "prepare_bridge_reclaim", hash: x.hash }).then((rv) => {
+                  if (rv) onReview(rv, "");
+                })
+              }
+            >
+              Take back
+            </button>
+          )}
+        </div>
+      ))}
       <div className="surface-hero">
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <span className="eyebrow">From Injective</span>
-          <span className="meta num">Balance {formatUnits(r?.balance ?? "0", USDC_DECIMALS)} USDC</span>
+          <span className="eyebrow">From</span>
+          <button type="button" className="token-chip" onClick={() => setPicking("from")} aria-label="Choose where it comes from" disabled={!r}>
+            {from && <ChainMark chain={from.key} network={network} small />}
+            {from ? from.name : "Pick a chain"}
+            <ChevronDownIcon size={16} />
+          </button>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10 }}>
           <input
@@ -200,18 +222,21 @@ function BridgeOutView({ canSign, draft, onDraft, onReview, onBack, note }: Brid
             disabled={draft.max}
             onChange={(e) => set({ amount: e.target.value })}
           />
-          <button type="button" className={draft.max ? "pill pill-gold" : "pill"} onClick={() => set({ max: !draft.max })} disabled={balance === 0n}>
+          <button type="button" className={draft.max ? "pill pill-gold" : "pill"} onClick={() => set({ max: !draft.max })} disabled={!balance}>
             {draft.max ? "Clear" : "Max"}
           </button>
+        </div>
+        <div className="meta num" style={{ marginTop: 6 }}>
+          {!from ? "" : r === null ? "Checking your balance there…" : from.usdc === null ? `Couldn't read your balance on ${from.name}.` : `Balance ${formatUnits(from.usdc, USDC_DECIMALS)} USDC`}
         </div>
         <div className="convert-arrow" aria-hidden="true">
           <ArrowDownIcon size={18} />
         </div>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <span className="eyebrow">To</span>
-          <button type="button" className="token-chip" onClick={() => setPicking(true)} aria-label="Choose the chain" disabled={!r}>
-            {chain && <ChainTile name={chain.name} small />}
-            {chain ? chain.name : "Pick a chain"}
+          <button type="button" className="token-chip" onClick={() => setPicking("to")} aria-label="Choose the chain" disabled={!r}>
+            {to && <ChainMark chain={to.key} network={network} small />}
+            {to ? to.name : "Pick a chain"}
             <ChevronDownIcon size={16} />
           </button>
         </div>
@@ -228,7 +253,7 @@ function BridgeOutView({ canSign, draft, onDraft, onReview, onBack, note }: Brid
           )}
         </div>
       </div>
-      {chain && evm && (
+      {to && mine && (
         <Segmented
           label="Who receives it"
           options={[
@@ -239,303 +264,19 @@ function BridgeOutView({ canSign, draft, onDraft, onReview, onBack, note }: Brid
           onChange={(v) => set({ other: v === "other" })}
         />
       )}
-      {chain && evm && !draft.other && <p className="meta">To {shortAddress(r?.address ?? "")} on {chain.name}: the same address as here.</p>}
-      {chain && (!evm || draft.other) && (
+      {to && mine && !draft.other && <p className="meta">To your address on {to.name}, {shortAddress(mine)}.</p>}
+      {to && (!mine || draft.other) && (
         <input
           className="input mono"
           autoComplete="off"
           spellCheck={false}
-          placeholder={evm ? `0x address on ${chain.name}` : "Solana wallet address"}
-          aria-label={evm ? `Address on ${chain.name}` : "Solana wallet address"}
+          placeholder={to.kind === "solana" ? "Solana wallet address" : `0x address on ${to.name}`}
+          aria-label={to.kind === "solana" ? "Solana wallet address" : `Address on ${to.name}`}
           value={draft.recipient}
           onChange={(e) => set({ recipient: e.target.value })}
         />
       )}
-      {problem && <p className="error">{problem}</p>}
-      {quoteError && <Callout level="amber">{quoteError}</Callout>}
-      {q && chain && (
-        <div className="well rows">
-          <div className="row">
-            <span>Arrives</span>
-            <span className="num">At least {usdc(q.minReceived)}</span>
-          </div>
-          <div className="row">
-            <span>Circle&apos;s fee</span>
-            <span className="num">Up to {usdc(q.maxFee)}</span>
-          </div>
-          {q.recipientSetup && (
-            <div className="row">
-              <span>Also</span>
-              <span>Circle opens its USDC account</span>
-            </div>
-          )}
-          <div className="row">
-            <span>Time</span>
-            <span>Usually under a minute</span>
-          </div>
-          {q.steps.length > 1 && (
-            <div className="row">
-              <span>First</span>
-              <span>One approval, for this amount only</span>
-            </div>
-          )}
-        </div>
-      )}
-      <p className="footnote">Native USDC over Circle&apos;s CCTP. Circle delivers it.</p>
-    </Screen>
-  );
-}
-
-function ChainPicker({ chains, onPick, onBack }: { chains: BridgeChain[]; onPick: (c: BridgeChain) => void; onBack: () => void }) {
-  return (
-    <Screen top={<BackBar title="Bridge to" onBack={onBack} />}>
-      <div className="token-list">
-        {chains.map((c) => (
-          <button key={c.key} className="token" onClick={() => onPick(c)}>
-            <ChainTile name={c.name} />
-            <span className="name">
-              <span className="symbol">{c.name}</span>
-              <span className="sub">{c.kind === "solana" ? "To a Solana wallet" : "To a 0x address"}</span>
-            </span>
-          </button>
-        ))}
-      </div>
-    </Screen>
-  );
-}
-
-/** The review's card for a burn, from the vault's reading; `info` is what the quote said. */
-export function BridgeCard({ line, tokens, info, from }: { line: BridgeLine; tokens: Record<string, TokenInfo>; info?: BridgeStepInfo; from: string }) {
-  const t = tokens[line.coin.denom];
-  const fee = (c: Coin) => (t ? `${formatShort(c.amount, t.decimals, 6)} ${t.symbol}` : c.amount);
-  const least: Coin = { denom: line.coin.denom, amount: (BigInt(line.coin.amount) - BigInt(line.maxFee.amount)).toString() };
-  const own = line.recipient !== null && line.recipient.toLowerCase() === from.toLowerCase();
-  const chain = line.chain ?? "an unknown chain";
-  // Solana: the burn names a USDC account. The wallet it belongs to is in the burn when Circle
-  // opens it; otherwise it is the one the quote was for (the host checked the account is its).
-  const solana = line.recipient !== null && !line.recipient.startsWith("0x");
-  const wallet = line.owner ?? (solana && info ? info.recipient : null);
-  return (
-    <div className="surface-hero">
-      <div className="eyebrow">You bridge</div>
-      <Figure coin={line.coin} t={t} />
-      <hr className="divider" style={{ margin: "14px 0 12px" }} />
-      <div className="eyebrow">To {chain}</div>
-      <code className="mono recipient" style={{ display: "block", marginTop: 6, fontSize: 14, lineHeight: "21px" }}>
-        {wallet ?? line.recipient ?? "No usable address"}
-      </code>
-      {own && <div className="meta" style={{ marginTop: 4 }}>Your own address there.</div>}
-      {solana && wallet && (
-        <div className="meta" style={{ marginTop: 4, wordBreak: "break-all" }}>
-          Into its USDC account {shortAddress(line.recipient!)}{line.owner ? ", which Circle opens." : "."}
-        </div>
-      )}
-      {solana && !wallet && <div className="meta" style={{ marginTop: 4 }}>A Solana USDC account.</div>}
-      <hr className="divider" style={{ margin: "14px 0 12px" }} />
-      <div className="rows">
-        <div className="row">
-          <span>Arrives</span>
-          <span className="num">At least {fee(least)}</span>
-        </div>
-        <div className="row">
-          <span>Circle&apos;s fee</span>
-          <span className="num">Up to {fee(line.maxFee)}</span>
-        </div>
-        <div className="row">
-          <span>Delivered by</span>
-          <span>{line.delivery === "circle" ? (line.caller ? "Only " + shortAddress(line.caller) : "Circle") : line.delivery === "claim" ? "Whoever claims it" : "A contract there"}</span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/** Ask Choice's bridge service this long before offering to mint a transfer in from here. */
-const RELAY_GRACE_MS = 3 * 60_000;
-
-function BridgeInView({ network, canSign, draft, onDraft, onReview, onBack, note, onFinish }: BridgeProps) {
-  const backend = useBackend();
-  const { run, error, busy } = useRequest();
-  const routes = useKept({ type: "bridge_in_routes" });
-  const balances = useKept({ type: "bridge_in_balances" });
-  const pending = useKept({ type: "bridge_in_pending" });
-  /** Burns on Solana whose record's rent comes back to the account, 5 days on. */
-  const rent = useKept({ type: "bridge_reclaims" });
-  const r = routes.value;
-  const [picking, setPicking] = useState(false);
-  const [quote, setQuote] = useState<{ q: BridgeInQuote; at: number } | null>(null);
-  const [quoting, setQuoting] = useState(false);
-  const [quoteError, setQuoteError] = useState<string | null>(null);
-  const asked = useRef(0);
-  const set = (p: Partial<BridgeDraft>) => onDraft({ ...draft, ...p });
-  const held = new Map((balances.value ?? []).map((b) => [b.chain, b]));
-
-  // Start where the USDC is.
-  useEffect(() => {
-    if (draft.from || !r || !balances.value) return;
-    const most = balances.value.filter((b) => b.usdc !== null && BigInt(b.usdc) > 0n).sort((a, b) => (BigInt(b.usdc!) > BigInt(a.usdc!) ? 1 : -1))[0];
-    set({ from: most?.chain ?? r.chains.find((c) => c.key === "base")?.key ?? r.chains[0]?.key ?? "" });
-  }, [r, balances.value]);
-
-  const chain = r?.chains.find((c) => c.key === draft.from);
-  const b = chain ? held.get(chain.key) : undefined;
-  const balance = b?.usdc ? BigInt(b.usdc) : null;
-  const gasDrop = r?.gasDrop === true && (draft.gasDrop ?? BigInt(r.inj) === 0n);
-  let amount: string | null = null;
-  let problem: string | null = null;
-  if (draft.inMax) amount = balance !== null && balance > 0n ? "max" : null;
-  else if (draft.inAmount.trim()) {
-    try {
-      const v = parseUnits(draft.inAmount, USDC_DECIMALS);
-      if (v === 0n) problem = "Enter an amount above zero.";
-      else if (balance !== null && v > balance) problem = `That's more USDC than you have on ${chain?.name ?? "that chain"}.`;
-      else amount = v.toString();
-    } catch (e) {
-      problem = errorText(e);
-    }
-  }
-
-  useEffect(() => {
-    setQuote(null);
-    setQuoteError(null);
-    if (!chain || !amount) return;
-    const n = ++asked.current;
-    setQuoting(true);
-    const t = setTimeout(() => {
-      void backend
-        .send({ type: "bridge_in_quote", from: chain.key, amount, gasDrop })
-        .then((x) => {
-          if (n !== asked.current) return;
-          if (x.ok) setQuote({ q: x.result, at: Date.now() });
-          else setQuoteError(x.error.message);
-        })
-        .catch(() => n === asked.current && setQuoteError("The wallet didn't answer. Try again."))
-        .finally(() => n === asked.current && setQuoting(false));
-    }, 450);
-    return () => clearTimeout(t);
-  }, [chain?.key, amount, gasDrop]);
-
-  async function review() {
-    if (!chain || !amount) return;
-    let q = quote?.q;
-    if (!q || Date.now() - (quote?.at ?? 0) > FRESH_MS) {
-      const fresh = await run({ type: "bridge_in_quote", from: chain.key, amount, gasDrop });
-      if (!fresh) return;
-      setQuote({ q: fresh, at: Date.now() });
-      q = fresh;
-    }
-    const x = await run({ type: "prepare_bridge_in", quote: q.id });
-    if (x) onReview(x, { id: q.id, dir: "in" });
-  }
-
-  if (picking && r) {
-    return (
-      <SourcePicker
-        chains={r.chains}
-        held={held}
-        onPick={(c) => {
-          set({ from: c.key, inMax: false });
-          setPicking(false);
-        }}
-        onBack={() => setPicking(false)}
-      />
-    );
-  }
-
-  const q = quote?.q;
-  const usdc = (v: string) => `${formatShort(v, USDC_DECIMALS, 6)} USDC`;
-  const coin = (v: string) => `${formatShort(v, chain?.decimals ?? 18, 6)} ${chain?.symbol ?? ""}`;
-  const short = q !== undefined && BigInt(q.gasHeld) < BigInt(q.gasNeed);
-  return (
-    <Screen
-      top={<BackBar title="Bridge USDC" onBack={onBack} />}
-      foot={
-        <>
-          {error && <Callout level="amber">{error}</Callout>}
-          <button className="btn btn-gold" disabled={!canSign || !q || busy || quoting} onClick={() => void review()}>
-            {!canSign ? "Watch-only" : busy ? "Checking…" : q && q.steps.length > 1 ? "Review (2 steps)" : "Review transfer"}
-          </button>
-        </>
-      }
-    >
-      <Direction value="in" onChange={(dir) => set({ dir })} />
-      {note && <Callout level="amber">{note}</Callout>}
-      {routes.error && <Callout level="amber">{routes.error}</Callout>}
-      {(pending.value ?? []).map((p) => (
-        <PendingIn key={p.hash} item={p} network={network} onFinish={() => onFinish(p.chain, p.hash)} onArrived={() => void pending.reload()} />
-      ))}
-      {(rent.value ?? []).map((x) => (
-        <div className="surface" key={x.hash} style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <ChainTile name="Solana" small />
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div className="num">Rent from a transfer</div>
-            <div className="meta">{x.ready ? "About 0.004 SOL, yours to take back" : `Yours to take back from ${new Date(x.at + 5 * 86_400_000).toLocaleDateString()}`}</div>
-          </div>
-          {x.ready && canSign && (
-            <button
-              type="button"
-              className="pill pill-gold"
-              disabled={busy}
-              onClick={() =>
-                void run({ type: "prepare_bridge_reclaim", hash: x.hash }).then((rv) => {
-                  if (rv) onReview(rv, { id: "", dir: "in" });
-                })
-              }
-            >
-              Take back
-            </button>
-          )}
-        </div>
-      ))}
-      <div className="surface-hero">
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <span className="eyebrow">From</span>
-          <button type="button" className="token-chip" onClick={() => setPicking(true)} aria-label="Choose where it comes from" disabled={!r}>
-            {chain && <ChainTile name={chain.name} small />}
-            {chain ? chain.name : "Pick a chain"}
-            <ChevronDownIcon size={16} />
-          </button>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10 }}>
-          <input
-            className="amount-input"
-            inputMode="decimal"
-            autoComplete="off"
-            placeholder="0.0"
-            aria-label="Amount of USDC"
-            value={draft.inMax ? "Max" : draft.inAmount}
-            disabled={draft.inMax}
-            onChange={(e) => set({ inAmount: e.target.value })}
-          />
-          <button type="button" className={draft.inMax ? "pill pill-gold" : "pill"} onClick={() => set({ inMax: !draft.inMax })} disabled={!balance}>
-            {draft.inMax ? "Clear" : "Max"}
-          </button>
-        </div>
-        <div className="meta num" style={{ marginTop: 6 }}>
-          {!chain ? "" : balances.value === null ? "Checking your balance there…" : b?.usdc === null || b === undefined ? `Couldn't read your balance on ${chain.name}.` : `Balance ${formatUnits(b.usdc, USDC_DECIMALS)} USDC`}
-        </div>
-        <div className="convert-arrow" aria-hidden="true">
-          <ArrowDownIcon size={18} />
-        </div>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <span className="eyebrow">To Injective</span>
-          <span className="meta mono">{shortAddress(r?.address ?? "")}</span>
-        </div>
-        <div className="hero num" style={{ marginTop: 10, minHeight: 36, fontSize: 28 }}>
-          {quoting ? (
-            <span className="skeleton" style={{ display: "inline-block", width: 120, height: 28 }} />
-          ) : q ? (
-            <>
-              ≈ {formatShort(q.minReceived, USDC_DECIMALS, 6)}
-              <span className="unit">USDC</span>
-            </>
-          ) : (
-            ""
-          )}
-        </div>
-      </div>
-      {chain && <p className="meta">From your address on {chain.name}: the same as here.</p>}
-      {r?.gasDrop && (
+      {to?.kind === "injective" && r?.gasDrop && (
         <>
           <Switch label="Also get INJ for gas" checked={gasDrop} onChange={(v) => set({ gasDrop: v })} />
           <p className="meta">{q && BigInt(q.gasDropFee) > 0n ? `About ${formatShort(q.gasDropInj, 18, 4)} INJ, for at most ${usdc(q.gasDropFee)}.` : "Pays for your first transactions on Injective."}</p>
@@ -543,12 +284,12 @@ function BridgeInView({ network, canSign, draft, onDraft, onReview, onBack, note
       )}
       {problem && <p className="error">{problem}</p>}
       {quoteError && <Callout level="amber">{quoteError}</Callout>}
-      {q && short && chain && (
+      {q && short && (
         <Callout level="amber">
-          You need about {coin(q.gasNeed)} on {chain.name} for its fee.
+          You need about {coin(q.gasNeed)} on {q.fromName} for its fee.
         </Callout>
       )}
-      {q && chain && (
+      {q && (
         <div className="well rows">
           <div className="row">
             <span>Arrives</span>
@@ -558,13 +299,23 @@ function BridgeInView({ network, canSign, draft, onDraft, onReview, onBack, note
             <span>Circle&apos;s fee</span>
             <span className="num">{BigInt(q.maxFee) > 0n ? `Up to ${usdc(q.maxFee)}` : "None"}</span>
           </div>
+          {q.recipientSetup && (
+            <div className="row">
+              <span>Also</span>
+              <span>Circle opens its USDC account</span>
+            </div>
+          )}
           <div className="row">
             <span>Time</span>
             <span>About {about(q.etaMs)}</span>
           </div>
           <div className="row">
-            <span>Fee on {chain.name}</span>
+            <span>Fee on {q.fromName}</span>
             <span className="num">About {coin(q.gasNeed)}</span>
+          </div>
+          <div className="row">
+            <span>Delivered by</span>
+            <span>{deliveredBy}</span>
           </div>
           {q.steps.length > 1 && (
             <div className="row">
@@ -574,48 +325,54 @@ function BridgeInView({ network, canSign, draft, onDraft, onReview, onBack, note
           )}
         </div>
       )}
-      <p className="footnote">Native USDC over Circle&apos;s CCTP. Choice&apos;s bridge service completes it on Injective.</p>
+      {q && !q.own && <p className="meta">To someone else&apos;s address. Check it: a transfer can&apos;t be undone.</p>}
+      <p className="footnote">Native USDC over Circle&apos;s CCTP.</p>
     </Screen>
   );
 }
 
-function SourcePicker({ chains, held, onPick, onBack }: { chains: BridgeSource[]; held: Map<string, BridgeInBalance>; onPick: (c: BridgeSource) => void; onBack: () => void }) {
-  const usdcOf = (c: BridgeSource) => {
-    const v = held.get(c.key)?.usdc;
-    return v ? BigInt(v) : -1n;
-  };
-  // Where the USDC is first; then the registry's order.
-  const sorted = [...chains].sort((a, b) => (usdcOf(b) > usdcOf(a) ? 1 : usdcOf(b) < usdcOf(a) ? -1 : 0));
+/** Chains to pick from: where it comes from (with the account's USDC there, most first), or
+ *  where it goes. */
+function ChainList({ title, network, chains, side, onPick, onBack }: { title: string; network: NetworkId; chains: BridgeEnd[]; side: "from" | "to"; onPick: (c: BridgeEnd) => void; onBack: () => void }) {
+  const usdcOf = (c: BridgeEnd) => (c.usdc ? BigInt(c.usdc) : -1n);
+  const sorted = side === "from" ? [...chains].sort((a, b) => (usdcOf(b) > usdcOf(a) ? 1 : usdcOf(b) < usdcOf(a) ? -1 : 0)) : chains;
   return (
-    <Screen top={<BackBar title="Bridge from" onBack={onBack} />}>
+    <Screen top={<BackBar title={title} onBack={onBack} />}>
       <div className="token-list">
-        {sorted.map((c) => {
-          const h = held.get(c.key);
-          return (
-            <button key={c.key} className="token" onClick={() => onPick(c)}>
-              <ChainTile name={c.name} />
-              <span className="name">
-                <span className="symbol">{c.name}</span>
-                <span className="sub">{h?.usdc ? `${formatShort(h.usdc, USDC_DECIMALS, 2)} USDC · ${formatShort(h.native ?? "0", c.decimals ?? 18, 4)} ${c.symbol}` : h ? "Balance unknown" : "Checking…"}</span>
+        {sorted.map((c) => (
+          <button key={c.key} className="token" onClick={() => onPick(c)}>
+            <ChainMark chain={c.key} network={network} />
+            <span className="name">
+              <span className="symbol">{c.name}</span>
+              <span className="sub">
+                {side === "from"
+                  ? c.usdc !== null
+                    ? `${formatShort(c.usdc, USDC_DECIMALS, 2)} USDC · ${formatShort(c.native ?? "0", c.decimals, 4)} ${c.symbol}`
+                    : "Balance unknown"
+                  : c.address
+                    ? `To your address, ${shortAddress(c.address)}`
+                    : c.kind === "solana"
+                      ? "To a Solana wallet"
+                      : "To a 0x address"}
               </span>
-            </button>
-          );
-        })}
+            </span>
+          </button>
+        ))}
       </div>
     </Screen>
   );
 }
 
-/** A transfer in that hasn't arrived: where it is, and a way to finish it from here once
- *  Choice's bridge service had its chance. */
-function PendingIn({ item, network, onFinish, onArrived }: { item: BridgeInPending; network: NetworkId; onFinish: () => void; onArrived: () => void }) {
+/** A transfer that hasn't landed: where it is, and a way to finish it from here once
+ *  whoever else would have minted it had their chance. */
+function PendingTransfer({ item, network, onFinish, onArrived }: { item: BridgePending; network: NetworkId; onFinish: () => void; onArrived: () => void }) {
   const backend = useBackend();
-  const [st, setSt] = useState<BridgeInStatus | null>(null);
+  const [st, setSt] = useState<BridgeStatus | null>(null);
   useEffect(() => {
     let live = true;
     async function tick() {
       if (!live) return;
-      const r = await backend.send({ type: "bridge_in_status", chain: item.chain, hash: item.hash }).catch(() => null);
+      const r = await backend.send({ type: "bridge_status", from: item.from, hash: item.hash }).catch(() => null);
       if (!live) return;
       if (r?.ok) {
         setSt(r.result);
@@ -631,14 +388,18 @@ function PendingIn({ item, network, onFinish, onArrived }: { item: BridgeInPendi
       live = false;
     };
   }, [item.hash]);
-  const canFinish = st?.phase === "ready" && st.selfMint && (network === "testnet" || Date.now() - item.at > RELAY_GRACE_MS);
-  const what = { pending: "Circle is picking it up", attesting: "Circle is confirming it", ready: canFinish ? "Not minted yet" : "Being minted on Injective", delivered: "Arrived" }[st?.phase ?? "pending"];
+  // Into Injective on mainnet, Choice's bridge service mints it; elsewhere nobody else will.
+  const waits = item.to === "injective" && network === "mainnet" ? RELAY_GRACE_MS : 0;
+  const canFinish = st?.selfMint === true && (st.phase === "stuck" || (st.phase === "ready" && Date.now() - item.at > waits));
+  const what = canFinish
+    ? "Not minted yet"
+    : { pending: "Circle is picking it up", attesting: "Circle is confirming it", delivering: `Circle is delivering it`, ready: `Being minted on ${item.toName}`, delivered: "Arrived", stuck: "Circle hasn't delivered it" }[st?.phase ?? "pending"];
   return (
     <div className="surface" style={{ display: "flex", alignItems: "center", gap: 10 }}>
-      <ChainTile name={item.chainName} small />
+      <ChainMark chain={item.to} network={network} small />
       <div style={{ flex: 1, minWidth: 0 }}>
         <div className="num">
-          {formatShort(item.amount, USDC_DECIMALS, 6)} USDC from {item.chainName}
+          {formatShort(item.amount, USDC_DECIMALS, 6)} USDC, {item.fromName} to {item.toName}
         </div>
         <div className="meta">{what}</div>
       </div>
@@ -651,21 +412,47 @@ function PendingIn({ item, network, onFinish, onArrived }: { item: BridgeInPendi
   );
 }
 
-/** The review's card for a transfer in, from the vault's reading; `info` is what the quote
- *  said (the INJ the top-up buys). */
-export function BridgeInCard({ line, tokens, info }: { line: BridgeInLine; tokens: Record<string, TokenInfo>; info?: BridgeInStepInfo }) {
+/** The review's card for a burn, from the vault's reading; `info` is what the quote said. */
+export function BridgeCard({ line, tokens, info, from }: { line: BridgeLine; tokens: Record<string, TokenInfo>; info?: BridgeStepInfo; from: string }) {
   const t = tokens[line.coin.denom];
   const fee = (c: Coin) => (t ? `${formatShort(c.amount, t.decimals, 6)} ${t.symbol}` : c.amount);
+  const own = line.recipient !== null && line.recipient.toLowerCase() === from.toLowerCase();
+  const chain = line.chain ?? "an unknown chain";
+  // Solana: the burn names a USDC account. The wallet it belongs to is in the burn when Circle
+  // opens it; otherwise it is the one the quote was for (the host checked the account is its).
+  const solana = line.recipient !== null && !line.recipient.startsWith("0x");
+  const wallet = line.owner ?? (solana && info ? info.recipient : null);
+  const deliveredBy =
+    line.delivery === "circle"
+      ? line.caller
+        ? "Only " + shortAddress(line.caller)
+        : "Circle"
+      : line.delivery === "gas_drop"
+        ? "Choice's bridge contract"
+        : line.delivery === "anyone"
+          ? info?.toKey === "injective"
+            ? "Choice's bridge service"
+            : "Whoever claims it there"
+          : line.caller
+            ? "Only " + shortAddress(line.caller)
+            : "A contract there";
   return (
     <div className="surface-hero">
-      <div className="eyebrow">You bridge from {line.chain}</div>
+      <div className="eyebrow">You bridge{(info?.from ?? line.from) ? ` from ${info?.from ?? line.from}` : ""}</div>
       <Figure coin={line.coin} t={t} />
       <hr className="divider" style={{ margin: "14px 0 12px" }} />
-      <div className="eyebrow">To Injective</div>
+      <div className="eyebrow">To {chain}</div>
       <code className="mono recipient" style={{ display: "block", marginTop: 6, fontSize: 14, lineHeight: "21px" }}>
-        {line.recipient}
+        {wallet ?? line.recipient ?? "No usable address"}
       </code>
-      <div className="meta" style={{ marginTop: 4 }}>This account.</div>
+      {own && <div className="meta" style={{ marginTop: 4 }}>Your own address there.</div>}
+      {solana && wallet && (
+        <div className="meta" style={{ marginTop: 4, wordBreak: "break-all" }}>
+          Into its USDC account {shortAddress(line.recipient!)}
+          {line.owner ? ", which Circle opens." : "."}
+        </div>
+      )}
+      {solana && !wallet && <div className="meta" style={{ marginTop: 4 }}>A Solana USDC account.</div>}
       <hr className="divider" style={{ margin: "14px 0 12px" }} />
       <div className="rows">
         <div className="row">
@@ -685,15 +472,15 @@ export function BridgeInCard({ line, tokens, info }: { line: BridgeInLine; token
           </div>
         )}
         <div className="row">
-          <span>Minted by</span>
-          <span>{line.delivery === "gas_drop" ? "Choice's bridge contract" : "Choice's bridge service"}</span>
+          <span>Delivered by</span>
+          <span>{deliveredBy}</span>
         </div>
       </div>
     </div>
   );
 }
 
-/** The review's card for minting a transfer in on Injective. */
+/** The review's card for minting a transfer on its destination. */
 export function MintCard({ line, tokens, from }: { line: MintLine; tokens: Record<string, TokenInfo>; from: string }) {
   const t = tokens[line.coin.denom];
   const own = line.recipient !== null && line.recipient.toLowerCase() === from.toLowerCase();

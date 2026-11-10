@@ -511,26 +511,20 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
     if (url.host === "iris-api.circle.com") {
       state.irisAsks.push({ path: `${p}${url.search}`, headers: Object.fromEntries(new Headers(init?.headers).entries()) });
       if (state.irisDown) return new Response("down", { status: 503 });
-      // Circle's answers for Injective (domain 29) as of 2026-11-10's shape: standard only
-      // from Injective is free; forwarding costs a flat fee per destination.
-      // Into Injective from Base: Fast costs 1 bp; Circle doesn't deliver on Injective.
-      if (p === "/v2/burn/USDC/fees/6/29") {
-        return json(200, [
-          { finalityThreshold: 1000, minimumFee: 1 },
-          { finalityThreshold: 2000, minimumFee: 0 },
-        ]);
-      }
-      const fees = /^\/v2\/burn\/USDC\/fees\/29\/(\d+)$/.exec(p);
+      // Circle's fees as of 2026-11-10's shape, for any route: Fast costs 1 bp; Standard is
+      // free; Circle's delivery (forwarding) is a flat fee per destination (Solana's more, and
+      // more again when it opens the recipient's USDC account).
+      const fees = /^\/v2\/burn\/USDC\/fees\/(\d+)\/(\d+)$/.exec(p);
       if (fees) {
         const setup = url.searchParams.get("includeRecipientSetup") === "true";
-        const fwd = fees[1] === "5" ? (setup ? 290_000 : 130_000) : 54_000;
+        const fwd = fees[2] === "5" ? (setup ? 290_000 : 130_000) : 54_000;
         const forwardFee = url.searchParams.get("forward") === "true" ? { forwardFee: { low: fwd - 4000, med: fwd, high: fwd + 6000 } } : {};
         return json(200, [
           { finalityThreshold: 1000, minimumFee: 1, ...forwardFee },
           { finalityThreshold: 2000, minimumFee: 0, ...forwardFee },
         ]);
       }
-      if (p === "/v2/messages/29" || p === "/v2/messages/6") {
+      if (/^\/v2\/messages\/\d+$/.test(p)) {
         const m = state.iris[url.searchParams.get("transactionHash") ?? ""];
         return m ? json(200, { messages: m }) : json(404, { error: "Message not found" });
       }

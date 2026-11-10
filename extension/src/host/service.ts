@@ -67,7 +67,7 @@ export const AUTO_LOCK_MINUTES = 15;
 const LOCK_CHOICES = [5, 15, 60, 240];
 /** Local storage that belongs to the wallet, not the device: removing the wallet clears it.
  *  Endpoints, the network and other settings stay. */
-const WALLET_KEYS = ["vault", "wallets", "keystore", "kind", "accounts", "active_account", "connections", "custom_tokens", "custom_nfts", "rescue", "token_filter", "address_book", "watch", "watch_own", "bridge_in_pending"];
+const WALLET_KEYS = ["vault", "wallets", "keystore", "kind", "accounts", "active_account", "connections", "custom_tokens", "custom_nfts", "rescue", "token_filter", "address_book", "watch", "watch_own", "bridge_transfers", "chain_sent"];
 const NOTIFY_MODES: readonly NotifyMode[] = ["off", "active", "all"];
 /** The shortest password, as the keystore takes it. */
 const MIN_PASSWORD = 8;
@@ -578,13 +578,8 @@ export function createService(d: Deps) {
       case "bridge_quote":
       case "prepare_bridge":
       case "bridge_status":
-      case "bridge_in_routes":
-      case "bridge_in_balances":
-      case "bridge_in_quote":
-      case "prepare_bridge_in":
-      case "bridge_in_status":
+      case "bridge_pending":
       case "prepare_bridge_receive":
-      case "bridge_in_pending":
       case "bridge_reclaims":
       case "prepare_bridge_reclaim":
       case "prepare_revoke":
@@ -603,7 +598,7 @@ export function createService(d: Deps) {
       case "tx_status": {
         const a = await active();
         if ("ok" in a) return a;
-        if ((r.type === "prepare_send" || r.type === "prepare_convert" || r.type === "prepare_stake" || r.type === "prepare_revoke" || r.type === "prepare_revoke_erc20" || r.type === "prepare_swap" || r.type === "prepare_bridge" || r.type === "prepare_bridge_in" || r.type === "prepare_bridge_receive" || r.type === "prepare_bridge_reclaim" || r.type === "prepare_nft_send" || r.type === "prepare_rescue" || r.type === "prepare_rescue_grant" || r.type === "prepare_subaccount_withdraw") && isWatch(a.account)) {
+        if ((r.type === "prepare_send" || r.type === "prepare_convert" || r.type === "prepare_stake" || r.type === "prepare_revoke" || r.type === "prepare_revoke_erc20" || r.type === "prepare_swap" || r.type === "prepare_bridge" || r.type === "prepare_bridge_receive" || r.type === "prepare_bridge_reclaim" || r.type === "prepare_nft_send" || r.type === "prepare_rescue" || r.type === "prepare_rescue_grant" || r.type === "prepare_subaccount_withdraw") && isWatch(a.account)) {
           return err("watch_only", "This account is watch-only. Switch to one that can sign.");
         }
         if (r.type === "snapshot") return { ok: true, result: await snapshot(a.net, a.account) };
@@ -654,14 +649,9 @@ export function createService(d: Deps) {
         if (r.type === "bridge_routes") return bridge.routes(a.net, a.account);
         if (r.type === "bridge_quote") return bridge.quote(a.net, a.account, r);
         if (r.type === "prepare_bridge") return bridge.prepare(a.net, a.account, r.quote);
-        if (r.type === "bridge_status") return bridge.status(a.net, r.hash);
-        if (r.type === "bridge_in_routes") return bridge.inRoutes(a.net, a.account);
-        if (r.type === "bridge_in_balances") return bridge.inBalances(a.net, a.account);
-        if (r.type === "bridge_in_quote") return bridge.inQuote(a.net, a.account, r);
-        if (r.type === "prepare_bridge_in") return bridge.prepareIn(a.net, a.account, r.quote);
-        if (r.type === "bridge_in_status") return bridge.inStatus(a.net, a.account, r);
+        if (r.type === "bridge_pending") return bridge.pending(a.net, a.account);
+        if (r.type === "bridge_status") return bridge.status(a.net, a.account, r);
         if (r.type === "prepare_bridge_receive") return bridge.prepareReceive(a.net, a.account, r);
-        if (r.type === "bridge_in_pending") return bridge.inPending(a.net, a.account);
         if (r.type === "bridge_reclaims") return bridge.reclaims(a.net, a.account);
         if (r.type === "prepare_bridge_reclaim") return bridge.prepareReclaim(a.net, a.account, r.hash);
         if (r.type === "prepare_revoke") return approvals.prepare(a.net, a.account, r.items);

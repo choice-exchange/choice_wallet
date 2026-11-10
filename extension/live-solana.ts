@@ -8,6 +8,7 @@
 
 import { readFileSync } from "node:fs";
 
+import { NETWORKS } from "@choice-wallet/chain";
 import { handle, initSync } from "choice-wallet-vault-glue";
 
 import { createService, type Store } from "./src/host/service";
@@ -84,32 +85,34 @@ async function main() {
     console.log("USDC sent", sent.explorer, (await land(sent)).state);
   }
   if (steps.includes("in")) {
-    const routes = ok<{ chains: { key: string }[]; usdc: string }>(await service.handle({ type: "bridge_in_routes" }), "routes");
-    if (!routes.chains.some((c) => c.key === "solana")) throw new Error("no Solana route");
+    const routes = ok<{ chains: { key: string; address: string }[] }>(await service.handle({ type: "bridge_routes" }), "routes");
+    if (!routes.chains.some((c) => c.key === "solana" && c.address)) throw new Error("no Solana route");
+    const me = routes.chains.find((c) => c.key === "injective")!.address;
+    const usdcDenom = `erc20:${NETWORKS.testnet.cctp.usdc}`;
     const q = ok<{ id: string; minReceived: string; maxFee: string; gasNeed: string; gasHeld: string; etaMs: number }>(
-      await service.handle({ type: "bridge_in_quote", from: "solana", amount: "2000000", gasDrop: false }),
+      await service.handle({ type: "bridge_quote", from: "solana", to: "injective", amount: "2000000", recipient: me }),
       "quote",
     );
     console.log("quote: at least", q.minReceived, "fee up to", q.maxFee, "SOL need", q.gasNeed, "held", q.gasHeld, "eta", q.etaMs);
-    const r = ok<Review>(await service.handle({ type: "prepare_bridge_in", quote: q.id }), "prepare burn");
+    const r = ok<Review>(await service.handle({ type: "prepare_bridge", quote: q.id }), "prepare burn");
     console.log("burn review", r.risk.level, r.risk.findings.map((f) => f.rule).join(","));
-    const injBefore = ok<{ balances: { denom: string; amount: string }[] }>(await service.handle({ type: "balances" }), "balances").balances.find((b) => b.denom === routes.usdc)?.amount ?? "0";
+    const injBefore = ok<{ balances: { denom: string; amount: string }[] }>(await service.handle({ type: "balances" }), "balances").balances.find((b) => b.denom.toLowerCase() === usdcDenom.toLowerCase())?.amount ?? "0";
     const sent = ok<{ hash: string; chain: string; explorer: string }>(await service.handle({ type: "confirm_send", digest: r.digest }), "burn");
     console.log("burned", sent.explorer, (await land(sent)).state);
     const t0 = Date.now();
     let phase = "";
     for (let i = 0; i < 200 && phase !== "ready" && phase !== "delivered"; i++) {
-      phase = ok<{ phase: string }>(await service.handle({ type: "bridge_in_status", chain: "solana", hash: sent.hash }), "status").phase;
+      phase = ok<{ phase: string }>(await service.handle({ type: "bridge_status", from: "solana", hash: sent.hash }), "status").phase;
       if (phase !== "ready" && phase !== "delivered") await sleep(3000);
     }
     console.log("Circle:", phase, `${Math.round((Date.now() - t0) / 1000)} s after the burn`);
     if (phase === "ready") {
-      const m = ok<Review>(await service.handle({ type: "prepare_bridge_receive", chain: "solana", hash: sent.hash }), "prepare mint");
+      const m = ok<Review>(await service.handle({ type: "prepare_bridge_receive", from: "solana", hash: sent.hash }), "prepare mint");
       console.log("mint review", m.risk.level, m.risk.findings.map((f) => f.rule).join(","));
       const minted = ok<{ hash: string }>(await service.handle({ type: "confirm_send", digest: m.digest }), "mint");
       console.log("minted", minted.hash, (await land(minted)).state);
     }
-    const injAfter = ok<{ balances: { denom: string; amount: string }[] }>(await service.handle({ type: "balances" }), "balances").balances.find((b) => b.denom === routes.usdc)?.amount ?? "0";
+    const injAfter = ok<{ balances: { denom: string; amount: string }[] }>(await service.handle({ type: "balances" }), "balances").balances.find((b) => b.denom.toLowerCase() === usdcDenom.toLowerCase())?.amount ?? "0";
     console.log(`USDC on Injective +${BigInt(injAfter) - BigInt(injBefore)} (at least ${q.minReceived})`);
     if (BigInt(injAfter) - BigInt(injBefore) < BigInt(q.minReceived)) throw new Error("less arrived than the quote");
     const rent = ok<{ hash: string; ready: boolean }[]>(await service.handle({ type: "bridge_reclaims" }), "rent");

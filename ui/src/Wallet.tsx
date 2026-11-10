@@ -42,8 +42,8 @@ type View =
   | { name: "token"; denom: string }
   | { name: "send"; denom?: string }
   | { name: "convert"; denom: string }
-  | { name: "review"; review: SendReview; entered: string; back: View; validators?: Record<string, string>; rewards?: Record<string, string>; quote?: string; bridgeQuote?: string; bridgeInQuote?: string }
-  | { name: "sent"; sent: Sent; converting: boolean; done?: string; save?: Draft; next?: string; nextBridge?: string; nextBridgeIn?: string; bridge?: { chain: string }; bridgeIn?: { chain: string } }
+  | { name: "review"; review: SendReview; entered: string; back: View; validators?: Record<string, string>; rewards?: Record<string, string>; quote?: string; bridgeQuote?: string }
+  | { name: "sent"; sent: Sent; converting: boolean; done?: string; save?: Draft; next?: string; nextBridge?: string; bridge?: { from: string; to: string; waitMs: number } }
   | { name: "bridge" }
   | { name: "staking" }
   | { name: "approvals" }
@@ -327,25 +327,21 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
     setView({ name: "bridge" });
   }
 
-  /** A transfer in's next step (the burn, after its approval landed on that chain). */
-  async function nextBridgeInStep(quote: string) {
-    const r = await backend.send({ type: "prepare_bridge_in", quote });
+  /** Mint a transfer on its destination from this account, when nobody has. */
+  async function finishBridge(from: string, hash: string) {
+    const r = await backend.send({ type: "prepare_bridge_receive", from, hash });
     if (r.ok) {
-      setView({ name: "review", review: r.result, entered: "", back: { name: "bridge" }, bridgeInQuote: quote });
+      setView({ name: "review", review: r.result, entered: "", back: { name: "bridge" } });
       return;
     }
     setBridgeNote(r.error.message);
     setView({ name: "bridge" });
   }
 
-  /** Mint a transfer in on Injective from this account, when nobody has. */
-  async function finishBridgeIn(chain: string, hash: string) {
-    const r = await backend.send({ type: "prepare_bridge_receive", chain, hash });
-    if (r.ok) {
-      setView({ name: "review", review: r.result, entered: "", back: { name: "bridge" } });
-      return;
-    }
-    setBridgeNote(r.error.message);
+  /** The bridge form, from `from` (empty: wherever the USDC is), to Injective unless that's
+   *  where it starts. */
+  function openBridge(from: string) {
+    setBridgeDraft((d) => ({ ...d, from, to: d.to && d.to !== from ? d.to : from === "injective" ? "" : "injective" }));
     setView({ name: "bridge" });
   }
 
@@ -363,10 +359,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
             chain={chain}
             ledger={account?.account.derivation === "ledger"}
             onBack={home}
-            onBridgeIn={() => {
-              setBridgeDraft((d) => ({ ...d, dir: "in" }));
-              setView({ name: "bridge" });
-            }}
+            onBridgeIn={() => openBridge("")}
           />
         );
       case "tokens":
@@ -391,7 +384,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
             canSign={!watch}
             onSend={() => setView({ name: "send", denom: t.denom })}
             onConvert={() => setView({ name: "convert", denom: t.denom })}
-            {...(t.denom.toLowerCase() === `erc20:${NETWORKS[status.network].cctp.usdc}`.toLowerCase() ? { onBridge: () => setView({ name: "bridge" }) } : {})}
+            {...(t.denom.toLowerCase() === `erc20:${NETWORKS[status.network].cctp.usdc}`.toLowerCase() ? { onBridge: () => openBridge("injective") } : {})}
             onBack={home}
           />
         );
@@ -459,7 +452,6 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
               const save = sentTo && sentTo.sends.length === 1 && !named && view.review.display.kind !== "solana_transaction" ? { address: sentTo.sends[0]!.to, memo: sentTo.memo } : undefined;
               const step = view.review.swap;
               const crossing = view.review.bridge;
-              const arriving = view.review.bridgeIn;
               setView({
                 name: "sent",
                 sent,
@@ -468,10 +460,10 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
                 ...(step ? { done: step.step === "swap" ? "Swapped" : "Approved" } : {}),
                 ...(step && step.left > 0 && view.quote ? { next: view.quote } : {}),
                 ...(crossing?.step === "approve" ? { done: "Approved", ...(view.bridgeQuote ? { nextBridge: view.bridgeQuote } : {}) } : {}),
-                ...(crossing?.step === "burn" ? { bridge: { chain: crossing.chain } } : {}),
-                ...(arriving?.step === "approve" ? { done: "Approved", ...(view.bridgeInQuote ? { nextBridgeIn: view.bridgeInQuote } : {}) } : {}),
-                ...(arriving?.step === "burn" ? { bridgeIn: { chain: arriving.chain } } : {}),
-                ...(arriving?.step === "receive" ? { done: "Minted" } : {}),
+                // Into Injective on mainnet Choice's bridge service mints it; this account is
+                // offered to once it had a minute.
+                ...(crossing?.step === "burn" ? { bridge: { from: crossing.fromKey, to: crossing.to, waitMs: crossing.toKey === "injective" && crossing.delivery === "anyone" && status.network === "mainnet" ? 60_000 : 0 } } : {}),
+                ...(crossing?.step === "receive" ? { done: "Minted" } : {}),
                 ...(save ? { save } : {}),
               });
             }}
@@ -484,12 +476,11 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
             sent={view.sent}
             onDone={home}
             onSave={view.save ? () => setView({ name: "contacts", prefill: view.save! }) : undefined}
-            onNext={view.next ? () => void nextSwapStep(view.next!) : view.nextBridge ? () => void nextBridgeStep(view.nextBridge!) : view.nextBridgeIn ? () => void nextBridgeInStep(view.nextBridgeIn!) : undefined}
+            onNext={view.next ? () => void nextSwapStep(view.next!) : view.nextBridge ? () => void nextBridgeStep(view.nextBridge!) : undefined}
             converting={view.converting}
             bridge={view.bridge}
-            bridgeIn={view.bridgeIn}
-            finishAfterMs={status.network === "testnet" ? 0 : 60_000}
-            onFinish={view.bridgeIn && view.sent.chain ? () => void finishBridgeIn(view.sent.chain!, view.sent.hash) : undefined}
+            finishAfterMs={view.bridge?.waitMs ?? 0}
+            onFinish={view.bridge ? () => void finishBridge(view.bridge!.from, view.sent.hash) : undefined}
             {...(view.done ? { done: view.done } : {})}
           />
         );
@@ -506,9 +497,9 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
             note={bridgeNote}
             onReview={(review, quote) => {
               setBridgeNote(null);
-              setView({ name: "review", review, entered: "", back: { name: "bridge" }, ...(quote.dir === "in" ? { bridgeInQuote: quote.id } : { bridgeQuote: quote.id }) });
+              setView({ name: "review", review, entered: "", back: { name: "bridge" }, ...(quote ? { bridgeQuote: quote } : {}) });
             }}
-            onFinish={(chain, hash) => void finishBridgeIn(chain, hash)}
+            onFinish={(from, hash) => void finishBridge(from, hash)}
             onBack={home}
           />
         );
@@ -542,10 +533,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
               </div>
               <button
                 className="btn btn-gold"
-                onClick={() => {
-                  setBridgeDraft((d) => ({ ...d, dir: "in", from: chain }));
-                  setView({ name: "bridge" });
-                }}
+                onClick={() => openBridge(chain)}
               >
                 Bridge USDC
               </button>
@@ -636,10 +624,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
                 watch={watch}
                 onSend={(denom) => setView({ name: "send", ...(denom ? { denom } : {}) })}
                 onReceive={() => setView({ name: "receive" })}
-                onBridge={() => {
-                  setBridgeDraft((d) => ({ ...d, dir: "in", from: "solana" }));
-                  setView({ name: "bridge" });
-                }}
+                onBridge={() => openBridge("solana")}
               />
             ) : evmChain ? (
               <EvmHome
@@ -649,10 +634,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
                 watch={watch}
                 onSend={(denom) => setView({ name: "send", ...(denom ? { denom } : {}) })}
                 onReceive={() => setView({ name: "receive" })}
-                onBridge={() => {
-                  setBridgeDraft((d) => ({ ...d, dir: "in", from: evmChain.key }));
-                  setView({ name: "bridge" });
-                }}
+                onBridge={() => openBridge(evmChain.key)}
               />
             ) : (
               <InjectiveHome
@@ -673,7 +655,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
                 onStake={() => setView({ name: "staking" })}
                 onTokens={() => setView({ name: "tokens" })}
                 onToken={(denom) => setView({ name: "token", denom })}
-                onBridge={() => setView({ name: "bridge" })}
+                onBridge={() => openBridge("injective")}
                 onInventory={() => setView({ name: "inventory" })}
                 onNfts={() => setView({ name: "nfts" })}
               />

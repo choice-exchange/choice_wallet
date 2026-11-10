@@ -13,6 +13,7 @@ import {
   adapterCw20,
   adapterDenom,
   chainByCaip2,
+  chainByKey,
   chainDenom,
   ChainError,
   cosmosTxHash,
@@ -82,11 +83,15 @@ export interface SourceChain {
 
 /** A deposit's burn, once broadcast. */
 export interface DepositSent {
+  /** Where it was burned, and where it goes (chain keys). */
   chain: string;
+  to?: string;
   hash: string;
   amount: string;
-  /** The account's 0x address. */
+  /** The signer's address on `chain`. */
   account: string;
+  /** Who it pays there. */
+  recipient?: string;
   /** On Solana: the burn's record (its rent comes back later) and the account's Solana
    *  address, which paid it. */
   event?: string;
@@ -138,7 +143,7 @@ interface Pending {
   /** Signed on another chain, where USDC comes from: broadcast there. */
   source?: SourceChain;
   /** A deposit's burn, followed once broadcast. */
-  deposit?: { amount: string; account: string; event?: string; owner?: string };
+  deposit?: Omit<DepositSent, "chain" | "hash">;
   /** A Solana transaction, signed with the account's Solana key (./solana.ts). */
   solana?: SolanaPending;
 }
@@ -479,6 +484,8 @@ export function createSender(d: SendDeps) {
       tokens: string[];
       expect: (display: EvmDisplayLike) => string | null;
       extra?: Partial<SendReview>;
+      /** A bridge burn: followed once broadcast. */
+      deposit?: Omit<DepositSent, "chain" | "hash">;
     },
   ): Promise<Result<SendReview>> {
     const net = NETWORKS[network];
@@ -537,7 +544,7 @@ export function createSender(d: SendDeps) {
       const wrong = spec.expect(display as unknown as EvmDisplayLike);
       if (wrong) return fail("mismatch", wrong);
       await d.session.set({
-        pending_send: { network, digest, request: built.result.request, ...signerFields(account), from: account.addresses[NETWORKS[network].cosmos] ?? "", confirm: risk.confirm ?? null, blocked: risk.level === "blocked", evm: true } satisfies Pending,
+        pending_send: { network, digest, request: built.result.request, ...signerFields(account), from: account.addresses[NETWORKS[network].cosmos] ?? "", confirm: risk.confirm ?? null, blocked: risk.level === "blocked", evm: true, ...(spec.deposit ? { deposit: spec.deposit } : {}) } satisfies Pending,
       });
       const tokens = await tokensFor(network, [...spec.tokens, net.feeDenom]);
       return { ok: true, result: { digest, display, risk: risk as Risk, tokens, checkedBy, ...spec.extra } };
@@ -566,7 +573,7 @@ export function createSender(d: SendDeps) {
       burns?: bigint;
       expect?: (display: EvmDisplayLike) => string | null;
       extra?: Partial<SendReview>;
-      deposit?: { amount: string; account: string };
+      deposit?: Omit<DepositSent, "chain" | "hash">;
     },
   ): Promise<Result<SendReview>> {
     const net = NETWORKS[network];
@@ -777,6 +784,7 @@ export function createSender(d: SendDeps) {
         if (!(e instanceof ChainError && /already known|already imported|known transaction/i.test(e.message))) return chainFailure(e);
       }
       d.onBroadcast?.(p.network, hash, p.from ?? "");
+      if (p.deposit) await d.onDeposit?.(p.network, { chain: "injective", hash, ...p.deposit });
       return { ok: true, result: { hash, explorer: explorerTxUrl(NETWORKS[p.network], hash) } };
     }
     const hash = await cosmosTxHash(signed.tx_raw);
@@ -822,6 +830,12 @@ export function createSender(d: SendDeps) {
     prepareSourceCall,
     prepareChainSend,
     sourceRpc,
+    /** A client for any EVM chain beside Injective, on the user's endpoints for it. */
+    chainRpc: async (network: NetworkId, key: string): Promise<EvmRpc> => {
+      const c = chainByKey(network, key);
+      if (!c || c.kind !== "evm") throw new RangeError(`not an EVM chain: ${key}`);
+      return rpcOn(network, sourceOfChain(c));
+    },
     pairs: async (network: NetworkId) => pairsFor(network, await lcd(network)),
     solanaPrices: holdings.solanaPrices,
     confirm,

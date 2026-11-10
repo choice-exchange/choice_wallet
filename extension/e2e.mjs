@@ -990,7 +990,7 @@ try {
   await p.click("Wallet");
   await p.waitText("Bridge USDC", 15000);
   await p.eval(`[...document.querySelectorAll(".token")].find((b) => b.querySelector(".symbol")?.textContent === "Bridge USDC").click()`);
-  await p.waitText("FROM INJECTIVE");
+  await p.waitText("Bridge USDC");
   await p.waitText("Balance 3 USDC", 15000);
   await p.click("Choose the chain");
   await p.waitText("Bridge to");
@@ -1021,24 +1021,22 @@ try {
   usdcHeld = false;
   console.log("bridge: 1 USDC to this account's address on Base; Circle's fee quoted live from the extension; approve exact, then the burn the vault read");
 
-  // 7g. Into Injective: the form, and each chain's balance for this (public test) address,
-  // read live from the bridge registry's public endpoints by the service worker.
+  // 7g. From another chain: each chain's USDC for this (public test) address, read live from
+  // its public endpoints by the service worker; picking Base turns the transfer toward
+  // Injective, with Choice's INJ top-up offered.
   await p.eval(`[...document.querySelectorAll(".token")].find((b) => b.querySelector(".symbol")?.textContent === "Bridge USDC").click()`);
-  await p.waitText("FROM INJECTIVE");
-  await p.click("To Injective");
-  await p.waitText("TO INJECTIVE");
-  await p.waitText("Also get INJ for gas");
-  await p.waitText("From your address on", 30000);
+  await p.waitText("Balance 3 USDC", 15000);
   await p.click("Choose where it comes from");
   await p.waitText("Bridge from");
-  for (const t of ["Base", "Arbitrum", "Ethereum"]) await p.waitText(t);
-  for (let t = 0; t < 300 && (await p.eval(`document.body.innerText.includes("Checking…")`)); t++) await sleep(100);
+  for (const t of ["Base", "Arbitrum", "Ethereum", "Solana"]) await p.waitText(t);
   await p.shot("16z-bridge-in-from");
   await p.eval(`[...document.querySelectorAll(".token")].find((b) => b.querySelector(".symbol")?.textContent === "Base").click()`);
-  await p.waitText("TO INJECTIVE");
+  await p.waitText("Also get INJ for gas");
+  if (!(await p.eval(`document.querySelector("[aria-label='Choose the chain']")?.innerText ?? ""`)).includes("Injective")) throw new Error("from Base, the transfer doesn't go to Injective");
+  await p.shot("16z2-bridge-from-base");
   await p.click("Back");
   await p.waitText("Manage", 15000);
-  console.log("bridge in: the form opens on Injective's side; every source chain's balance read live from its public endpoint");
+  console.log("bridge from another chain: every chain's USDC read live from its public endpoint; from Base it goes to Injective");
 
   // 7h. Another EVM chain: Base, picked in the chain sheet (each chain's total read live from
   // its public endpoints), its own Home, and Settings showing only Base's endpoints.

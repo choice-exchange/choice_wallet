@@ -143,33 +143,22 @@ export type UiRequest =
   | { type: "swap_quote"; from: string; to: string; amount: string; slippageBps?: number }
   /** The next step of a quoted swap, for review: an approval, or the swap itself. */
   | { type: "prepare_swap"; quote: string }
-  /** Where USDC can be bridged to (Circle's CCTP), and how much this account holds. */
+  /** The chains USDC moves between (Circle's CCTP): this account's address on each, and its
+   *  USDC and gas coin there. */
   | { type: "bridge_routes" }
-  /** Circle's fee for bridging `amount` (USDC base units, or "max") to chain `to` (a key from
-   *  `bridge_routes`), for `recipient` there: a 0x address, or a Solana wallet. */
-  | { type: "bridge_quote"; to: string; amount: string; recipient: string }
-  /** The next step of a quoted bridge transfer, for review: the approval, or the burn. */
+  /** Circle's fees for bridging `amount` (USDC base units, or "max") from chain `from` to
+   *  chain `to` (keys of `bridge_routes`), for `recipient` there: a 0x address, or a Solana
+   *  wallet. `gasDrop`, into Injective on mainnet, also buys INJ for gas. */
+  | { type: "bridge_quote"; from: string; to: string; amount: string; recipient: string; gasDrop?: boolean }
+  /** The next step of a quoted transfer, for review, on the chain the USDC is on: the
+   *  approval, or the burn. */
   | { type: "prepare_bridge"; quote: string }
-  /** Where a bridge transfer is, by its Injective transaction hash. */
-  | { type: "bridge_status"; hash: string }
-  /** The chains USDC can come in from (Circle's CCTP), signed with this account's own key
-   *  there. */
-  | { type: "bridge_in_routes" }
-  /** This account's USDC and gas coin on each of those chains (each one's public endpoint
-   *  is asked). */
-  | { type: "bridge_in_balances" }
-  /** Circle's fee for bringing `amount` (base units, or "max") of USDC from `from` (a key of
-   *  `bridge_in_routes`) into this account; `gasDrop` also buys INJ for gas (mainnet). */
-  | { type: "bridge_in_quote"; from: string; amount: string; gasDrop: boolean }
-  /** The next step of a quoted transfer in, for review: the approval or the burn, on the
-   *  chain the USDC is on. */
-  | { type: "prepare_bridge_in"; quote: string }
-  /** Where a transfer in is, by the burn's hash on `chain`. */
-  | { type: "bridge_in_status"; chain: string; hash: string }
-  /** Mint an attested transfer in on Injective from this account (when nobody has). */
-  | { type: "prepare_bridge_receive"; chain: string; hash: string }
-  /** Transfers in this account sent that haven't arrived. */
-  | { type: "bridge_in_pending" }
+  /** Transfers this account sent that haven't landed. */
+  | { type: "bridge_pending" }
+  /** Where a transfer is, by its burn's hash on `from`. */
+  | { type: "bridge_status"; from: string; hash: string }
+  /** Mint an attested transfer on its destination from this account (when nobody has). */
+  | { type: "prepare_bridge_receive"; from: string; hash: string }
   /** Convert `amount` (base units, or "max") of a token into its other form (`convertsTo`):
    *  a CW20 into its bank denom through the CW20 adapter, or back. Confirmed like a send. */
   | { type: "prepare_convert"; denom: string; amount: string }
@@ -466,131 +455,109 @@ export type SendReview = {
   /** One step of a bridge transfer: where it goes, as the quote said (the vault's reading in
    *  `display` is held to it). */
   bridge?: BridgeStepInfo;
-  /** One step of a transfer in, likewise. */
-  bridgeIn?: BridgeInStepInfo;
   /** On an OP Stack chain: the most its Ethereum data fee can be (wei of its coin), which it
    *  charges besides gas. */
   dataFee?: string;
 };
 
-export type BridgeInStepInfo = {
-  /** On the chain the USDC is on, then on Injective only if nobody mints it. */
-  step: "approve" | "burn" | "receive";
+/** One step of a bridge transfer, as its quote said: on the chain the USDC is on (the
+ *  approval, the burn), or on the destination when nobody minted it (`receive`). */
+export type BridgeStepInfo = {
+  step: BridgeStep | "receive";
+  /** Steps after this one. */
   left: number;
-  chain: string;
-  chainKey: string;
-  amount: string;
-  maxFee: string;
-  /** The INJ top-up: its most in USDC, and the INJ (wei) it buys; "0" without one. */
-  gasDropFee: string;
-  gasDropInj: string;
-  minReceived: string;
-  /** USDC's wallet key on that chain (in `tokens`), and on Injective. */
-  usdc: string;
-  injUsdc: string;
-};
-
-/** A chain USDC can come in from. `symbol` is its gas coin; `fast`: Circle attests a burn
- *  there in seconds rather than after its finality. */
-/** `decimals`: its gas coin's (18 on EVM chains, 9 for SOL). */
-export type BridgeSource = { key: string; name: string; symbol: string; fast: boolean; decimals?: number };
-
-export type BridgeInRoutes = {
-  chains: BridgeSource[];
-  /** This account's 0x address: its own on every EVM chain. */
-  address: string;
-  /** USDC's wallet key on Injective. */
-  usdc: string;
-  /** This account's INJ there (wei): with none, the top-up starts on. */
-  inj: string;
-  /** The network has Choice's INJ top-up. */
-  gasDrop: boolean;
-};
-
-/** This account on one source chain; null where its endpoint didn't answer. */
-export type BridgeInBalance = { chain: string; usdc: string | null; native: string | null };
-
-/** Circle's quote for bringing USDC in. USDC base units; gas in the chain's coin (wei). */
-export type BridgeInQuote = {
-  id: string;
-  chain: string;
-  chainName: string;
-  symbol: string;
+  /** Where it comes from and goes to: names, and keys. */
+  from: string;
+  to: string;
+  fromKey: string;
+  toKey: string;
+  /** As the quote named it: a 0x address, or a Solana wallet. */
+  recipient: string;
   amount: string;
   maxFee: string;
   gasDropFee: string;
   /** INJ the top-up buys, in wei. */
   gasDropInj: string;
   minReceived: string;
-  fast: boolean;
-  /** How long Circle usually takes to confirm it. */
-  etaMs: number;
-  steps: BridgeStep[];
-  /** About what the steps cost there, and what the account has for it. */
-  gasNeed: string;
-  gasHeld: string;
+  /** USDC's wallet key where it leaves, and where it arrives. */
+  usdc: string;
+  arriving: string;
+  delivery: BridgeQuote["delivery"];
 };
-
-/** Where a transfer in is: Circle hasn't seen it, is confirming it, confirmed it (`ready`:
- *  waiting to be minted; `selfMint` when this account can mint it), or it arrived. */
-export type BridgeInStatus = {
-  phase: "pending" | "attesting" | "ready" | "delivered";
-  selfMint: boolean;
-  track: string;
-  etaMs: number;
-};
-
-export type BridgeInPending = { chain: string; chainName: string; hash: string; amount: string; at: number };
 
 export type BridgeStep = "approve" | "burn";
 
-export type BridgeStepInfo = {
-  step: BridgeStep;
-  /** Steps after this one. */
-  left: number;
-  chain: string;
-  /** As typed: a 0x address, or the Solana wallet. */
-  recipient: string;
-  amount: string;
-  maxFee: string;
-  minReceived: string;
-  /** USDC's wallet key. */
-  usdc: string;
+/** A chain USDC can be bridged from or to: this account's address there, and what it holds
+ *  there (null where its endpoints didn't answer). */
+export type BridgeEnd = {
+  key: string;
+  name: string;
+  kind: "injective" | "solana" | "evm";
+  address: string;
+  usdc: string | null;
+  native: string | null;
+  /** Its gas coin. */
+  symbol: string;
+  decimals: number;
+  /** Circle offers Fast Transfer from there. */
+  fast: boolean;
+  /** Circle delivers there. */
+  forwarding: boolean;
 };
 
-/** A chain USDC can be bridged to. */
-export type BridgeChain = { key: string; name: string; kind: "evm" | "solana" };
-
 export type BridgeRoutes = {
-  chains: BridgeChain[];
-  /** USDC's wallet key on this network, and this account's balance of it. */
-  usdc: string;
-  balance: string;
-  /** This account's 0x address: its own address on any EVM chain. */
-  address: string;
+  chains: BridgeEnd[];
+  /** Choice's INJ top-up is offered on transfers into Injective (mainnet). */
+  gasDrop: boolean;
+  /** The account's INJ on Injective. */
+  inj: string;
 };
 
 /** Circle's quote for the wallet's own bridge transfer. USDC base units. */
 export type BridgeQuote = {
   /** What `prepare_bridge` builds from. */
   id: string;
-  chain: string;
-  chainName: string;
+  from: string;
+  fromName: string;
+  to: string;
+  toName: string;
   recipient: string;
+  /** The recipient is one of the user's own addresses. */
+  own: boolean;
   amount: string;
-  /** The most Circle keeps; it delivers at least `minReceived`. */
+  /** The most Circle keeps; at least `minReceived` arrives. */
   maxFee: string;
+  /** Choice's INJ top-up: the most it costs, and the INJ it buys. */
+  gasDropFee: string;
+  gasDropInj: string;
   minReceived: string;
   /** Solana: Circle also opens the recipient's USDC account (its fee covers the rent). */
   recipientSetup: boolean;
+  fast: boolean;
+  etaMs: number;
   steps: BridgeStep[];
+  /** Who mints it there: Circle; anyone (on Injective Choice's bridge service; elsewhere,
+   *  this wallet with gas there); Choice's bridge contract, with INJ for gas. */
+  delivery: "circle" | "anyone" | "gas_drop";
+  /** Gas the steps need on the source chain, and what the account holds there, in its coin. */
+  gasNeed: string;
+  gasHeld: string;
+  gasSymbol: string;
+  gasDecimals: number;
 };
 
+/** A transfer this account sent that hasn't landed yet. */
+export type BridgePending = { from: string; fromName: string; to: string; toName: string; hash: string; amount: string; at: number };
+
 /** Where a bridge transfer is. `track` is a page anyone can follow it on, and claim it from
- *  if Circle never delivers. */
+ *  if Circle never delivers. `selfMint`: this account can mint it on the destination. */
 export type BridgeStatus = {
-  phase: "pending" | "attesting" | "delivering" | "delivered" | "stuck";
+  phase: "pending" | "attesting" | "delivering" | "ready" | "delivered" | "stuck";
   track: string;
+  /** Where it goes (its key), once Circle's message says. */
+  to: string;
+  etaMs: number;
+  selfMint: boolean;
   mintTx?: string;
   mintUrl?: string;
 };
@@ -669,8 +636,8 @@ export type SwapQuote = {
 /** A token the swap screen offers. */
 export type SwapToken = TokenInfo & { amount?: string };
 
-/** A broadcast transaction. `chain` names the bridge registry's chain when it was signed on
- *  another chain than Injective (a step of a bridge transfer in). */
+/** A broadcast transaction. `chain` names the chain (its key) when it was signed on another
+ *  chain than Injective. */
 export type Sent = { hash: string; explorer: string; chain?: string };
 
 /** A staking action. Amounts are base units of INJ, or "max". `validator` is where the
@@ -930,14 +897,9 @@ export type Replies = {
   bridge_routes: BridgeRoutes;
   bridge_quote: BridgeQuote;
   prepare_bridge: SendReview;
+  bridge_pending: BridgePending[];
   bridge_status: BridgeStatus;
-  bridge_in_routes: BridgeInRoutes;
-  bridge_in_balances: BridgeInBalance[];
-  bridge_in_quote: BridgeInQuote;
-  prepare_bridge_in: SendReview;
-  bridge_in_status: BridgeInStatus;
   prepare_bridge_receive: SendReview;
-  bridge_in_pending: BridgeInPending[];
   prepare_convert: SendReview;
   staking: StakingSummary;
   approvals: ApprovalsSummary;

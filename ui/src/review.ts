@@ -5,9 +5,6 @@ import { adapterCw20, adapterDenom, chainByCaip2, chainCoin, chainUsdc, cw20Deno
 
 import type { Coin, CosmosDisplay, EvmDisplay, EvmSwapCall, NetworkId, SendReview, SolanaDisplay, SwapStepInfo } from "./protocol";
 
-/** Injective's CCTP domain. */
-const INJECTIVE_DOMAIN = 29;
-
 /** A token turned into its other form by the CW20 adapter, one for one. */
 export type Conversion = { from: Coin; to: Coin; recipient: string };
 
@@ -44,35 +41,27 @@ export type SwapLine = {
 /** An allowance a swap needs first, for its amount. */
 export type ApprovalLine = { token: string; spender: string; amount: string; via: "token" | "permit2"; until?: number };
 
-/** USDC burned over Circle's CCTP, as the vault read it. `recipient` is how the destination
- *  spells it (for Solana, a USDC account); `owner` the Solana wallet Circle opens it for. */
+/** USDC burned over Circle's CCTP on the chain it is signed on (`from`), as the vault read
+ *  it. `recipient` is how the destination spells it (for Solana, a USDC account); `owner` the
+ *  Solana wallet Circle opens it for. */
 export type BridgeLine = {
   coin: Coin;
   maxFee: Coin;
+  from: string | null;
   chain: string | null;
   recipient: string | null;
   owner: string | null;
-  delivery: "circle" | "claim" | "hook";
+  /** Who mints it there: Circle; anyone (Choice's bridge service on Injective, or whoever
+   *  claims it); Choice's bridge contract with INJ for gas; or some contract's hook. */
+  delivery: "circle" | "anyone" | "gas_drop" | "hook";
   /** Set when only this address may deliver. */
   caller: string | null;
-};
-
-/** USDC burned on another chain into this account on Injective, as the vault read it. */
-export type BridgeInLine = {
-  coin: Coin;
-  maxFee: Coin;
-  /** Where it comes from. */
-  chain: string;
-  /** This account (0x), which the vault requires. */
-  recipient: string;
-  /** Who mints it on Injective: anyone (Choice's bridge service), or Choice's bridge
-   *  contract, which also buys INJ for gas with at most `dropFee`. */
-  delivery: "anyone" | "gas_drop";
+  /** The most the INJ top-up costs. */
   dropFee: Coin | null;
   least: Coin;
 };
 
-/** A transfer Circle attested, minted on Injective (`receiveMessage`). */
+/** A transfer Circle attested, minted on the chain it is signed on (`receiveMessage`). */
 export type MintLine = { coin: Coin; fee: Coin; chain: string | null; recipient: string | null };
 
 /** Coins the signer moves from one of its trading accounts back to its balance. */
@@ -87,7 +76,6 @@ export type Shown = {
   moves: MoveLine[];
   swaps: SwapLine[];
   bridges: BridgeLine[];
-  bridgesIn: BridgeInLine[];
   mints: MintLine[];
   approvals: ApprovalLine[];
   converts: Conversion[];
@@ -125,7 +113,7 @@ export function shown(display: SendReview["display"], network: NetworkId, swap?:
     const d = display as EvmDisplay;
     // Signed on another EVM chain than Injective's: its fee is in that chain's coin.
     const feeDenom = d.chain !== net.evm ? `native:${d.chain}` : net.feeDenom;
-    const base = { fee: [{ denom: feeDenom, amount: d.max_gas_cost }], memo: "", evm: true, converts: [], stakes: [], revokes: [], swaps: [], bridges: [], bridgesIn: [], mints: [], approvals: [], nfts: [], moves: [] };
+    const base = { fee: [{ denom: feeDenom, amount: d.max_gas_cost }], memo: "", evm: true, converts: [], stakes: [], revokes: [], swaps: [], bridges: [], mints: [], approvals: [], nfts: [], moves: [] };
     // On another EVM chain than Injective's: its coin and its USDC have their own keys.
     const here = chainByCaip2(network, d.chain);
     const away = here?.kind === "evm" ? here : undefined;
@@ -160,20 +148,12 @@ export function shown(display: SendReview["display"], network: NetworkId, swap?:
       const c = d.call;
       const usdc = key(c.token, "from");
       const at = (amount: string) => ({ denom: usdc, amount });
-      // Into Injective from another chain, minted there by anyone or by Choice's contract.
-      if (c.domain === INJECTIVE_DOMAIN && d.chain !== net.evm && (c.delivery === "claim" || c.delivery === "gas_drop") && c.recipient) {
-        return {
-          ...base,
-          sends: [],
-          others: [],
-          bridgesIn: [{ coin: at(c.amount), maxFee: at(c.max_fee), chain: d.network.name, recipient: c.recipient, delivery: c.delivery === "claim" ? "anyone" : "gas_drop", dropFee: c.max_drop_fee === null ? null : at(c.max_drop_fee), least: at(c.least) }],
-        };
-      }
+      const delivery = c.delivery === "claim" ? "anyone" : c.delivery;
       return {
         ...base,
         sends: [],
         others: [],
-        bridges: [{ coin: at(c.amount), maxFee: at(c.max_fee), chain: c.chain, recipient: c.recipient, owner: c.account_owner, delivery: c.delivery === "gas_drop" ? "hook" : c.delivery, caller: c.destination_caller }],
+        bridges: [{ coin: at(c.amount), maxFee: at(c.max_fee), from: d.network.name, chain: c.chain, recipient: c.recipient, owner: c.account_owner, delivery, caller: delivery === "gas_drop" ? null : c.destination_caller, dropFee: c.max_drop_fee === null ? null : at(c.max_drop_fee), least: at(c.least) }],
       };
     }
     if (d.call.type === "bridge_receive") {
@@ -200,7 +180,7 @@ export function shown(display: SendReview["display"], network: NetworkId, swap?:
     return { ...base, sends: [], others: [`Contract call to ${d.to}`] };
   }
   const c = display as CosmosDisplay;
-  const out: Shown = { sends: [], nfts: [], moves: [], swaps: [], bridges: [], bridgesIn: [], mints: [], approvals: [], converts: [], stakes: [], revokes: [], others: [], fee: c.fee.amount, memo: c.memo, evm: false };
+  const out: Shown = { sends: [], nfts: [], moves: [], swaps: [], bridges: [], mints: [], approvals: [], converts: [], stakes: [], revokes: [], others: [], fee: c.fee.amount, memo: c.memo, evm: false };
   for (const msg of c.messages) {
     const m = msg as Record<string, unknown>;
     const kind = STAKE_KINDS[String(m["type"])];
@@ -288,7 +268,7 @@ const short = (a: string) => (a.length > 12 ? `${a.slice(0, 4)}…${a.slice(-4)}
  *  the wallet whose account it is, when the vault could tell), approvals, a CCTP burn to
  *  Injective, and one line for anything else. Compute budget instructions are its fee. */
 function solanaShown(d: SolanaDisplay, cluster: string): Shown {
-  const out: Shown = { sends: [], nfts: [], moves: [], swaps: [], bridges: [], bridgesIn: [], mints: [], approvals: [], converts: [], stakes: [], revokes: [], others: [], fee: [{ denom: "sol", amount: d.fee.total }], memo: "", evm: false };
+  const out: Shown = { sends: [], nfts: [], moves: [], swaps: [], bridges: [], mints: [], approvals: [], converts: [], stakes: [], revokes: [], others: [], fee: [{ denom: "sol", amount: d.fee.total }], memo: "", evm: false };
   for (const s of d.instructions) {
     const name = s.program_name ?? short(s.program);
     switch (s.type) {
@@ -308,15 +288,23 @@ function solanaShown(d: SolanaDisplay, cluster: string): Shown {
       case "token_approve":
         out.approvals.push({ token: s.mint ? `spl:${s.mint}` : s.source, spender: s.delegate, amount: s.amount, via: "token" });
         break;
-      case "bridge":
-        if (s.chain === "Injective" && (s.delivery === "anyone" || s.delivery === "gas_drop") && s.recipient) {
-          const usdc = `spl:${s.token}`;
-          const at = (amount: string) => ({ denom: usdc, amount });
-          out.bridgesIn.push({ coin: at(s.amount), maxFee: at(s.max_fee), chain: cluster, recipient: s.recipient, delivery: s.delivery, dropFee: s.max_drop_fee === null ? null : at(s.max_drop_fee), least: at(s.least) });
-        } else {
-          out.others.push(`Bridges USDC to ${s.chain ?? `CCTP domain ${s.domain}`}`);
-        }
+      case "bridge": {
+        const usdc = `spl:${s.token}`;
+        const at = (amount: string) => ({ denom: usdc, amount });
+        out.bridges.push({
+          coin: at(s.amount),
+          maxFee: at(s.max_fee),
+          from: cluster,
+          chain: s.chain,
+          recipient: s.recipient,
+          owner: null,
+          delivery: s.delivery === "caller" ? "hook" : s.delivery,
+          caller: null,
+          dropFee: s.max_drop_fee === null ? null : at(s.max_drop_fee),
+          least: at(s.least),
+        });
         break;
+      }
       case "bridge_reclaim":
         out.others.push("Takes back the rent of a finished bridge transfer's record");
         break;

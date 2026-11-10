@@ -213,8 +213,8 @@ export function createSolana(d: SolanaDeps) {
       tokenAccounts?: Record<string, { owner: string; mint: string }>;
       tokens: Record<string, TokenInfo>;
       cosigner?: Uint8Array;
-      /** A deposit into Injective: followed once broadcast. */
-      deposit?: { amount: string; account: string; event: string; owner: string };
+      /** A bridge burn: followed once broadcast. */
+      deposit?: { to: string; amount: string; account: string; recipient: string; event: string; owner: string };
       extra?: Partial<SendReview>;
       /** Holds the vault's reading to what was asked; a message why not. */
       expect?: (display: Record<string, unknown>) => string | null;
