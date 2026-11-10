@@ -204,6 +204,24 @@ try {
     const ok = await evalIn(`(() => { const t = ${JSON.stringify(t)}; const b = [...document.querySelectorAll("button")].find((b) => (b.textContent.trim() === t || b.getAttribute("aria-label") === t) && !b.disabled); if (b) b.click(); return !!b; })()`);
     if (!ok) throw new Error(`no enabled button "${t}"`);
   };
+  /** Out of any screen opened over the tabs (Settings, a picker), onto the Wallet tab's Tokens
+   *  pane. */
+  const toWallet = async () => {
+    for (let i = 0; i < 4; i++) {
+      const backed = await evalIn(`(() => { const b = [...document.querySelectorAll("button")].find((b) => b.getAttribute("aria-label") === "Back" && !b.disabled); if (b) b.click(); return !!b; })()`);
+      if (!backed) break;
+      await sleep(200);
+    }
+    await toWallet();
+    await sleep(200);
+    await click("Tokens");
+  };
+  /** Settings: the gear on the Wallet tab's top bar. */
+  const settings = async () => {
+    await toWallet();
+    await sleep(200);
+    await settings();
+  };
   const fill = (selector, index, value) =>
     evalIn(`(() => { const el = document.querySelectorAll(${JSON.stringify(selector)})[${index}];
       const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
@@ -225,6 +243,13 @@ try {
     const tx = (await lcd(`/cosmos/tx/v1beta1/txs/${hash}`)).tx_response;
     if (tx.code !== 0) throw new Error(`tx failed: ${tx.raw_log}`);
     return { tx, fee: BigInt(tx.tx.auth_info.fee.amount.find((c) => c.denom === "inj").amount) };
+  };
+  /** Solana's Home, its SOL row drawn. */
+  const waitSol = async () => {
+    for (let n = 0; !(await evalIn(`!!document.querySelector('.token[title="sol"]')`)); n += 300) {
+      if (n > 30000) throw new Error(`Solana's Home didn't show SOL: ${await text()}`);
+      await sleep(300);
+    }
   };
   const openToken = (denom) => evalIn(`[...document.querySelectorAll(".token")].find((t) => t.title === ${JSON.stringify(denom)}).click()`);
   const shot = async (name) => {
@@ -406,7 +431,7 @@ try {
     await pick(name);
     console.log(`watching ${name} ${me} and ${otherName} ${second}`);
 
-    await click("Settings");
+    await settings();
     await waitText("All accounts");
     await click("All accounts");
     await click("Save");
@@ -450,6 +475,7 @@ try {
     await click("Confirm and send");
     const hash = await landed();
     await click("Done");
+    await toWallet();
     await waitText("Manage", 20000);
     if ((await injOf(second)) - was !== sent) throw new Error("the second account didn't get the amount");
     const notes = () => inSw(`globalThis.__notes`);
@@ -502,6 +528,7 @@ try {
       await click("Confirm and send");
       const h = await landed();
       await click("Done");
+      await toWallet();
       await waitText("Manage", 20000);
       for (let n = 0; !(await notes()).some((x) => x.id === `testnet|${h}|${me}`); n += 500) {
         if (n > 30000) throw new Error(`no notification for the ${symbol} send: ${JSON.stringify(await notes())}`);
@@ -528,11 +555,11 @@ try {
     const near = (a, b) => (a > b ? a - b : b - a) <= 1000n; // share rounding
     const openStaking = async () => {
       for (let n = 0; n < 30000; n += 300) {
-        const ok = await evalIn(`(() => { const b = [...document.querySelectorAll("button.quick-action")].find((t) => t.textContent.trim() === "Stake"); if (b) b.click(); return !!b; })()`);
+        const ok = await evalIn(`(() => { const b = [...document.querySelectorAll("nav.tabbar button")].find((t) => t.textContent.trim() === "Stake"); if (b) b.click(); return !!b; })()`);
         if (ok) return waitText("Unstaking takes");
         await sleep(300);
       }
-      throw new Error("no Stake button on the home screen");
+      throw new Error("no Stake tab");
     };
     /** Click the first element matching `selector` once it shows (the summary refreshes). */
     const clickWhen = async (selector) => {
@@ -552,8 +579,9 @@ try {
       await click("Confirm");
       const hash = await landed();
       const { tx } = await cosmosTx(hash);
+      // Done goes back to the Stake tab.
       await click("Done");
-      await waitText("Manage", 20000);
+      await waitText("Unstaking takes", 20000);
       return { hash, msgs: tx.tx.body.messages };
     };
 
@@ -629,10 +657,11 @@ try {
       console.log("claimed", claimed.hash, `from ${claimed.msgs.length} validator(s)`);
     } else {
       console.log("no rewards to claim yet");
-      await click("Back");
     }
 
     // Activity, from testnet's endpoints: the staking rows, by validator name.
+    await toWallet();
+    await sleep(200);
     await click("Activity");
     let rows = [];
     for (let t = 0; t < 30000 && rows.length < 4; t += 500) {
@@ -680,7 +709,7 @@ try {
 
       // The Approvals screen, in the popup.
       const openApprovals = async () => {
-        await click("Settings");
+        await settings();
         await waitText("Approvals and grants");
         await click("Approvals and grants");
         for (let n = 0; n < 60000; n += 300) {
@@ -712,6 +741,7 @@ try {
       if ((await feesOf()).some((g) => g.grantee === KEYLESS)) throw new Error("the fee allowance is still there");
       if ((await rewardsTo()) !== from) throw new Error("rewards still go elsewhere");
       await click("Done");
+      await toWallet();
       await waitText("Manage", 20000);
 
       // Each ERC20 allowance on its own.
@@ -728,6 +758,7 @@ try {
         await click("Confirm");
         const h = await landed();
         await click("Done");
+        await toWallet();
         await waitText("Manage", 20000);
         const after = await allowanceOf(contract, spender);
         console.log("revoked", token, contract, "allowance of", spender, `${before} -> ${after}`, h);
@@ -748,7 +779,7 @@ try {
     // without the memo it is red and nothing is sent; with it, the chain has the memo.
     const to = recipient !== "-" ? recipient : "inj1g3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyfc6zmu";
     const MEMO = "choice-wallet-live-memo";
-    await click("Settings");
+    await settings();
     await click("Address book");
     await waitText("Add contact");
     await click("Add contact");
@@ -759,7 +790,7 @@ try {
     await waitText(`memo ${MEMO}`);
     await shot("live-c1-address-book");
     await click("Back");
-    await click("Wallet");
+    await toWallet();
     await waitText("Manage", 20000);
     const send = async (memo) => {
       await click("Send");
@@ -805,7 +836,7 @@ try {
     // listed and moved back to the balance, checked on chain. Put some in first (a dev
     // script's MsgDeposit to trading account 1). `recipient` and `amount` are ignored.
     const me = await evalIn(`document.querySelector("[aria-label='Copy address']").title`);
-    await evalIn(`[...document.querySelectorAll("button.token")].find((b) => b.textContent.includes("Trading and liquidity")).click()`);
+    await click("Trading");
     await waitText("Trading account", 60000);
     await shot("live-i1-inventory");
     const sub = await evalIn(`[...document.querySelectorAll(".well .mono")].map((e) => e.title).find((t) => /^0x[0-9a-f]{64}$/.test(t)) ?? ""`);
@@ -860,13 +891,14 @@ try {
     await click("Confirm and send");
     await landed();
     await click("Done");
+    await toWallet();
     await waitText("Manage", 20000);
     }
     const injLeft = await injOf(me);
     console.log(`after "the theft": ${injLeft} inj left`);
 
     // The rescue address, and gas from it.
-    await click("Settings");
+    await settings();
     await click("Rescue address");
     await waitText("If this account's key is ever lost or stolen");
     await evalIn(`[...document.querySelectorAll("button.token")].find((b) => b.textContent.includes(${JSON.stringify(rescuerName)})).click()`);
@@ -897,7 +929,7 @@ try {
       rescuerStake: (await lcd(`/cosmos/staking/v1beta1/delegations/${rescuer}`)).delegation_responses ?? [],
     };
     console.log(`to rescue: stakes ${JSON.stringify(before.stake.map((d) => d.balance.amount))}, bank ${JSON.stringify(before.bank.map((c) => `${c.amount} ${c.denom.slice(0, 20)}`))}`);
-    await click("Settings");
+    await settings();
     await click("Rescue address");
     await waitText("Rescue now", 20000);
     await click("Rescue now");
@@ -952,7 +984,7 @@ try {
     const to = recipient !== "-" ? recipient : "inj1g3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyfc6zmu";
     const to0x = `0x${Buffer.from(bech32Words(to)).toString("hex")}`;
     const openNfts = async () => {
-      await click("Wallet");
+      await toWallet();
       await waitText("Manage", 20000);
       await evalIn(`[...document.querySelectorAll("button.token")].find((b) => b.textContent.includes("CW721 and ERC721")).click()`);
       // Collection names sit in upper-cased labels: look in the text, not as rendered.
@@ -1199,15 +1231,17 @@ try {
         await sleep(500);
       }
       await click("Done");
+      await toWallet();
       await waitText("Manage", 20000);
-      await click("Wallet");
+      await toWallet();
     }
     const before = { inj: await balanceOf(USDC_T, me), base: await baseSepolia(me) };
     console.log(`USDC on Injective testnet ${before.inj}; on Base Sepolia ${before.base}`);
     if (before.inj < amountIn) throw new Error("not enough testnet USDC to bridge");
 
+    await toWallet();
+    await click("Bridge");
     await waitText("Bridge USDC", 20000);
-    await evalIn(`[...document.querySelectorAll(".token")].find((b) => b.querySelector(".symbol")?.textContent === "Bridge USDC").click()`);
     await waitText("Balance", 20000);
     // The chain button wakes once the chains are read.
     for (let n = 0; !(await evalIn(`!document.querySelector('[aria-label="Choose the chain"]').disabled`)); n += 300) {
@@ -1272,8 +1306,9 @@ try {
     console.log(`USDC on Base Sepolia ${before.base}; on Injective testnet ${before.inj}`);
     if (before.base < amountIn) throw new Error("not enough USDC on Base Sepolia to bridge in");
 
+    await toWallet();
+    await click("Bridge");
     await waitText("Bridge USDC", 20000);
-    await evalIn(`[...document.querySelectorAll(".token")].find((b) => b.querySelector(".symbol")?.textContent === "Bridge USDC").click()`);
     for (let n = 0; !(await evalIn(`!document.querySelector('[aria-label="Choose where it comes from"]').disabled`)); n += 300) {
       if (n > 30000) throw new Error(`the chains didn't load: ${await text()}`);
       await sleep(300);
@@ -1368,14 +1403,14 @@ try {
     const before = await both();
     console.log(`USDC on Base Sepolia ${before.base}; on Arbitrum Sepolia ${before.arb}`);
     if (before.base < amountIn) throw new Error("not enough USDC on Base Sepolia");
-    // Base Sepolia, from the chain sheet.
-    await waitText("Bridge USDC", 20000);
+    // Base Sepolia, from the chain sheet; the Bridge tab then starts there.
+    await waitText("Manage", 20000);
     await evalIn(`document.querySelector(".chain-pill").click()`);
     await waitText("Base Sepolia");
     await evalIn(`[...document.querySelectorAll(".chain-row")].find((b) => b.querySelector(".symbol")?.textContent === "Base Sepolia").click()`);
-    await waitText("USDC to another chain", 20000);
+    await waitText("Gas on Base Sepolia", 20000);
     await shot("live-x2-home-base");
-    await evalIn(`[...document.querySelectorAll(".token")].find((b) => b.querySelector(".symbol")?.textContent === "USDC to another chain").click()`);
+    await click("Bridge");
     for (let n = 0; !(await evalIn(`!document.querySelector('[aria-label="Choose the chain"]').disabled`)); n += 300) {
       if (n > 30000) throw new Error(`the chains didn't load: ${await text()}`);
       await sleep(300);
@@ -1437,7 +1472,7 @@ try {
     await sleep(1500); // each chain's total
     await shot("live-sol0-chains");
     await evalIn(`document.querySelectorAll(".chain-row")[1].click()`);
-    await waitText("USDC to Injective", 30000);
+    await waitSol();
     await sleep(1500);
     await shot("live-sol1-home");
     await click("Receive");
@@ -1447,7 +1482,7 @@ try {
     console.log("Solana address", me);
     await shot("live-sol2-receive");
     await click("Back");
-    await waitText("USDC to Injective", 20000);
+    await waitSol();
     const lamports = BigInt(Math.round(Number(amount) * 1e9));
     const before = { me: BigInt((await sol("getBalance", [me])).value), to: BigInt((await sol("getBalance", [recipient])).value) };
     await openToken("sol");

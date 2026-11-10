@@ -54,6 +54,29 @@ export function Segmented<T extends string>({
   );
 }
 
+/** Tabs within a screen, as a row of pills: which part of it shows below them. */
+export function PillTabs<T extends string>({
+  options,
+  value,
+  onChange,
+  label,
+}: {
+  options: readonly (readonly [T, string])[];
+  value: T;
+  onChange: (v: T) => void;
+  label: string;
+}) {
+  return (
+    <div className="pill-tabs" role="tablist" aria-label={label}>
+      {options.map(([v, text]) => (
+        <button key={v} type="button" role="tab" aria-selected={v === value} className={v === value ? "pill pill-gold" : "pill"} onClick={() => onChange(v)}>
+          {text}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 /** An on/off setting that takes effect at once. */
 export function Switch({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
   return (

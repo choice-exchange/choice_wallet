@@ -190,6 +190,10 @@ button:disabled { cursor: not-allowed; }
 }
 button.pill:hover { color: var(--text); border-color: #2a2b33; }
 .pill-gold { color: var(--gold); background: rgba(253, 199, 12, 0.1); border-color: rgba(253, 199, 12, 0.3); }
+.pill-tabs { display: flex; gap: 6px; margin: 16px 0 2px; overflow-x: auto; scrollbar-width: none; }
+.pill-tabs::-webkit-scrollbar { display: none; }
+.pill-tabs .pill { height: 32px; padding: 0 6px; font-size: 13px; flex: 1 1 0; justify-content: center; min-width: 0; }
+.pane-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 4px; }
 .dot { width: 7px; height: 7px; border-radius: 99px; background: var(--positive); box-shadow: 0 0 8px rgba(52, 211, 153, 0.5); }
 .dot.testnet { background: var(--warning); box-shadow: 0 0 8px rgba(251, 191, 36, 0.5); }
 

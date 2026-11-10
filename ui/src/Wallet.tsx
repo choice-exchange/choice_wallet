@@ -10,15 +10,15 @@ import { ApprovalsView } from "./Approvals";
 import { BridgeView, newBridgeDraft, type BridgeDraft } from "./Bridge";
 import { ChainPill, ChainSheet, chainName, type ChainRow } from "./Chains";
 import { ContactsView, type Draft } from "./Contacts";
-import { ActivityView } from "./Activity";
+import { ActivityPane } from "./Activity";
 import { merge, type ActivityState } from "./activityState";
 import { Kept, KeptContext } from "./kept";
 import { useBackend } from "./backend";
 import { chainTotal, EvmHome, holdsLine, InjectiveHome, SolanaHome, solanaTotal } from "./Home";
-import { ActivityIcon, CheckIcon, ChevronDownIcon, CopyIcon, LockIcon, SettingsIcon, SwapIcon, WalletIcon } from "./icons";
-import { formatUsd, Screen, shortAddress } from "./kit";
+import { CheckIcon, ChevronDownIcon, CopyIcon, GlobeIcon, SettingsIcon, StakeIcon, SwapIcon, WalletIcon } from "./icons";
+import { formatUsd, PillTabs, Screen, shortAddress } from "./kit";
 import { NftsView, NftView } from "./Nfts";
-import { InventoryScreen } from "./Inventory";
+import { LiquidityPane, TradingPane } from "./Inventory";
 import { RescueView } from "./Rescue";
 import type { ActivityPage, Balance, ChainHoldings, ChainView, NetworkId, Nft, NftCollection, Replies, SendReview, Sent, StakingSummary, Status, TokenFilter } from "./protocol";
 import { newDraft, SwapView, type SwapDraft } from "./Swap";
@@ -33,7 +33,9 @@ import { applyFilter, DEFAULT_FILTER } from "./tokenFilter";
 import { TokenMark } from "./TokenMark";
 import { TokensView } from "./Tokens";
 
-type Tab = "wallet" | "swap" | "activity" | "settings";
+type Tab = "wallet" | "swap" | "bridge" | "stake";
+/** The Wallet tab's panes, under its pills: Trading and Liquidity are Injective's. */
+type Pane = "tokens" | "trading" | "liquidity" | "activity";
 
 /** A flow opened over the tabs; "home" is the tabs themselves. */
 type View =
@@ -43,13 +45,11 @@ type View =
   | { name: "token"; denom: string }
   | { name: "send"; denom?: string }
   | { name: "convert"; denom: string }
-  | { name: "review"; review: SendReview; entered: string; back: View; validators?: Record<string, string>; rewards?: Record<string, string>; quote?: string; bridgeQuote?: string }
+  | { name: "review"; review: SendReview; entered: string; back: View; validators?: Record<string, string>; rewards?: Record<string, string>; quote?: string; bridgeQuote?: string; done?: string }
   | { name: "sent"; sent: Sent; converting: boolean; done?: string; save?: Draft; next?: string; nextBridge?: string; bridge?: { from: string; to: string; waitMs: number } }
-  | { name: "bridge" }
-  | { name: "staking" }
+  | { name: "settings" }
   | { name: "approvals" }
   | { name: "rescue" }
-  | { name: "inventory" }
   | { name: "contacts"; prefill?: Draft }
   | { name: "nfts" }
   | { name: "nft"; collection: NftCollection; nft: Nft }
@@ -63,8 +63,8 @@ const REFRESH_MS = 15_000;
 const TABS: readonly (readonly [Tab, string, typeof WalletIcon])[] = [
   ["wallet", "Wallet", WalletIcon],
   ["swap", "Swap", SwapIcon],
-  ["activity", "Activity", ActivityIcon],
-  ["settings", "Settings", SettingsIcon],
+  ["bridge", "Bridge", GlobeIcon],
+  ["stake", "Stake", StakeIcon],
 ];
 
 function TabBar({ tab, onTab }: { tab: Tab; onTab: (t: Tab) => void }) {
@@ -83,6 +83,7 @@ function TabBar({ tab, onTab }: { tab: Tab; onTab: (t: Tab) => void }) {
 export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: () => void; onStatus: (s?: Status) => void }) {
   const backend = useBackend();
   const [tab, setTab] = useState<Tab>("wallet");
+  const [pane, setPane] = useState<Pane>("tokens");
   const [view, setView] = useState<View>({ name: "home" });
   const [balances, setBalances] = useState<Balance[] | null>(null);
   const [filter, setFilter] = useState<TokenFilter>(DEFAULT_FILTER);
@@ -207,9 +208,9 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
     };
   }, [view.name, tab, refresh, status.network, address]);
 
+  /** Back to the tabs, on the one in use: a flow started from Stake ends on Stake. */
   const home = () => {
     setRefresh((n) => n + 1);
-    setTab("wallet");
     setView({ name: "home" });
   };
   const tabs = (
@@ -217,6 +218,9 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
       tab={tab}
       onTab={(t) => {
         if (t === "wallet" && tab !== "wallet") setRefresh((n) => n + 1);
+        // A bridge not started yet goes from the chain on screen, as each chain's Bridge
+        // button did.
+        if (t === "bridge" && tab !== "bridge" && !bridgeDraft.amount) openBridge(chain);
         setTab(t);
       }}
     />
@@ -322,29 +326,32 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
   async function nextBridgeStep(quote: string) {
     const r = await backend.send({ type: "prepare_bridge", quote });
     if (r.ok) {
-      setView({ name: "review", review: r.result, entered: "", back: { name: "bridge" }, bridgeQuote: quote });
+      setView({ name: "review", review: r.result, entered: "", back: { name: "home" }, bridgeQuote: quote });
       return;
     }
     setBridgeNote(r.error.message);
-    setView({ name: "bridge" });
+    setTab("bridge");
+    setView({ name: "home" });
   }
 
   /** Mint a transfer on its destination from this account, when nobody has. */
   async function finishBridge(from: string, hash: string) {
     const r = await backend.send({ type: "prepare_bridge_receive", from, hash });
     if (r.ok) {
-      setView({ name: "review", review: r.result, entered: "", back: { name: "bridge" } });
+      setView({ name: "review", review: r.result, entered: "", back: { name: "home" } });
       return;
     }
     setBridgeNote(r.error.message);
-    setView({ name: "bridge" });
+    setTab("bridge");
+    setView({ name: "home" });
   }
 
   /** The bridge form, from `from` (empty: wherever the USDC is), to Injective unless that's
    *  where it starts. */
   function openBridge(from: string) {
     setBridgeDraft((d) => ({ ...d, from, to: d.to && d.to !== from ? d.to : from === "injective" ? "" : "injective" }));
-    setView({ name: "bridge" });
+    setTab("bridge");
+    setView({ name: "home" });
   }
 
   return <KeptContext.Provider value={kept}>{screen()}</KeptContext.Provider>;
@@ -418,21 +425,26 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
           />
         );
       }
-      case "staking":
+      case "settings":
         return (
-          <StakingView
-            initial={staking}
-            canSign={!watch}
-            onReview={(review, validators, rewards) => setView({ name: "review", review, entered: "", back: { name: "staking" }, validators, rewards })}
+          <SettingsView
+            status={status}
+            onStatus={(s) => onStatus(s)}
+            onLock={onLock}
+            onApprovals={() => setView({ name: "approvals" })}
+            onRescue={() => setView({ name: "rescue" })}
+            onContacts={() => setView({ name: "contacts" })}
             onBack={home}
+            onDone={() => {
+              onStatus();
+              home();
+            }}
           />
         );
-      case "inventory":
-        return <InventoryScreen canSign={!watch} onReview={(review) => setView({ name: "review", review, entered: "", back: { name: "inventory" } })} onBack={() => setView({ name: "home" })} />;
       case "rescue":
-        return <RescueView status={status} onReview={(review) => setView({ name: "review", review, entered: "", back: { name: "rescue" } })} onBack={() => setView({ name: "home" })} />;
+        return <RescueView status={status} onReview={(review) => setView({ name: "review", review, entered: "", back: { name: "rescue" }, done: "Confirmed" })} onBack={() => setView({ name: "settings" })} />;
       case "approvals":
-        return <ApprovalsView canSign={!watch} onReview={(review) => setView({ name: "review", review, entered: "", back: { name: "approvals" } })} onBack={() => setView({ name: "home" })} />;
+        return <ApprovalsView canSign={!watch} onReview={(review) => setView({ name: "review", review, entered: "", back: { name: "approvals" }, done: "Confirmed" })} onBack={() => setView({ name: "settings" })} />;
       case "review":
         return (
           <Review
@@ -458,7 +470,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
                 name: "sent",
                 sent,
                 converting: back.name === "convert",
-                ...(back.name === "staking" || back.name === "approvals" || back.name === "rescue" || back.name === "inventory" ? { done: "Confirmed" } : {}),
+                ...(view.done ? { done: view.done } : {}),
                 ...(step ? { done: step.step === "swap" ? "Swapped" : "Approved" } : {}),
                 ...(step && step.left > 0 && view.quote ? { next: view.quote } : {}),
                 ...(crossing?.step === "approve" ? { done: "Approved", ...(view.bridgeQuote ? { nextBridge: view.bridgeQuote } : {}) } : {}),
@@ -488,23 +500,6 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
         );
       case "contacts":
         return <ContactsView prefill={view.prefill} onBack={home} />;
-      case "bridge":
-        return (
-          <BridgeView
-            key={`${address} ${status.network}`}
-            network={status.network}
-            canSign={!watch}
-            draft={bridgeDraft}
-            onDraft={setBridgeDraft}
-            note={bridgeNote}
-            onReview={(review, quote) => {
-              setBridgeNote(null);
-              setView({ name: "review", review, entered: "", back: { name: "bridge" }, ...(quote ? { bridgeQuote: quote } : {}) });
-            }}
-            onFinish={(from, hash) => void finishBridge(from, hash)}
-            onBack={home}
-          />
-        );
       case "add_chain":
         return (
           <AddChainView
@@ -513,6 +508,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
               onStatus(s);
               void pickChain(key, network).then(() => {
                 setPicking(false);
+                setTab("wallet");
                 setView({ name: "home" });
               });
             }}
@@ -533,12 +529,35 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
           />
         );
       case "home": {
-        if (tab === "activity") {
-          // This session's, or else the copy saved on disk (shown, then read again).
-          const kept = activity.current ?? (savedActivity ? merge(null, savedActivity, 1, 0) : null);
-          if (chain === "solana") return <ActivityView key={`${address} solana`} network={status.network} chain="solana" tabs={tabs} />;
-          if (evmChain) return <ActivityView key={`${address} ${evmChain.key}`} network={status.network} chain={evmChain.key} tabs={tabs} />;
-          return <ActivityView key={address} network={status.network} chain="injective" tabs={tabs} kept={kept} onKeep={(s) => (activity.current = s)} />;
+        if (tab === "bridge") {
+          return (
+            <BridgeView
+              key={`${address} ${status.network}`}
+              network={status.network}
+              canSign={!watch}
+              draft={bridgeDraft}
+              onDraft={setBridgeDraft}
+              note={bridgeNote}
+              onReview={(review, quote) => {
+                setBridgeNote(null);
+                setView({ name: "review", review, entered: "", back: { name: "home" }, ...(quote ? { bridgeQuote: quote } : {}) });
+              }}
+              onFinish={(from, hash) => void finishBridge(from, hash)}
+              tabs={tabs}
+            />
+          );
+        }
+        if (tab === "stake") {
+          return (
+            <StakingView
+              key={`${address} ${status.network}`}
+              initial={staking}
+              canSign={!watch}
+              onReview={(review, validators, rewards) => setView({ name: "review", review, entered: "", back: { name: "home" }, validators, rewards, done: "Confirmed" })}
+              tabs={tabs}
+              head={null}
+            />
+          );
         }
         if (tab === "swap" && chain !== "injective") {
           return (
@@ -576,23 +595,42 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
             />
           );
         }
-        if (tab === "settings") {
-          return (
-            <SettingsView
-              status={status}
-              onStatus={(s) => onStatus(s)}
-              tabs={tabs}
-              onLock={onLock}
-              onApprovals={() => setView({ name: "approvals" })}
-              onRescue={() => setView({ name: "rescue" })}
-              onContacts={() => setView({ name: "contacts" })}
-              onDone={() => {
-                onStatus();
-                home();
-              }}
-            />
-          );
-        }
+        // The Wallet tab: the chain's figure, Send and Receive, and its panes under pills.
+        const panes: readonly (readonly [Pane, string])[] =
+          chain === "injective"
+            ? [
+                ["tokens", "Tokens"],
+                ["trading", "Trading"],
+                ["liquidity", "Liquidity"],
+                ["activity", "Activity"],
+              ]
+            : [
+                ["tokens", "Tokens"],
+                ["activity", "Activity"],
+              ];
+        const shownPane: Pane = panes.some(([p]) => p === pane) ? pane : "tokens";
+        const pills = <PillTabs label="Wallet" options={panes} value={shownPane} onChange={setPane} />;
+        const paneBody =
+          shownPane === "activity" ? (
+            chain === "solana" ? (
+              <ActivityPane key={`${address} solana`} network={status.network} chain="solana" />
+            ) : evmChain ? (
+              <ActivityPane key={`${address} ${evmChain.key}`} network={status.network} chain={evmChain.key} />
+            ) : (
+              // This session's, or else the copy saved on disk (shown, then read again).
+              <ActivityPane
+                key={address}
+                network={status.network}
+                chain="injective"
+                kept={activity.current ?? (savedActivity ? merge(null, savedActivity, 1, 0) : null)}
+                onKeep={(s) => (activity.current = s)}
+              />
+            )
+          ) : shownPane === "trading" ? (
+            <TradingPane canSign={!watch} onReview={(review) => setView({ name: "review", review, entered: "", back: { name: "home" }, done: "Confirmed" })} />
+          ) : shownPane === "liquidity" ? (
+            <LiquidityPane />
+          ) : null;
         const openAccounts = () => setView({ name: "accounts" });
         return (
           <Screen
@@ -613,8 +651,9 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
                   <CopyAddress address={chain !== "injective" ? (account?.addresses[picked?.caip2 ?? ""] ?? address) : address} />
                 </div>
                 <ChainPill chain={chain} network={status.network} onClick={() => setPicking(true)} />
-                <button className="icon-btn" aria-label="Lock" onClick={onLock}>
-                  <LockIcon />
+                {/* Lock is in Settings ("Lock now"), and the wallet locks itself when idle. */}
+                <button className="icon-btn" aria-label="Settings" onClick={() => setView({ name: "settings" })}>
+                  <SettingsIcon />
                 </button>
               </>
             }
@@ -645,6 +684,8 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
                 onSend={(denom) => setView({ name: "send", ...(denom ? { denom } : {}) })}
                 onReceive={() => setView({ name: "receive" })}
                 onBridge={() => openBridge("solana")}
+                pills={pills}
+                pane={paneBody}
               />
             ) : evmChain ? (
               <EvmHome
@@ -654,7 +695,8 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
                 watch={watch}
                 onSend={(denom) => setView({ name: "send", ...(denom ? { denom } : {}) })}
                 onReceive={() => setView({ name: "receive" })}
-                onBridge={() => openBridge(evmChain.key)}
+                pills={pills}
+                pane={paneBody}
               />
             ) : (
               <InjectiveHome
@@ -671,13 +713,12 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
                 evmDown={evmDown}
                 onSend={() => setView({ name: "send" })}
                 onReceive={() => setView({ name: "receive" })}
-                onSwap={() => setTab("swap")}
-                onStake={() => setView({ name: "staking" })}
+                onStake={() => setTab("stake")}
                 onTokens={() => setView({ name: "tokens" })}
                 onToken={(denom) => setView({ name: "token", denom })}
-                onBridge={() => openBridge("injective")}
-                onInventory={() => setView({ name: "inventory" })}
                 onNfts={() => setView({ name: "nfts" })}
+                pills={pills}
+                pane={paneBody}
               />
             )}
           </Screen>

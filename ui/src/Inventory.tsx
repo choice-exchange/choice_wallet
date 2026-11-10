@@ -1,10 +1,11 @@
-// Trading and liquidity: what the account holds beyond its balance. INJ orderbook trading
-// accounts (their free coins move back to the balance from here), Choice XYK shares and
-// CLMM positions, each read from the chain. Liquidity is shown, not managed: adding and
-// removing it happens on Choice.
+// Trading and Liquidity, two of the Wallet tab's panes: what the account holds beyond its
+// balance. INJ orderbook trading accounts with their positions (their free coins move back to
+// the balance from here), and Choice XYK shares and CLMM positions, each read from the chain.
+// Liquidity is shown, not managed: adding and removing it happens on Choice.
 
 import { formatShort, shortDenom } from "@choice-wallet/chain";
-import { BackBar, Callout, Screen, shortAddress } from "./kit";
+
+import { Callout, shortAddress } from "./kit";
 import { useKept } from "./kept";
 import type { SendReview, TokenInfo } from "./protocol";
 import { useRequest } from "./request";
@@ -14,7 +15,11 @@ function amount(tokens: Record<string, TokenInfo>, denom: string, base: string):
   return t ? `${formatShort(base, t.decimals, 6)} ${t.symbol}` : `${base} ${shortDenom(denom)}`;
 }
 
-export function InventoryScreen({ canSign, onReview, onBack }: { canSign: boolean; onReview: (r: SendReview) => void; onBack: () => void }) {
+const skeleton = [0, 1].map((i) => <div key={i} className="skeleton" style={{ height: 64 }} />);
+
+/** The account's INJ orderbook trading accounts: what each holds, what backs open orders, and
+ *  its positions. */
+export function TradingPane({ canSign, onReview }: { canSign: boolean; onReview: (r: SendReview) => void }) {
   const { run, error, busy } = useRequest();
   const { value: inv, error: problem } = useKept({ type: "inventory" });
 
@@ -24,60 +29,60 @@ export function InventoryScreen({ canSign, onReview, onBack }: { canSign: boolea
   }
 
   const t = inv?.tokens ?? {};
-  const empty = inv && inv.subaccounts.length === 0 && inv.xyk.length === 0 && inv.clmm.length === 0;
   return (
-    <Screen top={<BackBar title="Trading and liquidity" onBack={onBack} />}>
+    <>
       {problem && <Callout level="amber">{problem}</Callout>}
       {error && <Callout level="red">{error}</Callout>}
-      {!inv && !problem && <p className="meta">Looking on chain…</p>}
-      {empty && <p className="empty">Nothing in trading accounts or Choice liquidity.</p>}
-
-      {inv && inv.subaccounts.length > 0 && (
-        <>
-          <div className="section-head">
-            <span className="eyebrow">Trading accounts</span>
-            <span className="meta">INJ orderbook</span>
-          </div>
-          {inv.subaccounts.map((s) => {
-            const free = s.deposits.some((d) => BigInt(d.available) > 0n);
-            return (
-              <div key={s.id} className="well rows">
-                <div className="row">
-                  <span className="symbol">{s.nonce === 0 ? "Default trading account" : `Trading account ${s.nonce}`}</span>
-                  <span className="meta mono" title={s.id}>
-                    {shortAddress(s.id)}
-                  </span>
-                </div>
-                {s.deposits.map((d) => (
-                  <div className="row" key={d.denom}>
-                    <span>{amount(t, d.denom, d.total)}</span>
-                    <span className="meta">{d.available === d.total ? "free" : `${amount(t, d.denom, d.available)} free`}</span>
-                  </div>
-                ))}
-                {s.positions.map((p) => (
-                  <div className="row" key={p.marketId}>
-                    <span>
-                      {p.long ? "Long" : "Short"} {p.quantity.replace(/\.?0+$/, "")} · market {shortAddress(p.marketId)}
-                    </span>
-                    <span className="meta">margin {p.margin.replace(/\.?0+$/, "")}</span>
-                  </div>
-                ))}
-                {canSign && free && (
-                  <button type="button" className="btn" disabled={busy} onClick={() => void withdraw(s.nonce)}>
-                    Move to wallet
-                  </button>
-                )}
+      {!inv && !problem && skeleton}
+      {inv && inv.subaccounts.length === 0 && <p className="empty">Nothing in INJ orderbook trading accounts.</p>}
+      {inv?.subaccounts.map((s) => {
+        const free = s.deposits.some((d) => BigInt(d.available) > 0n);
+        return (
+          <div key={s.id} className="well rows">
+            <div className="row">
+              <span className="symbol">{s.nonce === 0 ? "Default trading account" : `Trading account ${s.nonce}`}</span>
+              <span className="meta mono" title={s.id}>
+                {shortAddress(s.id)}
+              </span>
+            </div>
+            {s.deposits.map((d) => (
+              <div className="row" key={d.denom}>
+                <span>{amount(t, d.denom, d.total)}</span>
+                <span className="meta">{d.available === d.total ? "free" : `${amount(t, d.denom, d.available)} free`}</span>
               </div>
-            );
-          })}
-        </>
-      )}
+            ))}
+            {s.positions.map((p) => (
+              <div className="row" key={p.marketId}>
+                <span title={p.marketId}>
+                  {p.long ? "Long" : "Short"} {p.quantity.replace(/\.?0+$/, "")} <span className="meta">· {shortAddress(p.marketId)}</span>
+                </span>
+                <span className="meta" style={{ whiteSpace: "nowrap" }}>
+                  Margin {p.margin.replace(/\.?0+$/, "")}
+                </span>
+              </div>
+            ))}
+            {canSign && free && (
+              <button type="button" className="btn" disabled={busy} onClick={() => void withdraw(s.nonce)}>
+                Move to wallet
+              </button>
+            )}
+          </div>
+        );
+      })}
+      <p className="footnote">Read from the chain. What backs open orders stays until they close.</p>
+    </>
+  );
+}
 
-      {inv && (inv.xyk.length > 0 || inv.clmm.length > 0) && (
-        <div className="section-head">
-          <span className="eyebrow">Liquidity on Choice</span>
-        </div>
-      )}
+/** The account's liquidity on Choice: XYK pool shares and CLMM positions. */
+export function LiquidityPane() {
+  const { value: inv, error: problem } = useKept({ type: "inventory" });
+  const t = inv?.tokens ?? {};
+  return (
+    <>
+      {problem && <Callout level="amber">{problem}</Callout>}
+      {!inv && !problem && skeleton}
+      {inv && inv.xyk.length === 0 && inv.clmm.length === 0 && <p className="empty">No liquidity in Choice pools.</p>}
       {inv?.xyk.map((x) => (
         <div key={x.pool} className="well rows">
           <div className="row">
@@ -119,7 +124,7 @@ export function InventoryScreen({ canSign, onReview, onBack }: { canSign: boolea
           </span>
         </div>
       ))}
-      <p className="footnote">Read from the chain. Liquidity amounts are estimates from the pool&apos;s price; add or remove it on Choice.</p>
-    </Screen>
+      <p className="footnote">Amounts are estimates from each pool&apos;s price. Add or remove liquidity on Choice.</p>
+    </>
   );
 }

@@ -10,7 +10,7 @@
 // account mints it itself, with gas there.
 
 import { formatShort, formatUnits, parseUnits } from "@choice-wallet/chain";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { useBackend } from "./backend";
 import { ChainMark } from "./Chains";
@@ -42,7 +42,8 @@ type BridgeProps = {
   draft: BridgeDraft;
   onDraft: (d: BridgeDraft) => void;
   onReview: (review: SendReview, quote: string) => void;
-  onBack: () => void;
+  /** The tab bar: the bridge is one of the wallet's tabs. */
+  tabs: ReactNode;
   /** Why the user is back here, if a transfer stopped part way. */
   note?: string | null;
   /** Mint a transfer nobody has minted, from this account, on its destination. */
@@ -56,7 +57,7 @@ const USDC_DECIMALS = 6;
  *  account is offered to. */
 const RELAY_GRACE_MS = 3 * 60_000;
 
-export function BridgeView({ network, canSign, draft, onDraft, onReview, onBack, note, onFinish }: BridgeProps) {
+export function BridgeView({ network, canSign, draft, onDraft, onReview, tabs, note, onFinish }: BridgeProps) {
   const backend = useBackend();
   const { run, error, busy } = useRequest();
   const routes = useKept({ type: "bridge_routes" });
@@ -164,7 +165,8 @@ export function BridgeView({ network, canSign, draft, onDraft, onReview, onBack,
   const deliveredBy = q ? { circle: "Circle", gas_drop: "Choice's bridge contract", anyone: q.to === "injective" ? "Choice's bridge service" : "You, with gas there" }[q.delivery] : "";
   return (
     <Screen
-      top={<BackBar title="Bridge USDC" onBack={onBack} />}
+      tabs={tabs}
+      top={<span className="title">Bridge USDC</span>}
       foot={
         <>
           {error && <Callout level="amber">{error}</Callout>}

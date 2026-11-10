@@ -1,9 +1,9 @@
-// Staking: what is staked with which validator, rewards waiting to be claimed, what is
-// unstaking and when it returns. Actions (stake, unstake, move, claim, cancel an unstaking)
-// go to the same review screen as a send.
+// Staking, the Stake tab's first pane: what is staked with which validator, rewards waiting to
+// be claimed, what is unstaking and when it returns. Actions (stake, unstake, move, claim,
+// cancel an unstaking) go to the same review screen as a send.
 
 import { formatShort, parseUnits } from "@choice-wallet/chain";
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 
 import { useBackend } from "./backend";
 import { BackBar, Callout, Screen, shortAddress } from "./kit";
@@ -24,8 +24,20 @@ type ViewProps = {
   canSign: boolean;
   /** The review, with validator names and each validator's unclaimed rewards. */
   onReview: (review: SendReview, names: Record<string, string>, rewards: Record<string, string>) => void;
-  onBack: () => void;
+  /** The tab bar, and what sits above the pane (the Stake tab's pills). */
+  tabs: ReactNode;
+  head: ReactNode;
 };
+
+/** The Stake tab's own screen, around the pane in view. */
+export function StakeScreen({ tabs, head, children }: { tabs: ReactNode; head: ReactNode; children: ReactNode }) {
+  return (
+    <Screen tabs={tabs} top={<span className="title">Stake</span>}>
+      {head}
+      {children}
+    </Screen>
+  );
+}
 
 /** Shows the last summary the wallet had (if any) at once, and reads a fresh one. */
 export function StakingView({ initial, ...props }: ViewProps & { initial: StakingSummary | null }) {
@@ -45,15 +57,15 @@ export function StakingView({ initial, ...props }: ViewProps & { initial: Stakin
   }, []);
   if (!summary) {
     return (
-      <Screen top={<BackBar title="Staking" onBack={props.onBack} />}>
+      <StakeScreen tabs={props.tabs} head={props.head}>
         {error ? <Callout level="amber">{error}</Callout> : <div className="skeleton" style={{ height: 120 }} />}
-      </Screen>
+      </StakeScreen>
     );
   }
   return <Staking summary={summary} {...props} />;
 }
 
-function Staking({ summary, canSign, onReview, onBack }: ViewProps & { summary: StakingSummary }) {
+function Staking({ summary, canSign, onReview, tabs, head }: ViewProps & { summary: StakingSummary }) {
   const [sub, setSub] = useState<Sub>({ name: "main" });
   const { run, error, busy } = useRequest();
   const byAddress = useMemo(() => new Map(summary.validators.map((v) => [v.address, v])), [summary]);
@@ -128,7 +140,7 @@ function Staking({ summary, canSign, onReview, onBack }: ViewProps & { summary: 
   }
 
   return (
-    <Screen top={<BackBar title="Staking" onBack={onBack} />}>
+    <StakeScreen tabs={tabs} head={head}>
       {error && <Callout level="red">{error}</Callout>}
       <div className="plate-warm">
         <div className="eyebrow">Staked</div>
@@ -197,7 +209,7 @@ function Staking({ summary, canSign, onReview, onBack }: ViewProps & { summary: 
       )}
       {summary.stakes.length === 0 && summary.unbonding.length === 0 && <p className="empty">Nothing staked yet. Staked INJ earns rewards.</p>}
       <p className="footnote">Unstaking takes {summary.unbondingDays} days.</p>
-    </Screen>
+    </StakeScreen>
   );
 }
 

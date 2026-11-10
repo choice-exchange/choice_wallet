@@ -185,10 +185,21 @@ const lcd = createServer((req, res) => {
     if (p === "/injective/erc20/v1beta1/all_token_pairs") {
       return reply(200, { token_pairs: [{ bank_denom: USDT, erc20_address: "0x88f7F2b685F9692caf8c478f5BADF09eE9B1Cc13" }], pagination: null });
     }
+    // The account's default trading account (nonce 0): 10 USDT, 4 of it free, and a long.
+    if (p === "/injective/exchange/v2/exchange/subaccountDeposits") {
+      const mine = (url.searchParams.get("subaccount_id") ?? "").endsWith("0".repeat(24));
+      return reply(200, { deposits: mine ? { [USDT]: { available_balance: "4000000", total_balance: "10000000" } } : {} });
+    }
+    if (p.startsWith("/injective/exchange/v2/subaccount_positions/")) {
+      const mine = p.endsWith("0".repeat(24));
+      return reply(200, { state: mine ? [{ market_id: `0x${"ab".repeat(32)}`, position: { isLong: true, quantity: "2.5", entry_price: "25.1", margin: "30.5" } }] : [] });
+    }
     const smart = /^\/cosmwasm\/wasm\/v1\/contract\/([^/]+)\/smart\/([^/]+)$/.exec(p);
     if (smart) {
-      // CW20 queries as wasmd answers them; any other contract refuses.
+      // CW20 queries as wasmd answers them; Choice's CLMM position manager has none for this
+      // account; any other contract refuses.
       const q = JSON.parse(Buffer.from(decodeURIComponent(smart[2]), "base64").toString());
+      if (q.tokens && q.tokens.owner) return reply(200, { data: { tokens: [] } });
       if (smart[1] !== CW20) return reply(500, { code: 2, message: "query wasm contract failed: Error parsing into type" });
       if (q.token_info) return reply(200, { data: { name: "shroomin", symbol: "SHROOM", decimals: 18, total_supply: "1000000000000000000000000000" } });
       if (q.all_allowances) return reply(200, { data: { allowances: [{ spender: FRIEND, allowance: "2000000000000000000", expires: { never: {} } }] } });
@@ -288,6 +299,22 @@ const proc = spawn(chrome, [
 ], { stdio: ["ignore", "ignore", "ignore", "pipe", "pipe"] });
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/** Out of any screen opened over the tabs (Settings, a picker), onto the Wallet tab's Tokens
+ *  pane. */
+async function toWallet(pg) {
+  for (let i = 0; i < 4; i++) {
+    const backed = await pg.eval(`(() => { const b = [...document.querySelectorAll("button")].find((b) => b.getAttribute("aria-label") === "Back" && !b.disabled); if (b) b.click(); return !!b; })()`);
+    if (!backed) break;
+    await sleep(150);
+  }
+  await pg.click("Wallet");
+  await pg.click("Tokens");
+}
+/** Settings: the gear on the Wallet tab's top bar. */
+async function settings(pg) {
+  await toWallet(pg);
+  await pg.click("Settings");
+}
 
 const problems = [];
 let nextId = 1;
@@ -448,7 +475,8 @@ try {
   me0x = addrs[1];
 
   // 2. Lock, wrong password, unlock.
-  await p.click("Lock");
+  await settings(p);
+  await p.click("Lock now");
   await p.waitText("Unlock");
   await p.fill("input[type=password]", 0, "wrong password!");
   await p.click("Unlock");
@@ -467,7 +495,7 @@ try {
   console.log("reopened: still unlocked, same addresses");
 
   // 4. Point the wallet at the fake LCD.
-  await p.click("Settings");
+  await settings(p);
   await p.waitText("Tried in order, one per line.");
   await p.fill("textarea", 0, lcdUrl);
   await p.fill("textarea", 2, lcdUrl); // Blockscout too
@@ -605,11 +633,11 @@ try {
   // by hand (an unpacked extension's alarms may fire at once): the first check only keeps
   // what's there; 1 INJ from FRIEND then notifies, and counts on the toolbar icon until the
   // wallet opens.
-  await p.click("Settings");
+  await settings(p);
   await p.waitText("All accounts");
   const mode = await p.eval(`document.querySelector('[aria-label="Notifications"] [aria-pressed="true"]')?.textContent`);
   if (mode !== "This account") throw new Error(`notifications default: ${mode}`);
-  await p.click("Wallet");
+  await toWallet(p);
   const sw = await serviceWorker();
   if (!(await sw.eval(`chrome.alarms.get("watch").then((a) => a?.periodInMinutes)`))) throw new Error("no watcher alarm");
   // Start clean: the minute alarm may already have run (on mainnet, before step 4).
@@ -645,7 +673,7 @@ try {
   // Back as it was. Notifications go off for the rest: the watcher would see the 1 INJ go
   // again and have the wallet read everything again, in the middle of later checks.
   incoming = false;
-  await p.click("Settings");
+  await settings(p);
   await p.waitText("All accounts");
   await p.click("Off");
   await p.click("Save");
@@ -731,10 +759,10 @@ try {
   await p.shot("15-activity");
   await p.click("1 from hidden tokens");
   if ((await rows()).length !== 5) throw new Error("the hidden row didn't open");
-  await p.click("Settings");
+  await settings(p);
   await p.waitText("Tried in order, one per line.");
   await p.shot("16-settings-tab");
-  await p.click("Wallet");
+  await toWallet(p);
   await p.waitText("1 hidden token");
   // Back to Activity within the minute: drawn at once from what the tab had, nothing asked.
   const searched = txSearches;
@@ -747,7 +775,7 @@ try {
   if (shownAgain.length !== 4 || shownAgain[0] !== shownRows[0]) throw new Error(`activity on a revisit: ${JSON.stringify(shownAgain)}`);
   await sleep(1000);
   if (txSearches !== searched) throw new Error(`a revisit asked the index again: ${JSON.stringify(txSearchLog.slice(searched))}`);
-  await p.click("Wallet");
+  await toWallet(p);
   await p.waitText("1 hidden token");
   console.log("tabs: Activity (send, receive, EVM approval, LUMA found through Blockscout; junk hidden, poisoning dropped; a revisit drawn at once, nothing asked), Settings, back to Wallet");
 
@@ -791,10 +819,9 @@ try {
   if (!Buffer.from(broadcasts[1], "base64").includes(Buffer.from(VAL_B))) throw new Error("the delegation isn't to the reviewed validator");
   await p.shot("16f-staked");
   await p.click("Done");
-  await p.waitText("Account 1");
-  // Claim all: the review shows what is waiting (0.05 INJ with Alpha); cancelled here.
-  await p.eval(`[...document.querySelectorAll(".token")].find((b) => b.innerText.includes("Staked INJ")).click()`);
+  // Done goes back to the tab the flow started on: Stake.
   await p.waitText("YOUR VALIDATORS");
+  // Claim all: the review shows what is waiting (0.05 INJ with Alpha); cancelled here.
   await p.click("Claim all");
   await p.waitText("Review staking", 15000);
   await p.waitText("YOU CLAIM");
@@ -803,15 +830,28 @@ try {
   await p.shot("16g-review-claim");
   await p.click("Cancel");
   await p.waitText("YOUR VALIDATORS");
-  await p.click("Back");
+  await toWallet(p);
   await p.waitText("Account 1");
   if (broadcasts.length !== 2) throw new Error("a cancelled claim was broadcast");
   console.log("staking: home row 3.05 INJ, screen, picker search, stake max with Bravo reviewed and broadcast, claim reviewed and cancelled");
 
+  // 7b2. Trading and Liquidity, the Wallet tab's other panes: the default trading account's
+  // USDT (part of it backing orders) and its long; no Choice liquidity.
+  await p.click("Trading");
+  await p.waitText("Default trading account", 15000);
+  await p.waitText("4 USDT free");
+  await p.waitText("Long 2.5");
+  await p.shot("16g2-trading");
+  await p.click("Liquidity");
+  await p.waitText("No liquidity in Choice pools.");
+  await p.click("Tokens");
+  await p.waitText("Manage");
+  console.log("panes: Trading (a trading account, what's free, its long), Liquidity (none), back to Tokens");
+
   // 7c. Approvals and grants, from Settings: rewards redirected (red), a grant that can send
   // everything (red), a fee allowance and a SHROOM allowance; "Revoke all" takes all four back
   // in one transaction.
-  await p.click("Settings");
+  await settings(p);
   await p.click("Approvals and grants");
   await p.waitText("PERMISSIONS", 20000);
   await p.waitText("Your staking rewards go to");
@@ -840,7 +880,7 @@ try {
   // the memo comes with it and the review names the contact; without the memo, red. An
   // exchange the wallet finds from its deposits: amber until a memo is typed; sent with it,
   // and saved from the sent screen.
-  await p.click("Settings");
+  await settings(p);
   await p.click("Address book");
   await p.waitText("No contacts yet.");
   await p.click("Add contact");
@@ -852,7 +892,7 @@ try {
   await p.waitText("memo 101234567");
   await p.shot("16k-address-book");
   await p.click("Back");
-  await p.click("Wallet");
+  await toWallet(p);
   await p.waitText("Manage", 15000);
   await p.click("Send");
   await p.waitText("Balance");
@@ -903,12 +943,12 @@ try {
   await p.fill('input[aria-label="Contact name"]', 0, "Other exchange");
   await p.click("Save");
   await p.waitText("Manage", 15000);
-  await p.click("Settings");
+  await settings(p);
   await p.click("Address book");
   await p.waitText("Other exchange");
   await p.waitText("memo 555");
   await p.click("Back");
-  await p.click("Wallet");
+  await toWallet(p);
   await p.waitText("Manage", 15000);
   console.log("address book: a contact with its memo picked in Send and named in the review, red without the memo; an exchange found from its deposits, sent with a memo and saved");
 
@@ -918,7 +958,7 @@ try {
   const settingsLoaded = async () => {
     for (let t = 0; t < 10000 && !(await p.eval(`document.querySelector("#lcd-endpoints")?.value.includes(${JSON.stringify(lcdUrl)}) ?? false`)); t += 100) await sleep(100);
   };
-  await p.click("Settings");
+  await settings(p);
   await settingsLoaded();
   await p.fill("textarea", 1, lcdUrl);
   await p.click("Save");
@@ -946,6 +986,7 @@ try {
   await p.waitText("Swapped", 15000);
   if (evmRaw.length !== 1 || !evmRaw[0].toLowerCase().includes("a705d0d5f549af25024038dc575e3074b9bd37c9")) throw new Error("the swap wasn't sent to Choice's aggregator");
   await p.click("Done");
+  await toWallet(p);
   await p.waitText("Manage", 15000);
 
   await p.click("Swap");
@@ -980,6 +1021,7 @@ try {
     throw new Error("the USDT swap's three transactions aren't approve, Permit2, swap");
   }
   await p.click("Done");
+  await toWallet(p);
   await p.waitText("Manage", 15000);
   console.log("swaps: INJ to USDT in one step; USDT to INJ through approve, Permit2 and the swap, each exact; all quoted live by Choice");
 
@@ -987,9 +1029,8 @@ try {
   // (no CORS preflight), the approval is exact, and the burn the vault reads goes to this
   // account's own address on Base, delivered by Circle. Both go to the mock EVM endpoint.
   usdcHeld = true;
-  await p.click("Wallet");
-  await p.waitText("Bridge USDC", 15000);
-  await p.eval(`[...document.querySelectorAll(".token")].find((b) => b.querySelector(".symbol")?.textContent === "Bridge USDC").click()`);
+  await toWallet(p);
+  await p.click("Bridge");
   await p.waitText("Bridge USDC");
   await p.waitText("Balance 3 USDC", 15000);
   await p.click("Choose the chain");
@@ -1017,6 +1058,7 @@ try {
     throw new Error("the bridge's two transactions aren't the exact approval and the burn");
   }
   await p.click("Done");
+  await toWallet(p);
   await p.waitText("Manage", 15000);
   usdcHeld = false;
   console.log("bridge: 1 USDC to this account's address on Base; Circle's fee quoted live from the extension; approve exact, then the burn the vault read");
@@ -1024,7 +1066,7 @@ try {
   // 7g. From another chain: each chain's USDC for this (public test) address, read live from
   // its public endpoints by the service worker; picking Base turns the transfer toward
   // Injective, with Choice's INJ top-up offered.
-  await p.eval(`[...document.querySelectorAll(".token")].find((b) => b.querySelector(".symbol")?.textContent === "Bridge USDC").click()`);
+  await p.click("Bridge");
   await p.waitText("Balance 3 USDC", 15000);
   await p.click("Choose where it comes from");
   await p.waitText("Bridge from");
@@ -1034,7 +1076,7 @@ try {
   await p.waitText("Also get INJ for gas");
   if (!(await p.eval(`document.querySelector("[aria-label='Choose the chain']")?.innerText ?? ""`)).includes("Injective")) throw new Error("from Base, the transfer doesn't go to Injective");
   await p.shot("16z2-bridge-from-base");
-  await p.click("Back");
+  await toWallet(p);
   await p.waitText("Manage", 15000);
   console.log("bridge from another chain: every chain's USDC read live from its public endpoint; from Base it goes to Injective");
 
@@ -1045,19 +1087,18 @@ try {
   for (let t = 0; t < 150 && (await p.eval(`document.querySelectorAll(".chain-row .skeleton").length`)) > 0; t++) await sleep(100);
   await p.shot("16za-chains");
   await p.eval(`[...document.querySelectorAll(".chain-row")].find((b) => b.querySelector(".symbol")?.textContent === "Base").click()`);
-  await p.waitText("USDC to another chain");
   await p.waitText("Gas on Base");
   await p.shot("16zb-home-base");
   if (!(await p.eval(`document.querySelector("[aria-label='Copy address']")?.title ?? ""`)).startsWith("0x")) throw new Error("Base's Home doesn't show the 0x address");
   await p.click("Activity");
   await p.waitText("Only what this wallet sent on Base");
   await p.shot("16zd-activity-base");
-  await p.click("Settings");
+  await settings(p);
   await p.waitText("Base (JSON-RPC)");
   const areas = await p.eval(`[...document.querySelectorAll("textarea")].map((t) => t.getAttribute("aria-label")).join(",")`);
   if (areas !== "Base endpoints,Base history") throw new Error(`Settings on Base shows: ${areas}`);
   await p.shot("16zc-settings-base");
-  await p.click("Wallet");
+  await toWallet(p);
   await p.click("Chain: Base. Change chain");
   await p.eval(`[...document.querySelectorAll(".chain-row")].find((b) => b.querySelector(".symbol")?.textContent === "Injective").click()`);
   await p.waitText("Manage", 15000);
@@ -1083,14 +1124,14 @@ try {
   for (let t = 0; t < 150 && (await p.eval(`document.querySelectorAll(".skeleton").length`)) > 0; t++) await sleep(100);
   await p.shot("16zh-home-added-chain");
   if (await p.eval(`[...document.querySelectorAll(".quick-action")].some((b) => b.textContent.includes("Bridge"))`)) throw new Error("an added chain offers the bridge");
-  await p.click("Settings");
+  await settings(p);
   await p.waitText("history (Blockscout or Etherscan-style)");
   const removeLabel = await p.eval(`[...document.querySelectorAll("button")].map((b) => b.textContent.trim()).find((t) => t.startsWith("Remove ")) ?? ""`);
   if (!removeLabel) throw new Error("Settings on an added chain has no Remove");
   await p.shot("16zi-settings-added-chain");
   await p.click(removeLabel);
   await p.click(`${removeLabel}? Tap again`);
-  await p.click("Wallet");
+  await toWallet(p);
   await p.waitText("Manage", 15000);
   await p.click("Chain: Injective. Change chain");
   await p.waitText("Add a chain");
@@ -1098,7 +1139,7 @@ try {
   await p.eval(`[...document.querySelectorAll(".chain-row")].find((b) => b.querySelector(".symbol")?.textContent === "Injective").click()`);
   console.log("added chain: BNB Smart Chain found on chainlist.org, its endpoints checked, DefiLlama's logo kept, its Home, removed in Settings");
 
-  await p.click("Settings");
+  await settings(p);
   await settingsLoaded();
   await p.fill("textarea", 1, "https://sentry.evm-rpc.injective.network\nhttps://injective-evm-rpc.publicnode.com");
   await p.click("Save");
@@ -1209,7 +1250,7 @@ try {
   const solExpected = v("sign", { secret, wallet: "w", unlock_key, account: { derivation: "default", index: 0 }, request: solRequest, digest: v("decode", { request: solRequest }).digest }).signature;
   for (let t = 0; t < 50 && !(await answer()); t++) await sleep(100);
   if ((await answer()).ok !== `${solExpected}|${solText}`) throw new Error(`solana:signMessage: ${JSON.stringify(await answer())}, the vault signs ${solExpected}`);
-  await p.click("Settings");
+  await settings(p);
   await p.waitText(lcdUrl);
   await p.eval(`document.querySelector(".site-row")?.scrollIntoView()`);
   await p.shot("19-connected-sites");
@@ -1222,7 +1263,7 @@ try {
   // 9. Accounts: a second one from the phrase (the same address the vault derives in Node),
   // renamed; an address to watch, which can't send; then back to the first.
   const pill = () => p.eval(`document.querySelector("[aria-label='Copy address']").title`);
-  await p.click("Wallet");
+  await toWallet(p);
   await p.waitText("Manage", 15000);
   await p.click("Account: Account 1. Switch accounts");
   await p.waitText("Every wallet here opens with the same password.");
@@ -1344,10 +1385,11 @@ try {
     if (amino?.app !== "cosmos" || !amino.payload.includes(`"to_address":"${SENT_TO}"`) || !amino.payload.includes(`"amount":"250000000000000000"`)) throw new Error(`the Cosmos app signed: ${JSON.stringify(amino)}`);
     if (!Buffer.from(broadcasts.at(-1), "base64").includes(Buffer.from(first.public_key, "hex"))) throw new Error("the broadcast tx isn't signed by the Ledger's key");
     await lp.click("Done");
+    await toWallet(lp);
     await lp.waitText("Manage", 15000);
     // A swap, signed in the Ethereum app, sent to the mock EVM endpoint.
     const evmEndpoints = async (urls) => {
-      await lp.click("Settings");
+      await settings(lp);
       for (let t = 0; t < 10000 && !(await lp.eval(`document.querySelector("#lcd-endpoints")?.value.includes(${JSON.stringify(lcdUrl)}) ?? false`)); t += 100) await sleep(100);
       await lp.fill("textarea", 1, urls);
       await lp.click("Save");
@@ -1376,6 +1418,7 @@ try {
     const fields = evmSigned?.payload.slice(4 + 2 * ((parseInt(evmSigned.payload.slice(2, 4), 16) - 0xf7) > 0 ? parseInt(evmSigned.payload.slice(2, 4), 16) - 0xf7 : 0));
     if (evmSigned?.app !== "ethereum" || evmSigned.kind !== "transaction" || !evmRaw.at(-1).toLowerCase().includes(fields)) throw new Error("the sent transaction isn't the one the Ethereum app signed");
     await lp.click("Done");
+    await toWallet(lp);
     await lp.waitText("Manage", 15000);
     await evmEndpoints("https://sentry.evm-rpc.injective.network\nhttps://injective-evm-rpc.publicnode.com");
     await lp.close();
@@ -1392,7 +1435,7 @@ try {
 
   // 10. Security: the phrase behind the password; a new password (the old one stops
   // working); then the wallet removed, back to the welcome screen.
-  await p.click("Settings");
+  await settings(p);
   await p.waitText("Tried in order, one per line.");
   await p.click("Show Recovery phrase 1");
   await p.fill('input[aria-label="Password"]', 0, "wrong password!");
@@ -1402,7 +1445,7 @@ try {
   await p.click("Show");
   await p.waitText(words[11]);
   const revealed = await p.eval(`[...document.querySelectorAll(".words li")].map((li) => li.textContent).join(" ")`);
-  if (revealed !== words.join(" ")) throw new Error("the phrase shown isn't the wallet's");
+  if (revealed !== words.join(" ")) throw new Error(`the phrase shown isn't the wallet's: ${revealed.split(" ").length} words shown, ${revealed.split(" ").filter((w, i) => w !== words[i]).length} differ`);
   await p.click("Done");
   await p.click("Change password");
   await p.fill('input[aria-label="Password"]', 0, "correct horse battery staple");
@@ -1419,7 +1462,7 @@ try {
   await p.fill("input[type=password]", 0, "a brand new passphrase");
   await p.click("Unlock");
   await p.waitText("Manage", 15000);
-  await p.click("Settings");
+  await settings(p);
   await p.click("Reset Choice Wallet");
   await p.fill('input[aria-label="Password"]', 0, "a brand new passphrase");
   await p.shot("23-reset");

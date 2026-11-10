@@ -1,4 +1,4 @@
-// Activity (a tab): what each recent transaction did to this account, newest first, from
+// Activity (a pane of the Wallet tab): what each recent transaction did to this account, newest first, from
 // the user's own endpoints (Blockscout only finds EVM transfers others made; the LCD has
 // the say). Junk (not signed here, and only tokens the filter hides, in or out) sits behind
 // a row, like on the home screen. A row opens the explorer: Blockscout for an EVM one.
@@ -7,7 +7,7 @@ import { chainByCaip2, chainByKey, explorerTxUrl, formatShort, NETWORKS, shortDe
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { useBackend } from "./backend";
-import { ChainMark } from "./Chains";
+import { chainName } from "./Chains";
 import {
   ChartIcon,
   CheckIcon,
@@ -24,7 +24,7 @@ import {
   SwapIcon,
   WarningIcon,
 } from "./icons";
-import { Callout, Screen, shortAddress } from "./kit";
+import { Callout, shortAddress } from "./kit";
 import type { ActivityItem, ActivityKind, ActivityPage, Balance, ChainView, Coin, NetworkId, Replies } from "./protocol";
 import { useRequest } from "./request";
 import { ACTIVITY_FRESH_MS, merge, type ActivityState } from "./activityState";
@@ -68,19 +68,18 @@ const ICON: Record<ActivityKind, (p: { size?: number }) => ReactNode> = {
 
 type Tokens = ActivityPage["tokens"];
 
-/** `kept`: what the tab showed last (this popup session, or the saved copy from disk).
- *  `onKeep` gets every change, for the next visit. */
-export function ActivityView({
+/** The Wallet tab's Activity pane, for the chain picked. `kept`: what it showed last (this
+ *  popup session, or the saved copy from disk). `onKeep` gets every change, for the next
+ *  visit. */
+export function ActivityPane({
   network,
   chain,
-  tabs,
   kept,
   onKeep,
 }: {
   network: NetworkId;
-  /** Whose history: Injective's, or the account's Solana key's. */
+  /** Whose history: Injective's, the account's Solana key's, or an EVM chain's. */
   chain: ChainView;
-  tabs: ReactNode;
   kept?: ActivityState | null;
   onKeep?: (s: ActivityState) => void;
 }) {
@@ -171,18 +170,13 @@ export function ActivityView({
   }
 
   return (
-    <Screen
-      tabs={tabs}
-      top={
-        <>
-          <ChainMark chain={chain} network={network} small />
-          <span className="title">Activity</span>
-          <button className={busy ? "icon-btn busy" : "icon-btn"} aria-label="Refresh" disabled={busy} onClick={() => void load(1)}>
-            <RefreshIcon />
-          </button>
-        </>
-      }
-    >
+    <>
+      <div className="pane-head">
+        <span className="meta">On {chainName(chain, network)}</span>
+        <button className={busy ? "icon-btn busy" : "icon-btn"} aria-label="Refresh activity" disabled={busy} onClick={() => void load(1)}>
+          <RefreshIcon size={18} />
+        </button>
+      </div>
       {error && <Callout level="amber">{error}</Callout>}
       {items === null ? (
         !error && [0, 1, 2, 3].map((i) => <div key={i} className="skeleton" style={{ height: 44 }} />)
@@ -236,7 +230,7 @@ export function ActivityView({
       ) : (
         <p className="footnote">From your endpoints. How far back depends on the node.</p>
       )}
-    </Screen>
+    </>
   );
 }
 

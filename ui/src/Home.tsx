@@ -1,11 +1,11 @@
-// Home, the Wallet tab: what the account holds on the chain picked, in one figure, its
-// quick actions and its tokens. Injective's adds staking and the ways to the rest
-// (bridge, trading accounts, NFTs); Solana's and each EVM chain's, the way to bridge.
+// Home, the Wallet tab: what the account holds on the chain picked, in one figure, Send and
+// Receive, then pills for its panes: Tokens (this file), and Activity; Injective's adds
+// Trading and Liquidity. Swap, Bridge and Stake are tabs of their own.
 
 import { chainCoin, formatShort, NETWORKS, usdValue, type AnyChain } from "@choice-wallet/chain";
 import type { ReactNode } from "react";
 
-import { ChevronRightIcon, EyeOffIcon, GlobeIcon, ReceiveIcon, SendIcon, StakeIcon, SwapIcon } from "./icons";
+import { ChevronRightIcon, EyeOffIcon, ReceiveIcon, SendIcon } from "./icons";
 import { useKept } from "./kept";
 import { Callout, formatUsd, tokenSub } from "./kit";
 import type { Balance, ChainHoldings, NetworkId, Replies, StakingSummary } from "./protocol";
@@ -39,13 +39,12 @@ export function InjectiveHome({
   evmDown,
   onSend,
   onReceive,
-  onSwap,
   onStake,
   onTokens,
   onToken,
-  onBridge,
-  onInventory,
   onNfts,
+  pills,
+  pane,
 }: {
   balances: Balance[] | null;
   sorted: Sorted | null;
@@ -62,13 +61,13 @@ export function InjectiveHome({
   evmDown: boolean;
   onSend: () => void;
   onReceive: () => void;
-  onSwap: () => void;
   onStake: () => void;
   onTokens: () => void;
   onToken: (denom: string) => void;
-  onBridge: () => void;
-  onInventory: () => void;
   onNfts: () => void;
+  /** The pills, and the pane they picked (null: Tokens, drawn here). */
+  pills: ReactNode;
+  pane: ReactNode | null;
 }) {
   const inj = balances?.find((b) => b.denom === "inj");
   return (
@@ -90,101 +89,79 @@ export function InjectiveHome({
           )}
         </div>
       </section>
-      <div className="quick-actions">
+      <div className="quick-actions two">
         <QuickAction label="Send" gold disabled={watch || !sorted?.shown.some((b) => BigInt(b.amount) > 0n)} onClick={() => onSend()}>
           <SendIcon size={20} />
         </QuickAction>
         <QuickAction label="Receive" onClick={onReceive}>
           <ReceiveIcon size={20} />
         </QuickAction>
-        <QuickAction label="Swap" onClick={onSwap}>
-          <SwapIcon size={20} />
-        </QuickAction>
-        <QuickAction label="Stake" onClick={onStake}>
-          <StakeIcon size={20} />
-        </QuickAction>
       </div>
-
-      <div className="section-head">
-        <span className="eyebrow">Tokens{sorted?.shown.length ? ` · ${sorted.shown.length}` : ""}</span>
-        {balances !== null && balances.length > 0 && (
-          <button className="link" onClick={onTokens}>
-            Manage
-          </button>
-        )}
-      </div>
-      {error && balances !== null && readAt !== null ? (
-        <p className="meta warn">Couldn&apos;t update. Showing balances from {ago(readAt)}.</p>
-      ) : (
-        error && <Callout level="amber">{error}</Callout>
-      )}
-      {sorted === null ? (
-        !error && [0, 1, 2].map((i) => <div key={i} className="skeleton" style={{ height: 40 }} />)
-      ) : sorted.shown.length === 0 && sorted.hidden.length === 0 ? (
-        <p className="empty">No tokens yet. Use Receive to get your address.</p>
-      ) : (
-        <div className="token-list">
-          {sorted.shown.map((b) => (
-            <button
-              key={b.denom}
-              className="token"
-              title={b.denom}
-              onClick={() => onToken(b.denom)}
-            >
-              <TokenMark denom={b.denom} symbol={b.symbol} known={b.known} />
-              <span className="name">
-                <span className="symbol">{b.symbol}</span>
-                <span className={b.known ? "sub" : "sub denom"}>{tokenSub(b)}</span>
-              </span>
-              <HoldingValue amount={formatShort(b.amount, b.decimals)} symbol={b.symbol} usd={b.usd} />
-            </button>
-          ))}
-          {sorted.hidden.length > 0 && (
-            <button className="hidden-row" onClick={onTokens}>
-              <EyeOffIcon size={16} />
-              {sorted.hidden.length} hidden {sorted.hidden.length === 1 ? "token" : "tokens"}
-              <ChevronRightIcon size={16} />
-            </button>
-          )}
-        </div>
-      )}
-      {/* Staked, unstaking and unclaimed INJ. Nothing staked: the Stake button above. */}
-      {staking && stakedAll > 0n && (
+      {pills}
+      {pane ?? (
         <>
-          <div className="section-head">
-            <span className="eyebrow">Staking</span>
+          <div className="pane-head">
+            <span className="meta">{sorted?.shown.length ? `${sorted.shown.length} ${sorted.shown.length === 1 ? "token" : "tokens"}` : ""}</span>
+            {balances !== null && balances.length > 0 && (
+              <button className="link" onClick={onTokens}>
+                Manage
+              </button>
+            )}
           </div>
-          <button className="token" onClick={onStake}>
-            <TokenMark denom="inj" symbol="INJ" known />
-            <span className="name">
-              <span className="symbol">Staked INJ</span>
-              <span className="sub">{BigInt(staking.rewards) > 0n ? `Rewards ${formatShort(staking.rewards, 18, 4)} INJ` : "Earning rewards"}</span>
-            </span>
-            <HoldingValue amount={formatShort(stakedAll, 18, 4)} symbol="INJ" usd={injPrice && prices ? usdValue(stakedAll.toString(), 18, injPrice) : undefined} />
-          </button>
+          {error && balances !== null && readAt !== null ? (
+            <p className="meta warn">Couldn&apos;t update. Showing balances from {ago(readAt)}.</p>
+          ) : (
+            error && <Callout level="amber">{error}</Callout>
+          )}
+          {sorted === null ? (
+            !error && [0, 1, 2].map((i) => <div key={i} className="skeleton" style={{ height: 40 }} />)
+          ) : sorted.shown.length === 0 && sorted.hidden.length === 0 ? (
+            <p className="empty">No tokens yet. Use Receive to get your address.</p>
+          ) : (
+            <div className="token-list">
+              {sorted.shown.map((b) => (
+                <button
+                  key={b.denom}
+                  className="token"
+                  title={b.denom}
+                  onClick={() => onToken(b.denom)}
+                >
+                  <TokenMark denom={b.denom} symbol={b.symbol} known={b.known} />
+                  <span className="name">
+                    <span className="symbol">{b.symbol}</span>
+                    <span className={b.known ? "sub" : "sub denom"}>{tokenSub(b)}</span>
+                  </span>
+                  <HoldingValue amount={formatShort(b.amount, b.decimals)} symbol={b.symbol} usd={b.usd} />
+                </button>
+              ))}
+              {sorted.hidden.length > 0 && (
+                <button className="hidden-row" onClick={onTokens}>
+                  <EyeOffIcon size={16} />
+                  {sorted.hidden.length} hidden {sorted.hidden.length === 1 ? "token" : "tokens"}
+                  <ChevronRightIcon size={16} />
+                </button>
+              )}
+            </div>
+          )}
+          {/* Staked, unstaking and unclaimed INJ. Nothing staked: the Stake button above. */}
+          {staking && stakedAll > 0n && (
+            <>
+              <div className="section-head">
+                <span className="eyebrow">Staking</span>
+              </div>
+              <button className="token" onClick={onStake}>
+                <TokenMark denom="inj" symbol="INJ" known />
+                <span className="name">
+                  <span className="symbol">Staked INJ</span>
+                  <span className="sub">{BigInt(staking.rewards) > 0n ? `Rewards ${formatShort(staking.rewards, 18, 4)} INJ` : "Earning rewards"}</span>
+                </span>
+                <HoldingValue amount={formatShort(stakedAll, 18, 4)} symbol="INJ" usd={injPrice && prices ? usdValue(stakedAll.toString(), 18, injPrice) : undefined} />
+              </button>
         </>
       )}
       <div className="section-head">
-        <span className="eyebrow">More</span>
+        <span className="eyebrow">Collectibles</span>
       </div>
-      <button className="token" onClick={onBridge}>
-        <TokenMark denom="usdc:injective" symbol="USDC" known />
-        <span className="name">
-          <span className="symbol">Bridge USDC</span>
-          <span className="sub">To Base, Solana and more, by Circle</span>
-        </span>
-        <ChevronRightIcon size={16} />
-      </button>
-      <button className="token" onClick={onInventory}>
-        <span className="nft-tile small" aria-hidden="true">
-          LP
-        </span>
-        <span className="name">
-          <span className="symbol">Trading and liquidity</span>
-          <span className="sub">Orderbook accounts, Choice pools</span>
-        </span>
-        <ChevronRightIcon size={16} />
-      </button>
       <button className="token" onClick={onNfts}>
         <span className="nft-tile small" aria-hidden="true">
           NFT
@@ -197,6 +174,8 @@ export function InjectiveHome({
       </button>
       {evmDown && <p className="meta warn">EVM tokens may be missing: no EVM endpoint answered.</p>}
       <p className="footnote">{totalUsd === undefined ? "Pre-alpha. Not for real funds." : "Prices from Choice. Pre-alpha. Not for real funds."}</p>
+        </>
+      )}
     </>
   );
 }
@@ -266,7 +245,8 @@ export function holdsLine(balances: Balance[]): string {
   return held.length > 3 ? `${held.slice(0, 2).join(", ")} and ${held.length - 2} more` : held.join(", ");
 }
 
-/** Home on Solana: the account's Solana key, its SOL and tokens, and the way to Injective. */
+/** Home on Solana: the account's Solana key, its SOL and tokens, and rent a bridge transfer
+ *  left that can come back. */
 export function SolanaHome({
   network,
   holdings,
@@ -275,6 +255,8 @@ export function SolanaHome({
   onSend,
   onReceive,
   onBridge,
+  pills,
+  pane,
 }: {
   network: NetworkId;
   holdings: SolanaHoldings | null;
@@ -282,7 +264,10 @@ export function SolanaHome({
   watch: boolean;
   onSend: (denom?: string) => void;
   onReceive: () => void;
+  /** The Bridge tab, where that rent is taken back. */
   onBridge: () => void;
+  pills: ReactNode;
+  pane: ReactNode | null;
 }) {
   const cluster = NETWORKS[network].solana;
   /** Rent in burn records that comes back to the account, 5 days after each transfer. */
@@ -302,49 +287,47 @@ export function SolanaHome({
         )}
         <div className="balance-sub">{watch && <span className="flag quiet">Watch-only</span>}</div>
       </section>
-      <div className="quick-actions three">
+      <div className="quick-actions two">
         <QuickAction label="Send" gold disabled={watch || !list?.some((b) => BigInt(b.amount) > 0n)} onClick={() => onSend()}>
           <SendIcon size={20} />
         </QuickAction>
         <QuickAction label="Receive" onClick={onReceive}>
           <ReceiveIcon size={20} />
         </QuickAction>
-        <QuickAction label="Bridge" onClick={onBridge}>
-          <GlobeIcon size={20} />
-        </QuickAction>
       </div>
-      <div className="section-head">
-        <span className="eyebrow">Tokens{list?.length ? ` · ${list.length}` : ""}</span>
-      </div>
-      {holdings?.down && <p className="meta warn">{cluster.name} didn&apos;t answer. Its balances may be missing.</p>}
-      {list === null ? (
-        [0, 1].map((i) => <div key={i} className="skeleton" style={{ height: 40 }} />)
-      ) : (
-        <div className="token-list">
-          {list.map((b) => (
-            <button key={b.denom} className="token" title={b.denom} disabled={watch || BigInt(b.amount) === 0n} onClick={() => onSend(b.denom)}>
-              <TokenMark denom={b.denom} symbol={b.symbol} known={b.known} />
+      {pills}
+      {pane ?? (
+        <>
+          {holdings?.down && <p className="meta warn">{cluster.name} didn&apos;t answer. Its balances may be missing.</p>}
+          {list === null ? (
+            [0, 1].map((i) => <div key={i} className="skeleton" style={{ height: 40 }} />)
+          ) : (
+            <div className="token-list">
+              {list.map((b) => (
+                <button key={b.denom} className="token" title={b.denom} disabled={watch || BigInt(b.amount) === 0n} onClick={() => onSend(b.denom)}>
+                  <TokenMark denom={b.denom} symbol={b.symbol} known={b.known} />
+                  <span className="name">
+                    <span className="symbol">{b.symbol}</span>
+                    <span className={b.known ? "sub" : "sub denom"}>{b.known ? b.name : tokenSub(b)}</span>
+                  </span>
+                  <HoldingValue amount={formatShort(b.amount, b.decimals)} symbol={b.symbol} usd={b.usd} />
+                </button>
+              ))}
+            </div>
+          )}
+          {(ready > 0 || waiting > 0) && (
+            <button className="token" onClick={onBridge}>
+              <TokenMark denom="sol" symbol="SOL" known />
               <span className="name">
-                <span className="symbol">{b.symbol}</span>
-                <span className={b.known ? "sub" : "sub denom"}>{b.known ? b.name : tokenSub(b)}</span>
+                <span className="symbol">Bridge rent</span>
+                <span className="sub">{ready > 0 ? `To take back from ${ready} ${ready === 1 ? "transfer" : "transfers"}` : "Comes back 5 days after each transfer"}</span>
               </span>
-              <HoldingValue amount={formatShort(b.amount, b.decimals)} symbol={b.symbol} usd={b.usd} />
+              <ChevronRightIcon size={16} />
             </button>
-          ))}
-        </div>
+          )}
+          <p className="footnote">Pre-alpha. Not for real funds.</p>
+        </>
       )}
-      <div className="section-head">
-        <span className="eyebrow">Bridge</span>
-      </div>
-      <button className="token" onClick={onBridge}>
-        <TokenMark denom="usdc:injective" symbol="USDC" known />
-        <span className="name">
-          <span className="symbol">USDC to Injective</span>
-          <span className="sub">{ready > 0 ? `Rent to take back from ${ready} ${ready === 1 ? "transfer" : "transfers"}` : waiting > 0 ? `Rent comes back 5 days after each transfer` : "By Circle"}</span>
-        </span>
-        <ChevronRightIcon size={16} />
-      </button>
-      <p className="footnote">Pre-alpha. Not for real funds.</p>
     </>
   );
 }
@@ -359,8 +342,7 @@ function QuickAction({ label, gold, disabled, onClick, children }: { label: stri
 }
 
 /** Home on an EVM chain beside Injective: the account's coin and USDC there (the same 0x
- *  address as on Injective), and the way to bridge. On a chain the user added: its coin
- *  alone, and no bridge (CCTP doesn't reach it). */
+ *  address as on Injective). On a chain the user added: its coin alone. */
 export function EvmHome({
   chain,
   holdings,
@@ -368,7 +350,8 @@ export function EvmHome({
   watch,
   onSend,
   onReceive,
-  onBridge,
+  pills,
+  pane,
 }: {
   chain: AnyChain;
   holdings: ChainHoldings | null;
@@ -376,7 +359,8 @@ export function EvmHome({
   watch: boolean;
   onSend: (denom?: string) => void;
   onReceive: () => void;
-  onBridge: () => void;
+  pills: ReactNode;
+  pane: ReactNode | null;
 }) {
   const list = holdings?.balances ?? null;
   const unit = total?.text.split(" ").pop() ?? "";
@@ -392,57 +376,38 @@ export function EvmHome({
         )}
         <div className="balance-sub">{watch && <span className="flag quiet">Watch-only</span>}</div>
       </section>
-      <div className={chain.added ? "quick-actions two" : "quick-actions three"}>
+      <div className="quick-actions two">
         <QuickAction label="Send" gold disabled={watch || !list?.some((b) => BigInt(b.amount) > 0n)} onClick={() => onSend()}>
           <SendIcon size={20} />
         </QuickAction>
         <QuickAction label="Receive" onClick={onReceive}>
           <ReceiveIcon size={20} />
         </QuickAction>
-        {!chain.added && (
-          <QuickAction label="Bridge" onClick={onBridge}>
-            <GlobeIcon size={20} />
-          </QuickAction>
-        )}
       </div>
-      <div className="section-head">
-        <span className="eyebrow">Tokens{list?.length ? ` · ${list.length}` : ""}</span>
-      </div>
-      {holdings?.down && <p className="meta warn">{chain.name} didn&apos;t answer. Its balances may be missing.</p>}
-      {list === null ? (
-        [0, 1].map((i) => <div key={i} className="skeleton" style={{ height: 40 }} />)
-      ) : (
-        <div className="token-list">
-          {list.map((b) => (
-            <button key={b.denom} className="token" title={b.denom} disabled={watch || BigInt(b.amount) === 0n} onClick={() => onSend(b.denom)}>
-              <TokenMark denom={b.denom} symbol={b.symbol} known={b.known} />
-              <span className="name">
-                <span className="symbol">{b.symbol}</span>
-                <span className="sub">{b.denom === chainCoin(chain.caip2) ? `Gas on ${chain.name}` : b.name}</span>
-              </span>
-              <HoldingValue amount={formatShort(b.amount, b.decimals)} symbol={b.symbol} usd={b.usd} />
-            </button>
-          ))}
-        </div>
-      )}
-      {chain.added ? (
-        <p className="meta">Added by you. Chain ID {chain.chainId}.</p>
-      ) : (
+      {pills}
+      {pane ?? (
         <>
-          <div className="section-head">
-            <span className="eyebrow">Bridge</span>
-          </div>
-          <button className="token" onClick={onBridge}>
-            <TokenMark denom="usdc:injective" symbol="USDC" known />
-            <span className="name">
-              <span className="symbol">USDC to another chain</span>
-              <span className="sub">{chain.forwarding ? "By Circle" : "By Circle, claimed by this wallet"}</span>
-            </span>
-            <ChevronRightIcon size={16} />
-          </button>
+          {holdings?.down && <p className="meta warn">{chain.name} didn&apos;t answer. Its balances may be missing.</p>}
+          {list === null ? (
+            [0, 1].map((i) => <div key={i} className="skeleton" style={{ height: 40 }} />)
+          ) : (
+            <div className="token-list">
+              {list.map((b) => (
+                <button key={b.denom} className="token" title={b.denom} disabled={watch || BigInt(b.amount) === 0n} onClick={() => onSend(b.denom)}>
+                  <TokenMark denom={b.denom} symbol={b.symbol} known={b.known} />
+                  <span className="name">
+                    <span className="symbol">{b.symbol}</span>
+                    <span className="sub">{b.denom === chainCoin(chain.caip2) ? `Gas on ${chain.name}` : b.name}</span>
+                  </span>
+                  <HoldingValue amount={formatShort(b.amount, b.decimals)} symbol={b.symbol} usd={b.usd} />
+                </button>
+              ))}
+            </div>
+          )}
+          {chain.added && <p className="meta">Added by you. Chain ID {chain.chainId}.</p>}
+          <p className="footnote">Pre-alpha. Not for real funds.</p>
         </>
       )}
-      <p className="footnote">Pre-alpha. Not for real funds.</p>
     </>
   );
 }

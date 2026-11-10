@@ -3,11 +3,11 @@
 // Home's chain sheet.
 
 import { chainByKey } from "@choice-wallet/chain";
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 
 import { useBackend } from "./backend";
 import { GlobeIcon, LockIcon } from "./icons";
-import { Callout, Screen, Segmented } from "./kit";
+import { BackBar, Callout, Screen, Segmented } from "./kit";
 import type { Connection, NetworkId, NotifyMode, Settings, Status } from "./protocol";
 import { useRequest } from "./request";
 import { ChangePasswordView, ResetView, RevealView, type SecurityView } from "./Security";
@@ -27,7 +27,7 @@ export function SettingsView({
   onApprovals,
   onContacts,
   onRescue,
-  tabs,
+  onBack,
 }: {
   status: Status;
   onStatus: (s: Status) => void;
@@ -39,7 +39,8 @@ export function SettingsView({
   onContacts: () => void;
   /** Open the rescue address. */
   onRescue: () => void;
-  tabs: ReactNode;
+  /** Back to where Settings was opened from. */
+  onBack: () => void;
 }) {
   const { run, error, busy } = useRequest();
   const [settings, setSettings] = useState<Settings | null>(null);
@@ -132,8 +133,7 @@ export function SettingsView({
   return (
     <form onSubmit={(e) => void save(e)} style={{ height: "100%" }}>
       <Screen
-        top={<span className="title">Settings</span>}
-        tabs={tabs}
+        top={<BackBar title="Settings" onBack={onBack} />}
         foot={
           <>
             {error && <p className="error">{error}</p>}
