@@ -10,8 +10,8 @@ import { readFileSync } from "node:fs";
 
 import { handle, initSync } from "choice-wallet-vault-glue";
 
-import { createService, type Store } from "./src/service";
-import { callVault } from "./src/vault";
+import { createService, type Store } from "./src/host/service";
+import { callVault } from "./src/host/vault";
 
 initSync({ module: readFileSync(process.env["VAULT_WASM"] ?? "build/vault/choice_wallet_wasm_bg.wasm") });
 

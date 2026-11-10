@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { createService } from "../src/service";
+import { createService } from "../src/host/service";
 import { callVault, chain, code, handle, INJ, memory, ok, PASSWORD, PHRASE, serviceOn, THEM, THEM_KEY, wallet } from "./fake";
 
 type Status = { hasWallet: boolean; unlocked: boolean; accounts: { addresses: Record<string, string> }[] };

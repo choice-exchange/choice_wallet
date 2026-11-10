@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { dappOrigin } from "../src/service";
+import { dappOrigin } from "../src/host/service";
 import { ed25519 } from "@noble/curves/ed25519";
 
 import { base58Decode, bs58, callVault, chain, code, handle, INJ, ME, ME_EVM, ME_SOL, ok, PASSWORD, PHRASE, solTransfer, THEM, THEM_EVM, THEM_SOL, wallet } from "./fake";

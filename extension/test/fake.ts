@@ -9,8 +9,8 @@ import { ed25519 } from "@noble/curves/ed25519";
 import { handle, initSync } from "choice-wallet-vault-glue";
 
 import { ethMessage, rawTx, resultData, type Log } from "../../chain/test/evm-fixture";
-import { createService, type Store } from "../src/service";
-import { callVault } from "../src/vault";
+import { createService, type Store } from "../src/host/service";
+import { callVault } from "../src/host/vault";
 
 initSync({ module: readFileSync(new URL("./choice_wallet_wasm_bg.wasm", import.meta.url)) });
 

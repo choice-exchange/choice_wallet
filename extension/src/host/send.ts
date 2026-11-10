@@ -45,7 +45,7 @@ export interface SendDeps extends HoldingsDeps {
   riskFacts(network: NetworkId, recipient: string | null): Promise<RiskFacts>;
   /** A transaction the wallet just broadcast, signed by `from` (./watch.ts follows it). */
   onBroadcast?(network: NetworkId, hash: string, from: string): void;
-  /** A deposit's burn just broadcast on the chain it comes from (./bridge.ts follows it). */
+  /** A deposit's burn just broadcast on the chain it comes from (./bridge/ follows it). */
   onDeposit?(network: NetworkId, deposit: DepositSent): Promise<void>;
   /** Broadcasts a Solana transaction the vault signed (./solana.ts). */
   solanaBroadcast?(network: NetworkId, p: SolanaPending, signed: { signature: string; index: number }): Promise<Result<Sent>>;
@@ -693,7 +693,7 @@ export function createSender(d: SendDeps) {
     }
     if (p.source) {
       // On the chain the USDC comes from. The background watcher follows Injective only; a
-      // deposit's burn is followed by ./bridge.ts instead.
+      // deposit's burn is followed by ./bridge/ instead.
       const hash = signed.hash.toLowerCase();
       try {
         await sourceRpc(p.source).call("eth_sendRawTransaction", [signed.raw]);

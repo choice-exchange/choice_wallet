@@ -4,15 +4,15 @@
 // wait for the WASM module inside the handler, since top-level await isn't allowed in
 // service workers.
 //
-// The worker also wakes once a minute for the background watcher (./watch.ts), when
+// The worker also wakes once a minute for the background watcher (./host/watch.ts), when
 // notifications are on. Most wakes need no key, so the vault's WASM is compiled only when
 // a request first calls it.
 
 import init, { handle } from "choice-wallet-vault-glue";
 import { explorerTxUrl, isNetworkId, NETWORKS } from "@choice-wallet/chain";
 
-import { createService, dappOrigin, fromOwnPage, type Store } from "./service";
-import { callVault } from "./vault";
+import { createService, dappOrigin, fromOwnPage, type Store } from "./host/service";
+import { callVault } from "./host/vault";
 
 let ready: Promise<unknown> | null = null;
 const vaultReady = () => (ready ??= init({ module_or_path: chrome.runtime.getURL("vault/choice_wallet_wasm_bg.wasm") }));

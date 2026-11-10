@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { transferLog } from "../../chain/test/evm-fixture";
-import { createSnapshots } from "../src/snapshots";
+import { createSnapshots } from "../src/host/snapshots";
 import { attrs, chain, CW, evmHashAt, evmIndexed, INJ, indexed, LUMA, ME, ME_EVM, memory, PASSWORD, SCAM, sentTx, serviceOn, THEM, THEM_EVM, USDT, wallet } from "./fake";
 
 type R<T> = { ok: true; result: T } | { ok: false; error: { code: string; message: string } };

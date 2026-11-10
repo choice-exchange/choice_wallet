@@ -11,6 +11,27 @@ funds.
 
 Licensed GPL-3.0 ([LICENSE](LICENSE)); the Rust crates it uses are Apache-2.0.
 
+## Layout
+
+`src/` holds one entry point per place the extension's code runs, each bundled on its own:
+
+| File | Runs |
+| --- | --- |
+| `background.ts` | The service worker: the vault's WASM, `chrome.*`, and `host/` |
+| `popup.ts` | The wallet's pages (the popup, approval windows, the Ledger tab): the shared UI |
+| `ledger.ts` | Loaded by those pages the first time a Ledger is asked for |
+| `inpage.ts` | Inside every web page, in the page's own world: what sites see |
+| `relay.ts` | Inside every web page, in the isolated world: carries messages |
+| `dev/` | Dev builds only |
+
+`src/host/` is the service worker's logic, with no `chrome.*`, so the tests run all of it:
+`service.ts` answers the UI and routes everything else; `wallets.ts` and `vault.ts` the keys;
+then one file (or folder) per feature: `holdings.ts` and `send.ts`, `swap.ts`, `staking.ts`,
+`bridge/` (out, in from EVM chains, in from Solana), `solana.ts`, `dapp/` (sites: EVM,
+Cosmos and Solana requests, and the approval window's side), `approvals.ts`, `rescue.ts`,
+`contacts.ts`, `nfts.ts`, `inventory.ts`, and `watch.ts` (the background watcher), with
+`cache.ts` and `snapshots.ts` keeping chain data on disk.
+
 ## Build
 
 Needs Node 24, Rust (the pinned toolchain) and `wasm-bindgen` exactly 0.2.130. Install and

@@ -6,8 +6,8 @@ import { test } from "node:test";
 
 import { handle, initSync } from "choice-wallet-vault-glue";
 
-import { createService, fromOwnPage, type Store } from "../src/service";
-import { callVault } from "../src/vault";
+import { createService, fromOwnPage, type Store } from "../src/host/service";
+import { callVault } from "../src/host/vault";
 
 initSync({ module: readFileSync(new URL("./choice_wallet_wasm_bg.wasm", import.meta.url)) });
 

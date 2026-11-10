@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { STAKE_RESERVE } from "../src/staking";
+import { STAKE_RESERVE } from "../src/host/staking";
 import { chain, code, GAS_PRICE, INJ, indexed, ME, ok, VAL_A, VAL_B, VAL_JAILED, wallet } from "./fake";
 
 type Review = { digest: string; display: { messages: Record<string, unknown>[]; fee: { amount: { amount: string }[] } }; risk: { level: string; findings: { rule: string }[] } };
