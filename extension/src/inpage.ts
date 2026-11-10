@@ -1,6 +1,6 @@
 // What web pages see, injected into the page's own world: an EIP-1193 provider for the EVM
-// side, announced through EIP-6963 (it never touches window.ethereum), and window.choice
-// for the Cosmos side, in Keplr's shape. It holds nothing secret and decides nothing: each
+// side, announced through EIP-6963 (it never touches window.ethereum), window.choice for the
+// Cosmos side, in Keplr's shape, and a Solana wallet registered by the Wallet Standard. It holds nothing secret and decides nothing: each
 // request goes to the service worker through ./relay.ts, and the worker answers by the
 // origin the browser reports, asking the user in its own window where it must.
 
@@ -180,10 +180,111 @@ const TO_PAGE = "choice-wallet:page";
     ethereum: provider,
   };
 
+  // -- Solana: a wallet registered by the Wallet Standard --
+
+  type SolanaAccount = Readonly<{ address: string; publicKey: Uint8Array; chains: readonly string[]; features: readonly string[] }>;
+  type Change = (p: { accounts?: readonly SolanaAccount[] }) => void;
+  const SIGNS = Object.freeze(["solana:signAndSendTransaction", "solana:signTransaction", "solana:signMessage"]);
+  let solAccounts: readonly SolanaAccount[] = [];
+  const changes = new Set<Change>();
+  const toAccounts = (r: unknown): SolanaAccount[] => {
+    const v = r as { accounts: { address: string; publicKey: string }[]; chains: string[] };
+    return v.accounts.map((a) => Object.freeze({ address: a.address, publicKey: bytes(a.publicKey), chains: Object.freeze([...v.chains]), features: SIGNS }));
+  };
+  function setAccounts(next: SolanaAccount[]) {
+    const same = next.length === solAccounts.length && next.every((a, i) => a.address === solAccounts[i]!.address && a.chains.join() === solAccounts[i]!.chains.join());
+    if (same) return;
+    solAccounts = Object.freeze(next);
+    for (const fn of changes) {
+      try {
+        fn({ accounts: solAccounts });
+      } catch {
+        // The page's listener.
+      }
+    }
+  }
+  /** Each input in turn (each is its own approval); its account must be the one shown. */
+  async function each<I extends { account: { address: string } }, O>(inputs: I[], one: (i: I) => Promise<O>): Promise<O[]> {
+    const out: O[] = [];
+    for (const i of inputs) out.push(await one(i));
+    return out;
+  }
+  type TxInput = { account: { address: string }; transaction: Uint8Array; chain?: string };
+  const solanaWallet = Object.freeze({
+    version: "1.0.0",
+    name: "Choice Wallet",
+    icon,
+    chains: Object.freeze(["solana:mainnet", "solana:devnet"]),
+    get accounts() {
+      return solAccounts;
+    },
+    features: Object.freeze({
+      "standard:connect": Object.freeze({
+        version: "1.0.0",
+        async connect(input?: { silent?: boolean }) {
+          setAccounts(toAccounts(await call("solana_connect", { silent: input?.silent === true })));
+          return { accounts: solAccounts };
+        },
+      }),
+      "standard:disconnect": Object.freeze({
+        version: "1.0.0",
+        async disconnect() {
+          await call("solana_disconnect");
+          setAccounts([]);
+        },
+      }),
+      "standard:events": Object.freeze({
+        version: "1.0.0",
+        on(event: string, fn: Change) {
+          if (event !== "change") return () => {};
+          changes.add(fn);
+          return () => void changes.delete(fn);
+        },
+      }),
+      "solana:signTransaction": Object.freeze({
+        version: "1.0.0",
+        supportedTransactionVersions: Object.freeze(["legacy", 0]),
+        signTransaction: (...inputs: TxInput[]) =>
+          each(inputs, async (i) => {
+            const r = (await call("solana_signTransaction", { account: i.account.address, chain: i.chain, transaction: hex(i.transaction) })) as { transaction: string };
+            return { signedTransaction: bytes(r.transaction) };
+          }),
+      }),
+      "solana:signAndSendTransaction": Object.freeze({
+        version: "1.0.0",
+        supportedTransactionVersions: Object.freeze(["legacy", 0]),
+        signAndSendTransaction: (...inputs: TxInput[]) =>
+          each(inputs, async (i) => {
+            const r = (await call("solana_signAndSendTransaction", { account: i.account.address, chain: i.chain, transaction: hex(i.transaction) })) as { signature: string };
+            return { signature: bytes(r.signature) };
+          }),
+      }),
+      "solana:signMessage": Object.freeze({
+        version: "1.0.0",
+        signMessage: (...inputs: { account: { address: string }; message: Uint8Array }[]) =>
+          each(inputs, async (i) => {
+            const r = (await call("solana_signMessage", { account: i.account.address, message: hex(i.message) })) as { signature: string };
+            return { signedMessage: i.message, signature: bytes(r.signature), signatureType: "ed25519" };
+          }),
+      }),
+    }),
+  });
+  // The Wallet Standard's handshake: announce now, and again to an app that loads later.
+  const register = (api: unknown) => {
+    try {
+      (api as { register(w: unknown): unknown }).register(solanaWallet);
+    } catch {
+      // Not the standard's API.
+    }
+  };
+  dispatch(new CustomEvent("wallet-standard:register-wallet", { detail: register }));
+  listen("wallet-standard:app-ready", (e: Event) => register((e as CustomEvent).detail));
+
   listen("message", (e: MessageEvent) => {
     if (e.source !== window || typeof e.data !== "object" || e.data === null || e.data.target !== TO_PAGE) return;
     if (e.data.event === "changed") {
       if (watching) void refresh();
+      if (changes.size > 0) void call("solana_accounts").then((r) => setAccounts(toAccounts(r)), () => {});
       dispatch(new Event("choice_keystorechange"));
       return;
     }

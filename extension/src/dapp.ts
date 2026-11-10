@@ -13,8 +13,11 @@
 
 import {
   balanceChanges,
+  base58ToBytes,
+  bytesToHex,
   ChainError,
   cosmosTxHash,
+  hexToBytes,
   isObject,
   MIN_GAS_PRICE,
   NETWORKS,
@@ -26,6 +29,7 @@ import type { AccountInfo, Connection, CosmosDisplay, DappRequest, DappReview, D
 
 import { displayDenoms, type createSender } from "./send";
 import type { Store } from "./service";
+import type { createSolana } from "./solana";
 
 type Sender = ReturnType<typeof createSender>;
 
@@ -87,6 +91,7 @@ export interface DappHost {
   vault<T>(method: string, params?: unknown): Promise<Result<T>>;
   local: Store;
   sender: Sender;
+  solana: ReturnType<typeof createSolana>;
   network(): Promise<NetworkId>;
   setNetwork(n: NetworkId): Promise<void>;
   /** The account in use, its wallet's sealed secret and ID, and the unlock key, while
@@ -106,8 +111,15 @@ interface Waiting {
   windowId?: number;
   /** connect and switch: what approving does, and the page's answer. */
   approve?: () => Promise<DappReply>;
-  /** sign: build the vault request (fresh, at review time). */
-  build?: (account: AccountInfo) => Promise<{ request: unknown; checkedBy?: string; simulation?: DappReview["simulation"] }>;
+  /** sign: build the vault request (fresh, at review time). `tokens` and `context` replace
+   *  what the review would read from Injective (a Solana transaction's own). */
+  build?: (account: AccountInfo) => Promise<{
+    request: unknown;
+    checkedBy?: string;
+    simulation?: DappReview["simulation"];
+    tokens?: DappReview["tokens"];
+    context?: Record<string, unknown>;
+  }>;
   /** sign: what to hand the page once signed. */
   finish?: (signed: Record<string, unknown>) => Promise<unknown>;
   /** sign, on a Ledger: what the device was handed, waiting for its signature. */
@@ -481,6 +493,70 @@ export function createDapps(h: DappHost) {
     }
   }
 
+  // -- Solana (Wallet Standard) --
+
+  /** The Wallet Standard's name for the network's cluster. */
+  const standardChain = (network: NetworkId) => (network === "mainnet" ? "solana:mainnet" : "solana:devnet");
+
+  /** The Solana account a site sees: the account's, while connected and unlocked. */
+  async function solanaAccounts(origin: string): Promise<{ address: string; publicKey: string }[]> {
+    if (!(await isConnected(origin))) return [];
+    const u = await h.unlocked();
+    const a = u?.account.addresses[NETWORKS[await h.network()].solana.caip2];
+    return a ? [{ address: a, publicKey: bytesToHex(base58ToBytes(a)) }] : [];
+  }
+
+  async function solanaSite(origin: string, method: string, p: Record<string, unknown>): Promise<DappReply> {
+    const network = await h.network();
+    const net = NETWORKS[network];
+    const chains = { chains: [standardChain(network)] };
+    if (method === "solana_accounts") return { result: { accounts: await solanaAccounts(origin), ...chains } };
+    if (method === "solana_connect") {
+      // Silent: only what a connected site already sees; the user is never asked.
+      if (p["silent"] === true) return { result: { accounts: await solanaAccounts(origin), ...chains } };
+      return connect(origin, async () => ({ result: { accounts: await solanaAccounts(origin), ...chains } }));
+    }
+    if (method === "solana_disconnect") {
+      await disconnect(origin);
+      return { result: null };
+    }
+    if (p["chain"] !== undefined && p["chain"] !== standardChain(network)) return no(CHAIN_DISCONNECTED, `Choice Wallet is on ${net.solana.name} (${standardChain(network)}).`);
+    if (!(await isConnected(origin))) return no(UNAUTHORIZED, "Connect to Choice Wallet first.");
+    const mine = (await solanaAccounts(origin))[0]?.address;
+    if (!mine || p["account"] !== mine) return no(UNAUTHORIZED, "That account isn't this wallet's connected Solana account.");
+    if (method === "solana_signMessage") {
+      const message = p["message"];
+      if (typeof message !== "string" || !bytesHex(message) || message.length === 0 || message.length > 2 * MAX_ARBITRARY) return no(INVALID_PARAMS, `signMessage takes the message as bytes, at most ${MAX_ARBITRARY} of them.`);
+      return sign(
+        origin,
+        "solana_message",
+        async () => ({ request: { solana_message: { chain: net.solana.caip2, signer: mine, message: message.replace(/^0x/, "") } } }),
+        async (signed) => ({ signature: signed["signature"] }),
+      );
+    }
+    if (method === "solana_signTransaction" || method === "solana_signAndSendTransaction") {
+      const tx = p["transaction"];
+      if (typeof tx !== "string" || !bytesHex(tx) || tx.length < 4 || tx.length > 2 * 1232) return no(INVALID_PARAMS, `${method.slice(7)} takes a serialized transaction (at most 1232 bytes).`);
+      const wire = hexToBytes(tx.replace(/^0x/, ""));
+      const send = method === "solana_signAndSendTransaction";
+      let read: Awaited<ReturnType<typeof h.solana.siteTransaction>> | null = null;
+      return sign(
+        origin,
+        "solana_transaction",
+        async (account) => {
+          read = await h.solana.siteTransaction(network, account, wire);
+          return { request: read.request, checkedBy: read.checkedBy, simulation: read.simulation, tokens: read.tokens, context: read.context };
+        },
+        async (signed) => {
+          if (!read || Number(signed["index"]) !== read.index) throw new RangeError("The signature isn't where this account signs.");
+          const done = await h.solana.siteSigned(network, read, hexToBytes(String(signed["signature"])), send);
+          return send ? { signature: bytesToHex(base58ToBytes(done.signature)) } : { transaction: bytesToHex(done.wire) };
+        },
+      );
+    }
+    return no(UNSUPPORTED, `${method} isn't supported.`);
+  }
+
   /** Handle one message from a page, at `origin`. */
   async function handle(origin: string, msg: unknown): Promise<DappReply> {
     if (!isObject(msg) || typeof msg["method"] !== "string") return no(INVALID_PARAMS, "Not a request.");
@@ -524,6 +600,13 @@ export function createDapps(h: DappHost) {
         case "choice_verifyArbitrary":
         case "choice_sendTx":
           return cosmos(origin, method, isObject(params) ? params : {});
+        case "solana_accounts":
+        case "solana_connect":
+        case "solana_disconnect":
+        case "solana_signMessage":
+        case "solana_signTransaction":
+        case "solana_signAndSendTransaction":
+          return solanaSite(origin, method, isObject(params) ? params : {});
       }
       if (REFUSED[method]) return no(UNSUPPORTED, REFUSED[method]);
       if (READS.has(method)) return { result: await (await h.sender.evm(network)).call(method, Array.isArray(params) ? params : []) };
@@ -554,7 +637,10 @@ export function createDapps(h: DappHost) {
     try {
       const built = await w.build(u.account);
       const all = await grants();
-      const context = await reviewContext(network, u.account, w.req.origin, (all[w.req.origin]?.approvals ?? 0) > 0);
+      const known = (all[w.req.origin]?.approvals ?? 0) > 0;
+      const context = built.context
+        ? { origin: w.req.origin, origin_known: known, ...(await h.sender.riskFacts(network, null)), ...built.context }
+        : await reviewContext(network, u.account, w.req.origin, known);
       const d = await h.vault<{ digest: string; display: DappReview["display"]; risk: Risk }>("decode", { request: built.request, context });
       if (!d.ok) return d;
       const { digest, display, risk } = d.result;
@@ -567,7 +653,7 @@ export function createDapps(h: DappHost) {
         );
       }
       w.prepared = { request: built.request, digest, confirm: risk.confirm ?? null, blocked: risk.level === "blocked" };
-      const tokens = await h.sender.tokensFor(network, reviewDenoms(network, display, built.simulation?.ok ? built.simulation.changes : []));
+      const tokens = built.tokens ?? (await h.sender.tokensFor(network, reviewDenoms(network, display, built.simulation?.ok ? built.simulation.changes : [])));
       return { ok: true, result: { digest, display, risk, tokens, checkedBy: built.checkedBy ?? "", ...(built.simulation ? { simulation: built.simulation } : {}) } };
     } catch (e) {
       if (e instanceof RangeError) return fail("bad_request", e.message);

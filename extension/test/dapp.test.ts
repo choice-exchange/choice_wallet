@@ -6,7 +6,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { dappOrigin } from "../src/service";
-import { callVault, chain, code, handle, INJ, ME, ME_EVM, ok, PASSWORD, PHRASE, THEM, THEM_EVM, wallet } from "./fake";
+import { ed25519 } from "@noble/curves/ed25519";
+
+import { base58Decode, bs58, callVault, chain, code, handle, INJ, ME, ME_EVM, ME_SOL, ok, PASSWORD, PHRASE, THEM, THEM_EVM, THEM_SOL, wallet } from "./fake";
 
 const SITE = "https://app.example";
 const OTHER = "https://other.example";
@@ -251,4 +253,70 @@ test("signArbitrary (ADR-036): the window shows the text; the page gets injectiv
   assert.equal(got.pub_key.type, "tendermint/PubKeySecp256k1");
   assert.equal(await site("choice_verifyArbitrary", { chainId: "injective-1", signer: ME, data, signature: got }).then((r) => r.result), true);
   assert.equal(await site("choice_verifyArbitrary", { chainId: "injective-1", signer: ME, data: "00", signature: got }).then((r) => r.result), false);
+});
+
+/** A legacy SOL transfer from the account, as a site would build it: unsigned. */
+function solTransfer(lamports: bigint): Uint8Array {
+  const data = new Uint8Array(12);
+  new DataView(data.buffer).setUint32(0, 2, true);
+  new DataView(data.buffer).setBigUint64(4, lamports, true);
+  const keys = [ME_SOL, THEM_SOL, "11111111111111111111111111111111"].map(base58Decode);
+  const message = Uint8Array.from([1, 0, 1, 3, ...keys.flatMap((k) => [...k]), ...new Uint8Array(32).fill(9), 1, 2, 2, 0, 1, 12, ...data]);
+  return Uint8Array.from([1, ...new Uint8Array(64), ...message]);
+}
+const hexOf = (b: Uint8Array) => Buffer.from(b).toString("hex");
+
+test("Solana sites (Wallet Standard): connect, a transfer read by the vault and simulated, signed and sent; a message", async () => {
+  const net = chain({ balances: { inj: INJ } });
+  const { page, window, service } = await setup(net);
+  const site = page(SITE);
+  const none = { result: { accounts: [], chains: ["solana:mainnet"] } };
+  assert.deepEqual(await site("solana_accounts"), none);
+  // A silent connect asks nobody.
+  assert.deepEqual(await site("solana_connect", { silent: true }), none);
+  const asked = site("solana_connect", {});
+  const c = await window();
+  assert.equal(c.req.kind, "connect");
+  ok(await service.handle({ type: "dapp_answer", id: c.id, approve: true }));
+  const me = { address: ME_SOL, publicKey: hexOf(base58Decode(ME_SOL)) };
+  assert.deepEqual(await asked, { result: { accounts: [me], chains: ["solana:mainnet"] } });
+
+  // The site's transfer: the vault reads it, a simulation says what it costs the account.
+  const wire = solTransfer(250_000_000n);
+  net.state.solana.simulateSpend = 250_005_000n;
+  const sending = site("solana_signAndSendTransaction", { account: ME_SOL, chain: "solana:mainnet", transaction: hexOf(wire) });
+  const s = await window();
+  assert.deepEqual([s.req.kind, s.req.method], ["sign", "solana_transaction"]);
+  const review = ok<{ digest: string; display: { kind: string; instructions: Record<string, unknown>[] }; simulation: unknown; tokens: Record<string, unknown> }>(
+    await service.handle({ type: "dapp_review", id: s.id }),
+  );
+  assert.equal(review.display.kind, "solana_transaction");
+  const move = review.display.instructions.find((i) => i["type"] === "sol_transfer")!;
+  assert.deepEqual([move["to"], move["lamports"]], [THEM_SOL, "250000000"]);
+  assert.deepEqual(review.simulation, { ok: true, changes: [{ denom: "sol", amount: "-250005000" }] });
+  assert.ok(review.tokens["sol"]);
+  ok(await service.handle({ type: "dapp_answer", id: s.id, approve: true, digest: review.digest }));
+  const sent = (await sending) as { result: { signature: string } };
+  // Sent once, its signature checked by the fake node; the page gets that signature.
+  assert.equal(net.state.solana.sent.length, 1);
+  assert.equal(bs58(Buffer.from(sent.result.signature, "hex")), bs58(Buffer.from(net.state.solana.sent[0]!, "base64").subarray(1, 65)));
+
+  // Another cluster, another account, or bytes that aren't a transaction: refused.
+  assert.equal((await site("solana_signTransaction", { account: ME_SOL, chain: "solana:devnet", transaction: hexOf(wire) })).error?.code, 4901);
+  assert.equal((await site("solana_signTransaction", { account: THEM_SOL, transaction: hexOf(wire) })).error?.code, 4100);
+  const bad = site("solana_signTransaction", { account: ME_SOL, transaction: "0102" });
+  const b = await window();
+  assert.equal(code(await service.handle({ type: "dapp_review", id: b.id })), "bad_request");
+  ok(await service.handle({ type: "dapp_answer", id: b.id, approve: false }));
+  assert.equal(((await bad) as Reply).error?.code, 4001);
+
+  // signMessage: the vault's ed25519 signature of exactly the bytes.
+  const text = new TextEncoder().encode("Sign in to app.example");
+  const signing = site("solana_signMessage", { account: ME_SOL, message: hexOf(text) });
+  const m = await window();
+  const mr = ok<{ digest: string; display: { kind: string } }>(await service.handle({ type: "dapp_review", id: m.id }));
+  assert.equal(mr.display.kind, "solana_message");
+  ok(await service.handle({ type: "dapp_answer", id: m.id, approve: true, digest: mr.digest }));
+  const sig = ((await signing) as { result: { signature: string } }).result.signature;
+  assert.ok(ed25519.verify(Buffer.from(sig, "hex"), text, base58Decode(ME_SOL)));
 });

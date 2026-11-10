@@ -274,6 +274,8 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
       height: 1_000,
       history: [] as { signature: string; slot: number; tx: Record<string, unknown> }[],
       simulateErr: null as unknown,
+      /** What a simulation takes from the account's SOL (a site's transaction). */
+      simulateSpend: 0n,
       down: false,
     },
     /** Base: ME's USDC and ETH there, what TokenMessengerV2 may take, what was broadcast. */
@@ -491,6 +493,17 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
         lamports: 2039280,
         data: { parsed: { type: "account", info: { mint, owner, tokenAmount: { amount: amount.toString(), decimals: 6 } } }, program: "spl-token", space: 165 },
       });
+      /** An account as base64 `getMultipleAccounts` gives it: the account's own (less `spent`),
+       *  and its USDC account. */
+      const rawSolana = (a: string, spent: bigint) => {
+        if (a === ME_SOL) return { lamports: Number(sol.lamports - spent), owner: "11111111111111111111111111111111", data: ["", "base64"], executable: false, rentEpoch: 0, space: 0 };
+        if (a !== ME_SOL_USDC || sol.usdc === 0n) return null;
+        const data = new Uint8Array(165);
+        data.set(base58Decode(SOL_USDC), 0);
+        data.set(base58Decode(ME_SOL), 32);
+        new DataView(data.buffer).setBigUint64(64, sol.usdc, true);
+        return { lamports: 2039280, owner: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", data: [Buffer.from(data).toString("base64"), "base64"], executable: false, rentEpoch: 0, space: 165 };
+      };
       switch (body.method) {
         case "getGenesisHash":
           return ok(SOLANA_GENESIS);
@@ -504,6 +517,7 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
           // As publicnode: refused.
           return ok_err(body.id, -32602, "Request blocked");
         case "getMultipleAccounts":
+          if ((body.params[1] as { encoding?: string } | undefined)?.encoding === "base64") return ok({ ...ctx, value: (body.params[0] as string[]).map((a) => rawSolana(a, 0n)) });
           return ok({ ...ctx, value: (body.params[0] as string[]).map((a) => (a === ME_SOL_USDC && sol.usdc > 0n ? tokenAccount(ME_SOL, SOL_USDC, sol.usdc) : null)) });
         case "getLatestBlockhash":
           return ok({ ...ctx, value: { blockhash: "4wBqpZM9xaSheZzJSMawUKKwhdpChKbZ5eu5ky4Vigw", lastValidBlockHeight: sol.height + 150 } });
@@ -513,8 +527,11 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
           return ok([{ slot: 1, prioritizationFee: 0 }, { slot: 2, prioritizationFee: 5000 }]);
         case "getMinimumBalanceForRentExemption":
           return ok(2039280);
-        case "simulateTransaction":
-          return ok({ ...ctx, value: { err: sol.simulateErr, logs: sol.simulateErr ? ["Program log: Error: insufficient funds"] : [], unitsConsumed: 30_000 } });
+        case "simulateTransaction": {
+          const watch = (body.params[1] as { accounts?: { addresses: string[] } }).accounts?.addresses;
+          const after = watch && !sol.simulateErr ? { accounts: watch.map((a) => rawSolana(a, sol.simulateSpend)) } : {};
+          return ok({ ...ctx, value: { err: sol.simulateErr, logs: sol.simulateErr ? ["Program log: Error: insufficient funds"] : [], unitsConsumed: 30_000, ...after } });
+        }
         case "sendTransaction": {
           const wire = Buffer.from(body.params[0] as string, "base64");
           const n = wire[0]!;
@@ -672,6 +689,13 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
 const ok_err = (id: number, code: number, message: string) => new Response(JSON.stringify({ jsonrpc: "2.0", id, error: { code, message } }), { status: 200 });
 
 const B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+/** A 32-byte Solana address's bytes. */
+export function base58Decode(s: string): Uint8Array {
+  let n = 0n;
+  for (const c of s) n = n * 58n + BigInt(B58.indexOf(c));
+  const hex = n.toString(16).padStart(64, "0");
+  return Uint8Array.from(hex.match(/../g)!, (x) => parseInt(x, 16));
+}
 export function bs58(b: Uint8Array): string {
   let n = BigInt(`0x${Buffer.from(b).toString("hex") || "0"}`);
   let out = "";

@@ -19,12 +19,18 @@ import {
   bytesToHex,
   hexToBytes,
   isSolanaAddress,
+  joinSolanaTransaction,
+  LOOKUP_TABLE_PROGRAM,
+  lookupTableAddresses,
   NETWORKS,
+  readSolanaMessage,
   SOL,
   SolanaRpc,
   splDenom,
+  splitSolanaTransaction,
   splMint,
   summarizeSolana,
+  tokenAccountOf,
   TOKEN_2022_PROGRAM,
   TOKEN_PROGRAM,
   ChainError,
@@ -461,7 +467,98 @@ export function createSolana(d: SolanaDeps) {
     }
   }
 
-  return { rpc, address, ata, token, holdings, prepareInstructions, prepareSend, broadcast, status, activity, known: (network: NetworkId) => KNOWN[network] };
+  // -- A site's transaction (Wallet Standard) --
+
+  /** A transaction a site asks this account to sign: the vault's request for it (with the
+   *  lookup tables a v0 message reads, as the cluster holds them now), what a simulation says
+   *  it moves for the account, and the tokens and context its review needs. The site's other
+   *  signatures are kept for when it's signed. Throws a RangeError for what can't be signed. */
+  async function siteTransaction(network: NetworkId, account: AccountInfo, wire: Uint8Array): Promise<SiteTransaction> {
+    const net = NETWORKS[network];
+    const owner = address(network, account);
+    if (!owner) throw new RangeError("This account has no Solana address.");
+    const { signatures, message } = splitSolanaTransaction(wire);
+    const keys = readSolanaMessage(message);
+    const index = keys.keys.indexOf(owner);
+    if (index < 0 || index >= keys.signers) throw new RangeError("This account doesn't sign this transaction.");
+    const r = await rpc(network);
+    const tableAccounts = keys.lookups.length > 0 ? await r.rawAccounts(keys.lookups.map((l) => l.table)) : [];
+    const tables = keys.lookups.map((l, i) => {
+      const a = tableAccounts[i];
+      if (!a || a.owner !== LOOKUP_TABLE_PROGRAM) throw new RangeError(`Its lookup table ${l.table} isn't on ${net.solana.name}.`);
+      return { address: l.table, addresses: lookupTableAddresses(a.data) };
+    });
+    // What moves for the account: its SOL, and every token account of its that the
+    // transaction writes (one it opens too), before and after a simulation.
+    const writable = [...keys.keys.filter((_, i) => keys.writable[i]), ...keys.lookups.flatMap((l, i) => l.writable.map((j) => tables[i]!.addresses[j] ?? ""))].filter(Boolean);
+    const watched = [...new Set([owner, ...writable])].slice(0, 100);
+    const before = await r.rawAccounts(watched);
+    const accounts: Record<string, { owner: string; mint: string }> = {};
+    const moved = new Map<string, bigint>();
+    let simulation: SiteTransaction["simulation"];
+    try {
+      const sim = await r.simulateWith(bytesToBase64(wire), watched);
+      if (sim.err !== null) {
+        simulation = { ok: false, error: siteFailure(sim.err, sim.logs) };
+      } else {
+        watched.forEach((a, i) => {
+          const pre = before[i] ?? null;
+          const post = sim.after[i] ?? null;
+          if (a === owner) {
+            moved.set(SOL, (post?.lamports ?? 0n) - (pre?.lamports ?? 0n));
+            return;
+          }
+          const t0 = pre ? tokenAccountOf(pre) : null;
+          const t1 = post ? tokenAccountOf(post) : null;
+          const t = t1 ?? t0;
+          if (!t) return;
+          accounts[a] = { owner: t.owner, mint: t.mint };
+          if (t.owner === owner) moved.set(splDenom(t.mint), (moved.get(splDenom(t.mint)) ?? 0n) + (t1?.amount ?? 0n) - (t0?.amount ?? 0n));
+        });
+        simulation = { ok: true, changes: [...moved].filter(([, v]) => v !== 0n).map(([denom, v]) => ({ denom, amount: v.toString() })) };
+      }
+    } catch (e) {
+      if (!(e instanceof Unreachable || e instanceof ChainError)) throw e;
+      simulation = { ok: false, error: `${net.solana.name} couldn't simulate it.` };
+    }
+    // Every token account it writes, named, so the review can say whose it is.
+    watched.forEach((a, i) => {
+      const t = before[i] ? tokenAccountOf(before[i]!) : null;
+      if (t && !accounts[a]) accounts[a] = { owner: t.owner, mint: t.mint };
+    });
+    const sol: TokenInfo = { denom: SOL, symbol: "SOL", name: "Solana", decimals: 9, known: true, chain: net.solana.caip2 };
+    const mints = [...new Set(Object.values(accounts).map((t) => t.mint))];
+    const tokens: Record<string, TokenInfo> = { [SOL]: sol, ...Object.fromEntries(await Promise.all(mints.map(async (m) => [splDenom(m), await token(network, m)] as const))) };
+    return {
+      request: { solana_transaction: { chain: net.solana.caip2, signer: owner, message: bytesToHex(message), tables } },
+      simulation,
+      tokens,
+      context: {
+        balances: { native: (before[0]?.lamports ?? 0n).toString() },
+        symbols: Object.fromEntries(Object.values(tokens).map((t) => [t.denom === SOL ? "native" : (splMint(t.denom) ?? t.denom), t.symbol])),
+        solana_token_accounts: accounts,
+      },
+      checkedBy: new URL(r.pool.current).host,
+      signatures,
+      message,
+      index,
+    };
+  }
+
+  /** A site's transaction once signed here: the account's signature in its place. Sent too
+   *  when `send`; its signature (base58) either way. */
+  async function siteSigned(network: NetworkId, t: Pick<SiteTransaction, "signatures" | "message" | "index">, signature: Uint8Array, send: boolean): Promise<{ wire: Uint8Array; signature: string }> {
+    const signatures = t.signatures.map((s, i) => (i === t.index ? signature : s));
+    const wire = joinSolanaTransaction(signatures, t.message);
+    const sig = bytesToBase58(signatures[0]!);
+    if (send) {
+      if (signatures.some((s) => s.every((b) => b === 0))) throw new RangeError("Another signature it needs is missing.");
+      await (await rpc(network)).send(bytesToBase64(wire));
+    }
+    return { wire, signature: sig };
+  }
+
+  return { rpc, address, ata, token, holdings, prepareInstructions, prepareSend, broadcast, status, activity, siteTransaction, siteSigned, known: (network: NetworkId) => KNOWN[network] };
 }
 
 /** Whether the vault's reading is the send that was asked for. */
@@ -473,6 +570,27 @@ function sendMatches(display: Record<string, unknown>, want: { type: "sol_transf
   if (m["type"] !== want.type) return false;
   if (want.type === "sol_transfer") return m["to"] === want.to && m["lamports"] === want.amount.toString();
   return m["destination_owner"] === want.to && m["amount"] === want.amount.toString() && m["mint"] === want.mint;
+}
+
+/** A site's transaction, read for its review (see `siteTransaction`). */
+export interface SiteTransaction {
+  request: { solana_transaction: { chain: string; signer: string; message: string; tables: { address: string; addresses: string[] }[] } };
+  simulation: { ok: true; changes: { denom: string; amount: string }[] } | { ok: false; error: string };
+  tokens: Record<string, TokenInfo>;
+  /** For the vault's rules: the account's SOL, token symbols, and whose each token account is. */
+  context: Record<string, unknown>;
+  checkedBy: string;
+  signatures: Uint8Array[];
+  message: Uint8Array;
+  /** Where the account's signature goes. */
+  index: number;
+}
+
+/** Why a site's transaction fails in simulation, in one line. */
+function siteFailure(err: unknown, logs: readonly string[]): string {
+  if (logs.some((l) => /insufficient (funds|lamports)/i.test(l))) return "It fails: not enough funds.";
+  const line = [...logs].reverse().find((l) => /failed|error/i.test(l));
+  return line ? `It fails: ${line.length > 160 ? `${line.slice(0, 159)}…` : line}` : `It fails: ${JSON.stringify(err).slice(0, 160)}`;
 }
 
 function simulationReason(e: SolanaSimulationError): string {

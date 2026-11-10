@@ -270,6 +270,7 @@ export function createService(d: Deps) {
     vault: d.vault,
     local: d.local,
     sender,
+    solana,
     network,
     setNetwork: (n) => d.local.set({ network: n }),
     async unlocked() {
