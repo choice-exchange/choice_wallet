@@ -169,7 +169,7 @@ fn bridging_from_other_evm_chains_builds_decodes_and_signs() {
     assert_eq!(d["display"]["chain"], "eip155:8453");
     assert_eq!(
         d["display"]["network"],
-        json!({ "name": "Base", "symbol": "ETH", "decimals": 18 })
+        json!({ "name": "Base", "symbol": "ETH", "decimals": 18, "added": false })
     );
     assert_eq!(
         d["display"]["call"],
@@ -302,11 +302,11 @@ fn bridging_from_other_evm_chains_builds_decodes_and_signs() {
     );
     assert_eq!(d["risk"]["level"], "red");
     assert!(rules_of(&d).contains(&"bridge_token".to_owned()));
-    // A chain the wallet doesn't know is still refused.
+    // Another EVM chain is one the user added (tests/evm.rs); an ID in another form is none.
     assert_eq!(
         code(
             "decode",
-            json!({ "request": { "evm_personal_sign": { "chain": "eip155:56", "signer": me, "message": "hi" } } })
+            json!({ "request": { "evm_personal_sign": { "chain": "eip155:056", "signer": me, "message": "hi" } } })
         ),
         "unknown_chain"
     );

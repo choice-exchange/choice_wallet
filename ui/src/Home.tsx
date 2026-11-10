@@ -2,7 +2,7 @@
 // quick actions and its tokens. Injective's adds staking and the ways to the rest
 // (bridge, trading accounts, NFTs); Solana's and each EVM chain's, the way to bridge.
 
-import { chainCoin, formatShort, NETWORKS, usdValue, type ChainInfo } from "@choice-wallet/chain";
+import { chainCoin, formatShort, NETWORKS, usdValue, type AnyChain } from "@choice-wallet/chain";
 import type { ReactNode } from "react";
 
 import { ChevronRightIcon, EyeOffIcon, GlobeIcon, ReceiveIcon, SendIcon, StakeIcon, SwapIcon } from "./icons";
@@ -250,7 +250,7 @@ export function solanaTotal(balances: Balance[], prices: boolean): { text: strin
 
 /** An EVM chain's total: USD when something there is priced, otherwise its coin (USDC on
  *  Arc, whose coin is its USDC). */
-export function chainTotal(c: ChainInfo, balances: Balance[], prices: boolean): { text: string; usd?: number } {
+export function chainTotal(c: AnyChain, balances: Balance[], prices: boolean): { text: string; usd?: number } {
   const priced = balances.filter((b) => b.usd !== undefined);
   if (prices && priced.length > 0) {
     const usd = priced.reduce((t, b) => t + (b.usd ?? 0), 0);
@@ -359,7 +359,8 @@ function QuickAction({ label, gold, disabled, onClick, children }: { label: stri
 }
 
 /** Home on an EVM chain beside Injective: the account's coin and USDC there (the same 0x
- *  address as on Injective), and the way to bridge. */
+ *  address as on Injective), and the way to bridge. On a chain the user added: its coin
+ *  alone, and no bridge (CCTP doesn't reach it). */
 export function EvmHome({
   chain,
   holdings,
@@ -369,7 +370,7 @@ export function EvmHome({
   onReceive,
   onBridge,
 }: {
-  chain: ChainInfo;
+  chain: AnyChain;
   holdings: ChainHoldings | null;
   total: { text: string; usd?: number } | null;
   watch: boolean;
@@ -391,16 +392,18 @@ export function EvmHome({
         )}
         <div className="balance-sub">{watch && <span className="flag quiet">Watch-only</span>}</div>
       </section>
-      <div className="quick-actions three">
+      <div className={chain.added ? "quick-actions two" : "quick-actions three"}>
         <QuickAction label="Send" gold disabled={watch || !list?.some((b) => BigInt(b.amount) > 0n)} onClick={() => onSend()}>
           <SendIcon size={20} />
         </QuickAction>
         <QuickAction label="Receive" onClick={onReceive}>
           <ReceiveIcon size={20} />
         </QuickAction>
-        <QuickAction label="Bridge" onClick={onBridge}>
-          <GlobeIcon size={20} />
-        </QuickAction>
+        {!chain.added && (
+          <QuickAction label="Bridge" onClick={onBridge}>
+            <GlobeIcon size={20} />
+          </QuickAction>
+        )}
       </div>
       <div className="section-head">
         <span className="eyebrow">Tokens{list?.length ? ` · ${list.length}` : ""}</span>
@@ -422,17 +425,23 @@ export function EvmHome({
           ))}
         </div>
       )}
-      <div className="section-head">
-        <span className="eyebrow">Bridge</span>
-      </div>
-      <button className="token" onClick={onBridge}>
-        <TokenMark denom="usdc:injective" symbol="USDC" known />
-        <span className="name">
-          <span className="symbol">USDC to another chain</span>
-          <span className="sub">{chain.forwarding ? "By Circle" : "By Circle, claimed by this wallet"}</span>
-        </span>
-        <ChevronRightIcon size={16} />
-      </button>
+      {chain.added ? (
+        <p className="meta">Added by you. Chain ID {chain.chainId}.</p>
+      ) : (
+        <>
+          <div className="section-head">
+            <span className="eyebrow">Bridge</span>
+          </div>
+          <button className="token" onClick={onBridge}>
+            <TokenMark denom="usdc:injective" symbol="USDC" known />
+            <span className="name">
+              <span className="symbol">USDC to another chain</span>
+              <span className="sub">{chain.forwarding ? "By Circle" : "By Circle, claimed by this wallet"}</span>
+            </span>
+            <ChevronRightIcon size={16} />
+          </button>
+        </>
+      )}
       <p className="footnote">Pre-alpha. Not for real funds.</p>
     </>
   );

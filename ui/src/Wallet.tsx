@@ -1,10 +1,11 @@
 // The unlocked wallet: three tabs (Wallet, Activity, Settings), and the flows that open
 // over them full screen (receive, a token, send, convert, manage tokens).
 
-import { CHAINS, chainByKey, formatShort, NETWORKS, usdValue } from "@choice-wallet/chain";
+import { chainByKey, chainList, formatShort, NETWORKS, usdValue } from "@choice-wallet/chain";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { AccountMark, AccountsView, isWatch } from "./Accounts";
+import { AddChainView } from "./AddChain";
 import { ApprovalsView } from "./Approvals";
 import { BridgeView, newBridgeDraft, type BridgeDraft } from "./Bridge";
 import { ChainPill, ChainSheet, chainName, type ChainRow } from "./Chains";
@@ -52,7 +53,8 @@ type View =
   | { name: "contacts"; prefill?: Draft }
   | { name: "nfts" }
   | { name: "nft"; collection: NftCollection; nft: Nft }
-  | { name: "tokens" };
+  | { name: "tokens" }
+  | { name: "add_chain" };
 
 const COSMOS = "cosmos:injective-1";
 /** While the wallet is on screen, its balances are read again this often. */
@@ -266,7 +268,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
   }
   /** Each chain in the picker, with what the account holds there: Injective, Solana, then
    *  the EVM chains, those holding something first. */
-  const evmRows = CHAINS[status.network]
+  const evmRows = chainList(status.network)
     .filter((c) => c.kind === "evm")
     .map((c) => {
       const h = chains?.find((x) => x.chain === c.key);
@@ -503,6 +505,20 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
             onBack={home}
           />
         );
+      case "add_chain":
+        return (
+          <AddChainView
+            network={status.network}
+            onAdded={(s, key, network) => {
+              onStatus(s);
+              void pickChain(key, network).then(() => {
+                setPicking(false);
+                setView({ name: "home" });
+              });
+            }}
+            onBack={home}
+          />
+        );
       case "nfts":
         return <NftsView canSign={!watch} onOpen={(collection, nft) => setView({ name: "nft", collection, nft })} onBack={home} />;
       case "nft":
@@ -611,6 +627,10 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
                   {...(allUsd ? { all: allUsd } : {})}
                   onPick={(c) => void pickChain(c)}
                   onTestnet={(on) => void pickChain(chain, on ? "testnet" : "mainnet")}
+                  onAdd={() => {
+                    setPicking(false);
+                    setView({ name: "add_chain" });
+                  }}
                   onClose={() => setPicking(false)}
                 />
               )

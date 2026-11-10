@@ -634,7 +634,7 @@ fn evm_tx_display(entry: &Entry, r: &TxRequest) -> Result<Value, VaultError> {
     Ok(json!({
         "kind": "evm_transaction",
         "chain": entry.id,
-        "network": { "name": entry.name, "symbol": entry.native.0, "decimals": entry.native.1 },
+        "network": { "name": entry.name, "symbol": entry.native.0, "decimals": entry.native.1, "added": entry.added },
         "from": r.from.to_checksum_hex(),
         "to": tx.to.to_checksum_hex(),
         "value": tx.value.to_string(),

@@ -2,7 +2,29 @@
 // checks what comes back. No keys here: it reads, simulates and broadcasts signed bytes.
 // Web APIs only (fetch, crypto.subtle), so it runs in a service worker, a web view or Node.
 
-export { CHAINS, chainByCaip2, chainByKey, chainCoin, chainDenom, chainUsdc, type ChainInfo, type ChainKind } from "./chains.ts";
+export {
+  addedChains,
+  addedKey,
+  cctpChain,
+  cctpChainByCaip2,
+  CHAINS,
+  chainByCaip2,
+  chainByKey,
+  chainCoin,
+  chainDenom,
+  chainList,
+  chainUsdc,
+  checkAddedChain,
+  MAX_ADDED_CHAINS,
+  MAX_CHAIN_ID,
+  markOf,
+  setAddedChains,
+  type AddedChain,
+  type AddedInfo,
+  type AnyChain,
+  type ChainInfo,
+  type ChainKind,
+} from "./chains.ts";
 export { balanceChanges, mergeActivity, parseCoins, summarize, type Activity, type ActivityKind, type EvmView } from "./activity.ts";
 export { DEPOSITS_LOOKED_AT, takesMemos } from "./deposits.ts";
 export { base58ToBytes, base64ToBytes, bytesToBase58, bytesToBase64, bytesToHex, cosmosTxHash, hexToBase64, hexToBytes, isSolanaAddress } from "./encoding.ts";

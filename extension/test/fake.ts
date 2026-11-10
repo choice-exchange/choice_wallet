@@ -162,6 +162,33 @@ export const USDC = "erc20:0xa00C59fF5a080D2b954d0c75e46E22a0c371235a";
 export const TOKEN_MESSENGER = "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d";
 export const MESSAGE_TRANSMITTER = "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64";
 export const BRIDGE_RECEIVER = "0xcA5A96ECF72B3656eF7cF60BDAA42FCdb218cd4A";
+/** A 1×1 PNG: a chain's logo as DefiLlama serves it. */
+export const TINY_PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
+
+/** chainlist.org's list, as much of it as the tests need: BNB Smart Chain (its endpoints, the
+ *  one that tracks least first), a test network, a coin that isn't 18 decimals, a chain the
+ *  wallet has built in, and one the list flags. */
+export const CHAIN_DIRECTORY = [
+  {
+    name: "BNB Smart Chain Mainnet",
+    chain: "BSC",
+    rpc: [{ url: "https://wrong-rpc.example", tracking: "yes" }, { url: "https://bnb-rpc.example", tracking: "none" }, { url: "https://${API_KEY}.bnb.example" }, "wss://bnb.example"],
+    nativeCurrency: { name: "BNB", symbol: "BNB", decimals: 18 },
+    shortName: "bnb",
+    chainId: 56,
+    icon: "bnbchain",
+    explorers: [{ name: "bscscan", url: "https://bscscan.com/", standard: "EIP3091" }],
+    tvl: 5_000_000_000,
+    chainSlug: "binance",
+    isTestnet: false,
+  },
+  { name: "BNB Smart Chain Testnet", rpc: ["https://bnb-testnet.example"], nativeCurrency: { symbol: "tBNB", decimals: 18 }, chainId: 97, isTestnet: true },
+  { name: "Six Decimals Chain", rpc: ["https://six.example"], nativeCurrency: { symbol: "SIX", decimals: 6 }, chainId: 66666, isTestnet: false },
+  { name: "Base", rpc: ["https://mainnet.base.org"], nativeCurrency: { symbol: "ETH", decimals: 18 }, chainId: 8453, isTestnet: false },
+  { name: "Reused <b>Chain</b>", rpc: ["https://reused.example"], nativeCurrency: { symbol: "RE", decimals: 18 }, chainId: 77777, isTestnet: false, redFlags: ["reusedChainId"] },
+  "not a chain",
+];
+
 /** USDC on Base, where the fake's second chain is (mainnet.base.org, chain 8453). */
 export const BASE_USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
 export const ERC20: Record<string, { symbol: string; name: string; decimals: number }> = {
@@ -301,6 +328,11 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
       /** What a test's Base index finds: hashes of transactions and of token transfers. */
       index: { txs: [] as string[], transfers: [] as string[] },
     },
+    /** BNB Smart Chain (56), a chain the user can add: ME's BNB there, what was broadcast. */
+    bnb: { coin: 3n * 10n ** 17n, sent: [] as string[] },
+    /** chainlist.org's list (null: it doesn't answer), and the logo hosts asked. */
+    directory: CHAIN_DIRECTORY as unknown[] | null,
+    logos: [] as string[],
     /** Injective's MessageTransmitterV2: the nonces it has used (minted). */
     usedNonces: new Set<string>(),
     /** BridgeReceiver's INJ top-up: wei, its fee in USDC, paused. */
@@ -350,6 +382,23 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
       if (data.startsWith("0xdd62ed3e")) return answer(word(mine && data.slice(98, 138) === TOKEN_MESSENGER.slice(2).toLowerCase() ? state.base.allowance : 0n));
     }
     return reverted;
+  };
+  /** BNB Smart Chain at bnb-rpc.example: its ID, ME's BNB, plain transfers. */
+  const bnbRpc = (r: Rpc) => {
+    const answer = (result: unknown) => ({ jsonrpc: "2.0", id: r.id, result });
+    if (r.method === "eth_chainId") return answer("0x38");
+    if (r.method === "eth_blockNumber") return answer("0x3000000");
+    if (r.method === "eth_getTransactionCount") return answer(`0x${state.bnb.sent.length.toString(16)}`);
+    if (r.method === "eth_getBlockByNumber") return answer({ number: "0x3000000", baseFeePerGas: "0x0" });
+    if (r.method === "eth_maxPriorityFeePerGas") return answer("0x3b9aca00");
+    if (r.method === "eth_getBalance") return answer((r.params[0] as unknown as string).toLowerCase() === ME_EVM.toLowerCase() ? `0x${state.bnb.coin.toString(16)}` : "0x0");
+    if (r.method === "eth_estimateGas") return answer("0x5208");
+    if (r.method === "eth_sendRawTransaction") {
+      state.bnb.sent.push(r.params[0] as unknown as string);
+      return answer(`0x${"b0".repeat(31)}${state.bnb.sent.length.toString(16).padStart(2, "0")}`);
+    }
+    if (r.method === "eth_getTransactionReceipt") return answer(state.bnb.sent.length ? { status: "0x1", blockNumber: "0x3000000" } : null);
+    return { jsonrpc: "2.0", id: r.id, error: { code: 3, message: "execution reverted" } };
   };
   const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status });
   type Rpc = { id: number; method: string; params: { to: string; data: string }[] };
@@ -418,6 +467,17 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
       const body = JSON.parse(String(init.body)) as Rpc | Rpc[];
       return json(200, Array.isArray(body) ? body.map(baseRpc) : baseRpc(body));
     }
+    // A chain to add: BNB Smart Chain's endpoint, and one that serves another chain.
+    if (init?.method === "POST" && (url.host === "bnb-rpc.example" || url.host === "wrong-rpc.example")) {
+      const body = JSON.parse(String(init.body)) as Rpc | Rpc[];
+      const one = url.host === "bnb-rpc.example" ? bnbRpc : (r: Rpc) => ({ jsonrpc: "2.0", id: r.id, result: r.method === "eth_chainId" ? "0x1" : "0x10" });
+      return json(200, Array.isArray(body) ? body.map(one) : one(body));
+    }
+    if (url.host === "chainlist.org" && p === "/rpcs.json") return state.directory ? json(200, state.directory) : new Response("down", { status: 503 });
+    if (url.host === "icons.llamao.fi") {
+      state.logos.push(p);
+      return p === "/icons/chains/rsz_binance.jpg" ? new Response(TINY_PNG, { status: 200, headers: { "content-type": "image/png" } }) : new Response("no", { status: 404 });
+    }
     // Prices: Jupiter for Solana's tokens, DefiLlama for the EVM chains' (Base's here).
     if (url.host === "lite-api.jup.ag" && p === "/price/v3") {
       state.priceAsks.push(url.toString());
@@ -426,7 +486,7 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
     }
     if (url.host === "coins.llama.fi" && p.startsWith("/prices/current/")) {
       state.priceAsks.push(url.toString());
-      const known: Record<string, number> = { [`base:${BASE_USDC}`.toLowerCase()]: 0.9998, "base:0x0000000000000000000000000000000000000000": 3000 };
+      const known: Record<string, number> = { [`base:${BASE_USDC}`.toLowerCase()]: 0.9998, "base:0x0000000000000000000000000000000000000000": 3000, "binance:0x0000000000000000000000000000000000000000": 600 };
       const keys = decodeURIComponent(p.slice("/prices/current/".length)).split(",");
       return json(200, { coins: Object.fromEntries(keys.filter((k) => known[k.toLowerCase()]).map((k) => [k, { price: known[k.toLowerCase()], symbol: "?", confidence: 0.99 }])) });
     }

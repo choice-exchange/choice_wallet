@@ -14,6 +14,7 @@ import type { AccountInfo, Balance, NotifyMode, Result, Settings, SnapshotView, 
 import { DEFAULT_FILTER } from "@choice-wallet/ui/token-filter";
 
 import { createDapps, type DappReply } from "./dapp";
+import { createAddedChains } from "./addedchains";
 import { createEvmChains, evmChains as evmChainsOf, type ChainEndpoints } from "./evmchains";
 import { createSender, sourceOfChain } from "./send";
 import { createApprovals } from "./approvals";
@@ -59,6 +60,8 @@ export interface Deps {
   badge?(text: string): void;
   /** Start or stop the background watcher's alarm. */
   scheduleWatch?(on: boolean): void;
+  /** An image made 64 pixels square, as a PNG data URL: an added chain's logo. */
+  resizeImage?(bytes: Uint8Array, type: string): Promise<string | null>;
 }
 
 /** Minutes without activity before the wallet locks itself, unless the user picks another
@@ -160,6 +163,7 @@ export function createService(d: Deps) {
     riskFacts: (n, recipient) => contacts.facts(n, recipient),
   });
   const evmChains = createEvmChains({ fetch: d.fetch, local: d.local, prices: showPrices });
+  const added = createAddedChains({ fetch: d.fetch, local: d.local, ...(d.resizeImage ? { resize: d.resizeImage } : {}) });
   const sender = createSender({
     vault: d.vault,
     fetch: d.fetch,
@@ -199,7 +203,12 @@ export function createService(d: Deps) {
       }
     },
   });
-  const status = wallets.status;
+  /** The wallet's status, with the chains added read in first (the background asks for it
+   *  directly too). */
+  const status = async (): Promise<Status> => {
+    await added.load();
+    return wallets.status();
+  };
   const nfts = createNfts({ sender, local: d.local, vault: d.vault });
   const inventory = createInventory({ sender });
   const rescue = createRescue({ sender, local: d.local, vault: d.vault, accounts: async () => (await wallets.stored()).accounts });
@@ -274,6 +283,7 @@ export function createService(d: Deps) {
     vault: d.vault,
     local: d.local,
     sender,
+    chains: added,
     solana,
     network,
     setNetwork: (n) => d.local.set({ network: n }),
@@ -474,6 +484,8 @@ export function createService(d: Deps) {
 
   /** Handle one request from an extension page. */
   async function handle(req: unknown): Promise<UiResponse> {
+    // The chains the user added join the list before anything reads it.
+    await added.load();
     const r = req as UiRequest;
     switch (r?.type) {
       case "status": {
@@ -536,6 +548,17 @@ export function createService(d: Deps) {
         const chain = chainByKey(next, r.chain) ? r.chain : "injective";
         await d.local.set({ chain, ...(r.network ? { network: r.network } : {}) });
         if (r.network && r.network !== before) d.notify();
+        return { ok: true, result: await status() };
+      }
+      case "chain_search":
+        return added.search(await network(), r.query);
+      case "add_chain":
+      case "remove_chain": {
+        const a = await active();
+        if ("ok" in a) return a;
+        const out = r.type === "add_chain" ? await added.add(r.chain) : await added.remove(r.chainId);
+        if (!out.ok) return out;
+        d.notify();
         return { ok: true, result: await status() };
       }
       case "save_settings":
@@ -694,7 +717,8 @@ export function createService(d: Deps) {
   }
 
   /** A message from a web page, through the content script, at `origin` (from the browser). */
-  function dapp(origin: string, message: unknown): Promise<DappReply> {
+  async function dapp(origin: string, message: unknown): Promise<DappReply> {
+    await added.load();
     return dapps.handle(origin, message);
   }
 
@@ -705,7 +729,10 @@ export function createService(d: Deps) {
     dapp,
     windowClosed: dapps.windowClosed,
     /** The background watcher's check (the alarm's), and whether it is on. */
-    watch: watcher.tick,
+    async watch() {
+      await added.load();
+      return watcher.tick();
+    },
     watching: async () => (await notifyMode()) !== "off",
     /** Every write the caches and the watcher have started is done (tests). */
     async settled() {

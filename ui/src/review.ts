@@ -122,7 +122,7 @@ export function shown(display: SendReview["display"], network: NetworkId, swap?:
     const key = (a: string, side?: "from" | "to") => {
       if (a.toLowerCase() === NATIVE) return away ? chainCoin(away.caip2) : net.feeDenom;
       if (swap && side) return swap[side];
-      if (away && a.toLowerCase() === away.usdc.toLowerCase()) return chainUsdc(away.caip2);
+      if (away && !away.added && a.toLowerCase() === away.usdc.toLowerCase()) return chainUsdc(away.caip2);
       return evmDenom(a);
     };
     if (d.call.type === "swap") {

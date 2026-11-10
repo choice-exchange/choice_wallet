@@ -38,7 +38,7 @@ export type LedgerSolana = { path: string; public_key: string };
 export type NewSecret = { mnemonic: string } | { private_key: string };
 
 export type { Nft, NftCollection, NftStandard } from "@choice-wallet/chain";
-import type { NftCollection, NftStandard } from "@choice-wallet/chain";
+import type { AddedChain, NftCollection, NftStandard } from "@choice-wallet/chain";
 /** The account's NFTs by collection; `evmDown`: no EVM endpoint answered, so ERC721s may be
  *  missing. */
 export type NftList = { collections: NftCollection[]; evmDown?: true };
@@ -91,6 +91,11 @@ export type UiRequest =
    *  defaults; left out: unchanged; an empty Blockscout list turns it off). */
   /** The chain Home shows, and mainnet or test networks; endpoints stay as they are. */
   | { type: "pick_chain"; chain: ChainView; network?: NetworkId }
+  /** Chains on chainlist.org's list matching a name or chain ID. */
+  | { type: "chain_search"; query: string }
+  /** Add an EVM chain: its endpoints must answer as its chain ID. */
+  | { type: "add_chain"; chain: NewChain }
+  | { type: "remove_chain"; chainId: number }
   /** Each endpoint list: `null` for the defaults, absent to leave it. `chain` is one EVM
    *  chain's (not Injective's own EVM side, which is `evm`): its endpoints, and the indexes
    *  that find its history (an empty list turns that off). */
@@ -223,6 +228,8 @@ export type Status = {
   accounts: AccountInfo[];
   /** Which of `accounts` is in use. */
   active: number;
+  /** The chains the user added, on both networks' lists. */
+  added: AddedChain[];
 };
 
 /** How a token is shown. Symbols of tokens not on the wallet's list (`known: false`) are
@@ -819,14 +826,41 @@ export type DappRequest = {
   origin: string;
   network: NetworkId;
   /** connect: see the account and ask for approvals. switch: move the wallet to `to`.
-   *  sign: one of the vault's request kinds (`method` names it). */
-  kind: "connect" | "switch" | "sign";
+   *  add_chain: add `chain` to the list and move the site to it. sign: one of the vault's
+   *  request kinds (`method` names it). */
+  kind: "connect" | "switch" | "add_chain" | "sign";
   /** For sign: evm_transaction, evm_personal_sign, evm_typed_data, cosmos_direct,
    *  cosmos_amino or cosmos_arbitrary (ADR-036). */
   method?: string;
   /** For switch: the network asked for, and the chain on it (a key) for an EVM site. */
   to?: NetworkId;
   toChain?: string;
+  /** For add_chain: the chain as it would be added (the list's details where it has the
+   *  chain, else the site's), and the list's entry. */
+  chain?: NewChain;
+  listed?: ListedChain;
+  /** The name the site gave, when it isn't the list's. */
+  siteName?: string;
+};
+
+/** A chain to add, as the form (or a site) gives it. */
+export type NewChain = { chainId: number; name: string; symbol: string; rpc: string[]; explorer?: string; testnet: boolean };
+
+/** A chain on chainlist.org's list. `rpc`: its https endpoints, those tracking least first.
+ *  `llama`: DefiLlama's name (its price and logo). `flags`: the list's warnings, such as
+ *  `reusedChainId`. */
+export type ListedChain = {
+  chainId: number;
+  name: string;
+  symbol: string;
+  decimals: number;
+  testnet: boolean;
+  rpc: string[];
+  explorer?: string;
+  llama?: string;
+  icon?: string;
+  flags: string[];
+  tvl?: number;
 };
 
 /** A signature request's approval screen: the vault's decode and the risk rules' verdict,
@@ -860,6 +894,9 @@ export type Replies = {
   reset: Status;
   settings: Settings;
   pick_chain: Status;
+  chain_search: ListedChain[];
+  add_chain: Status;
+  remove_chain: Status;
   save_settings: Settings;
   /** Every balance; the UI applies `filter`. `prices` is the USD values setting. EVM-only
    *  tokens (denom `evm:0x…`) and CW20s (`cw20:inj1…`) are in the list; `evmDown` says the

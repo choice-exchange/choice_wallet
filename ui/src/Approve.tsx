@@ -15,7 +15,7 @@ import { useBackend } from "./backend";
 import { ArrowDownIcon, CheckIcon, GlobeIcon, LockIcon } from "./icons";
 import { Callout, Screen, shortAddress } from "./kit";
 import { DeviceStep } from "./Ledger";
-import type { Coin, CosmosDisplay, DappRequest, DappReview, DeviceRequest, DeviceSignature, NetworkId, Status } from "./protocol";
+import type { Coin, CosmosDisplay, DappRequest, DappReview, DeviceRequest, DeviceSignature, ListedChain, NetworkId, NewChain, Status } from "./protocol";
 import { shown } from "./review";
 import { Figure, formName, realName, SwapCards } from "./Send";
 
@@ -45,7 +45,7 @@ function useArmed(): boolean {
   return armed;
 }
 
-const WHAT: Record<DappRequest["kind"], string> = { connect: "wants to connect", switch: "wants to switch network", sign: "wants a signature" };
+const WHAT: Record<DappRequest["kind"], string> = { connect: "wants to connect", switch: "wants to switch network", add_chain: "wants to add a chain", sign: "wants a signature" };
 
 export function ApproveView({ id }: { id: string }) {
   const backend = useBackend();
@@ -138,7 +138,7 @@ export function ApproveView({ id }: { id: string }) {
   const blocked = risk?.level === "blocked";
   const needsWord = risk?.confirm !== undefined && typed.trim() !== risk.confirm;
   const ready = unlocked && (req.kind !== "sign" || review !== null) && !closed;
-  const yes = { connect: "Connect", switch: "Switch", sign: req.method === "evm_transaction" ? "Confirm" : "Sign" }[req.kind];
+  const yes = { connect: "Connect", switch: "Switch", add_chain: "Add and switch", sign: req.method === "evm_transaction" ? "Confirm" : "Sign" }[req.kind];
 
   return (
     <Screen
@@ -217,6 +217,8 @@ export function ApproveView({ id }: { id: string }) {
             From {net.name}. Every connected site sees the change.
           </p>
         </div>
+      ) : req.kind === "add_chain" && req.chain ? (
+        <AddChainBody chain={req.chain} listed={req.listed} siteName={req.siteName} from={net.name} />
       ) : !review ? (
         !problem && [0, 1].map((i) => <div key={i} className="skeleton" style={{ height: 64 }} />)
       ) : (
@@ -379,6 +381,46 @@ function SignBody({ review, network, typed, onTyped }: { review: DappReview; net
   );
 }
 
+/** A site's chain to add: as it would be added, and what chainlist.org's list says of it. */
+function AddChainBody({ chain, listed, siteName, from }: { chain: NewChain; listed: ListedChain | undefined; siteName: string | undefined; from: string }) {
+  const host = (u: string | undefined) => (u ? new URL(u).host : "None");
+  return (
+    <>
+      <div className="surface-hero">
+        <div className="eyebrow">Add to {chain.testnet ? "the test networks" : "the chain list"}, then switch to</div>
+        <div className="hero" style={{ fontSize: 24, marginTop: 6 }}>
+          {chain.name}
+        </div>
+        <p className="meta" style={{ marginTop: 8 }}>
+          From {from}. Every connected site sees the change.
+        </p>
+      </div>
+      {!listed && <Callout level="amber">Not on chainlist.org&apos;s list. Check its chain ID with whoever runs it.</Callout>}
+      {listed?.flags.includes("reusedChainId") && <Callout level="amber">chainlist.org says another chain uses this chain ID too.</Callout>}
+      {siteName && <Callout level="amber">The site calls it {siteName}. The list says {chain.name}.</Callout>}
+      <Rows>
+        <div className="row">
+          <span>Chain ID</span>
+          <span className="num">{chain.chainId}</span>
+        </div>
+        <div className="row">
+          <span>Coin</span>
+          <span>{chain.symbol}</span>
+        </div>
+        <div className="row">
+          <span>Endpoint</span>
+          <span>{host(chain.rpc[0])}</span>
+        </div>
+        <div className="row">
+          <span>Explorer</span>
+          <span>{host(chain.explorer)}</span>
+        </div>
+      </Rows>
+      <p className="meta">The wallet signs there by chain ID. The name and coin are labels.</p>
+    </>
+  );
+}
+
 function Rows({ children }: { children: ReactNode }) {
   return <div className="well rows">{children}</div>;
 }
@@ -509,7 +551,10 @@ function networkName(d: Record<string, unknown>, network: NetworkId): string {
   const chain = typeof d["chain"] === "string" ? d["chain"] : "";
   if (chain.startsWith("eip155:")) {
     const c = chainByCaip2(network, chain);
-    if (c?.kind === "evm") return c.name;
+    // An added chain is named by the user (or a site), so its ID goes with the name.
+    if (c?.kind === "evm") return c.added ? `${c.name} (chain ${c.chainId})` : c.name;
+    const added = typeof d["network"] === "object" && d["network"] !== null && (d["network"] as { added?: unknown }).added === true;
+    if (added) return `Chain ${chain.slice("eip155:".length)}`;
     return `${net.name}${kind === "evm_transaction" ? " (EVM)" : ""}`;
   }
   return net.name;

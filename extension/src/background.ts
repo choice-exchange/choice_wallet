@@ -9,7 +9,7 @@
 // a request first calls it.
 
 import init, { handle } from "choice-wallet-vault-glue";
-import { explorerTxUrl, isNetworkId, NETWORKS } from "@choice-wallet/chain";
+import { bytesToBase64, explorerTxUrl, isNetworkId, NETWORKS } from "@choice-wallet/chain";
 
 import { createService, dappOrigin, fromOwnPage, type Store } from "./host/service";
 import { callVault } from "./host/vault";
@@ -93,7 +93,24 @@ const service = createService({
     if (text) void chrome.action.setBadgeBackgroundColor({ color: "#fdc70c" });
   },
   scheduleWatch,
+  resizeImage,
 });
+
+/** An added chain's logo, drawn 64 pixels square and kept as a PNG: small to store, and only
+ *  pixels (whatever the image came as). */
+async function resizeImage(bytes: Uint8Array, type: string): Promise<string | null> {
+  try {
+    const size = 64;
+    const bitmap = await createImageBitmap(new Blob([new Uint8Array(bytes)], { type }), { resizeWidth: size, resizeHeight: size, resizeQuality: "high" });
+    const canvas = new OffscreenCanvas(size, size);
+    canvas.getContext("2d")?.drawImage(bitmap, 0, 0, size, size);
+    bitmap.close();
+    const png = new Uint8Array(await (await canvas.convertToBlob({ type: "image/png" })).arrayBuffer());
+    return `data:image/png;base64,${bytesToBase64(png)}`;
+  } catch {
+    return null;
+  }
+}
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (fromOwnPage(sender, chrome.runtime.id)) {

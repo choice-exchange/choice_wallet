@@ -55,7 +55,7 @@ test("create, lock and unlock a wallet", async () => {
   const { service, local, session, locks } = setup();
   assert.deepEqual(await service.handle({ type: "status" }), {
     ok: true,
-    result: { hasWallet: false, unlocked: false, network: "mainnet", chain: "injective", wallets: [], accounts: [], active: 0 },
+    result: { hasWallet: false, unlocked: false, network: "mainnet", chain: "injective", wallets: [], accounts: [], active: 0, added: [] },
   });
 
   const created = await service.handle({ type: "create", secret: { mnemonic: PHRASE }, password: PASSWORD });
@@ -74,7 +74,7 @@ test("create, lock and unlock a wallet", async () => {
   assert.ok(!sent.includes(session.data.get("unlock_key") as string));
 
   const locked = await service.handle({ type: "lock" });
-  assert.deepEqual((locked as { result: unknown }).result, { hasWallet: true, unlocked: false, network: "mainnet", chain: "injective", wallets: [], accounts: [], active: 0 });
+  assert.deepEqual((locked as { result: unknown }).result, { hasWallet: true, unlocked: false, network: "mainnet", chain: "injective", wallets: [], accounts: [], active: 0, added: [] });
   assert.equal(session.data.has("unlock_key"), false);
   assert.equal(locks.cancelled, 1);
 

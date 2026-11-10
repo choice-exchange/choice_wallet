@@ -7,7 +7,7 @@ import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 
 import { useBackend } from "./backend";
 import { GlobeIcon, LockIcon } from "./icons";
-import { Screen, Segmented } from "./kit";
+import { Callout, Screen, Segmented } from "./kit";
 import type { Connection, NetworkId, NotifyMode, Settings, Status } from "./protocol";
 import { useRequest } from "./request";
 import { ChangePasswordView, ResetView, RevealView, type SecurityView } from "./Security";
@@ -258,6 +258,7 @@ export function SettingsView({
             Use the defaults
           </button>
         </div>
+        {picked.added && <RemoveChain chainId={picked.chainId} name={picked.name} onStatus={onStatus} />}
         <div className="eyebrow" style={{ marginTop: 8 }}>
           USD values
         </div>
@@ -365,5 +366,28 @@ export function SettingsView({
         <p className="footnote">Choice Wallet 0.1.0. Pre-alpha. Not for real funds.</p>
       </Screen>
     </form>
+  );
+}
+
+/** Take an added chain off the list, with its endpoints. What the account holds there stays
+ *  on the chain: adding it again shows it. */
+function RemoveChain({ chainId, name, onStatus }: { chainId: number; name: string; onStatus: (s: Status) => void }) {
+  const { run, error, busy } = useRequest();
+  const [sure, setSure] = useState(false);
+  return (
+    <>
+      {error && <Callout level="amber">{error}</Callout>}
+      <button
+        type="button"
+        className="btn btn-quiet danger-text"
+        disabled={busy}
+        onClick={() => {
+          if (!sure) return setSure(true);
+          void run({ type: "remove_chain", chainId }).then((s) => s && onStatus(s));
+        }}
+      >
+        {sure ? `Remove ${name}? Tap again` : `Remove ${name}`}
+      </button>
+    </>
   );
 }

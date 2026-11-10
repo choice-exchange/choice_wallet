@@ -1,6 +1,6 @@
 # Choice Wallet
 
-An open-source, self-custody wallet. Injective first (Cosmos side and Injective EVM), Solana, and every EVM chain Circle's CCTP joins to them (Ethereum, Base, Arbitrum, OP Mainnet, Polygon, Avalanche and more), with native USDC bridged between any two. Browser extension first, mobile later.
+An open-source, self-custody wallet. Injective first (Cosmos side and Injective EVM), Solana, and every EVM chain Circle's CCTP joins to them (Ethereum, Base, Arbitrum, OP Mainnet, Polygon, Avalanche and more), with native USDC bridged between any two, and any other EVM chain the user adds. Browser extension first, mobile later.
 
 - Design: [docs/DESIGN.md](docs/DESIGN.md)
 - Security model, audit process, dependency budget: [docs/SECURITY.md](docs/SECURITY.md)

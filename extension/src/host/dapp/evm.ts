@@ -6,9 +6,10 @@
 // the site's to make (nothing is signed by it, and every request names its chain in the
 // approval window); moving the whole wallet between mainnet and the test networks asks first.
 
-import { CHAINS, chainByKey, ChainError, erc20Meta, evmDenom, isObject, MIN_GAS_PRICE, NETWORKS, type ChainInfo, type EvmRpc, type NetworkId } from "@choice-wallet/chain";
-import type { AccountInfo, TokenInfo } from "@choice-wallet/ui/protocol";
+import { addedKey, chainByKey, ChainError, chainList, checkAddedChain, erc20Meta, evmDenom, isObject, MIN_GAS_PRICE, NETWORKS, type AnyChain, type EvmRpc, type NetworkId } from "@choice-wallet/chain";
+import type { AccountInfo, NewChain, TokenInfo } from "@choice-wallet/ui/protocol";
 
+import { cleanName } from "../addedchains";
 import { CHAIN_DISCONNECTED, INVALID_PARAMS, no, quantity, UNAUTHORIZED, UNRECOGNIZED_CHAIN, UNSUPPORTED, type DappReply, type SiteCore } from "./shared";
 
 /** Read-only JSON-RPC methods passed to the user's own EVM endpoints. */
@@ -49,7 +50,7 @@ export function createEvmSite(core: SiteCore) {
 
   /** The EVM chain a site is on, on this network: its own pick, Injective's EVM side until
    *  then. */
-  async function siteChain(origin: string, network: NetworkId): Promise<ChainInfo> {
+  async function siteChain(origin: string, network: NetworkId): Promise<AnyChain> {
     const { site_chains } = (await h.local.get(["site_chains"])) as { site_chains?: Record<string, Partial<Record<NetworkId, string>>> };
     const c = chainByKey(network, site_chains?.[origin]?.[network]);
     return c && c.kind !== "solana" ? c : chainByKey(network, "injective")!;
@@ -61,7 +62,7 @@ export function createEvmSite(core: SiteCore) {
   }
 
   /** A client for a site's chain, on the user's endpoints. */
-  const rpcFor = (network: NetworkId, c: ChainInfo): Promise<EvmRpc> => (c.kind === "injective" ? h.sender.evm(network) : h.sender.chainRpc(network, c.key));
+  const rpcFor = (network: NetworkId, c: AnyChain): Promise<EvmRpc> => (c.kind === "injective" ? h.sender.evm(network) : h.sender.chainRpc(network, c.key));
 
   /** The EVM accounts a site sees: the account while connected and unlocked, else none. */
   async function evmAccounts(origin: string): Promise<string[]> {
@@ -73,11 +74,11 @@ export function createEvmSite(core: SiteCore) {
   }
 
   /** The wallet's chain (and network) a chain ID names, if it's one of its EVM chains. */
-  function chainOfId(chainId: unknown): { network: NetworkId; chain: ChainInfo } | null {
+  function chainOfId(chainId: unknown): { network: NetworkId; chain: AnyChain } | null {
     if (typeof chainId !== "string" || !/^0x[0-9a-fA-F]{1,16}$/.test(chainId)) return null;
     const n = Number(BigInt(chainId));
     for (const network of ["mainnet", "testnet"] as NetworkId[]) {
-      const c = CHAINS[network].find((x) => x.kind !== "solana" && x.chainId === n);
+      const c = chainList(network).find((x) => x.kind !== "solana" && x.chainId === n);
       if (c) return { network, chain: c };
     }
     return null;
@@ -86,7 +87,7 @@ export function createEvmSite(core: SiteCore) {
   async function switchTo(origin: string, chainId: unknown): Promise<DappReply> {
     const to = chainOfId(chainId);
     if (!to) {
-      const names = CHAINS.mainnet.filter((c) => c.kind !== "solana").map((c) => `${c.name} (${c.chainId})`);
+      const names = chainList("mainnet").filter((c) => c.kind !== "solana").map((c) => `${c.name} (${c.chainId})`);
       return no(UNRECOGNIZED_CHAIN, `Choice Wallet doesn't know that chain. It has ${names.join(", ")}, and their test networks.`);
     }
     if (!(await isConnected(origin))) return no(UNAUTHORIZED, "Connect first.");
@@ -109,11 +110,62 @@ export function createEvmSite(core: SiteCore) {
     );
   }
 
+  /** A site asks to add a chain the wallet doesn't have (EIP-3085). The user sees it as it
+   *  would be added: chainlist.org's details where the list has the chain (the site's name
+   *  shown beside them if it differs), the site's otherwise, on the network in use. Approved,
+   *  it joins the list once its endpoints answer as its chain ID, and the site moves to it.
+   *  The site's icon is never used. */
+  async function addChain(origin: string, p: Record<string, unknown>): Promise<DappReply> {
+    if (!(await isConnected(origin))) return no(UNAUTHORIZED, "Connect first.");
+    const id = p["chainId"];
+    if (typeof id !== "string" || !/^0x[0-9a-fA-F]{1,16}$/.test(id)) return no(INVALID_PARAMS, "chainId must be a hex number.");
+    const chainId = Number(BigInt(id));
+    const coin = isObject(p["nativeCurrency"]) ? p["nativeCurrency"] : {};
+    // The vault reads amounts at 18 decimals on an added chain: another count would show
+    // the wrong amounts.
+    if (coin["decimals"] !== 18) return no(INVALID_PARAMS, "Choice Wallet adds chains whose coin has 18 decimals.");
+    const strings = (v: unknown) => (Array.isArray(v) ? v.filter((u): u is string => typeof u === "string") : []);
+    const siteName = typeof p["chainName"] === "string" ? cleanName(p["chainName"]) : "";
+    const listed = await h.chains.listed(chainId);
+    if (listed && listed.decimals !== 18) return no(INVALID_PARAMS, "Choice Wallet adds chains whose coin has 18 decimals.");
+    const net = await h.network();
+    const siteExplorer = strings(p["blockExplorerUrls"]).find((u) => /^https:\/\//.test(u));
+    const chain: NewChain = listed
+      ? { chainId, name: listed.name, symbol: listed.symbol, rpc: listed.rpc.slice(0, 4), ...(listed.explorer ? { explorer: listed.explorer } : {}), testnet: listed.testnet }
+      : {
+          chainId,
+          name: siteName,
+          symbol: typeof coin["symbol"] === "string" ? coin["symbol"] : "",
+          rpc: strings(p["rpcUrls"]).filter((u) => /^https:\/\//.test(u)).slice(0, 4),
+          ...(siteExplorer ? { explorer: siteExplorer } : {}),
+          testnet: net === "testnet",
+        };
+    const why = checkAddedChain(chain);
+    if (why) return no(INVALID_PARAMS, why);
+    if (chain.rpc.length === 0) return no(INVALID_PARAMS, "rpcUrls needs an https endpoint.");
+    const to: NetworkId = chain.testnet ? "testnet" : "mainnet";
+    return ask(
+      {
+        check: async () => {
+          const r = await h.chains.add(chain);
+          return r.ok || r.error.code === "exists" ? { ok: true, result: null } : r;
+        },
+        approve: async () => {
+          if (to !== net) await h.setNetwork(to);
+          await setSiteChain(origin, to, addedKey(chainId));
+          h.notify();
+          return { result: null };
+        },
+      },
+      { origin, network: net, kind: "add_chain", chain, ...(listed ? { listed } : {}), ...(listed && siteName && siteName.toLowerCase() !== listed.name.toLowerCase() ? { siteName } : {}) },
+    );
+  }
+
   /** The dapp's transaction with the wallet's own nonce, gas and fees. Injective charges
    *  gas limit × max fee per gas, so the wallet sets both and ignores the dapp's. An
    *  estimate that fails stops the request: a failing tx on Injective still pays its whole
    *  gas limit. */
-  async function fillEvmTx(network: NetworkId, chain: ChainInfo, from: string, tx: Record<string, unknown>) {
+  async function fillEvmTx(network: NetworkId, chain: AnyChain, from: string, tx: Record<string, unknown>) {
     const rpc = await rpcFor(network, chain);
     const hexOr = (v: unknown, what: string, fallback: string) => {
       if (v === undefined || v === null) return fallback;
@@ -176,14 +228,14 @@ export function createEvmSite(core: SiteCore) {
 
   /** On another EVM chain than Injective's: what the review shows amounts in (its coin, its
    *  USDC, the token a call is to) and what the rules weigh them against. */
-  async function elsewhere(chain: ChainInfo, rpc: EvmRpc, to: string | null, held: bigint | null) {
+  async function elsewhere(chain: AnyChain, rpc: EvmRpc, to: string | null, held: bigint | null) {
     const coin = `native:${chain.caip2}`;
     const usdc = `usdc:${chain.caip2}`;
     const tokens: Record<string, TokenInfo> = {
       [coin]: { denom: coin, symbol: chain.native.symbol, name: chain.native.symbol, decimals: chain.native.decimals, known: true, chain: chain.caip2 },
-      [usdc]: { denom: usdc, symbol: "USDC", name: "USD Coin", decimals: 6, known: true, chain: chain.caip2 },
+      ...(chain.added ? {} : { [usdc]: { denom: usdc, symbol: "USDC", name: "USD Coin", decimals: 6, known: true, chain: chain.caip2 } }),
     };
-    if (to && to.toLowerCase() !== chain.usdc.toLowerCase()) {
+    if (to && (chain.added || to.toLowerCase() !== chain.usdc.toLowerCase())) {
       const meta = await erc20Meta(rpc, to).catch(() => null);
       if (meta) tokens[evmDenom(to)] = { denom: evmDenom(to), symbol: meta.symbol, name: meta.symbol, decimals: meta.decimals, known: false, chain: chain.caip2 };
     }
@@ -281,6 +333,8 @@ export function createEvmSite(core: SiteCore) {
       case "wallet_switchEthereumChain":
       case "wallet_addEthereumChain": {
         const p = Array.isArray(params) && isObject(params[0]) ? params[0] : {};
+        // A chain the wallet has (built in or added) is a switch; another is added first.
+        if (method === "wallet_addEthereumChain" && !chainOfId(p["chainId"])) return addChain(origin, p);
         return switchTo(origin, p["chainId"]);
       }
       case "eth_sendTransaction":

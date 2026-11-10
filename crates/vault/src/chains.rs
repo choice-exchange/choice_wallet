@@ -5,8 +5,12 @@
 //! signs on each, under the same EVM rules. Adding a chain means adding an entry there (and,
 //! for a Cosmos chain, its profile). The protocol stays the same: every request names its
 //! chain by CAIP-2 ID.
+//!
+//! Any other EVM chain is one the user added in the wallet: [`find`] gives it an entry with
+//! no Injective or CCTP rules and its coin at 18 decimals. Its chain ID is all the vault
+//! knows of it, and what it signs for; the name and symbol the wallet shows are the user's.
 
-use std::sync::LazyLock;
+use std::sync::{LazyLock, Mutex, PoisonError};
 
 use choice_wallet_core::{EthAddress, PublicKey};
 use choice_wallet_cosmos::chain::Chain as CosmosChain;
@@ -43,6 +47,8 @@ pub struct Entry {
     pub bridge: Option<(&'static Network, &'static EvmChain)>,
     /// Native coin symbol and decimals.
     pub native: (&'static str, u8),
+    /// A chain the user added: known by its ID alone (no name or symbol here).
+    pub added: bool,
 }
 
 /// Every chain, in display order: each network's Cosmos side, then its EVM chains.
@@ -61,6 +67,7 @@ pub static CHAINS: LazyLock<Vec<Entry>> = LazyLock::new(|| {
             injective: Some(n),
             bridge: None,
             native: ("INJ", 18),
+            added: false,
         });
         for c in n.cctp.evm {
             let own = c.chain_id == n.evm_chain_id;
@@ -75,6 +82,7 @@ pub static CHAINS: LazyLock<Vec<Entry>> = LazyLock::new(|| {
                 injective: own.then_some(n),
                 bridge: Some((n, c)),
                 native: c.native,
+                added: false,
             });
         }
     }
@@ -112,12 +120,46 @@ pub fn solana(id: &str) -> Option<&'static SolanaChain> {
     SOLANA.iter().find(|c| c.id == id)
 }
 
-/// Find a chain by CAIP-2 ID.
+/// The highest chain ID an added chain may have (MetaMask's: an EIP-155 `v` fits 53 bits).
+pub const MAX_ADDED_CHAIN_ID: u64 = 4_503_599_627_370_476;
+/// Added chains one vault keeps entries for (the wallet adds at most 32).
+const MAX_ADDED: usize = 64;
+
+/// Entries for added chains, each made once and kept as long as the vault, like the built-in
+/// ones.
+static ADDED: Mutex<Vec<&'static Entry>> = Mutex::new(Vec::new());
+
+/// Find a chain by CAIP-2 ID: a built-in one, or any other EVM chain (`eip155:` and its ID in
+/// plain decimal) as one the user added.
 pub fn find(id: &str) -> Result<&'static Entry, VaultError> {
-    CHAINS
-        .iter()
-        .find(|c| c.id == id)
-        .ok_or_else(|| VaultError::new(UNKNOWN_CHAIN, format!("unknown chain {id:?}")))
+    if let Some(c) = CHAINS.iter().find(|c| c.id == id) {
+        return Ok(c);
+    }
+    let unknown = || VaultError::new(UNKNOWN_CHAIN, format!("unknown chain {id:?}"));
+    let n = id
+        .strip_prefix("eip155:")
+        .filter(|d| !d.starts_with('0') && (1..=16).contains(&d.len()) && d.bytes().all(|b| b.is_ascii_digit()))
+        .and_then(|d| d.parse::<u64>().ok())
+        .filter(|n| (1..=MAX_ADDED_CHAIN_ID).contains(n))
+        .ok_or_else(unknown)?;
+    let mut added = ADDED.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(e) = added.iter().find(|e| e.kind == Kind::Evm(n)) {
+        return Ok(e);
+    }
+    if added.len() >= MAX_ADDED {
+        return Err(VaultError::bad("too many added chains"));
+    }
+    let e: &'static Entry = Box::leak(Box::new(Entry {
+        id: Box::leak(id.to_owned().into_boxed_str()),
+        name: "",
+        kind: Kind::Evm(n),
+        injective: None,
+        bridge: None,
+        native: ("", 18),
+        added: true,
+    }));
+    added.push(e);
+    Ok(e)
 }
 
 impl Entry {
@@ -227,8 +269,19 @@ mod tests {
             assert_eq!(c.id, id);
             assert_eq!(find(c.id).unwrap(), c);
         }
-        assert_eq!(find("eip155:56").unwrap_err().code, UNKNOWN_CHAIN);
-        for id in ["eip155:08453", "eip155:8453 ", "cosmos:8453", "eip155:"] {
+        // Any other EVM chain is one the user added; other forms are no chain.
+        let bnb = find("eip155:56").unwrap();
+        assert!(bnb.added && bnb.bridge.is_none() && bnb.injective.is_none());
+        assert_eq!((bnb.evm().unwrap(), bnb.native.1), (56, 18));
+        assert!(std::ptr::eq(bnb, find("eip155:56").unwrap()));
+        assert!(CHAINS.iter().all(|c| !c.added));
+        for id in [
+            "eip155:08453",
+            "eip155:8453 ",
+            "cosmos:8453",
+            "eip155:",
+            "cosmos:injective-2",
+        ] {
             assert!(find(id).is_err(), "{id}");
         }
     }

@@ -22,7 +22,7 @@
 // lower-level pieces (Iris' fees, the burn's calldata, the hooks, Solana's instruction) are
 // used here for every route, with the same arithmetic.
 
-import { CHAINS, chainByKey, word, bytesToBase58, type ChainInfo, type NetworkId } from "@choice-wallet/chain";
+import { CHAINS, cctpChain, word, bytesToBase58, type ChainInfo, type NetworkId } from "@choice-wallet/chain";
 import { ed25519 } from "@noble/curves/ed25519";
 import type { AccountInfo, BridgeEnd, BridgePending, BridgeQuote, BridgeRoutes, BridgeStatus, BridgeStep, BridgeStepInfo, Result, SendReview } from "@choice-wallet/ui/protocol";
 import {
@@ -242,8 +242,8 @@ export function createTransfers(c: BridgeContext) {
   }
 
   async function quote(network: NetworkId, account: AccountInfo, req: { from?: unknown; to?: unknown; amount?: unknown; recipient?: unknown; gasDrop?: unknown }): Promise<Result<BridgeQuote>> {
-    const from = chainByKey(network, req.from);
-    const to = chainByKey(network, req.to);
+    const from = cctpChain(network, req.from);
+    const to = cctpChain(network, req.to);
     if (!from || !to) return fail("bad_request", "Pick both chains.");
     if (from.key === to.key) return fail("bad_request", "Pick another chain to bridge to.");
     const me = account.addresses[from.caip2];
@@ -352,8 +352,8 @@ export function createTransfers(c: BridgeContext) {
   async function prepare(network: NetworkId, account: AccountInfo, id: unknown): Promise<Result<SendReview>> {
     const { bridge_quote } = await session.get(["bridge_quote"]);
     const s = bridge_quote as Stored | undefined;
-    const from = s ? chainByKey(network, s.from) : undefined;
-    const to = s ? chainByKey(network, s.to) : undefined;
+    const from = s ? cctpChain(network, s.from) : undefined;
+    const to = s ? cctpChain(network, s.to) : undefined;
     const me = from ? account.addresses[from.caip2] : undefined;
     if (!s || s.id !== id || s.network !== network || !from || !to || !me || !same(s.account, me)) return fail("not_found", "This quote is gone. Get a new one.");
     const amount = BigInt(s.amount);
@@ -500,7 +500,7 @@ export function createTransfers(c: BridgeContext) {
   /** Transfers this account sent that haven't landed, newest first. */
   async function pending(network: NetworkId, account: AccountInfo): Promise<Result<BridgePending[]>> {
     const mine = new Set(Object.values(account.addresses).map((a) => a.toLowerCase()));
-    const name = (k: string) => chainByKey(network, k)?.name;
+    const name = (k: string) => cctpChain(network, k)?.name;
     return {
       ok: true,
       result: (await tracked())
@@ -511,7 +511,7 @@ export function createTransfers(c: BridgeContext) {
 
   /** Iris' message for a burn on `from` (none yet: null). */
   async function attested(network: NetworkId, req: { from?: unknown; hash?: unknown }): Promise<Result<{ from: ChainInfo; hash: string; m: IrisMessage | null }>> {
-    const from = chainByKey(network, req.from);
+    const from = cctpChain(network, req.from);
     if (!from) return fail("bad_request", "Not a chain the wallet knows.");
     // A Solana transaction is named by its signature (base58), an EVM one by its 0x hash.
     const hash = typeof req.hash !== "string" ? "" : from.kind === "solana" ? req.hash : req.hash.toLowerCase();
@@ -525,7 +525,7 @@ export function createTransfers(c: BridgeContext) {
     // A transaction with several messages would be someone else's batch: the one going
     // where the wallet sent it counts.
     const t = (await tracked()).find((x) => x.hash === hash);
-    const toDomain = t ? chainByKey(network, t.to)?.domain : undefined;
+    const toDomain = t ? cctpChain(network, t.to)?.domain : undefined;
     const m = messages.find((x) => toDomain === undefined || x.decodedMessage?.destinationDomain === undefined || String(x.decodedMessage.destinationDomain) === String(toDomain)) ?? null;
     return { ok: true, result: { from, hash, m } };
   }

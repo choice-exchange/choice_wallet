@@ -25,9 +25,10 @@ import worldchain from "./assets/chains/worldchain.png";
 export const CHAIN_LOGOS: Readonly<Record<string, string>> = { arbitrum, arc, avalanche, base, ethereum, hyperevm, ink, linea, monad, optimism, plasma, polygon, sei, sonic, unichain, worldchain };
 
 /** The mark of an EVM chain's coin, by the chain's CAIP-2 ID: Ethereum's for every chain whose
- *  gas is ETH, the chain's own for the rest. */
+ *  gas is ETH, the chain's own for the rest (an added chain's, the logo kept with it). */
 export function coinLogo(caip2: string): string | undefined {
   const c = chainByCaip2("mainnet", caip2) ?? chainByCaip2("testnet", caip2);
   if (!c || c.kind !== "evm") return undefined;
-  return c.native.symbol === "ETH" ? ethereum : CHAIN_LOGOS[c.key];
+  if (c.native.symbol === "ETH") return ethereum;
+  return c.added ? c.logo : CHAIN_LOGOS[c.key];
 }

@@ -1,8 +1,8 @@
 // What the site handlers share (./index.ts puts them together): the page's answers and
 // error codes, the host, a waiting request, and the encodings pages send.
 
-import { base64ToBytes, bytesToHex, type NetworkId } from "@choice-wallet/chain";
-import type { AccountInfo, DappRequest, DappReview, DeviceRequest, Result } from "@choice-wallet/ui/protocol";
+import { base64ToBytes, bytesToHex, type AddedChain, type NetworkId } from "@choice-wallet/chain";
+import type { AccountInfo, DappRequest, DappReview, DeviceRequest, ListedChain, NewChain, Result } from "@choice-wallet/ui/protocol";
 
 import type { createSender } from "../send";
 import type { Store } from "../service";
@@ -42,6 +42,11 @@ export interface DappHost {
   openWindow(id: string): Promise<number | undefined>;
   /** Tell every page that its view (accounts, chain) may have changed. */
   notify(): void;
+  /** The chains the user adds (../addedchains.ts). */
+  chains: {
+    listed(chainId: number): Promise<ListedChain | undefined>;
+    add(chain: NewChain): Promise<Result<AddedChain>>;
+  };
 }
 
 export type Prepared = { request: unknown; digest: string; confirm: string | null; blocked: boolean };
@@ -50,8 +55,11 @@ export interface Waiting {
   req: DappRequest;
   resolve: (r: DappReply) => void;
   windowId?: number;
-  /** connect and switch: what approving does, and the page's answer. */
+  /** connect, switch and add_chain: what approving does, and the page's answer. */
   approve?: () => Promise<DappReply>;
+  /** Run before `approve`: a failure goes to the approval window, and the request stays
+   *  open (a chain whose endpoints don't answer, say). */
+  check?: () => Promise<Result<null>>;
   /** sign: build the vault request (fresh, at review time). `tokens` and `context` replace
    *  what the review would read from Injective (a Solana transaction's own). */
   build?: (account: AccountInfo) => Promise<{

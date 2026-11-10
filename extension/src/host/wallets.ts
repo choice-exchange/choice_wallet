@@ -13,7 +13,7 @@
 // device from before vaults has `keystore` and `kind` instead: the first unlock moves it
 // into a vault as "Recovery phrase 1" (or "Imported key 1"), keeping the account list.
 
-import { CHAINS, chainByKey, cleanText, NETWORKS, type NetworkId } from "@choice-wallet/chain";
+import { addedChains, CHAINS, chainByKey, cleanText, NETWORKS, type NetworkId } from "@choice-wallet/chain";
 import type { AccountInfo, NewSecret, Result, Status, WalletInfo } from "@choice-wallet/ui/protocol";
 
 import type { Store } from "./service";
@@ -40,6 +40,15 @@ const WATCH = "watch";
 const BOTH: readonly NetworkId[] = ["mainnet", "testnet"];
 const EVM_IDS = BOTH.flatMap((n) => CHAINS[n].filter((c) => c.kind === "evm").map((c) => c.caip2));
 const SOLANA_IDS = BOTH.map((n) => NETWORKS[n].solana.caip2);
+
+/** An account's addresses with its 0x on each chain the user added: the same 20 bytes the
+ *  vault gives on every EVM chain (one key, or one watched address). */
+function onAddedChains(addresses: Record<string, string>): Record<string, string> {
+  const evm = addresses[NETWORKS.mainnet.evm];
+  const extra = addedChains().filter((c) => !addresses[`eip155:${c.chainId}`]);
+  if (!evm || extra.length === 0) return addresses;
+  return { ...addresses, ...Object.fromEntries(extra.map((c) => [`eip155:${c.chainId}`, evm])) };
+}
 
 export const isWatch = (a: AccountInfo) => a.account.derivation === "watch";
 export const isLedger = (a: AccountInfo) => a.account.derivation === "ledger";
@@ -99,6 +108,7 @@ export function createWallets(h: WalletsHost) {
       ...a,
       name: typeof a.name === "string" && a.name ? a.name : `Account ${i + 1}`,
       wallet: typeof a.wallet === "string" && a.wallet ? a.wallet : isWatch(a) ? WATCH : (wallets[0]?.id ?? ""),
+      addresses: onAddedChains(a.addresses),
     }));
     const i = got.active_account;
     const active = typeof i === "number" && Number.isInteger(i) && i >= 0 && i < accounts.length ? i : 0;
@@ -134,6 +144,7 @@ export function createWallets(h: WalletsHost) {
       wallets: unlocked ? s.wallets.map(({ id, type, name }) => ({ id, type, name })) : [],
       accounts: unlocked ? s.accounts : [],
       active: unlocked ? s.active : 0,
+      added: [...addedChains()],
     };
   }
 

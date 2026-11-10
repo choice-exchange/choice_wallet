@@ -49,6 +49,8 @@ export interface ChainInfo {
   /** Free Etherscan-style indexes (Blockscout, Routescan) that find its history: each
    *  answered an extension origin on 2026-11-10. Many chains have none without a key. */
   history?: readonly string[];
+  /** Built in, not added (`AddedInfo`). */
+  added?: false;
 }
 
 type Evm = Omit<ChainInfo, "kind" | "caip2" | "native"> & { chainId: number; symbol: string };
@@ -378,22 +380,133 @@ const TESTNET_EVM: readonly ChainInfo[] = [
   }),
 ];
 
-/** Every chain on a network, in the order the wallet lists them: Injective, Solana, then the
- *  EVM chains. */
+/** The chains built in, on a network, in the order the wallet lists them: Injective, Solana,
+ *  then the EVM chains on CCTP. */
 export const CHAINS: Readonly<Record<NetworkId, readonly ChainInfo[]>> = {
   mainnet: [injective("mainnet"), solana("mainnet"), ...MAINNET_EVM],
   testnet: [injective("testnet"), solana("testnet"), ...TESTNET_EVM],
 };
 
-/** A chain by key on a network. */
-export function chainByKey(network: NetworkId, key: unknown): ChainInfo | undefined {
-  return typeof key === "string" ? CHAINS[network].find((c) => c.key === key) : undefined;
+/** A chain the user added (or a site asked for, and the user let it): any EVM chain whose
+ *  coin has 18 decimals. The vault signs there by chain ID alone, and the review says the
+ *  chain was added; its name, coin symbol and logo are the user's labels. Kept in local
+ *  storage (`added_chains`), on mainnet's list or the test networks'. */
+export interface AddedChain {
+  chainId: number;
+  name: string;
+  symbol: string;
+  /** Endpoints, tried in order. */
+  rpc: string[];
+  /** The explorer's address: a transaction's page is `{explorer}/tx/{hash}`. */
+  explorer?: string;
+  testnet: boolean;
+  /** Its logo, a data URL, fetched once when it was added. */
+  logo?: string;
+  /** DefiLlama's name for it, where its coin is priced. */
+  llama?: string;
+}
+
+/** An added chain as the wallet lists it: an EVM chain without CCTP (no domain, no USDC
+ *  there), so the bridge never offers it. */
+export type AddedInfo = Omit<ChainInfo, "kind" | "domain" | "usdc" | "forwarding" | "fast" | "added" | "chainId"> & {
+  kind: "evm";
+  chainId: number;
+  added: true;
+  logo?: string;
+};
+
+/** Any chain on the wallet's list: built in, or added. */
+export type AnyChain = ChainInfo | AddedInfo;
+
+/** The most chains one wallet adds. */
+export const MAX_ADDED_CHAINS = 32;
+/** The highest chain ID a chain may have (MetaMask's: an EIP-155 `v` still fits 53 bits). */
+export const MAX_CHAIN_ID = 4503599627370476;
+
+/** An added chain's key: `added-56`. */
+export const addedKey = (chainId: number): string => `added-${chainId}`;
+
+/** One or two letters and a colour from a chain's name and ID, for one without a logo. */
+export function markOf(name: string, chainId: number): { letters: string; color: string } {
+  const words = name.replace(/[^A-Za-z0-9 ]/g, " ").trim().split(/\s+/).filter(Boolean);
+  const letters = (words.length > 1 ? `${words[0]![0]}${words[1]![0]}` : (words[0] ?? "?").slice(0, 2)).toUpperCase();
+  const hue = (chainId * 137) % 360;
+  return { letters, color: `hsl(${hue} 45% 38%)` };
+}
+
+function addedInfo(a: AddedChain): AddedInfo {
+  return {
+    key: addedKey(a.chainId),
+    kind: "evm",
+    added: true,
+    name: a.name,
+    caip2: `eip155:${a.chainId}`,
+    chainId: a.chainId,
+    native: { symbol: a.symbol, decimals: 18 },
+    rpc: a.rpc,
+    explorerTx: a.explorer ? `${a.explorer.replace(/\/+$/, "")}/tx/{hash}` : "",
+    mark: markOf(a.name, a.chainId),
+    ...(a.llama ? { llama: a.llama } : {}),
+    ...(a.logo ? { logo: a.logo } : {}),
+  };
+}
+
+/** The chains added, as last set: both the service worker and each extension page set them
+ *  from local storage (through status) before reading the list. */
+let added: { mainnet: readonly AddedInfo[]; testnet: readonly AddedInfo[]; list: readonly AddedChain[] } = { mainnet: [], testnet: [], list: [] };
+
+/** Replace the added chains (each one's ID not built in, as `checkAddedChain` checks). */
+export function setAddedChains(list: readonly AddedChain[]): void {
+  const builtIn = new Set([...CHAINS.mainnet, ...CHAINS.testnet].map((c) => c.chainId));
+  const ok = list.filter((a) => !builtIn.has(a.chainId));
+  added = {
+    mainnet: ok.filter((a) => !a.testnet).map(addedInfo),
+    testnet: ok.filter((a) => a.testnet).map(addedInfo),
+    list: ok,
+  };
+}
+
+/** The chains added, as stored. */
+export function addedChains(): readonly AddedChain[] {
+  return added.list;
+}
+
+/** Every chain on a network: the ones built in, then the ones added. */
+export function chainList(network: NetworkId): readonly AnyChain[] {
+  return [...CHAINS[network], ...added[network]];
+}
+
+/** A chain by key on a network, built in or added. */
+export function chainByKey(network: NetworkId, key: unknown): AnyChain | undefined {
+  return typeof key === "string" ? chainList(network).find((c) => c.key === key) : undefined;
 }
 
 /** A chain by CAIP-2 ID (Injective's Cosmos side names Injective too). */
-export function chainByCaip2(network: NetworkId, caip2: string): ChainInfo | undefined {
+export function chainByCaip2(network: NetworkId, caip2: string): AnyChain | undefined {
+  if (caip2 === NETWORKS[network].cosmos) return CHAINS[network][0];
+  return chainList(network).find((c) => c.caip2 === caip2);
+}
+
+/** A built-in chain by key: the ones CCTP joins, which the bridge works between. */
+export function cctpChain(network: NetworkId, key: unknown): ChainInfo | undefined {
+  return typeof key === "string" ? CHAINS[network].find((c) => c.key === key) : undefined;
+}
+
+/** A built-in chain by CAIP-2 ID. */
+export function cctpChainByCaip2(network: NetworkId, caip2: string): ChainInfo | undefined {
   if (caip2 === NETWORKS[network].cosmos) return CHAINS[network][0];
   return CHAINS[network].find((c) => c.caip2 === caip2);
+}
+
+/** Why a chain can't be added as given, or null. Endpoints and the explorer are checked
+ *  where they're used (the RPC must answer with the chain's ID). */
+export function checkAddedChain(a: { chainId: unknown; name: unknown; symbol: unknown }): string | null {
+  if (typeof a.chainId !== "number" || !Number.isSafeInteger(a.chainId) || a.chainId < 1 || a.chainId > MAX_CHAIN_ID) return "That isn't a chain ID.";
+  const builtIn = [...CHAINS.mainnet, ...CHAINS.testnet].find((c) => c.chainId === a.chainId);
+  if (builtIn) return `${builtIn.name} is already on the list.`;
+  if (typeof a.name !== "string" || !/^[\p{L}\p{N}][\p{L}\p{N} .()'_-]{0,31}$/u.test(a.name)) return "Give it a name: letters and numbers, up to 32.";
+  if (typeof a.symbol !== "string" || !/^[A-Za-z0-9.]{1,8}$/.test(a.symbol)) return "Give its coin a symbol: up to 8 letters or numbers.";
+  return null;
 }
 
 /** The wallet keys of an EVM chain's coin and of a token there. Injective's own keep their

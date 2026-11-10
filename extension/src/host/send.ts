@@ -28,7 +28,7 @@ import {
   word,
   NETWORKS,
   shortDenom,
-  type ChainInfo,
+  type AnyChain,
   type Coin,
   type NetworkId,
 } from "@choice-wallet/chain";
@@ -75,7 +75,8 @@ export interface SourceChain {
   /** An OP Stack chain: besides gas, each transaction pays an Ethereum data fee, which its
    *  GasPriceOracle bounds. */
   opStack: boolean;
-  usdc: string;
+  /** Native USDC there; none on a chain the user added. */
+  usdc?: string;
   rpcUrls: readonly string[];
   /** Transaction page, `{hash}` replaced. */
   explorerTx: string;
@@ -109,8 +110,8 @@ export async function dataFeeBound(rpc: EvmRpc, s: Pick<SourceChain, "opStack">,
 }
 
 /** An EVM chain from the wallet's list, as the sender needs it. */
-export function sourceOfChain(c: ChainInfo): SourceChain {
-  return { key: c.key, name: c.name, caip2: c.caip2, chainId: c.chainId ?? 0, symbol: c.native.symbol, gasIsUsdc: c.gasIsUsdc === true, opStack: c.opStack === true, usdc: c.usdc, rpcUrls: c.rpc, explorerTx: c.explorerTx };
+export function sourceOfChain(c: AnyChain): SourceChain {
+  return { key: c.key, name: c.name, caip2: c.caip2, chainId: c.chainId ?? 0, symbol: c.native.symbol, gasIsUsdc: c.gasIsUsdc === true, opStack: c.opStack === true, ...(c.added ? {} : { usdc: c.usdc }), rpcUrls: c.rpc, explorerTx: c.explorerTx };
 }
 
 /** Left on Arc for the fee, which is paid in the same USDC, when sending all of it. */
@@ -640,7 +641,7 @@ export function createSender(d: SendDeps) {
       const facts = spec.token || plain ? await d.riskFacts(network, spec.to) : {};
       const decoded = await d.vault<Pick<SendReview, "digest" | "display" | "risk">>("decode", {
         request: built.result.request,
-        context: { ...facts, balances: { native: held.toString(), ...(spec.usdcHeld === undefined ? {} : { [source.usdc]: spec.usdcHeld.toString() }) } },
+        context: { ...facts, balances: { native: held.toString(), ...(spec.usdcHeld === undefined || !source.usdc ? {} : { [source.usdc]: spec.usdcHeld.toString() }) } },
       });
       if (!decoded.ok) return decoded;
       const { digest, display, risk } = decoded.result;
@@ -687,6 +688,7 @@ export function createSender(d: SendDeps) {
     let amount = max ? 0n : BigInt(req.amount as string);
     const source = sourceOfChain(c);
     if (which.what === "native") return prepareSourceCall(network, account, source, { to, amount, max });
+    if (c.added) return fail("bad_request", `There's no USDC on ${c.name}.`);
     let held: bigint;
     try {
       held = quantity(await (await rpcOn(network, source)).call("eth_call", [{ to: c.usdc, data: `0x70a08231${word(from)}` }, "latest"]), "balance");

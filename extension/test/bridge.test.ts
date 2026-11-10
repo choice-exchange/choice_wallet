@@ -193,7 +193,7 @@ test("Base to Arbitrum, with Injective at neither end: approve and burn on Base,
   assert.ok(net.state.irisAsks.some((a) => a.path === "/v2/burn/USDC/fees/6/3?forward=true"));
   const approve = ok<Review>(await service.handle({ type: "prepare_bridge", quote: q.id }));
   assert.equal(approve.display.chain, "eip155:8453");
-  assert.deepEqual(approve.display.network, { name: "Base", symbol: "ETH", decimals: 18 });
+  assert.deepEqual(approve.display.network, { name: "Base", symbol: "ETH", decimals: 18, added: false });
   assert.deepEqual(approve.display.call, { type: "approve", spender: TOKEN_MESSENGER, amount: "25000000" });
   assert.equal(approve.tokens["usdc:eip155:8453"]?.symbol, "USDC");
   // Base is OP Stack: its Ethereum data fee is bounded by its GasPriceOracle and counted.

@@ -184,6 +184,8 @@ export function createDapps(h: DappHost) {
     const u = await h.unlocked();
     if (!u) return fail("locked", "Unlock the wallet first.");
     if (w.approve) {
+      const checked = w.check ? await w.check() : null;
+      if (checked && !checked.ok) return checked;
       const reply = await w.approve();
       settle(w.req.id, reply);
       return { ok: true, result: { done: true } };

@@ -4,6 +4,7 @@
 /// <reference path="./assets.d.ts" />
 import "./styles.css";
 
+import { setAddedChains, type AddedChain } from "@choice-wallet/chain";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
@@ -20,7 +21,22 @@ export function mount(root: HTMLElement | null, backend: Backend, opts: { approv
   if (!root) throw new Error("mount: no root element");
   createRoot(root).render(
     <StrictMode>
-      <BackendContext value={backend}>{opts.approve ? <ApproveView id={opts.approve} /> : opts.ledger ? <LedgerAddView start={opts.ledger} /> : <App />}</BackendContext>
+      <BackendContext value={withAddedChains(backend)}>{opts.approve ? <ApproveView id={opts.approve} /> : opts.ledger ? <LedgerAddView start={opts.ledger} /> : <App />}</BackendContext>
     </StrictMode>,
   );
+}
+
+/** The backend, keeping the chains the user added (each status carries them) where every
+ *  screen's chain lookups read them, before the status reaches a screen. */
+function withAddedChains(backend: Backend): Backend {
+  return {
+    ...backend,
+    async send(request) {
+      const r = await backend.send(request);
+      if (r.ok && typeof r.result === "object" && r.result !== null && "hasWallet" in r.result && Array.isArray((r.result as { added?: unknown }).added)) {
+        setAddedChains((r.result as { added: AddedChain[] }).added);
+      }
+      return r;
+    },
+  };
 }

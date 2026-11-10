@@ -47,4 +47,6 @@ Everything it shows ships with it; nothing is loaded from the network at runtime
   "USDT" never wears USDT's logo.
 - `src/assets/chains/`: the EVM chains' marks, 64 px, each file's source and original's
   SHA-256 in [SOURCES.md](src/assets/chains/SOURCES.md). Trademarks of their owners. Chosen
-  by chain key; a chain's coin wears its chain's mark (Ethereum's for every ETH chain).
+  by chain key; a chain's coin wears its chain's mark (Ethereum's for every ETH chain). A
+  chain the user adds wears the logo the host fetched once when it was added (a data URL kept
+  with the chain), or letters on a colour.

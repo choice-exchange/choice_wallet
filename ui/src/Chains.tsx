@@ -7,7 +7,7 @@ import { chainByKey, type NetworkId } from "@choice-wallet/chain";
 import { useEffect, useRef } from "react";
 
 import { CHAIN_LOGOS } from "./chainLogos";
-import { CheckIcon, ChevronDownIcon } from "./icons";
+import { CheckIcon, ChevronDownIcon, PlusIcon } from "./icons";
 import { Switch } from "./kit";
 import type { ChainView } from "./protocol";
 import { TokenMark } from "./TokenMark";
@@ -34,7 +34,9 @@ export function ChainMark({ chain, small, network = "mainnet" }: { chain: ChainV
   if (chain === "injective" || chain === "solana") {
     return <TokenMark denom={chain === "solana" ? "sol" : "inj"} symbol={chain === "solana" ? "SOL" : "INJ"} known small={small === true} />;
   }
-  const logo = CHAIN_LOGOS[chain];
+  // An added chain's logo was fetched once, when it was added, and kept with it.
+  const c = chainByKey(network, chain);
+  const logo = CHAIN_LOGOS[chain] ?? (c?.added ? c.logo : undefined);
   if (logo) {
     return (
       <span className={small ? "mark sm" : "mark"} style={{ borderColor: "transparent" }} aria-hidden="true">
@@ -42,7 +44,7 @@ export function ChainMark({ chain, small, network = "mainnet" }: { chain: ChainV
       </span>
     );
   }
-  const mark = chainByKey(network, chain)?.mark ?? { letters: chain.slice(0, 2).toUpperCase(), color: "#555" };
+  const mark = c?.mark ?? { letters: chain.slice(0, 2).toUpperCase(), color: "#555" };
   return (
     <span className={small ? "mark sm chain-mark" : "mark chain-mark"} aria-hidden="true" style={{ background: mark.color, borderColor: "transparent" }}>
       {mark.letters}
@@ -57,7 +59,7 @@ export function ChainPill({ chain, network, onClick }: { chain: ChainView; netwo
         <ChainMark chain={chain} network={network} small />
         {network === "testnet" && <span className="dot testnet" />}
       </span>
-      {chainByKey("mainnet", chain)?.name ?? chainName(chain, network)}
+      <span className="chain-pill-name">{chainByKey("mainnet", chain)?.name ?? chainName(chain, network)}</span>
       <ChevronDownIcon size={14} />
     </button>
   );
@@ -70,6 +72,7 @@ export function ChainSheet({
   all,
   onPick,
   onTestnet,
+  onAdd,
   onClose,
 }: {
   chain: ChainView;
@@ -79,6 +82,8 @@ export function ChainSheet({
   all?: string;
   onPick: (c: ChainView) => void;
   onTestnet: (on: boolean) => void;
+  /** Open the screen that adds an EVM chain. */
+  onAdd: () => void;
   onClose: () => void;
 }) {
   const sheet = useRef<HTMLDivElement>(null);
@@ -120,6 +125,15 @@ export function ChainSheet({
               <span className="chain-check">{r.chain === chain && <CheckIcon size={16} />}</span>
             </button>
           ))}
+          <button className="token chain-row add-chain" onClick={onAdd}>
+            <span className="mark chain-mark add" aria-hidden="true">
+              <PlusIcon size={18} />
+            </span>
+            <span className="name">
+              <span className="symbol">Add a chain</span>
+              <span className="sub">Any EVM chain{network === "testnet" ? " or test network" : ""}</span>
+            </span>
+          </button>
         </div>
         <Switch label="Test networks" checked={network === "testnet"} onChange={onTestnet} />
         <p className="meta">{network === "testnet" ? "Each chain's test network. Test tokens only." : "Turn on for each chain's test network."}</p>

@@ -286,3 +286,57 @@ fn own_swap_approvals_are_exact() {
     assert_eq!(code("build_evm", p2(usdt, aggregator, "5")), "bad_request");
     assert_eq!(code("build_evm", p2(permit2, aggregator, unlimited)), "bad_request");
 }
+
+#[test]
+fn an_added_chain_is_known_by_its_id_alone() {
+    // BNB Smart Chain (56) isn't built in: a send there decodes as an added chain's, with no
+    // name or symbol of the vault's, and signs for chain 56.
+    let from = "0x9858EfFD232B4033E47d90003D41EC34EcaEda94";
+    let build = |chain: &str| {
+        json!({
+            "chain": chain, "from": from, "to": "0x9d8A62f656a8d1615C1294fd71e9CFb3E4855A4F", "amount": "1000",
+            "nonce": 0, "gas_limit": 21000, "max_fee_per_gas": "3000000000", "max_priority_fee_per_gas": "1000000000",
+        })
+    };
+    let request = ok("build_evm", build("eip155:56"))["request"].clone();
+    let d = ok("decode", json!({ "request": request }));
+    assert_eq!(d["display"]["chain"], "eip155:56");
+    assert_eq!(
+        d["display"]["network"],
+        json!({ "name": "", "symbol": "", "decimals": 18, "added": true })
+    );
+    assert_eq!(d["display"]["call"]["type"], "transfer");
+    let signed = approve_and_sign(&request, account(0));
+    // EIP-1559: 0x02, the list's two-byte header, then the chain ID (56 = 0x38) first.
+    let raw = signed["raw"].as_str().unwrap();
+    assert!(raw.starts_with("0x02f8") && &raw[8..10] == "38", "{raw}");
+    // A built-in chain stays itself.
+    let base = ok(
+        "decode",
+        json!({ "request": ok("build_evm", build("eip155:8453"))["request"] }),
+    );
+    assert_eq!(base["display"]["network"]["added"], false);
+    // Only plain decimal IDs from 1 to MetaMask's highest.
+    for bad in [
+        "eip155:0",
+        "eip155:056",
+        "eip155:4503599627370477",
+        "eip155:",
+        "eip155:5x",
+        "eip155:-1",
+    ] {
+        assert_eq!(code("build_evm", build(bad)), "unknown_chain", "{bad}");
+    }
+    // Typed data there must be for that chain.
+    let td = json!({
+        "types": { "EIP712Domain": [{ "name": "chainId", "type": "uint256" }], "Hello": [{ "name": "text", "type": "string" }] },
+        "primaryType": "Hello",
+        "domain": { "chainId": 1 },
+        "message": { "text": "hi" },
+    });
+    let typed = |td: &Value| json!({ "evm_typed_data": { "chain": "eip155:56", "signer": from, "typed_data": td.to_string() } });
+    assert_eq!(code("decode", json!({ "request": typed(&td) })), "invalid");
+    let mut on56 = td.clone();
+    on56["domain"]["chainId"] = 56.into();
+    ok("decode", json!({ "request": typed(&on56) }));
+}

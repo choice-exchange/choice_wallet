@@ -27,7 +27,8 @@ Licensed GPL-3.0 ([LICENSE](LICENSE)); the Rust crates it uses are Apache-2.0.
 `src/host/` is the service worker's logic, with no `chrome.*`, so the tests run all of it:
 `service.ts` answers the UI and routes everything else; `wallets.ts` and `vault.ts` the keys;
 then one file (or folder) per feature: `holdings.ts` and `send.ts`, `evmchains.ts` (the EVM
-chains beside Injective: endpoints, holdings, prices, history), `swap.ts`, `staking.ts`,
+chains beside Injective: endpoints, holdings, prices, history), `addedchains.ts` (chains the
+user adds: chainlist.org's list, endpoint checks, the logo kept), `swap.ts`, `staking.ts`,
 `bridge/` (USDC between any two chains, and Solana's burn-record rent), `solana.ts`, `dapp/`
 (sites: EVM on each site's chain, Cosmos and Solana requests, and the approval window's side), `approvals.ts`, `rescue.ts`,
 `contacts.ts`, `nfts.ts`, `inventory.ts`, and `watch.ts` (the background watcher), with

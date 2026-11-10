@@ -6,9 +6,9 @@
 // wallet's would. The prices list is the same for everyone: every chain's coin and USDC.
 
 import {
-  CHAINS,
   chainByKey,
   chainCoin,
+  chainList,
   chainUsdc,
   ChainError,
   Down,
@@ -22,7 +22,7 @@ import {
   Unreachable,
   usdValue,
   word,
-  type ChainInfo,
+  type AnyChain,
   type Fetch,
   type NetworkId,
 } from "@choice-wallet/chain";
@@ -54,9 +54,9 @@ const PAGE = 25;
 /** Transactions the wallet sent on each chain, kept for its history there. */
 const MAX_SENT = 100;
 
-/** The EVM chains other than Injective's own EVM side on a network. */
-export function evmChains(network: NetworkId): ChainInfo[] {
-  return CHAINS[network].filter((c) => c.kind === "evm");
+/** The EVM chains other than Injective's own EVM side on a network, the added ones last. */
+export function evmChains(network: NetworkId): AnyChain[] {
+  return chainList(network).filter((c) => c.kind === "evm");
 }
 
 export function createEvmChains(d: EvmChainsDeps) {
@@ -84,21 +84,23 @@ export function createEvmChains(d: EvmChainsDeps) {
     return client;
   }
 
-  const priceCache = new Map<NetworkId, { at: number; prices: Promise<Map<string, string>> }>();
+  /** By network and the coins asked about: a chain just added is priced at once. */
+  const priceCache = new Map<string, { at: number; prices: Promise<Map<string, string>> }>();
   /** The last prices DefiLlama gave, shown for up to 15 minutes while it doesn't answer. */
   let lastGood = { at: 0, prices: new Map<string, string>() };
   /** USD prices of every EVM chain's coin and USDC, by wallet key (mainnet, USD values on).
    *  Never an error: a chain without a price shows amounts alone. */
   async function prices(network: NetworkId): Promise<Map<string, string>> {
     if (network !== "mainnet" || !(await d.prices())) return new Map();
-    const hit = priceCache.get(network);
-    if (hit && now() - hit.at < PRICE_TTL_MS) return hit.prices;
     const chains = evmChains(network).filter((c) => c.llama);
     const keys = new Map<string, string>();
     for (const c of chains) {
-      keys.set(`${c.llama}:${c.usdc}`, chainUsdc(c.caip2));
+      if (!c.added) keys.set(`${c.llama}:${c.usdc}`, chainUsdc(c.caip2));
       if (!c.gasIsUsdc) keys.set(`${c.llama}:${ZERO}`, chainCoin(c.caip2));
     }
+    const id = `${network} ${[...keys.keys()].join(",")}`;
+    const hit = priceCache.get(id);
+    if (hit && now() - hit.at < PRICE_TTL_MS) return hit.prices;
     const p = fetchLlamaPrices(d.fetch, [...keys.keys()]).then(
       (got) => {
         const prices = new Map([...got].map(([k, v]) => [keys.get(k)!, v]));
@@ -106,16 +108,18 @@ export function createEvmChains(d: EvmChainsDeps) {
         return prices;
       },
       () => {
-        priceCache.delete(network);
+        priceCache.delete(id);
         return now() - lastGood.at < STALE_MS ? lastGood.prices : new Map<string, string>();
       },
     );
-    priceCache.set(network, { at: now(), prices: p });
+    priceCache.clear();
+    priceCache.set(id, { at: now(), prices: p });
     return p;
   }
 
   /** The account's coin and USDC on one chain, in one batch. On Arc the coin is the USDC
-   *  itself (at 18 decimals), so only the token is listed. */
+   *  itself (at 18 decimals), so only the token is listed; on a chain the user added there
+   *  is only the coin. */
   async function holdings(network: NetworkId, account: AccountInfo, key: string): Promise<ChainHoldings | null> {
     const c = chainByKey(network, key);
     const address = c ? account.addresses[c.caip2] : undefined;
@@ -126,17 +130,17 @@ export function createEvmChains(d: EvmChainsDeps) {
       const client = await rpc(network, key);
       const [native, held] = await client.batch([
         { method: "eth_getBalance", params: [address, "latest"] },
-        { method: "eth_call", params: [{ to: c.usdc, data: `0x70a08231${word(address)}` }, "latest"] },
+        ...(c.added ? [] : [{ method: "eth_call", params: [{ to: c.usdc, data: `0x70a08231${word(address)}` }, "latest"] }]),
       ]);
       const amount = (v: unknown) => {
         if (v instanceof ChainError || typeof v !== "string" || !/^0x[0-9a-fA-F]{1,64}$/.test(v)) throw new Error("no number");
         return BigInt(v).toString();
       };
-      const list = c.gasIsUsdc ? [{ ...usdc, amount: amount(held) }] : [{ ...coin, amount: amount(native) }, { ...usdc, amount: amount(held) }];
+      const list = c.added ? [{ ...coin, amount: amount(native) }] : c.gasIsUsdc ? [{ ...usdc, amount: amount(held) }] : [{ ...coin, amount: amount(native) }, { ...usdc, amount: amount(held) }];
       const p = await prices(network);
       return { chain: key, address, balances: list.map((b) => priced(b, p)) };
     } catch {
-      return { chain: key, address, balances: c.gasIsUsdc ? [usdc] : [coin, usdc], down: true };
+      return { chain: key, address, balances: c.added ? [coin] : c.gasIsUsdc ? [usdc] : [coin, usdc], down: true };
     }
   }
 
@@ -215,7 +219,7 @@ export function createEvmChains(d: EvmChainsDeps) {
     } catch {
       return fail("unreachable", `Couldn't reach ${c.name}. Try again.`);
     }
-    const usdc = c.usdc.toLowerCase();
+    const usdc = c.added ? undefined : c.usdc.toLowerCase();
     const keys = {
       coin: chainCoin(c.caip2),
       token: (a: string) => (a.toLowerCase() === usdc ? chainUsdc(c.caip2) : `token:${c.caip2}:${a.toLowerCase()}`),
@@ -225,7 +229,7 @@ export function createEvmChains(d: EvmChainsDeps) {
     const all = records.map((r) => summarizeEvmTx(r, me, c.caip2, keys)).sort((a, b) => (BigInt(b.height) > BigInt(a.height) ? 1 : BigInt(b.height) < BigInt(a.height) ? -1 : 0));
     const tokens: Record<string, TokenInfo> = {
       [keys.coin]: { denom: keys.coin, symbol: c.native.symbol, name: c.native.symbol, decimals: c.native.decimals, known: true, chain: c.caip2 },
-      [chainUsdc(c.caip2)]: { denom: chainUsdc(c.caip2), symbol: "USDC", name: "USD Coin", decimals: 6, known: true, chain: c.caip2 },
+      ...(c.added ? {} : { [chainUsdc(c.caip2)]: { denom: chainUsdc(c.caip2), symbol: "USDC", name: "USD Coin", decimals: 6, known: true, chain: c.caip2 } }),
     };
     const others = [...new Set(all.flatMap((a) => a.changes.map((x) => x.denom)).filter((x) => x.startsWith("token:")))];
     await Promise.all(

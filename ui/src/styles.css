@@ -596,7 +596,8 @@ details.raw summary {
 .chain-tile.small { width: 24px; height: 24px; font-size: 9px; }
 
 /* The chain picker: a pill on Home's top bar, and the sheet it opens from the bottom. */
-.chain-pill { padding: 0 8px 0 4px; color: var(--text); }
+.chain-pill { padding: 0 8px 0 4px; color: var(--text); min-width: 0; }
+.chain-pill-name { max-width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chain-pill-mark { position: relative; display: inline-flex; }
 .chain-pill-mark .mark.sm { width: 20px; height: 20px; }
 .chain-pill-mark .dot { position: absolute; right: -2px; bottom: -1px; box-shadow: 0 0 0 2px var(--inner); }
@@ -618,3 +619,5 @@ details.raw summary {
 @keyframes sheet-up { from { transform: translateY(24px); opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .sheet-backdrop, .sheet { animation: none; } }
 .quick-actions.three { grid-template-columns: repeat(3, 1fr); }
+.quick-actions.two { grid-template-columns: repeat(2, 1fr); }
+.chain-mark.add { background: var(--inner); border: 1px dashed var(--dim); color: var(--muted); }

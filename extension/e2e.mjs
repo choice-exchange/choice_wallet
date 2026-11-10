@@ -1063,6 +1063,41 @@ try {
   await p.waitText("Manage", 15000);
   console.log("chains: Base from the sheet, its coin and USDC, its Activity, and Settings with only Base's endpoints");
 
+  // 7i. A chain added from chainlist.org, live: found by name, its endpoints checked by the
+  // service worker, its logo fetched once from DefiLlama and kept; its Home; then removed.
+  await p.click("Chain: Injective. Change chain");
+  await p.eval(`document.querySelector(".add-chain").click()`);
+  await p.waitText("From chainlist.org");
+  await p.fill("input", 0, "BNB Smart");
+  await p.waitText("Chain ID 56 · BNB", 45000);
+  await p.shot("16zf-add-chain-search");
+  await p.eval(`[...document.querySelectorAll(".chain-row")].find((b) => b.querySelector(".sub")?.textContent.startsWith("Chain ID 56 ")).click()`);
+  await p.waitText("It must answer as this chain");
+  await p.shot("16zg-add-chain-form");
+  await p.click("Add chain");
+  await p.waitText("Added by you. Chain ID 56.", 60000);
+  const bnbName = await p.eval(`document.querySelector(".chain-pill")?.textContent ?? ""`);
+  if (!/BNB/.test(bnbName)) throw new Error(`the added chain isn't picked: ${bnbName}`);
+  const bnbLogo = await p.eval(`document.querySelector(".chain-pill img")?.getAttribute("src") ?? ""`);
+  if (!bnbLogo.startsWith("data:image/png;base64,")) throw new Error(`the added chain has no kept logo: ${bnbLogo.slice(0, 40)}`);
+  for (let t = 0; t < 150 && (await p.eval(`document.querySelectorAll(".skeleton").length`)) > 0; t++) await sleep(100);
+  await p.shot("16zh-home-added-chain");
+  if (await p.eval(`[...document.querySelectorAll(".quick-action")].some((b) => b.textContent.includes("Bridge"))`)) throw new Error("an added chain offers the bridge");
+  await p.click("Settings");
+  await p.waitText("history (Blockscout or Etherscan-style)");
+  const removeLabel = await p.eval(`[...document.querySelectorAll("button")].map((b) => b.textContent.trim()).find((t) => t.startsWith("Remove ")) ?? ""`);
+  if (!removeLabel) throw new Error("Settings on an added chain has no Remove");
+  await p.shot("16zi-settings-added-chain");
+  await p.click(removeLabel);
+  await p.click(`${removeLabel}? Tap again`);
+  await p.click("Wallet");
+  await p.waitText("Manage", 15000);
+  await p.click("Chain: Injective. Change chain");
+  await p.waitText("Add a chain");
+  if (await p.eval(`[...document.querySelectorAll(".chain-row .symbol")].some((s) => s.textContent.includes("BNB"))`)) throw new Error("the removed chain is still listed");
+  await p.eval(`[...document.querySelectorAll(".chain-row")].find((b) => b.querySelector(".symbol")?.textContent === "Injective").click()`);
+  console.log("added chain: BNB Smart Chain found on chainlist.org, its endpoints checked, DefiLlama's logo kept, its Home, removed in Settings");
+
   await p.click("Settings");
   await settingsLoaded();
   await p.fill("textarea", 1, "https://sentry.evm-rpc.injective.network\nhttps://injective-evm-rpc.publicnode.com");
