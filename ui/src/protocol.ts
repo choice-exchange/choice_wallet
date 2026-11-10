@@ -824,8 +824,9 @@ export type DappRequest = {
   /** For sign: evm_transaction, evm_personal_sign, evm_typed_data, cosmos_direct,
    *  cosmos_amino or cosmos_arbitrary (ADR-036). */
   method?: string;
-  /** For switch: the network asked for. */
+  /** For switch: the network asked for, and the chain on it (a key) for an EVM site. */
   to?: NetworkId;
+  toChain?: string;
 };
 
 /** A signature request's approval screen: the vault's decode and the risk rules' verdict,

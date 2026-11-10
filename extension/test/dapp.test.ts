@@ -164,16 +164,40 @@ test("eth_sendTransaction: the wallet's own nonce, gas and fee; signed, broadcas
   assert.equal((await page(SITE)("eth_sendTransaction", [{ from: ME_EVM, to: THEM_EVM, chainId: "0x1" }])).error?.code, 4901);
 });
 
-test("switching network: only between Injective's, and only when the user agrees", async () => {
-  const { page, window, service } = await connected();
-  assert.equal((await page(SITE)("wallet_switchEthereumChain", [{ chainId: "0x1" }])).error?.code, 4902);
-  assert.deepEqual(await page(SITE)("wallet_switchEthereumChain", [{ chainId: "0x6f0" }]), { result: null });
-  const asked = page(SITE)("wallet_switchEthereumChain", [{ chainId: "0x59f" }]);
+test("each site on its own EVM chain: switched freely within the network, the network only when the user agrees", async () => {
+  const { page, window, service, net } = await connected();
+  const site = page(SITE);
+  assert.equal((await site("wallet_switchEthereumChain", [{ chainId: "0x38" }])).error?.code, 4902);
+  assert.deepEqual(await site("wallet_switchEthereumChain", [{ chainId: "0x6f0" }]), { result: null });
+  // Base: the site alone moves there; another site stays on Injective.
+  assert.deepEqual(await site("wallet_switchEthereumChain", [{ chainId: "0x2105" }]), { result: null });
+  assert.deepEqual(await site("eth_chainId"), { result: "0x2105" });
+  assert.deepEqual(await site("net_version"), { result: "8453" });
+  assert.deepEqual(await page(OTHER)("eth_chainId"), { result: "0x6f0" });
+  // Reads go to Base's endpoints.
+  net.state.base.eth = 7n * 10n ** 15n;
+  assert.deepEqual(await site("eth_getBalance", [ME_EVM, "latest"]), { result: `0x${(7n * 10n ** 15n).toString(16)}` });
+  // A transaction there: Base's nonce and fees, shown as ETH on Base, sent there.
+  net.state.base.usdc = 10_000_000n;
+  const asked = site("eth_sendTransaction", [{ from: ME_EVM, to: THEM_EVM, value: "0x2386f26fc10000" }]);
   const w = await window();
-  assert.deepEqual([w.req.kind, w.req.to], ["switch", "testnet"]);
-  ok(await service.handle({ type: "dapp_answer", id: w.id, approve: true }));
-  assert.deepEqual(await asked, { result: null });
-  assert.deepEqual(await page(SITE)("eth_chainId"), { result: "0x59f" });
+  const review = ok<{ digest: string; display: { chain: string; network: { name: string }; call: { type: string } }; tokens: Record<string, { symbol: string }> }>(await service.handle({ type: "dapp_review", id: w.id }));
+  assert.deepEqual([review.display.chain, review.display.network.name, review.display.call.type], ["eip155:8453", "Base", "transfer"]);
+  assert.equal(review.tokens["native:eip155:8453"]?.symbol, "ETH");
+  ok(await service.handle({ type: "dapp_answer", id: w.id, approve: true, digest: review.digest }));
+  assert.match(String((await asked).result), /^0x[0-9a-f]{64}$/);
+  assert.equal(net.state.base.sent.length, 1);
+  assert.equal(net.state.evmSent.length, 0);
+  // Its transaction's chain ID must be Base's now.
+  assert.equal((await site("eth_sendTransaction", [{ from: ME_EVM, to: THEM_EVM, chainId: "0x6f0" }])).error?.code, 4901);
+  // The test networks: the whole wallet moves, so the user is asked.
+  const moved = site("wallet_switchEthereumChain", [{ chainId: "0x14a34" }]);
+  const sw = await window();
+  assert.deepEqual([sw.req.kind, sw.req.to, (sw.req as { toChain?: string }).toChain], ["switch", "testnet", "base"]);
+  ok(await service.handle({ type: "dapp_answer", id: sw.id, approve: true }));
+  assert.deepEqual(await moved, { result: null });
+  assert.deepEqual(await site("eth_chainId"), { result: "0x14a34" });
+  assert.deepEqual(await page(OTHER)("eth_chainId"), { result: "0x59f" });
 });
 
 test("window.choice: enable, getKey, signDirect (simulated first), sendTx", async () => {

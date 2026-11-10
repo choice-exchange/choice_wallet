@@ -85,6 +85,8 @@ const TO_PAGE = "choice-wallet:page";
       }
       watch();
       const result = await call(args.method, args.params);
+      // A switch tells the page at once (chainChanged), before it asks anything else.
+      if (args.method === "wallet_switchEthereumChain" || args.method === "wallet_addEthereumChain") await refresh();
       if (args.method === "eth_requestAccounts" || args.method === "eth_accounts") {
         const a = result as string[];
         if (JSON.stringify(a) !== JSON.stringify(accounts)) {

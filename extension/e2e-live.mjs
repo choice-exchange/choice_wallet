@@ -1369,7 +1369,8 @@ try {
     console.log(`USDC on Base Sepolia ${before.base}; on Arbitrum Sepolia ${before.arb}`);
     if (before.base < amountIn) throw new Error("not enough USDC on Base Sepolia");
     // Base Sepolia, from the chain sheet.
-    await click("Chain: Injective. Change chain");
+    await waitText("Bridge USDC", 20000);
+    await evalIn(`document.querySelector(".chain-pill").click()`);
     await waitText("Base Sepolia");
     await evalIn(`[...document.querySelectorAll(".chain-row")].find((b) => b.querySelector(".symbol")?.textContent === "Base Sepolia").click()`);
     await waitText("USDC to another chain", 20000);

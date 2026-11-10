@@ -1,8 +1,13 @@
-// Ethereum sites (EIP-1193, found through EIP-6963): accounts, the network, reads passed
-// to the user's own endpoints, and transactions and messages to sign.
+// Ethereum sites (EIP-1193, found through EIP-6963): accounts, the chain, reads passed to
+// the user's own endpoints, and transactions and messages to sign.
+//
+// Each site is on one EVM chain at a time, its own (Injective's EVM side until it asks for
+// another): any EVM chain the wallet lists on the network in use. Switching between them is
+// the site's to make (nothing is signed by it, and every request names its chain in the
+// approval window); moving the whole wallet between mainnet and the test networks asks first.
 
-import { ChainError, isObject, MIN_GAS_PRICE, NETWORKS, type NetworkId } from "@choice-wallet/chain";
-import type { AccountInfo } from "@choice-wallet/ui/protocol";
+import { CHAINS, chainByKey, ChainError, erc20Meta, evmDenom, isObject, MIN_GAS_PRICE, NETWORKS, type ChainInfo, type EvmRpc, type NetworkId } from "@choice-wallet/chain";
+import type { AccountInfo, TokenInfo } from "@choice-wallet/ui/protocol";
 
 import { CHAIN_DISCONNECTED, INVALID_PARAMS, no, quantity, UNAUTHORIZED, UNRECOGNIZED_CHAIN, UNSUPPORTED, type DappReply, type SiteCore } from "./shared";
 
@@ -42,35 +47,65 @@ const EVM_MAX_GAS = 10_000_000n;
 export function createEvmSite(core: SiteCore) {
   const { h, isConnected, connect, ask, sign, disconnect } = core;
 
+  /** The EVM chain a site is on, on this network: its own pick, Injective's EVM side until
+   *  then. */
+  async function siteChain(origin: string, network: NetworkId): Promise<ChainInfo> {
+    const { site_chains } = (await h.local.get(["site_chains"])) as { site_chains?: Record<string, Partial<Record<NetworkId, string>>> };
+    const c = chainByKey(network, site_chains?.[origin]?.[network]);
+    return c && c.kind !== "solana" ? c : chainByKey(network, "injective")!;
+  }
+
+  async function setSiteChain(origin: string, network: NetworkId, key: string): Promise<void> {
+    const { site_chains } = (await h.local.get(["site_chains"])) as { site_chains?: Record<string, Partial<Record<NetworkId, string>>> };
+    await h.local.set({ site_chains: { ...(site_chains ?? {}), [origin]: { ...(site_chains?.[origin] ?? {}), [network]: key } } });
+  }
+
+  /** A client for a site's chain, on the user's endpoints. */
+  const rpcFor = (network: NetworkId, c: ChainInfo): Promise<EvmRpc> => (c.kind === "injective" ? h.sender.evm(network) : h.sender.chainRpc(network, c.key));
+
   /** The EVM accounts a site sees: the account while connected and unlocked, else none. */
   async function evmAccounts(origin: string): Promise<string[]> {
     if (!(await isConnected(origin))) return [];
     const u = await h.unlocked();
-    const a = u?.account.addresses[NETWORKS[await h.network()].evm];
+    const network = await h.network();
+    const a = u?.account.addresses[(await siteChain(origin, network)).caip2];
     return a ? [a.toLowerCase()] : [];
   }
 
-  /** The network a chain ID names, if it's one of the wallet's. */
-  function networkOfEvm(chainId: unknown): NetworkId | null {
+  /** The wallet's chain (and network) a chain ID names, if it's one of its EVM chains. */
+  function chainOfId(chainId: unknown): { network: NetworkId; chain: ChainInfo } | null {
     if (typeof chainId !== "string" || !/^0x[0-9a-fA-F]{1,16}$/.test(chainId)) return null;
     const n = Number(BigInt(chainId));
-    return (Object.values(NETWORKS).find((x) => x.evmChainId === n)?.id as NetworkId | undefined) ?? null;
+    for (const network of ["mainnet", "testnet"] as NetworkId[]) {
+      const c = CHAINS[network].find((x) => x.kind !== "solana" && x.chainId === n);
+      if (c) return { network, chain: c };
+    }
+    return null;
   }
 
-  async function switchTo(origin: string, to: NetworkId | null): Promise<DappReply> {
-    if (!to) return no(UNRECOGNIZED_CHAIN, "Choice Wallet only knows Injective (1776) and Injective testnet (1439).");
-    const net = await h.network();
-    if (to === net) return { result: null };
+  async function switchTo(origin: string, chainId: unknown): Promise<DappReply> {
+    const to = chainOfId(chainId);
+    if (!to) {
+      const names = CHAINS.mainnet.filter((c) => c.kind !== "solana").map((c) => `${c.name} (${c.chainId})`);
+      return no(UNRECOGNIZED_CHAIN, `Choice Wallet doesn't know that chain. It has ${names.join(", ")}, and their test networks.`);
+    }
     if (!(await isConnected(origin))) return no(UNAUTHORIZED, "Connect first.");
+    const net = await h.network();
+    if (to.network === net) {
+      await setSiteChain(origin, net, to.chain.key);
+      h.notify();
+      return { result: null };
+    }
     return ask(
       {
         approve: async () => {
-          await h.setNetwork(to);
+          await h.setNetwork(to.network);
+          await setSiteChain(origin, to.network, to.chain.key);
           h.notify();
           return { result: null };
         },
       },
-      { origin, network: net, kind: "switch", to },
+      { origin, network: net, kind: "switch", to: to.network, toChain: to.chain.key },
     );
   }
 
@@ -78,9 +113,8 @@ export function createEvmSite(core: SiteCore) {
    *  gas limit × max fee per gas, so the wallet sets both and ignores the dapp's. An
    *  estimate that fails stops the request: a failing tx on Injective still pays its whole
    *  gas limit. */
-  async function fillEvmTx(network: NetworkId, from: string, tx: Record<string, unknown>) {
-    const net = NETWORKS[network];
-    const rpc = await h.sender.evm(network);
+  async function fillEvmTx(network: NetworkId, chain: ChainInfo, from: string, tx: Record<string, unknown>) {
+    const rpc = await rpcFor(network, chain);
     const hexOr = (v: unknown, what: string, fallback: string) => {
       if (v === undefined || v === null) return fallback;
       if (typeof v !== "string" || !/^0x[0-9a-fA-F]*$/.test(v)) throw new RangeError(`${what} must be hex`);
@@ -92,19 +126,31 @@ export function createEvmSite(core: SiteCore) {
     if (data.length % 2 !== 0) throw new RangeError("data must be whole bytes");
     if (typeof tx["to"] !== "string") throw new RangeError("contract creation isn't supported");
     const to = tx["to"].toLowerCase();
-    const [nonce, block, tip] = await rpc.batch([
+    const [nonce, block, tip, held] = await rpc.batch([
       { method: "eth_getTransactionCount", params: [from, "pending"] },
       { method: "eth_getBlockByNumber", params: ["latest", false] },
       { method: "eth_maxPriorityFeePerGas", params: [] },
+      { method: "eth_getBalance", params: [from, "latest"] },
     ]);
     const q = (v: unknown, what: string): bigint => {
       if (typeof v !== "string" || !/^0x[0-9a-fA-F]{1,64}$/.test(v)) throw new ChainError(-1, `the node returned no ${what}`);
       return BigInt(v);
     };
-    const base = isObject(block) ? q(block["baseFeePerGas"], "base fee") : MIN_GAS_PRICE;
-    const baseFee = base < MIN_GAS_PRICE ? MIN_GAS_PRICE : base > MIN_GAS_PRICE * 1000n ? MIN_GAS_PRICE * 1000n : base;
     const tipped = typeof tip === "string" ? q(tip, "tip") : 0n;
-    const priority = tipped > baseFee ? baseFee : tipped;
+    let maxFee: bigint;
+    let priority: bigint;
+    if (chain.kind === "injective") {
+      // Injective charges gas limit × max fee per gas: the price is kept near the floor.
+      const base = isObject(block) ? q(block["baseFeePerGas"], "base fee") : MIN_GAS_PRICE;
+      const baseFee = base < MIN_GAS_PRICE ? MIN_GAS_PRICE : base > MIN_GAS_PRICE * 1000n ? MIN_GAS_PRICE * 1000n : base;
+      priority = tipped > baseFee ? baseFee : tipped;
+      maxFee = baseFee + priority;
+    } else {
+      // Elsewhere what is used is paid: room for the base fee to double, plus the tip.
+      const base = isObject(block) ? q(block["baseFeePerGas"], "base fee") : 0n;
+      priority = tipped;
+      maxFee = base * 2n + priority;
+    }
     const call = { from, to, value: quantity(value), data };
     const used = q(await rpc.call("eth_estimateGas", [call]), "gas estimate");
     let gas = (used * 12n) / 10n + 1n;
@@ -113,55 +159,77 @@ export function createEvmSite(core: SiteCore) {
     return {
       tx: {
         type: "0x2",
-        chainId: quantity(BigInt(net.evmChainId)),
+        chainId: quantity(BigInt(chain.chainId!)),
         from,
         to,
         value: quantity(value),
         data,
         nonce: quantity(q(nonce, "nonce")),
         gas: quantity(gas),
-        maxFeePerGas: quantity(baseFee + priority),
+        maxFeePerGas: quantity(maxFee),
         maxPriorityFeePerGas: quantity(priority),
       },
+      held: typeof held === "string" ? q(held, "balance") : null,
       checkedBy: new URL(rpc.pool.current).host,
     };
+  }
+
+  /** On another EVM chain than Injective's: what the review shows amounts in (its coin, its
+   *  USDC, the token a call is to) and what the rules weigh them against. */
+  async function elsewhere(chain: ChainInfo, rpc: EvmRpc, to: string | null, held: bigint | null) {
+    const coin = `native:${chain.caip2}`;
+    const usdc = `usdc:${chain.caip2}`;
+    const tokens: Record<string, TokenInfo> = {
+      [coin]: { denom: coin, symbol: chain.native.symbol, name: chain.native.symbol, decimals: chain.native.decimals, known: true, chain: chain.caip2 },
+      [usdc]: { denom: usdc, symbol: "USDC", name: "USD Coin", decimals: 6, known: true, chain: chain.caip2 },
+    };
+    if (to && to.toLowerCase() !== chain.usdc.toLowerCase()) {
+      const meta = await erc20Meta(rpc, to).catch(() => null);
+      if (meta) tokens[evmDenom(to)] = { denom: evmDenom(to), symbol: meta.symbol, name: meta.symbol, decimals: meta.decimals, known: false, chain: chain.caip2 };
+    }
+    return { tokens, context: { balances: held === null ? {} : { native: held.toString() }, symbols: { native: chain.native.symbol } } };
   }
 
   async function evmSign(origin: string, method: string, params: unknown): Promise<DappReply> {
     const network = await h.network();
     const net = NETWORKS[network];
+    const chain = await siteChain(origin, network);
     const list = Array.isArray(params) ? params : [];
-    const me = async () => (await h.unlocked())?.account.addresses[net.evm] ?? "";
+    const me = async () => (await h.unlocked())?.account.addresses[chain.caip2] ?? "";
     const mine = async (a: unknown) => typeof a === "string" && (await isConnected(origin)) && a.toLowerCase() === (await evmAccountsAny()).toLowerCase();
     // The account in use's address, from storage, for checks made while locked. A
     // watch-only account has nothing to sign with, so it matches nothing.
     async function evmAccountsAny(): Promise<string> {
       const { accounts, active_account } = (await h.local.get(["accounts", "active_account"])) as { accounts?: AccountInfo[]; active_account?: number };
       const a = accounts?.[typeof active_account === "number" ? active_account : 0] ?? accounts?.[0];
-      return a && a.account.derivation !== "watch" ? (a.addresses[net.evm] ?? "") : "";
+      return a && a.account.derivation !== "watch" ? (a.addresses[chain.caip2] ?? a.addresses[net.evm] ?? "") : "";
     }
 
     if (method === "eth_sendTransaction") {
       const tx = list[0];
       if (!isObject(tx)) return no(INVALID_PARAMS, "eth_sendTransaction takes a transaction object.");
       if (!(await mine(tx["from"]))) return no(UNAUTHORIZED, "The transaction's from isn't this wallet's connected account.");
-      if (tx["chainId"] !== undefined && networkOfEvm(tx["chainId"]) !== network) return no(CHAIN_DISCONNECTED, `The wallet is on ${net.name}.`);
+      if (tx["chainId"] !== undefined && chainOfId(tx["chainId"])?.chain.caip2 !== chain.caip2) return no(CHAIN_DISCONNECTED, `This site is on ${chain.name}. Switch chains first.`);
       if (typeof tx["to"] !== "string") return no(INVALID_PARAMS, "Contract creation isn't supported.");
       return sign(
         origin,
         "evm_transaction",
         async () => {
-          const filled = await fillEvmTx(network, await me(), tx);
-          return { request: { evm_transaction: { chain: net.evm, tx: filled.tx } }, checkedBy: filled.checkedBy };
+          const filled = await fillEvmTx(network, chain, await me(), tx);
+          const request = { evm_transaction: { chain: chain.caip2, tx: filled.tx } };
+          if (chain.kind === "injective") return { request, checkedBy: filled.checkedBy };
+          const extra = await elsewhere(chain, await rpcFor(network, chain), filled.tx.to, filled.held);
+          return { request, checkedBy: filled.checkedBy, tokens: extra.tokens, context: extra.context };
         },
         async (signed) => {
           const hash = String(signed["hash"]).toLowerCase();
           try {
-            await (await h.sender.evm(network)).call("eth_sendRawTransaction", [signed["raw"]]);
+            await (await rpcFor(network, chain)).call("eth_sendRawTransaction", [signed["raw"]]);
           } catch (e) {
             if (!(e instanceof ChainError && /already known|already imported|known transaction/i.test(e.message))) throw e;
           }
-          h.sender.broadcasted(network, hash, (await h.unlocked())?.account.addresses[net.cosmos] ?? "");
+          if (chain.kind === "injective") h.sender.broadcasted(network, hash, (await h.unlocked())?.account.addresses[net.cosmos] ?? "");
+          else await h.sender.chainSent(network, chain.key, await me(), hash);
           return hash;
         },
       );
@@ -173,7 +241,7 @@ export function createEvmSite(core: SiteCore) {
       return sign(
         origin,
         "evm_personal_sign",
-        async () => ({ request: { evm_personal_sign: { chain: net.evm, signer: await me(), message } } }),
+        async () => ({ request: { evm_personal_sign: { chain: chain.caip2, signer: await me(), message } } }),
         async (signed) => signed["signature"],
       );
     }
@@ -184,7 +252,7 @@ export function createEvmSite(core: SiteCore) {
     return sign(
       origin,
       "evm_typed_data",
-      async () => ({ request: { evm_typed_data: { chain: net.evm, signer: await me(), typed_data: typed } } }),
+      async () => ({ request: { evm_typed_data: { chain: chain.caip2, signer: await me(), typed_data: typed } } }),
       async (signed) => signed["signature"],
     );
   }
@@ -192,12 +260,11 @@ export function createEvmSite(core: SiteCore) {
   /** An EVM method's answer, or null when it isn't one. */
   async function handle(origin: string, method: string, params: unknown): Promise<DappReply | null> {
     const network = await h.network();
-    const net = NETWORKS[network];
     switch (method) {
       case "eth_chainId":
-        return { result: quantity(BigInt(net.evmChainId)) };
+        return { result: quantity(BigInt((await siteChain(origin, network)).chainId!)) };
       case "net_version":
-        return { result: String(net.evmChainId) };
+        return { result: String((await siteChain(origin, network)).chainId) };
       case "eth_accounts":
         return { result: await evmAccounts(origin) };
       case "eth_requestAccounts":
@@ -214,7 +281,7 @@ export function createEvmSite(core: SiteCore) {
       case "wallet_switchEthereumChain":
       case "wallet_addEthereumChain": {
         const p = Array.isArray(params) && isObject(params[0]) ? params[0] : {};
-        return switchTo(origin, networkOfEvm(p["chainId"]));
+        return switchTo(origin, p["chainId"]);
       }
       case "eth_sendTransaction":
       case "personal_sign":
@@ -222,7 +289,7 @@ export function createEvmSite(core: SiteCore) {
         return evmSign(origin, method, params);
     }
     if (REFUSED[method]) return no(UNSUPPORTED, REFUSED[method]);
-    if (READS.has(method)) return { result: await (await h.sender.evm(network)).call(method, Array.isArray(params) ? params : []) };
+    if (READS.has(method)) return { result: await (await rpcFor(network, await siteChain(origin, network))).call(method, Array.isArray(params) ? params : []) };
     return null;
   }
 

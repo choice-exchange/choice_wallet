@@ -830,6 +830,10 @@ export function createSender(d: SendDeps) {
     prepareSourceCall,
     prepareChainSend,
     sourceRpc,
+    /** A site's transaction broadcast on another EVM chain, for that chain's history. */
+    chainSent: async (network: NetworkId, key: string, from: string, hash: string): Promise<void> => {
+      await d.onChainSent?.(network, key, from, hash).catch(() => {});
+    },
     /** A client for any EVM chain beside Injective, on the user's endpoints for it. */
     chainRpc: async (network: NetworkId, key: string): Promise<EvmRpc> => {
       const c = chainByKey(network, key);

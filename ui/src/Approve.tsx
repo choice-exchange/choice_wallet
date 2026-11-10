@@ -8,7 +8,7 @@
 // - What it shows is the vault's decode of what will be signed, prepared when it asks;
 //   approving names that decode's digest.
 
-import { formatUnits, NETWORKS, shortDenom } from "@choice-wallet/chain";
+import { chainByCaip2, chainByKey, formatUnits, NETWORKS, shortDenom } from "@choice-wallet/chain";
 import { useEffect, useState, type ReactNode } from "react";
 
 import { useBackend } from "./backend";
@@ -211,7 +211,7 @@ export function ApproveView({ id }: { id: string }) {
         <div className="surface-hero">
           <div className="eyebrow">Switch the wallet to</div>
           <div className="hero" style={{ fontSize: 24, marginTop: 6 }}>
-            {NETWORKS[req.to ?? req.network].name}
+            {req.toChain ? (chainByKey(req.to ?? req.network, req.toChain)?.name ?? NETWORKS[req.to ?? req.network].name) : NETWORKS[req.to ?? req.network].name}
           </div>
           <p className="meta" style={{ marginTop: 8 }}>
             From {net.name}. Every connected site sees the change.
@@ -350,10 +350,7 @@ function SignBody({ review, network, typed, onTyped }: { review: DappReview; net
         )}
         <div className="row">
           <span>Network</span>
-          <span>
-            {solana || d["kind"] === "solana_message" ? net.solana.name : net.name}
-            {d["kind"] === "evm_transaction" ? " (EVM)" : ""}
-          </span>
+          <span>{networkName(d, network)}</span>
         </div>
         {view?.memo && (
           <div className="row">
@@ -501,4 +498,19 @@ function TypedData({ d }: { d: Record<string, unknown> }) {
       </div>
     </>
   );
+}
+
+/** The chain a request is signed for: an EVM chain by its name (Injective's EVM side marked
+ *  so), Solana's cluster, or Injective. */
+function networkName(d: Record<string, unknown>, network: NetworkId): string {
+  const net = NETWORKS[network];
+  const kind = d["kind"];
+  if (kind === "solana_transaction" || kind === "solana_message") return net.solana.name;
+  const chain = typeof d["chain"] === "string" ? d["chain"] : "";
+  if (chain.startsWith("eip155:")) {
+    const c = chainByCaip2(network, chain);
+    if (c?.kind === "evm") return c.name;
+    return `${net.name}${kind === "evm_transaction" ? " (EVM)" : ""}`;
+  }
+  return net.name;
 }
