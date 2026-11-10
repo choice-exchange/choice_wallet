@@ -45,3 +45,6 @@ Everything it shows ships with it; nothing is loaded from the network at runtime
   `injective-lists` token list (INJ: the current mark, which that list files under wINJ). Trademarks of their issuers. A logo is chosen by denom and
   only for listed tokens; any other token gets a monogram, so a token that calls itself
   "USDT" never wears USDT's logo.
+- `src/assets/chains/`: the EVM chains' marks, 64 px, each file's source and original's
+  SHA-256 in [SOURCES.md](src/assets/chains/SOURCES.md). Trademarks of their owners. Chosen
+  by chain key; a chain's coin wears its chain's mark (Ethereum's for every ETH chain).

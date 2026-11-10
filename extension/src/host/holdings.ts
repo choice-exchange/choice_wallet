@@ -197,6 +197,8 @@ export function createHoldings(d: HoldingsDeps) {
   }
 
   const solanaPriceCache = { at: 0, prices: Promise.resolve(new Map<string, string>()) };
+  /** The last prices Jupiter gave, shown for up to 15 minutes while it doesn't answer. */
+  const solanaPriceGood = { at: 0, prices: new Map<string, string>() };
   /** USD prices for Solana's tokens, by their denoms there (mainnet, with USD values on), from
    *  Jupiter, where Solana's tokens trade: SOL, and Circle's and Tether's dollars. The same
    *  three for everyone. Never an error. */
@@ -206,10 +208,14 @@ export function createHoldings(d: HoldingsDeps) {
     const denoms: Record<string, string> = { [WRAPPED_SOL]: "sol", [NETWORKS[network].solana.usdcMint]: `spl:${NETWORKS[network].solana.usdcMint}`, [SOLANA_USDT]: `spl:${SOLANA_USDT}` };
     solanaPriceCache.at = Date.now();
     solanaPriceCache.prices = fetchJupiterPrices(d.fetch, Object.keys(denoms)).then(
-      (got) => new Map([...got].map(([mint, p]) => [denoms[mint]!, p])),
+      (got) => {
+        const prices = new Map([...got].map(([mint, p]) => [denoms[mint]!, p]));
+        Object.assign(solanaPriceGood, { at: Date.now(), prices });
+        return prices;
+      },
       () => {
         solanaPriceCache.at = 0;
-        return new Map<string, string>();
+        return Date.now() - solanaPriceGood.at < 15 * MINUTE ? solanaPriceGood.prices : new Map<string, string>();
       },
     );
     return solanaPriceCache.prices;

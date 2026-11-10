@@ -6,6 +6,7 @@
 import { chainByKey, type NetworkId } from "@choice-wallet/chain";
 import { useEffect, useRef } from "react";
 
+import { CHAIN_LOGOS } from "./chainLogos";
 import { CheckIcon, ChevronDownIcon } from "./icons";
 import { Switch } from "./kit";
 import type { ChainView } from "./protocol";
@@ -27,10 +28,19 @@ function compact(a: string): string {
   return a.length > head + 6 ? `${a.slice(0, head)}…${a.slice(-4)}` : a;
 }
 
-/** A chain's mark: Injective's and Solana's logos, a monogram on its colour for the rest. */
+/** A chain's mark: its logo (./chainLogos.ts), or a monogram on its colour for one the wallet
+ *  ships none for. */
 export function ChainMark({ chain, small, network = "mainnet" }: { chain: ChainView; small?: boolean; network?: NetworkId }) {
   if (chain === "injective" || chain === "solana") {
     return <TokenMark denom={chain === "solana" ? "sol" : "inj"} symbol={chain === "solana" ? "SOL" : "INJ"} known small={small === true} />;
+  }
+  const logo = CHAIN_LOGOS[chain];
+  if (logo) {
+    return (
+      <span className={small ? "mark sm" : "mark"} style={{ borderColor: "transparent" }} aria-hidden="true">
+        <img src={logo} alt="" />
+      </span>
+    );
   }
   const mark = chainByKey(network, chain)?.mark ?? { letters: chain.slice(0, 2).toUpperCase(), color: "#555" };
   return (

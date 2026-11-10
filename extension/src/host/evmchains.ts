@@ -45,8 +45,9 @@ export interface EvmChainsDeps {
 
 /** Holdings on the chains Home isn't showing are read again after this long. */
 const HELD_TTL_MS = 60_000;
-/** Prices are asked again after a minute. */
+/** Prices are asked again after a minute; the last ones show for 15 while the source is down. */
 const PRICE_TTL_MS = 60_000;
+const STALE_MS = 15 * 60_000;
 const ZERO = "0x0000000000000000000000000000000000000000";
 /** Rows per Activity page. */
 const PAGE = 25;
@@ -84,6 +85,8 @@ export function createEvmChains(d: EvmChainsDeps) {
   }
 
   const priceCache = new Map<NetworkId, { at: number; prices: Promise<Map<string, string>> }>();
+  /** The last prices DefiLlama gave, shown for up to 15 minutes while it doesn't answer. */
+  let lastGood = { at: 0, prices: new Map<string, string>() };
   /** USD prices of every EVM chain's coin and USDC, by wallet key (mainnet, USD values on).
    *  Never an error: a chain without a price shows amounts alone. */
   async function prices(network: NetworkId): Promise<Map<string, string>> {
@@ -97,10 +100,14 @@ export function createEvmChains(d: EvmChainsDeps) {
       if (!c.gasIsUsdc) keys.set(`${c.llama}:${ZERO}`, chainCoin(c.caip2));
     }
     const p = fetchLlamaPrices(d.fetch, [...keys.keys()]).then(
-      (got) => new Map([...got].map(([k, v]) => [keys.get(k)!, v])),
+      (got) => {
+        const prices = new Map([...got].map(([k, v]) => [keys.get(k)!, v]));
+        lastGood = { at: now(), prices };
+        return prices;
+      },
       () => {
         priceCache.delete(network);
-        return new Map<string, string>();
+        return now() - lastGood.at < STALE_MS ? lastGood.prices : new Map<string, string>();
       },
     );
     priceCache.set(network, { at: now(), prices: p });

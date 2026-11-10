@@ -6,6 +6,7 @@
 // real USDT's logo on it is the one rendering mistake here worth money to someone. Its
 // monogram's hue comes from the denom too, so two "USDT"s look different.
 
+import { coinLogo } from "./chainLogos";
 import atom from "./assets/tokens/atom.png";
 import inj from "./assets/tokens/inj.png";
 import sol from "./assets/tokens/sol.svg";
@@ -29,8 +30,8 @@ const LOGOS: Record<string, string> = {
 };
 
 export function TokenMark({ denom, symbol, known, small }: { denom: string; symbol: string; known: boolean; small?: boolean }) {
-  // USDC on another chain, in a bridge transfer's review (`usdc:<chain>`).
-  const logo = known ? (LOGOS[denom] ?? (denom.startsWith("usdc:") ? usdc : undefined)) : undefined;
+  // USDC on another chain (`usdc:<chain>`), and an EVM chain's coin (`native:<chain>`).
+  const logo = known ? (LOGOS[denom] ?? (denom.startsWith("usdc:") ? usdc : denom.startsWith("native:") ? coinLogo(denom.slice("native:".length)) : undefined)) : undefined;
   const cls = small ? "mark sm" : "mark";
   if (logo) {
     return (
