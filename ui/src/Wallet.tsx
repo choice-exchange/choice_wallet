@@ -2,7 +2,7 @@
 // over them full screen (receive, a token, send, convert, manage tokens).
 
 import { formatShort, NETWORKS, usdValue } from "@choice-wallet/chain";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { AccountMark, AccountsView, isWatch } from "./Accounts";
 import { ApprovalsView } from "./Approvals";
@@ -11,16 +11,17 @@ import { ChainPill, ChainSheet, type ChainRow } from "./Chains";
 import { ContactsView, type Draft } from "./Contacts";
 import { ActivityView } from "./Activity";
 import { merge, type ActivityState } from "./activityState";
-import { Kept, KeptContext, useKept } from "./kept";
+import { Kept, KeptContext } from "./kept";
 import { useBackend } from "./backend";
-import { ActivityIcon, CheckIcon, ChevronDownIcon, ChevronRightIcon, CopyIcon, EyeOffIcon, GlobeIcon, LockIcon, ReceiveIcon, SendIcon, SettingsIcon, StakeIcon, SwapIcon, WalletIcon } from "./icons";
-import { BackBar, Callout, formatUsd, Screen, Segmented, shortAddress, tokenSub } from "./kit";
+import { holdsLine, InjectiveHome, SolanaHome, solanaTotal } from "./Home";
+import { ActivityIcon, CheckIcon, ChevronDownIcon, CopyIcon, LockIcon, SettingsIcon, SwapIcon, WalletIcon } from "./icons";
+import { formatUsd, Screen, shortAddress } from "./kit";
 import { NftsView, NftView } from "./Nfts";
 import { InventoryScreen } from "./Inventory";
 import { RescueView } from "./Rescue";
 import type { ActivityPage, Balance, ChainView, NetworkId, Nft, NftCollection, Replies, SendReview, Sent, StakingSummary, Status, TokenFilter } from "./protocol";
 import { newDraft, SwapView, type SwapDraft } from "./Swap";
-import { QrCode } from "./QrCode";
+import { Receive } from "./Receive";
 import { useRequest } from "./request";
 import { Review, SendForm, SentView } from "./Send";
 import { SettingsView } from "./Settings";
@@ -54,20 +55,8 @@ type View =
   | { name: "tokens" };
 
 const COSMOS = "cosmos:injective-1";
-const EVM = "eip155:1776";
 /** While the wallet is on screen, its balances are read again this often. */
 const REFRESH_MS = 15_000;
-
-/** "just now", "4 min ago", "2 h ago", "3 days ago". */
-export function ago(at: number, now = Date.now()): string {
-  const m = Math.floor((now - at) / 60_000);
-  if (m < 1) return "just now";
-  if (m < 60) return `${m} min ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h} h ago`;
-  const days = Math.floor(h / 24);
-  return `${days} ${days === 1 ? "day" : "days"} ago`;
-}
 
 const TABS: readonly (readonly [Tab, string, typeof WalletIcon])[] = [
   ["wallet", "Wallet", WalletIcon],
@@ -345,6 +334,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
             addresses={account?.addresses ?? {}}
             network={status.network}
             chain={chain}
+            ledger={account?.account.derivation === "ledger"}
             onBack={home}
             onBridgeIn={() => {
               setBridgeDraft((d) => ({ ...d, dir: "in" }));
@@ -565,7 +555,6 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
             />
           );
         }
-        const inj = balances?.find((b) => b.denom === "inj");
         const openAccounts = () => setView({ name: "accounts" });
         return (
           <Screen
@@ -619,283 +608,34 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
                 }}
               />
             ) : (
-              <>
-            {/* Everything the account holds, staking included: in USD when Choice prices
-                something here, otherwise in INJ. */}
-            <section className="balance-head" aria-label="Total balance">
-              {balances === null ? (
-                <div className="skeleton" style={{ width: 168, height: 40, margin: "3px auto" }} />
-              ) : totalUsd === undefined ? (
-                <Figure text={formatShort((BigInt(inj?.amount ?? "0") + stakedAll).toString(), 18, 4)} unit="INJ" />
-              ) : (
-                <Figure text={formatUsd(totalUsd)} />
-              )}
-              <div className="balance-sub">
-                {watch && <span className="flag quiet">Watch-only</span>}
-                {balances !== null && stakedAll > 0n && (
-                  <span>Includes {totalUsd !== undefined && injPrice && prices ? formatUsd(usdValue(stakedAll.toString(), 18, injPrice)) : `${formatShort(stakedAll, 18, 4)} INJ`} staked</span>
-                )}
-              </div>
-            </section>
-            <div className="quick-actions">
-              <QuickAction label="Send" gold disabled={watch || !sorted?.shown.length} onClick={() => setView({ name: "send" })}>
-                <SendIcon size={20} />
-              </QuickAction>
-              <QuickAction label="Receive" onClick={() => setView({ name: "receive" })}>
-                <ReceiveIcon size={20} />
-              </QuickAction>
-              <QuickAction label="Swap" onClick={() => setTab("swap")}>
-                <SwapIcon size={20} />
-              </QuickAction>
-              <QuickAction label="Stake" onClick={() => setView({ name: "staking" })}>
-                <StakeIcon size={20} />
-              </QuickAction>
-            </div>
-
-            <div className="section-head">
-              <span className="eyebrow">Tokens{sorted?.shown.length ? ` · ${sorted.shown.length}` : ""}</span>
-              {balances !== null && balances.length > 0 && (
-                <button className="link" onClick={() => setView({ name: "tokens" })}>
-                  Manage
-                </button>
-              )}
-            </div>
-            {error && balances !== null && readAt !== null ? (
-              <p className="meta warn">Couldn&apos;t update. Showing balances from {ago(readAt)}.</p>
-            ) : (
-              error && <Callout level="amber">{error}</Callout>
-            )}
-            {sorted === null ? (
-              !error && [0, 1, 2].map((i) => <div key={i} className="skeleton" style={{ height: 40 }} />)
-            ) : sorted.shown.length === 0 && sorted.hidden.length === 0 ? (
-              <p className="empty">No tokens yet. Use Receive to get your address.</p>
-            ) : (
-              <div className="token-list">
-                {sorted.shown.map((b) => (
-                  <button
-                    key={b.denom}
-                    className="token"
-                    title={b.denom}
-                    onClick={() => setView({ name: "token", denom: b.denom })}
-                  >
-                    <TokenMark denom={b.denom} symbol={b.symbol} known={b.known} />
-                    <span className="name">
-                      <span className="symbol">{b.symbol}</span>
-                      <span className={b.known ? "sub" : "sub denom"}>{tokenSub(b)}</span>
-                    </span>
-                    <HoldingValue amount={formatShort(b.amount, b.decimals)} symbol={b.symbol} usd={b.usd} />
-                  </button>
-                ))}
-                {sorted.hidden.length > 0 && (
-                  <button className="hidden-row" onClick={() => setView({ name: "tokens" })}>
-                    <EyeOffIcon size={16} />
-                    {sorted.hidden.length} hidden {sorted.hidden.length === 1 ? "token" : "tokens"}
-                    <ChevronRightIcon size={16} />
-                  </button>
-                )}
-              </div>
-            )}
-            {/* Staked, unstaking and unclaimed INJ. Nothing staked: the Stake button above. */}
-            {staking && stakedAll > 0n && (
-              <>
-                <div className="section-head">
-                  <span className="eyebrow">Staking</span>
-                </div>
-                <button className="token" onClick={() => setView({ name: "staking" })}>
-                  <TokenMark denom="inj" symbol="INJ" known />
-                  <span className="name">
-                    <span className="symbol">Staked INJ</span>
-                    <span className="sub">{BigInt(staking.rewards) > 0n ? `Rewards ${formatShort(staking.rewards, 18, 4)} INJ` : "Earning rewards"}</span>
-                  </span>
-                  <HoldingValue amount={formatShort(stakedAll, 18, 4)} symbol="INJ" usd={injPrice && prices ? usdValue(stakedAll.toString(), 18, injPrice) : undefined} />
-                </button>
-              </>
-            )}
-            <div className="section-head">
-              <span className="eyebrow">More</span>
-            </div>
-            <button className="token" onClick={() => setView({ name: "bridge" })}>
-              <TokenMark denom="usdc:injective" symbol="USDC" known />
-              <span className="name">
-                <span className="symbol">Bridge USDC</span>
-                <span className="sub">To Base, Solana and more, by Circle</span>
-              </span>
-              <ChevronRightIcon size={16} />
-            </button>
-            <button className="token" onClick={() => setView({ name: "inventory" })}>
-              <span className="nft-tile small" aria-hidden="true">
-                LP
-              </span>
-              <span className="name">
-                <span className="symbol">Trading and liquidity</span>
-                <span className="sub">Orderbook accounts, Choice pools</span>
-              </span>
-              <ChevronRightIcon size={16} />
-            </button>
-            <button className="token" onClick={() => setView({ name: "nfts" })}>
-              <span className="nft-tile small" aria-hidden="true">
-                NFT
-              </span>
-              <span className="name">
-                <span className="symbol">NFTs</span>
-                <span className="sub">CW721 and ERC721</span>
-              </span>
-              <ChevronRightIcon size={16} />
-            </button>
-            {evmDown && <p className="meta warn">EVM tokens may be missing: no EVM endpoint answered.</p>}
-            <p className="footnote">{totalUsd === undefined ? "Pre-alpha. Not for real funds." : "Prices from Choice. Pre-alpha. Not for real funds."}</p>
-              </>
+              <InjectiveHome
+                balances={balances}
+                sorted={sorted}
+                totalUsd={totalUsd}
+                stakedAll={stakedAll}
+                injPrice={injPrice}
+                prices={prices}
+                staking={staking}
+                watch={watch}
+                error={error}
+                readAt={readAt}
+                evmDown={evmDown}
+                onSend={() => setView({ name: "send" })}
+                onReceive={() => setView({ name: "receive" })}
+                onSwap={() => setTab("swap")}
+                onStake={() => setView({ name: "staking" })}
+                onTokens={() => setView({ name: "tokens" })}
+                onToken={(denom) => setView({ name: "token", denom })}
+                onBridge={() => setView({ name: "bridge" })}
+                onInventory={() => setView({ name: "inventory" })}
+                onNfts={() => setView({ name: "nfts" })}
+              />
             )}
           </Screen>
         );
       }
     }
   }
-}
-
-/** The headline figure: dollars with their cents dimmed, or an amount and its unit. Long
- *  figures step down a size so they stay on one line. */
-function Figure({ text, unit }: { text: string; unit?: string }) {
-  const dot = unit ? -1 : text.lastIndexOf(".");
-  const size = text.length > 13 ? "smaller" : text.length > 10 ? "small" : "";
-  return (
-    <div className={`hero balance-figure ${size}`}>
-      {dot < 0 ? text : text.slice(0, dot)}
-      {dot >= 0 && <span className="cents">{text.slice(dot)}</span>}
-      {unit && <span className="unit">{unit}</span>}
-    </div>
-  );
-}
-
-/** A holding's value column: its USD value first, the amount under it; the amount alone
- *  when nothing prices it. */
-function HoldingValue({ amount, symbol, usd }: { amount: string; symbol: string; usd: number | undefined }) {
-  if (usd === undefined) {
-    return (
-      <span className="value">
-        <span className="amount">{amount}</span>
-      </span>
-    );
-  }
-  return (
-    <span className="value">
-      <span className="amount">{formatUsd(usd)}</span>
-      <span className="usd">
-        {amount} {symbol}
-      </span>
-    </span>
-  );
-}
-
-type SolanaHoldings = NonNullable<Replies["balances"]["solana"]>;
-
-/** What the account holds on Solana, in one figure: the USD of what has a price (as
- *  Injective's total), otherwise its SOL. */
-function solanaTotal(balances: Balance[], prices: boolean): { text: string; usd?: number } {
-  const priced = balances.filter((b) => b.usd !== undefined);
-  if (prices && priced.length > 0) {
-    const usd = priced.reduce((t, b) => t + (b.usd ?? 0), 0);
-    return { text: formatUsd(usd), usd };
-  }
-  return { text: `${formatShort(balances.find((b) => b.denom === "sol")?.amount ?? "0", 9, 4)} SOL` };
-}
-
-/** "SOL, USDC": what's held, for the picker. */
-function holdsLine(balances: Balance[]): string {
-  const held = balances.filter((b) => BigInt(b.amount) > 0n).map((b) => b.symbol);
-  return held.length > 3 ? `${held.slice(0, 2).join(", ")} and ${held.length - 2} more` : held.join(", ");
-}
-
-/** Home on Solana: the account's Solana key, its SOL and tokens, and the way to Injective. */
-function SolanaHome({
-  network,
-  holdings,
-  total,
-  watch,
-  onSend,
-  onReceive,
-  onBridge,
-}: {
-  network: NetworkId;
-  holdings: SolanaHoldings | null;
-  total: { text: string; usd?: number } | null;
-  watch: boolean;
-  onSend: (denom?: string) => void;
-  onReceive: () => void;
-  onBridge: () => void;
-}) {
-  const cluster = NETWORKS[network].solana;
-  /** Rent in burn records that comes back to the account, 5 days after each transfer. */
-  const rent = useKept({ type: "bridge_reclaims" });
-  const ready = (rent.value ?? []).filter((r) => r.ready).length;
-  const waiting = (rent.value ?? []).length - ready;
-  const list = holdings?.balances.filter((b) => b.denom === "sol" || BigInt(b.amount) > 0n) ?? null;
-  return (
-    <>
-      <section className="balance-head" aria-label="Total balance">
-        {total === null ? (
-          <div className="skeleton" style={{ width: 168, height: 40, margin: "3px auto" }} />
-        ) : total.usd !== undefined ? (
-          <Figure text={total.text} />
-        ) : (
-          <Figure text={total.text.replace(/ SOL$/, "")} unit="SOL" />
-        )}
-        <div className="balance-sub">{watch && <span className="flag quiet">Watch-only</span>}</div>
-      </section>
-      <div className="quick-actions three">
-        <QuickAction label="Send" gold disabled={watch || !list?.some((b) => BigInt(b.amount) > 0n)} onClick={() => onSend()}>
-          <SendIcon size={20} />
-        </QuickAction>
-        <QuickAction label="Receive" onClick={onReceive}>
-          <ReceiveIcon size={20} />
-        </QuickAction>
-        <QuickAction label="Bridge" onClick={onBridge}>
-          <GlobeIcon size={20} />
-        </QuickAction>
-      </div>
-      <div className="section-head">
-        <span className="eyebrow">Tokens{list?.length ? ` · ${list.length}` : ""}</span>
-      </div>
-      {holdings?.down && <p className="meta warn">{cluster.name} didn&apos;t answer. Its balances may be missing.</p>}
-      {list === null ? (
-        [0, 1].map((i) => <div key={i} className="skeleton" style={{ height: 40 }} />)
-      ) : (
-        <div className="token-list">
-          {list.map((b) => (
-            <button key={b.denom} className="token" title={b.denom} disabled={watch || BigInt(b.amount) === 0n} onClick={() => onSend(b.denom)}>
-              <TokenMark denom={b.denom} symbol={b.symbol} known={b.known} />
-              <span className="name">
-                <span className="symbol">{b.symbol}</span>
-                <span className={b.known ? "sub" : "sub denom"}>{b.known ? b.name : tokenSub(b)}</span>
-              </span>
-              <HoldingValue amount={formatShort(b.amount, b.decimals)} symbol={b.symbol} usd={b.usd} />
-            </button>
-          ))}
-        </div>
-      )}
-      <div className="section-head">
-        <span className="eyebrow">Bridge</span>
-      </div>
-      <button className="token" onClick={onBridge}>
-        <TokenMark denom="usdc:injective" symbol="USDC" known />
-        <span className="name">
-          <span className="symbol">USDC to Injective</span>
-          <span className="sub">{ready > 0 ? `Rent to take back from ${ready} ${ready === 1 ? "transfer" : "transfers"}` : waiting > 0 ? `Rent comes back 5 days after each transfer` : "By Circle"}</span>
-        </span>
-        <ChevronRightIcon size={16} />
-      </button>
-      <p className="footnote">Pre-alpha. Not for real funds.</p>
-    </>
-  );
-}
-
-function QuickAction({ label, gold, disabled, onClick, children }: { label: string; gold?: boolean; disabled?: boolean; onClick: () => void; children: ReactNode }) {
-  return (
-    <button className={gold ? "quick-action gold" : "quick-action"} disabled={disabled} onClick={onClick}>
-      <span className="quick-icon">{children}</span>
-      {label}
-    </button>
-  );
 }
 
 /** The account's address under its name: copies on a click. */
@@ -917,68 +657,5 @@ function CopyAddress({ address }: { address: string }) {
       <span className="mono">{copied ? "Copied" : shortAddress(address)}</span>
       {copied ? <CheckIcon size={12} /> : <CopyIcon size={12} />}
     </button>
-  );
-}
-
-/** The account's address on the chain Home shows: Injective's in either form, or Solana's. */
-function Receive({ addresses, network, chain, onBack, onBridgeIn }: { addresses: Record<string, string>; network: NetworkId; chain: ChainView; onBack: () => void; onBridgeIn: () => void }) {
-  const backend = useBackend();
-  const [form, setForm] = useState<"cosmos" | "evm">("cosmos");
-  const [copied, setCopied] = useState(false);
-  const cluster = NETWORKS[network].solana;
-  const side = chain === "solana" ? "solana" : form;
-  const address = (side === "cosmos" ? addresses[COSMOS] : side === "evm" ? addresses[EVM] : addresses[cluster.caip2]) ?? "";
-  return (
-    <Screen
-      top={<BackBar title="Receive" onBack={onBack} />}
-      foot={
-        <button
-          className="btn btn-gold"
-          onClick={() =>
-            void backend.copy(address).then(() => {
-              setCopied(true);
-              setTimeout(() => setCopied(false), 1500);
-            })
-          }
-        >
-          {copied ? <CheckIcon /> : <CopyIcon />}
-          {copied ? "Copied" : "Copy address"}
-        </button>
-      }
-    >
-      {chain === "injective" && (
-        <Segmented
-          label="Address format"
-          options={[
-            ["cosmos", "Injective"],
-            ["evm", "EVM (0x)"],
-          ]}
-          value={form}
-          onChange={(v) => {
-            setForm(v);
-            setCopied(false);
-          }}
-        />
-      )}
-      <div className="surface-hero">
-        <div className="eyebrow">{side === "cosmos" ? "Injective address" : side === "evm" ? "EVM address" : `${cluster.name} address`}</div>
-        {address && (
-          <div className="qr-frame">
-            <QrCode text={address} />
-          </div>
-        )}
-        <div className="well">
-          <code className="mono address" style={{ fontSize: 15, lineHeight: "22px" }}>
-            {address}
-          </code>
-        </div>
-      </div>
-      <p className="lead">{side === "solana" ? `Only ${cluster.name} tokens here. Same phrase, its own key.` : "Both addresses are the same account."}</p>
-      {side !== "solana" && (
-        <button type="button" className="btn btn-quiet" onClick={onBridgeIn}>
-          USDC on another chain? Bring it in
-        </button>
-      )}
-    </Screen>
   );
 }
