@@ -1,14 +1,14 @@
 // Home, the Wallet tab: what the account holds on the chain picked, in one figure, its
 // quick actions and its tokens. Injective's adds staking and the ways to the rest
-// (bridge, trading accounts, NFTs); Solana's, its way to Injective.
+// (bridge, trading accounts, NFTs); Solana's and each EVM chain's, the way to bridge.
 
-import { formatShort, NETWORKS, usdValue } from "@choice-wallet/chain";
+import { chainCoin, formatShort, NETWORKS, usdValue, type ChainInfo } from "@choice-wallet/chain";
 import type { ReactNode } from "react";
 
 import { ChevronRightIcon, EyeOffIcon, GlobeIcon, ReceiveIcon, SendIcon, StakeIcon, SwapIcon } from "./icons";
 import { useKept } from "./kept";
 import { Callout, formatUsd, tokenSub } from "./kit";
-import type { Balance, NetworkId, Replies, StakingSummary } from "./protocol";
+import type { Balance, ChainHoldings, NetworkId, Replies, StakingSummary } from "./protocol";
 import type { Sorted } from "./tokenFilter";
 import { TokenMark } from "./TokenMark";
 
@@ -248,6 +248,18 @@ export function solanaTotal(balances: Balance[], prices: boolean): { text: strin
   return { text: `${formatShort(balances.find((b) => b.denom === "sol")?.amount ?? "0", 9, 4)} SOL` };
 }
 
+/** An EVM chain's total: USD when something there is priced, otherwise its coin (USDC on
+ *  Arc, whose coin is its USDC). */
+export function chainTotal(c: ChainInfo, balances: Balance[], prices: boolean): { text: string; usd?: number } {
+  const priced = balances.filter((b) => b.usd !== undefined);
+  if (prices && priced.length > 0) {
+    const usd = priced.reduce((t, b) => t + (b.usd ?? 0), 0);
+    return { text: formatUsd(usd), usd };
+  }
+  const main = balances.find((b) => b.denom === chainCoin(c.caip2)) ?? balances[0];
+  return { text: `${formatShort(main?.amount ?? "0", main?.decimals ?? 18, 4)} ${main?.symbol ?? c.native.symbol}` };
+}
+
 /** "SOL, USDC": what's held, for the picker. */
 export function holdsLine(balances: Balance[]): string {
   const held = balances.filter((b) => BigInt(b.amount) > 0n).map((b) => b.symbol);
@@ -343,5 +355,85 @@ function QuickAction({ label, gold, disabled, onClick, children }: { label: stri
       <span className="quick-icon">{children}</span>
       {label}
     </button>
+  );
+}
+
+/** Home on an EVM chain beside Injective: the account's coin and USDC there (the same 0x
+ *  address as on Injective), and the way to bridge. */
+export function EvmHome({
+  chain,
+  holdings,
+  total,
+  watch,
+  onSend,
+  onReceive,
+  onBridge,
+}: {
+  chain: ChainInfo;
+  holdings: ChainHoldings | null;
+  total: { text: string; usd?: number } | null;
+  watch: boolean;
+  onSend: (denom?: string) => void;
+  onReceive: () => void;
+  onBridge: () => void;
+}) {
+  const list = holdings?.balances ?? null;
+  const unit = total?.text.split(" ").pop() ?? "";
+  return (
+    <>
+      <section className="balance-head" aria-label="Total balance">
+        {total === null ? (
+          <div className="skeleton" style={{ width: 168, height: 40, margin: "3px auto" }} />
+        ) : total.usd !== undefined ? (
+          <Figure text={total.text} />
+        ) : (
+          <Figure text={total.text.slice(0, -unit.length - 1)} unit={unit} />
+        )}
+        <div className="balance-sub">{watch && <span className="flag quiet">Watch-only</span>}</div>
+      </section>
+      <div className="quick-actions three">
+        <QuickAction label="Send" gold disabled={watch || !list?.some((b) => BigInt(b.amount) > 0n)} onClick={() => onSend()}>
+          <SendIcon size={20} />
+        </QuickAction>
+        <QuickAction label="Receive" onClick={onReceive}>
+          <ReceiveIcon size={20} />
+        </QuickAction>
+        <QuickAction label="Bridge" onClick={onBridge}>
+          <GlobeIcon size={20} />
+        </QuickAction>
+      </div>
+      <div className="section-head">
+        <span className="eyebrow">Tokens{list?.length ? ` · ${list.length}` : ""}</span>
+      </div>
+      {holdings?.down && <p className="meta warn">{chain.name} didn&apos;t answer. Its balances may be missing.</p>}
+      {list === null ? (
+        [0, 1].map((i) => <div key={i} className="skeleton" style={{ height: 40 }} />)
+      ) : (
+        <div className="token-list">
+          {list.map((b) => (
+            <button key={b.denom} className="token" title={b.denom} disabled={watch || BigInt(b.amount) === 0n} onClick={() => onSend(b.denom)}>
+              <TokenMark denom={b.denom} symbol={b.symbol} known={b.known} />
+              <span className="name">
+                <span className="symbol">{b.symbol}</span>
+                <span className="sub">{b.denom === chainCoin(chain.caip2) ? `Gas on ${chain.name}` : b.name}</span>
+              </span>
+              <HoldingValue amount={formatShort(b.amount, b.decimals)} symbol={b.symbol} usd={b.usd} />
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="section-head">
+        <span className="eyebrow">Bridge</span>
+      </div>
+      <button className="token" onClick={onBridge}>
+        <TokenMark denom="usdc:injective" symbol="USDC" known />
+        <span className="name">
+          <span className="symbol">USDC to another chain</span>
+          <span className="sub">{chain.forwarding ? "By Circle" : "By Circle, claimed by this wallet"}</span>
+        </span>
+        <ChevronRightIcon size={16} />
+      </button>
+      <p className="footnote">Pre-alpha. Not for real funds.</p>
+    </>
   );
 }

@@ -1,6 +1,8 @@
-// Settings (a tab): the network's endpoints, USD values, connected sites, and locking. Mainnet or
-// the test networks is picked in Home's chain sheet.
+// Settings (a tab): the endpoints of the chain picked on Home (and only those), USD values,
+// connected sites, and locking. The chain, and mainnet or the test networks, are picked in
+// Home's chain sheet.
 
+import { chainByKey } from "@choice-wallet/chain";
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 
 import { useBackend } from "./backend";
@@ -46,6 +48,8 @@ export function SettingsView({
   const [evmText, setEvmText] = useState("");
   const [indexText, setIndexText] = useState("");
   const [solanaText, setSolanaText] = useState("");
+  /** The picked EVM chain's endpoints (not Injective's own EVM side). */
+  const [chainText, setChainText] = useState("");
   const [prices, setPrices] = useState(true);
   const [lockAfter, setLockAfter] = useState("15");
   const [notify, setNotify] = useState<NotifyMode>("active");
@@ -66,6 +70,7 @@ export function SettingsView({
       setEvmText(s.evm[s.network].join("\n"));
       setIndexText(s.evmIndex[s.network].join("\n"));
       setSolanaText(s.solana[s.network].join("\n"));
+      setChainText((s.chains[s.network][status.chain] ?? []).join("\n"));
       setPrices(s.prices);
       setLockAfter(String(s.autoLock));
       setNotify(s.notify);
@@ -76,19 +81,23 @@ export function SettingsView({
     e.preventDefault();
     if (!settings) return;
     const lines = (t: string) => t.split("\n").map((l) => l.trim()).filter(Boolean);
-    const lcd = lines(text);
-    const evm = lines(evmText);
-    const evmIndex = lines(indexText);
-    const solana = lines(solanaText);
     const same = (a: string[], b: string[]) => a.join("\n") === b.join("\n");
+    // Only the picked chain's endpoints are on screen, so only they are saved.
+    const own = (t: string, defaults: string[]) => {
+      const l = lines(t);
+      return same(l, defaults) ? null : l;
+    };
+    const endpoints =
+      kind === "solana"
+        ? { solana: own(solanaText, settings.solanaDefault[net]) }
+        : kind === "evm"
+          ? { chain: { key: status.chain, rpc: own(chainText, settings.chainsDefault[net][status.chain] ?? []) } }
+          : { lcd: own(text, settings.lcdDefault[net]), evm: own(evmText, settings.evmDefault[net]), evmIndex: own(indexText, settings.evmIndexDefault[net]) };
     if (
       await run({
         type: "save_settings",
         network: net,
-        lcd: same(lcd, settings.lcdDefault[net]) ? null : lcd,
-        evm: same(evm, settings.evmDefault[net]) ? null : evm,
-        evmIndex: same(evmIndex, settings.evmIndexDefault[net]) ? null : evmIndex,
-        solana: same(solana, settings.solanaDefault[net]) ? null : solana,
+        ...endpoints,
         prices,
         autoLock: Number(lockAfter),
         notify,
@@ -99,6 +108,9 @@ export function SettingsView({
   }
 
   const account = status.accounts[status.active];
+  /** The chain picked on Home, whose endpoints this shows. */
+  const picked = chainByKey(status.network, status.chain) ?? chainByKey(status.network, "injective")!;
+  const kind = picked.kind;
   // The wallet of the account in use (the first, for a watched address).
   const wallet = status.wallets.find((w) => w.id === account?.wallet) ?? status.wallets[0];
   if (security === "phrase" || security === "key") return <RevealView what={security} wallet={wallet} status={status} onBack={() => setSecurity(null)} />;
@@ -134,56 +146,80 @@ export function SettingsView({
           [0, 1, 2].map((k) => <div key={k} className="skeleton" style={{ height: 56 }} />)
         ) : (
           <>
-        <div className="eyebrow">Endpoints · {net === "testnet" ? "Test networks" : "Mainnet"}</div>
-        <label className="meta" htmlFor="lcd-endpoints">
-          Injective (LCD)
-        </label>
-        <textarea
-          id="lcd-endpoints"
-          className="textarea"
-          rows={3}
-          spellCheck={false}
-          aria-label="Endpoints"
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-        />
-        <label className="meta" htmlFor="evm-endpoints">
-          EVM (JSON-RPC)
-        </label>
-        <textarea
-          id="evm-endpoints"
-          className="textarea"
-          rows={2}
-          spellCheck={false}
-          aria-label="EVM endpoints"
-          value={evmText}
-          onChange={(e) => setEvmText(e.target.value)}
-        />
-        <label className="meta" htmlFor="evm-index">
-          EVM history (Blockscout)
-        </label>
-        <textarea
-          id="evm-index"
-          className="textarea"
-          rows={1}
-          spellCheck={false}
-          aria-label="Blockscout"
-          value={indexText}
-          onChange={(e) => setIndexText(e.target.value)}
-        />
-        <span className="meta">Finds tokens others send you. Empty turns it off.</span>
-        <label className="meta" htmlFor="solana-endpoints">
-          Solana (JSON-RPC)
-        </label>
-        <textarea
-          id="solana-endpoints"
-          className="textarea"
-          rows={1}
-          spellCheck={false}
-          aria-label="Solana endpoints"
-          value={solanaText}
-          onChange={(e) => setSolanaText(e.target.value)}
-        />
+        <div className="eyebrow">Endpoints · {picked.name}</div>
+        {kind === "injective" && (
+          <>
+            <label className="meta" htmlFor="lcd-endpoints">
+              Injective (LCD)
+            </label>
+            <textarea
+              id="lcd-endpoints"
+              className="textarea"
+              rows={3}
+              spellCheck={false}
+              aria-label="Endpoints"
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+            />
+            <label className="meta" htmlFor="evm-endpoints">
+              EVM (JSON-RPC)
+            </label>
+            <textarea
+              id="evm-endpoints"
+              className="textarea"
+              rows={2}
+              spellCheck={false}
+              aria-label="EVM endpoints"
+              value={evmText}
+              onChange={(e) => setEvmText(e.target.value)}
+            />
+            <label className="meta" htmlFor="evm-index">
+              EVM history (Blockscout)
+            </label>
+            <textarea
+              id="evm-index"
+              className="textarea"
+              rows={1}
+              spellCheck={false}
+              aria-label="Blockscout"
+              value={indexText}
+              onChange={(e) => setIndexText(e.target.value)}
+            />
+            <span className="meta">Finds tokens others send you. Empty turns it off.</span>
+          </>
+        )}
+        {kind === "solana" && (
+          <>
+            <label className="meta" htmlFor="solana-endpoints">
+              {picked.name} (JSON-RPC)
+            </label>
+            <textarea
+              id="solana-endpoints"
+              className="textarea"
+              rows={2}
+              spellCheck={false}
+              aria-label="Solana endpoints"
+              value={solanaText}
+              onChange={(e) => setSolanaText(e.target.value)}
+            />
+          </>
+        )}
+        {kind === "evm" && (
+          <>
+            <label className="meta" htmlFor="chain-endpoints">
+              {picked.name} (JSON-RPC)
+            </label>
+            <textarea
+              id="chain-endpoints"
+              className="textarea"
+              rows={3}
+              spellCheck={false}
+              aria-label={`${picked.name} endpoints`}
+              value={chainText}
+              onChange={(e) => setChainText(e.target.value)}
+            />
+          </>
+        )}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
           <span className="meta">Tried in order, one per line.</span>
           <button
@@ -192,10 +228,13 @@ export function SettingsView({
             disabled={!settings}
             onClick={() => {
               if (!settings) return;
-              setText(settings.lcdDefault[net].join("\n"));
-              setEvmText(settings.evmDefault[net].join("\n"));
-              setIndexText(settings.evmIndexDefault[net].join("\n"));
-              setSolanaText(settings.solanaDefault[net].join("\n"));
+              if (kind === "injective") {
+                setText(settings.lcdDefault[net].join("\n"));
+                setEvmText(settings.evmDefault[net].join("\n"));
+                setIndexText(settings.evmIndexDefault[net].join("\n"));
+              }
+              if (kind === "solana") setSolanaText(settings.solanaDefault[net].join("\n"));
+              if (kind === "evm") setChainText((settings.chainsDefault[net][status.chain] ?? []).join("\n"));
             }}
           >
             Use the defaults
@@ -213,7 +252,7 @@ export function SettingsView({
           value={prices ? "on" : "off"}
           onChange={(v) => setPrices(v === "on")}
         />
-        <span className="meta">Mainnet prices from Choice. It sees no balances.</span>
+        <span className="meta">Mainnet prices from Choice, Jupiter and DefiLlama. They see no balances.</span>
         <div className="eyebrow" style={{ marginTop: 8 }}>
           Notifications
         </div>

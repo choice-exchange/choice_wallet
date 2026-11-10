@@ -14,6 +14,7 @@ import {
   EvmRpc,
   evmAddress,
   evmDenom,
+  fetchJupiterPrices,
   fetchPrices,
   isContractAddress,
   knownToken,
@@ -63,11 +64,9 @@ const PAIRS_TTL_MS = HOUR;
 /** A token Choice priced this recently still counts as priced for the token filter, so a
  *  Choice outage doesn't make tokens vanish. */
 const SEEN_MS = 7 * 24 * 3_600_000;
-/** Injective's SOL/USDC perpetual (mainnet), whose mark price prices SOL. */
-const SOL_PERP = "0x291f404810c663e5fdd68b50454c1014760227842d420a2315f88311efe6ec41";
-/** Tether's USDT: its mint on Solana, and its Peggy denom on Injective. */
+/** Wrapped SOL's mint, which Jupiter prices SOL by, and Tether's USDT on Solana. */
+const WRAPPED_SOL = "So11111111111111111111111111111111111111112";
 const SOLANA_USDT = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
-const INJECTIVE_USDT = "peggy0xdAC17F958D2ee523a2206206994597C13D831ec7";
 
 /** Index entries per query per page (the node's `limit`), and Blockscout transfers per page. */
 const ACTIVITY_PAGE = 50;
@@ -197,29 +196,23 @@ export function createHoldings(d: HoldingsDeps) {
     return out;
   }
 
-  /** USD prices for Solana's tokens, by their denoms there (mainnet, with USD values on).
-   *  USDC and USDT are the same tokens as Injective's, at Choice's prices for those. SOL is
-   *  the mark price of Injective's SOL/USDC perpetual (Chainlink's oracle, checked
-   *  2026-11-10: $86.67 against the perp's $86.64), read from the user's endpoint, since
-   *  Choice prices only what has an address on Injective EVM. Never an error. */
+  const solanaPriceCache = { at: 0, prices: Promise.resolve(new Map<string, string>()) };
+  /** USD prices for Solana's tokens, by their denoms there (mainnet, with USD values on), from
+   *  Jupiter, where Solana's tokens trade: SOL, and Circle's and Tether's dollars. The same
+   *  three for everyone. Never an error. */
   async function solanaPrices(network: NetworkId): Promise<Map<string, string>> {
-    const out = new Map<string, string>();
-    if (network !== "mainnet" || !(await d.prices())) return out;
-    const client = await lcd(network);
-    const usdc = `erc20:${NETWORKS[network].cctp.usdc}`;
-    const twins: Record<string, string> = { [`spl:${NETWORKS[network].solana.usdcMint}`]: usdc, [`spl:${SOLANA_USDT}`]: INJECTIVE_USDT };
-    const [choice, perp] = await Promise.all([
-      choiceFor(network, client, Object.values(twins)),
-      client.get(`/injective/exchange/v1beta1/derivative/markets/${SOL_PERP}`).catch(() => null),
-    ]);
-    for (const [denom, twin] of Object.entries(twins)) {
-      const p = choice.prices.get(twin);
-      if (p) out.set(denom, p);
-    }
-    const m = (perp as { market?: { market?: { status?: string; quote_denom?: string }; mark_price?: string } } | null)?.market;
-    const mark = Number(m?.mark_price) / 1e6; // USDC base units per SOL
-    if (m?.market?.status === "Active" && m.market.quote_denom?.toLowerCase() === usdc.toLowerCase() && Number.isFinite(mark) && mark > 0) out.set("sol", mark.toFixed(6));
-    return out;
+    if (network !== "mainnet" || !(await d.prices())) return new Map();
+    if (Date.now() - solanaPriceCache.at < PRICE_TTL_MS) return solanaPriceCache.prices;
+    const denoms: Record<string, string> = { [WRAPPED_SOL]: "sol", [NETWORKS[network].solana.usdcMint]: `spl:${NETWORKS[network].solana.usdcMint}`, [SOLANA_USDT]: `spl:${SOLANA_USDT}` };
+    solanaPriceCache.at = Date.now();
+    solanaPriceCache.prices = fetchJupiterPrices(d.fetch, Object.keys(denoms)).then(
+      (got) => new Map([...got].map(([mint, p]) => [denoms[mint]!, p])),
+      () => {
+        solanaPriceCache.at = 0;
+        return new Map<string, string>();
+      },
+    );
+    return solanaPriceCache.prices;
   }
 
   const evmClients = new Map<string, EvmRpc>();

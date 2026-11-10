@@ -2,6 +2,7 @@
 // checks what comes back. No keys here: it reads, simulates and broadcasts signed bytes.
 // Web APIs only (fetch, crypto.subtle), so it runs in a service worker, a web view or Node.
 
+export { CHAINS, chainByCaip2, chainByKey, chainCoin, chainDenom, chainUsdc, type ChainInfo, type ChainKind } from "./chains.ts";
 export { balanceChanges, mergeActivity, parseCoins, summarize, type Activity, type ActivityKind, type EvmView } from "./activity.ts";
 export { DEPOSITS_LOOKED_AT, takesMemos } from "./deposits.ts";
 export { base58ToBytes, base64ToBytes, bytesToBase58, bytesToBase64, bytesToHex, cosmosTxHash, hexToBase64, hexToBytes, isSolanaAddress } from "./encoding.ts";
@@ -41,7 +42,7 @@ export {
 } from "./lcd.ts";
 export { explorerTxUrl, isNetworkId, MIN_GAS_PRICE, NETWORKS, type Network, type NetworkId } from "./networks.ts";
 export { ChainError, Down, isObject, Pool, Unreachable, type Fetch } from "./pool.ts";
-export { CHOICE_PRICES, CLIENT, fetchPrices, priceAddress, usdValue, type PriceList } from "./prices.ts";
+export { CHOICE_PRICES, CLIENT, fetchJupiterPrices, fetchLlamaPrices, fetchPrices, JUPITER_PRICES, LLAMA_PRICES, priceAddress, usdValue, type PriceList } from "./prices.ts";
 export { clmmAmounts, clmmPositions, decFloor, subaccountId, subaccounts, SUBACCOUNTS, xykPositions, type ClmmPosition, type Deposit, type Position, type Subaccount, type XykPosition } from "./inventory.ts";
 export { cw721Collections, cw721Info, cw721Tokens, CW721_PAGE, erc721Collections, isTokenId, MAX_PER_COLLECTION, type Nft, type NftCollection, type NftStandard } from "./nfts.ts";
 export { grantedMsg, type AuthzGrant, type Cw20Allowance, type FeeGrant } from "./grants.ts";

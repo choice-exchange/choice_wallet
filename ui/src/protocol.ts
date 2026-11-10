@@ -91,7 +91,9 @@ export type UiRequest =
    *  defaults; left out: unchanged; an empty Blockscout list turns it off). */
   /** The chain Home shows, and mainnet or test networks; endpoints stay as they are. */
   | { type: "pick_chain"; chain: ChainView; network?: NetworkId }
-  | { type: "save_settings"; network: NetworkId; lcd: string[] | null; evm?: string[] | null; evmIndex?: string[] | null; solana?: string[] | null; prices?: boolean; autoLock?: number; notify?: NotifyMode }
+  /** Each endpoint list: `null` for the defaults, absent to leave it. `chain` is one EVM
+   *  chain's (not Injective's own EVM side, which is `evm`). */
+  | { type: "save_settings"; network: NetworkId; lcd?: string[] | null; evm?: string[] | null; evmIndex?: string[] | null; solana?: string[] | null; chain?: { key: string; rpc: string[] | null }; prices?: boolean; autoLock?: number; notify?: NotifyMode }
   | { type: "balances" }
   /** What the account in use showed last (balances, staking, the first page of activity),
    *  from disk: drawn at once while the chain is asked again. */
@@ -204,7 +206,8 @@ export type Contact = { id: string; name: string; address: string; evm: string; 
 export type RecipientCheck = { contact?: Contact; mine?: string; takesMemo: boolean };
 
 /** The chain the wallet shows: Injective (its inj1 and 0x forms), or the account's Solana key. */
-export type ChainView = "injective" | "solana";
+/** A chain by its key in `CHAINS` (chain/src/chains.ts): "injective", "solana", "base"… */
+export type ChainView = string;
 
 export type Status = {
   hasWallet: boolean;
@@ -799,6 +802,9 @@ export type Settings = {
   /** Solana endpoints for each network's cluster, and the defaults. */
   solana: Record<NetworkId, string[]>;
   solanaDefault: Record<NetworkId, string[]>;
+  /** Each EVM chain's endpoints by chain key, and the defaults. */
+  chains: Record<NetworkId, Record<string, string[]>>;
+  chainsDefault: Record<NetworkId, Record<string, string[]>>;
   /** Show USD values (Choice's price index). */
   prices: boolean;
   /** Minutes without activity before the wallet locks: 5, 15, 60 or 240. */
@@ -806,6 +812,9 @@ export type Settings = {
   /** Notifications for tokens in and out, and the wallet's own transactions landing. */
   notify: NotifyMode;
 };
+
+/** What an account holds on one EVM chain (`chain` is its key). */
+export type ChainHoldings = { chain: string; address: string; balances: Balance[]; down?: true };
 
 /** Who the background watcher follows: nobody, the account in use, or every account. */
 export type NotifyMode = "off" | "active" | "all";
@@ -879,6 +888,9 @@ export type Replies = {
     /** The account's Solana side: its address and holdings (SOL first); `down` when the
      *  cluster couldn't be asked. Absent for an account with no Solana key. */
     solana?: { address: string; balances: Balance[]; down?: true };
+    /** Each EVM chain beside Injective: the account's address there (the same 0x), its coin
+     *  and USDC; `down` when the chain's endpoints didn't answer. */
+    chains?: ChainHoldings[];
   };
   solana_activity: { items: ActivityItem[]; tokens: Record<string, TokenInfo>; next: string | null };
   bridge_reclaims: { hash: string; event: string; ready: boolean; at: number }[];

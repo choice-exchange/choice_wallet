@@ -9,6 +9,8 @@ import { ed25519 } from "@noble/curves/ed25519";
 import { handle, initSync } from "choice-wallet-vault-glue";
 
 import { ethMessage, rawTx, resultData, type Log } from "../../chain/test/evm-fixture";
+import { CHAINS } from "@choice-wallet/chain";
+
 import { createService, type Store } from "../src/host/service";
 import { callVault } from "../src/host/vault";
 
@@ -28,6 +30,13 @@ export const PASSWORD = "correct horse battery staple";
 export const ME_SOL = "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk";
 export const THEM_SOL = "Hh8QwFUA6MtVu1qAoq12ucvFHNwCcVTV7hpWjeY1Hztb";
 export const SOL_USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+/** Hosts of the other EVM chains' default endpoints, which the fake has down. */
+const OTHER_EVM_HOSTS = new Set(
+  [...CHAINS.mainnet, ...CHAINS.testnet]
+    .filter((c) => c.kind === "evm")
+    .flatMap((c) => c.rpc.map((u) => new URL(u).host))
+    .filter((h) => h !== "mainnet.base.org"),
+);
 /** Their associated USDC accounts (web3.js agrees). */
 export const ME_SOL_USDC = "5N3f1tj9v1vc5TUZ8S7mCAnVmjVKrfnzXWhxLaxyZAgt";
 export const THEM_SOL_USDC = "8X8ts1CnpZmtqApE2rREA97xEJuSRcomPGVcMFdS2cgY";
@@ -207,6 +216,8 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
     broadcasts: [] as string[],
     simulations: 0,
     priceCalls: 0,
+    /** Jupiter and DefiLlama requests, as sent. */
+    priceAsks: [] as string[],
     pricesDown: opts.pricesDown ?? false,
     hosts: new Set<string>(),
     /** More of what ME signed (EVM transactions), and what the LCD finds by EVM hash. */
@@ -299,6 +310,9 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
       assert.equal(tx.from.toLowerCase(), ME_EVM.toLowerCase());
       if (tx.data.startsWith("0x095ea7b3")) return answer("0xb3b0");
       if (/^0x(779b432d|8e0250ee)/.test(tx.data)) return BigInt(`0x${tx.data.slice(10, 74)}`) > state.base.allowance ? reverted : answer("0x29810");
+      // A USDC transfer within what ME holds; a plain ETH transfer.
+      if (tx.data.startsWith("0xa9059cbb")) return BigInt(`0x${tx.data.slice(74, 138)}`) > state.base.usdc ? reverted : answer("0xc350");
+      if (tx.data === "0x" || tx.data === "") return answer("0x5208");
       return reverted;
     }
     if (r.method === "eth_sendRawTransaction") {
@@ -383,6 +397,20 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
       const body = JSON.parse(String(init.body)) as Rpc | Rpc[];
       return json(200, Array.isArray(body) ? body.map(baseRpc) : baseRpc(body));
     }
+    // Prices: Jupiter for Solana's tokens, DefiLlama for the EVM chains' (Base's here).
+    if (url.host === "lite-api.jup.ag" && p === "/price/v3") {
+      state.priceAsks.push(url.toString());
+      const known: Record<string, number> = { So11111111111111111111111111111111111111112: 150, [SOL_USDC]: 0.9999 };
+      return json(200, Object.fromEntries((url.searchParams.get("ids") ?? "").split(",").filter((m) => known[m]).map((m) => [m, { usdPrice: known[m], decimals: 6 }])));
+    }
+    if (url.host === "coins.llama.fi" && p.startsWith("/prices/current/")) {
+      state.priceAsks.push(url.toString());
+      const known: Record<string, number> = { [`base:${BASE_USDC}`.toLowerCase()]: 0.9998, "base:0x0000000000000000000000000000000000000000": 3000 };
+      const keys = decodeURIComponent(p.slice("/prices/current/".length)).split(",");
+      return json(200, { coins: Object.fromEntries(keys.filter((k) => known[k.toLowerCase()]).map((k) => [k, { price: known[k.toLowerCase()], symbol: "?", confidence: 0.99 }])) });
+    }
+    // The other EVM chains' endpoints (all but Base's first): down.
+    if (init?.method === "POST" && OTHER_EVM_HOSTS.has(url.host)) return new Response("down", { status: 503 });
     if (init?.method === "POST" && p === "/" && url.host !== "solana-rpc.publicnode.com") {
       // EVM JSON-RPC.
       if (state.evmDown) return new Response("down", { status: 503 });
@@ -577,10 +605,6 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
           { address: CW_PAIR, symbol: "SHROOM", priceUsd: "0.5" },
         ],
       });
-    }
-    // Injective's SOL/USDC perpetual: its mark price prices SOL (USDC base units per SOL).
-    if (p === "/injective/exchange/v1beta1/derivative/markets/0x291f404810c663e5fdd68b50454c1014760227842d420a2315f88311efe6ec41") {
-      return json(200, { market: { market: { ticker: "SOL/USDC PERP", status: "Active", quote_denom: "erc20:0xa00C59fF5a080D2b954d0c75e46E22a0c371235a" }, mark_price: "150000000.000000000000000000" } });
     }
     if (p === "/cosmos/bank/v1beta1/denoms_metadata_by_query_string") {
       state.metadataCalls++;

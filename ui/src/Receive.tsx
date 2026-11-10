@@ -1,6 +1,6 @@
 // Receive: the account's address on the chain Home shows, as text and a QR code.
 
-import { NETWORKS } from "@choice-wallet/chain";
+import { chainByKey, NETWORKS } from "@choice-wallet/chain";
 import { useState } from "react";
 
 import { useBackend } from "./backend";
@@ -9,7 +9,8 @@ import { BackBar, Screen, Segmented } from "./kit";
 import type { ChainView, NetworkId } from "./protocol";
 import { QrCode } from "./QrCode";
 
-/** The account's address on the chain Home shows: Injective's in either form, or Solana's. */
+/** The account's address on the chain Home shows: Injective's in either form, Solana's, or
+ *  an EVM chain's (the same 0x as Injective's EVM side). */
 export function Receive({
   addresses,
   network,
@@ -30,9 +31,12 @@ export function Receive({
   const [form, setForm] = useState<"cosmos" | "evm">("cosmos");
   const [copied, setCopied] = useState(false);
   const cluster = NETWORKS[network].solana;
-  const side = chain === "solana" ? "solana" : form;
+  const other = chainByKey(network, chain);
+  const elsewhere = other?.kind === "evm" ? other : undefined;
+  const side = chain === "solana" ? "solana" : elsewhere ? "elsewhere" : form;
   const net = NETWORKS[network];
-  const address = (side === "cosmos" ? addresses[net.cosmos] : side === "evm" ? addresses[net.evm] : addresses[cluster.caip2]) ?? "";
+  const address =
+    (side === "cosmos" ? addresses[net.cosmos] : side === "evm" ? addresses[net.evm] : side === "elsewhere" ? addresses[elsewhere!.caip2] : addresses[cluster.caip2]) ?? "";
   return (
     <Screen
       top={<BackBar title="Receive" onBack={onBack} />}
@@ -66,7 +70,7 @@ export function Receive({
         />
       )}
       <div className="surface-hero">
-        <div className="eyebrow">{side === "cosmos" ? "Injective address" : side === "evm" ? "EVM address" : `${cluster.name} address`}</div>
+        <div className="eyebrow">{side === "cosmos" ? "Injective address" : side === "evm" ? "EVM address" : side === "elsewhere" ? `${elsewhere!.name} address` : `${cluster.name} address`}</div>
         {address && (
           <div className="qr-frame">
             <QrCode text={address} />
@@ -78,8 +82,14 @@ export function Receive({
           </code>
         </div>
       </div>
-      <p className="lead">{side === "solana" ? `Only ${cluster.name} tokens here. Same ${ledger ? "Ledger" : "phrase"}, its own key.` : "Both addresses are the same account."}</p>
-      {side !== "solana" && (
+      <p className="lead">
+        {side === "solana"
+          ? `Only ${cluster.name} tokens here. Same ${ledger ? "Ledger" : "phrase"}, its own key.`
+          : side === "elsewhere"
+            ? `Only ${elsewhere!.name} tokens here. The same 0x on every EVM chain.`
+            : "Both addresses are the same account."}
+      </p>
+      {side !== "solana" && side !== "elsewhere" && (
         <button type="button" className="btn btn-quiet" onClick={onBridgeIn}>
           USDC on another chain? Bring it in
         </button>

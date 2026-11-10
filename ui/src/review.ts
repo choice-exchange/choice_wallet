@@ -1,7 +1,7 @@
 // What a review shows, from the vault's decode of the transaction that will be signed: the
 // sends, the conversions, anything else the transaction does, and the fee.
 
-import { adapterCw20, adapterDenom, cw20Denom, evmDenom, isContractAddress, NETWORKS } from "@choice-wallet/chain";
+import { adapterCw20, adapterDenom, chainByCaip2, chainCoin, chainUsdc, cw20Denom, evmDenom, isContractAddress, NETWORKS } from "@choice-wallet/chain";
 
 import type { Coin, CosmosDisplay, EvmDisplay, EvmSwapCall, NetworkId, SendReview, SolanaDisplay, SwapStepInfo } from "./protocol";
 
@@ -126,10 +126,15 @@ export function shown(display: SendReview["display"], network: NetworkId, swap?:
     // Signed on another EVM chain than Injective's: its fee is in that chain's coin.
     const feeDenom = d.chain !== net.evm ? `native:${d.chain}` : net.feeDenom;
     const base = { fee: [{ denom: feeDenom, amount: d.max_gas_cost }], memo: "", evm: true, converts: [], stakes: [], revokes: [], swaps: [], bridges: [], bridgesIn: [], mints: [], approvals: [], nfts: [], moves: [] };
-    // An address as a wallet key: INJ, or the swap's own tokens, or an EVM token.
+    // On another EVM chain than Injective's: its coin and its USDC have their own keys.
+    const here = chainByCaip2(network, d.chain);
+    const away = here?.kind === "evm" ? here : undefined;
+    // An address as a wallet key: the chain's coin, the swap's own tokens, USDC on another
+    // chain, or an EVM token.
     const key = (a: string, side?: "from" | "to") => {
-      if (a.toLowerCase() === NATIVE) return net.feeDenom;
+      if (a.toLowerCase() === NATIVE) return away ? chainCoin(away.caip2) : net.feeDenom;
       if (swap && side) return swap[side];
+      if (away && a.toLowerCase() === away.usdc.toLowerCase()) return chainUsdc(away.caip2);
       return evmDenom(a);
     };
     if (d.call.type === "swap") {
@@ -187,8 +192,8 @@ export function shown(display: SendReview["display"], network: NetworkId, swap?:
     if (call["type"] === "nft_transfer" && text(call["from"])?.toLowerCase() === d.from.toLowerCase() && text(call["to"]) && text(call["token_id"])) {
       return { ...base, sends: [], others: [], nfts: [{ collection: d.to, tokenId: text(call["token_id"])!, to: text(call["to"])! }] };
     }
-    if (d.call.type === "erc20_transfer") return { ...base, sends: [{ coins: [{ denom: evmDenom(d.to), amount: d.call.amount }], to: d.call.to }], others: [] };
-    if (d.call.type === "transfer") return { ...base, sends: [{ coins: [{ denom: net.feeDenom, amount: d.value }], to: d.to }], others: [] };
+    if (d.call.type === "erc20_transfer") return { ...base, sends: [{ coins: [{ denom: key(d.to), amount: d.call.amount }], to: d.call.to }], others: [] };
+    if (d.call.type === "transfer") return { ...base, sends: [{ coins: [{ denom: away ? chainCoin(away.caip2) : net.feeDenom, amount: d.value }], to: d.to }], others: [] };
     // approve(spender, 0): an allowance taken back.
     const revoke = /^0x095ea7b3(0{24}[0-9a-fA-F]{40})(0{64})$/.exec(String((d as { data?: unknown }).data ?? ""));
     if (revoke) return { ...base, sends: [], revokes: [{ kind: "allowance", token: evmDenom(d.to), spender: `0x${revoke[1]!.slice(24)}` }], others: [] };

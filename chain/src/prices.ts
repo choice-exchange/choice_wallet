@@ -53,3 +53,55 @@ export function priceAddress(denom: string, pairs: ReadonlyMap<string, string>, 
 export function usdValue(amount: string, decimals: number, priceUsd: string): number {
   return Number(formatUnits(amount, decimals)) * Number(priceUsd);
 }
+
+// Each chain's tokens are priced where they trade: Injective's by Choice (above), Solana's by
+// Jupiter (its aggregator, which routes most of Solana's volume), and the EVM chains' by
+// DefiLlama (by chain and contract, from each chain's own markets). Each is asked about the
+// same fixed list for every user (each chain's coin and stablecoins), never about what one
+// account holds. Both answer extension origins (checked 2026-11-10).
+
+export const JUPITER_PRICES = "https://lite-api.jup.ag/price/v3";
+export const LLAMA_PRICES = "https://coins.llama.fi/prices/current";
+
+/** A price as the wallet keeps it: a plain decimal string, or nothing. */
+function decimal(v: unknown): string | null {
+  if (typeof v !== "number" || !Number.isFinite(v) || v <= 0) return null;
+  const s = v.toFixed(12).replace(/0+$/, "").replace(/\.$/, "");
+  return /^[0-9]+(\.[0-9]+)?$/.test(s) && Number(s) > 0 ? s : null;
+}
+
+/** USD per whole token on Solana, by mint (Jupiter's price API). A mint it can't price is
+ *  absent. */
+export async function fetchJupiterPrices(fetch: Fetch, mints: readonly string[], url = JUPITER_PRICES): Promise<Map<string, string>> {
+  const r = await fetch(`${url}?ids=${mints.map(encodeURIComponent).join(",")}`, { signal: AbortSignal.timeout(8000) });
+  if (!r.ok) throw new Error(`Jupiter prices: HTTP ${r.status}`);
+  const body: unknown = await r.json();
+  if (!isObject(body)) throw new Error("Jupiter prices: unexpected response");
+  const out = new Map<string, string>();
+  for (const m of mints) {
+    const entry = body[m];
+    const p = isObject(entry) ? decimal(entry["usdPrice"]) : null;
+    if (p) out.set(m, p);
+  }
+  return out;
+}
+
+/** USD per whole token by DefiLlama key (`base:0x…`, the zero address for a chain's coin).
+ *  Only confident prices (DefiLlama's own measure, 0.9 and up) count. */
+export async function fetchLlamaPrices(fetch: Fetch, keys: readonly string[], url = LLAMA_PRICES): Promise<Map<string, string>> {
+  const r = await fetch(`${url}/${keys.join(",")}`, { signal: AbortSignal.timeout(8000) });
+  if (!r.ok) throw new Error(`DefiLlama prices: HTTP ${r.status}`);
+  const body: unknown = await r.json();
+  const coins = isObject(body) ? body["coins"] : null;
+  if (!isObject(coins)) throw new Error("DefiLlama prices: unexpected response");
+  // Keys come back as asked, though an address's case may not.
+  const lower = new Map(Object.entries(coins).map(([k, v]) => [k.toLowerCase(), v]));
+  const out = new Map<string, string>();
+  for (const k of keys) {
+    const entry = lower.get(k.toLowerCase());
+    if (!isObject(entry) || typeof entry["confidence"] !== "number" || entry["confidence"] < 0.9) continue;
+    const p = decimal(entry["price"]);
+    if (p) out.set(k, p);
+  }
+  return out;
+}

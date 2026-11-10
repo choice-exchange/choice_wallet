@@ -1,25 +1,25 @@
 // The unlocked wallet: three tabs (Wallet, Activity, Settings), and the flows that open
 // over them full screen (receive, a token, send, convert, manage tokens).
 
-import { formatShort, NETWORKS, usdValue } from "@choice-wallet/chain";
+import { CHAINS, chainByKey, formatShort, NETWORKS, usdValue } from "@choice-wallet/chain";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { AccountMark, AccountsView, isWatch } from "./Accounts";
 import { ApprovalsView } from "./Approvals";
 import { BridgeView, newBridgeDraft, type BridgeDraft } from "./Bridge";
-import { ChainPill, ChainSheet, type ChainRow } from "./Chains";
+import { ChainPill, ChainSheet, chainName, type ChainRow } from "./Chains";
 import { ContactsView, type Draft } from "./Contacts";
 import { ActivityView } from "./Activity";
 import { merge, type ActivityState } from "./activityState";
 import { Kept, KeptContext } from "./kept";
 import { useBackend } from "./backend";
-import { holdsLine, InjectiveHome, SolanaHome, solanaTotal } from "./Home";
+import { chainTotal, EvmHome, holdsLine, InjectiveHome, SolanaHome, solanaTotal } from "./Home";
 import { ActivityIcon, CheckIcon, ChevronDownIcon, CopyIcon, LockIcon, SettingsIcon, SwapIcon, WalletIcon } from "./icons";
 import { formatUsd, Screen, shortAddress } from "./kit";
 import { NftsView, NftView } from "./Nfts";
 import { InventoryScreen } from "./Inventory";
 import { RescueView } from "./Rescue";
-import type { ActivityPage, Balance, ChainView, NetworkId, Nft, NftCollection, Replies, SendReview, Sent, StakingSummary, Status, TokenFilter } from "./protocol";
+import type { ActivityPage, Balance, ChainHoldings, ChainView, NetworkId, Nft, NftCollection, Replies, SendReview, Sent, StakingSummary, Status, TokenFilter } from "./protocol";
 import { newDraft, SwapView, type SwapDraft } from "./Swap";
 import { Receive } from "./Receive";
 import { useRequest } from "./request";
@@ -88,6 +88,8 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
   const [evmDown, setEvmDown] = useState(false);
   /** The account's Solana side (its own key): null for an account without one. */
   const [solana, setSolana] = useState<Replies["balances"]["solana"] | null>(null);
+  /** The EVM chains beside Injective: the account's coin and USDC on each. */
+  const [chains, setChains] = useState<ChainHoldings[] | null>(null);
   const [refresh, setRefresh] = useState(0);
   const [staking, setStaking] = useState<StakingSummary | null>(null);
   const [swapDraft, setSwapDraft] = useState<SwapDraft>(() => newDraft(NETWORKS[status.network].feeDenom));
@@ -111,7 +113,11 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
   const watch = isWatch(account);
   const solAddress = account?.addresses[NETWORKS[status.network].solana.caip2];
   /** The chain Home shows: the one picked, when this account has a key there. */
-  const chain: ChainView = status.chain === "solana" && solAddress ? "solana" : "injective";
+  const picked = chainByKey(status.network, status.chain);
+  const chain: ChainView = picked && picked.kind !== "injective" && account?.addresses[picked.caip2] ? picked.key : "injective";
+  /** Home is on an EVM chain beside Injective: which, and what the account holds there. */
+  const evmChain = picked?.kind === "evm" && chain === picked.key ? picked : undefined;
+  const evmHeld = evmChain ? (chains?.find((h) => h.chain === evmChain.key) ?? null) : null;
   const [picking, setPicking] = useState(false);
   /** What other screens read (NFTs, trading and liquidity, approvals, swap tokens), for this
    *  account and network while the popup is open. */
@@ -126,6 +132,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
   useEffect(() => {
     setBalances(null);
     setSolana(null);
+    setChains(null);
     setStaking(null);
     setReadAt(null);
     setSavedActivity(null);
@@ -140,6 +147,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
       if (b && !answered.current) {
         setBalances(b.value.balances);
         setSolana(b.value.solana ?? null);
+        setChains(b.value.chains ?? null);
         setFilter(b.value.filter);
         setPrices(b.value.prices);
         setReadAt(b.at);
@@ -184,6 +192,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
       if (live && r) {
         setBalances(r.balances);
         setSolana(r.solana ?? null);
+        setChains(r.chains ?? []);
         setFilter(r.filter);
         setPrices(r.prices);
         setEvmDown(r.evmDown === true);
@@ -255,7 +264,21 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
     if (network === status.network) setPicking(false);
     onStatus(r.result);
   }
-  /** Each chain in the picker, with what the account holds there. */
+  /** Each chain in the picker, with what the account holds there: Injective, Solana, then
+   *  the EVM chains, those holding something first. */
+  const evmRows = CHAINS[status.network]
+    .filter((c) => c.kind === "evm")
+    .map((c) => {
+      const h = chains?.find((x) => x.chain === c.key);
+      const t = h ? chainTotal(c, h.balances, prices) : null;
+      const row: ChainRow = {
+        chain: c.key,
+        ...(account?.addresses[c.caip2] ? { address: account.addresses[c.caip2]! } : {}),
+        total: t?.text ?? (chains === null ? null : `0 ${c.native.symbol}`),
+        holds: h ? holdsLine(h.balances) : "",
+      };
+      return { row, usd: t?.usd, held: h?.balances.some((b) => BigInt(b.amount) > 0n) === true };
+    });
   const chainRows: ChainRow[] = [
     {
       chain: "injective",
@@ -273,8 +296,12 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
       total: solTotal?.text ?? (balances === null ? null : "0 SOL"),
       holds: solana ? holdsLine(solana.balances) : "",
     },
+    ...evmRows.filter((r) => r.held).map((r) => r.row),
+    ...evmRows.filter((r) => !r.held).map((r) => r.row),
   ];
-  const allUsd = totalUsd !== undefined && (!solAddress || solTotal?.usd !== undefined) ? formatUsd(totalUsd + (solTotal?.usd ?? 0)) : undefined;
+  // Every chain together, when each one's total is in USD.
+  const everyUsd = totalUsd !== undefined && (!solAddress || solTotal?.usd !== undefined) && chains !== null && evmRows.every((r) => !r.row.address || r.usd !== undefined);
+  const allUsd = everyUsd ? formatUsd(totalUsd + (solTotal?.usd ?? 0) + evmRows.reduce((t, r) => t + (r.usd ?? 0), 0)) : undefined;
 
   /** The next step of a swap, once the last one landed; back to the form if its quote ran out. */
   async function nextSwapStep(quote: string) {
@@ -372,7 +399,13 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
       case "send":
         return (
           <SendForm
-            balances={chain === "solana" ? (solana?.balances ?? []).filter((b) => BigInt(b.amount) > 0n) : (sorted?.shown ?? [])}
+            balances={
+              chain === "solana"
+                ? (solana?.balances ?? []).filter((b) => BigInt(b.amount) > 0n)
+                : evmChain
+                  ? (evmHeld?.balances ?? []).filter((b) => BigInt(b.amount) > 0n)
+                  : (sorted?.shown ?? [])
+            }
             accounts={status.accounts.filter((_, i) => i !== status.active)}
             denom={view.denom}
             onReview={(review, entered, denom) => setView({ name: "review", review, entered, back: { name: "send", denom } })}
@@ -497,19 +530,26 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
           // This session's, or else the copy saved on disk (shown, then read again).
           const kept = activity.current ?? (savedActivity ? merge(null, savedActivity, 1, 0) : null);
           if (chain === "solana") return <ActivityView key={`${address} solana`} network={status.network} chain="solana" tabs={tabs} />;
+          if (evmChain) {
+            return (
+              <Screen tabs={tabs} top={<span className="title">Activity</span>}>
+                <p className="empty">Activity on {evmChain.name} isn&apos;t in the wallet yet.</p>
+              </Screen>
+            );
+          }
           return <ActivityView key={address} network={status.network} chain="injective" tabs={tabs} kept={kept} onKeep={(s) => (activity.current = s)} />;
         }
-        if (tab === "swap" && chain === "solana") {
+        if (tab === "swap" && chain !== "injective") {
           return (
             <Screen tabs={tabs} top={<span className="title">Swap</span>}>
               <div className="surface-hero">
                 <TokenMark denom="inj" symbol="INJ" known />
-                <p className="lead">Swaps run on Injective. Bring USDC over from Solana to swap it.</p>
+                <p className="lead">Swaps run on Injective. Bring USDC over from {chainName(chain, status.network)} to swap it.</p>
               </div>
               <button
                 className="btn btn-gold"
                 onClick={() => {
-                  setBridgeDraft((d) => ({ ...d, dir: "in", from: "solana" }));
+                  setBridgeDraft((d) => ({ ...d, dir: "in", from: chain }));
                   setView({ name: "bridge" });
                 }}
               >
@@ -572,7 +612,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
                     <span className="account-name">{account?.name}</span>
                     <ChevronDownIcon size={16} />
                   </button>
-                  <CopyAddress address={chain === "solana" && solAddress ? solAddress : address} />
+                  <CopyAddress address={chain !== "injective" ? (account?.addresses[picked?.caip2 ?? ""] ?? address) : address} />
                 </div>
                 <ChainPill chain={chain} network={status.network} onClick={() => setPicking(true)} />
                 <button className="icon-btn" aria-label="Lock" onClick={onLock}>
@@ -586,7 +626,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
                   chain={chain}
                   network={status.network}
                   rows={chainRows}
-                  {...(allUsd && solAddress ? { all: allUsd } : {})}
+                  {...(allUsd ? { all: allUsd } : {})}
                   onPick={(c) => void pickChain(c)}
                   onTestnet={(on) => void pickChain(chain, on ? "testnet" : "mainnet")}
                   onClose={() => setPicking(false)}
@@ -604,6 +644,19 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
                 onReceive={() => setView({ name: "receive" })}
                 onBridge={() => {
                   setBridgeDraft((d) => ({ ...d, dir: "in", from: "solana" }));
+                  setView({ name: "bridge" });
+                }}
+              />
+            ) : evmChain ? (
+              <EvmHome
+                chain={evmChain}
+                holdings={evmHeld}
+                total={evmHeld ? chainTotal(evmChain, evmHeld.balances, prices) : null}
+                watch={watch}
+                onSend={(denom) => setView({ name: "send", ...(denom ? { denom } : {}) })}
+                onReceive={() => setView({ name: "receive" })}
+                onBridge={() => {
+                  setBridgeDraft((d) => ({ ...d, dir: "in", from: evmChain.key }));
                   setView({ name: "bridge" });
                 }}
               />

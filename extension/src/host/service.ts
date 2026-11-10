@@ -9,12 +9,13 @@
 // - The vault is stateless: every call that needs a key gets the keystore and unlock key
 //   from here. UI pages never see either.
 
-import { cw20Address, evmAddress, isNetworkId, isSolanaDenom, NETWORKS, Pool, usdValue, type Fetch, type NetworkId } from "@choice-wallet/chain";
+import { chainByCaip2, chainByKey, chainDenom, cw20Address, evmAddress, isNetworkId, isSolanaDenom, NETWORKS, Pool, usdValue, type Fetch, type NetworkId } from "@choice-wallet/chain";
 import type { AccountInfo, Balance, NotifyMode, Result, Settings, SnapshotView, Status, TokenFilter, UiRequest } from "@choice-wallet/ui/protocol";
 import { DEFAULT_FILTER } from "@choice-wallet/ui/token-filter";
 
 import { createDapps, type DappReply } from "./dapp";
-import { createSender } from "./send";
+import { createEvmChains, evmChains as evmChainsOf, type ChainEndpoints } from "./evmchains";
+import { createSender, sourceOfChain } from "./send";
 import { createApprovals } from "./approvals";
 import { createInventory } from "./inventory";
 import { createNfts } from "./nfts";
@@ -158,6 +159,7 @@ export function createService(d: Deps) {
     endpoints: solanaEndpoints,
     riskFacts: (n, recipient) => contacts.facts(n, recipient),
   });
+  const evmChains = createEvmChains({ fetch: d.fetch, local: d.local, prices: showPrices });
   const sender = createSender({
     vault: d.vault,
     fetch: d.fetch,
@@ -171,6 +173,7 @@ export function createService(d: Deps) {
     onBroadcast: (n, hash, from) => void watcher.track(n, hash, from).catch(() => {}),
     onDeposit: (n, deposit) => bridge.track(n, deposit),
     solanaBroadcast: (n, p, signed) => solana.broadcast(n, p, signed),
+    chainRpc: (n, key) => evmChains.rpc(n, key),
   });
   const staking = createStaking(sender);
   const swaps = createSwaps(sender, d.session, d.fetch, async (net) => (await tokenFilter(net)).shown);
@@ -342,11 +345,23 @@ export function createService(d: Deps) {
         evmIndexDefault: { mainnet: [...NETWORKS.mainnet.evmIndex], testnet: [...NETWORKS.testnet.evmIndex] },
         solana: { mainnet: await solanaEndpoints("mainnet"), testnet: await solanaEndpoints("testnet") },
         solanaDefault: { mainnet: [...NETWORKS.mainnet.solana.rpc], testnet: [...NETWORKS.testnet.solana.rpc] },
+        chains: { mainnet: await chainEndpoints("mainnet"), testnet: await chainEndpoints("testnet") },
+        chainsDefault: { mainnet: chainDefaults("mainnet"), testnet: chainDefaults("testnet") },
         prices: await showPrices(),
         autoLock: await lockAfter(),
         notify: await notifyMode(),
       },
     };
+  }
+
+  /** Each EVM chain's endpoints in use on a network (Injective's own are `evm`). */
+  async function chainEndpoints(net: NetworkId): Promise<Record<string, string[]>> {
+    const out: Record<string, string[]> = {};
+    for (const c of evmChainsOf(net)) out[c.key] = [...(await evmChains.endpoints(net, c.key))];
+    return out;
+  }
+  function chainDefaults(net: NetworkId): Record<string, string[]> {
+    return Object.fromEntries(evmChainsOf(net).map((c) => [c.key, [...c.rpc]]));
   }
 
   /** A network's endpoint list after a change: `null` is the defaults; `undefined` leaves it.
@@ -371,7 +386,7 @@ export function createService(d: Deps) {
     return next;
   }
 
-  async function saveSettings(net: unknown, lcd: unknown, evm: unknown, evmIndex: unknown, prices: unknown, autoLock: unknown, notify?: unknown, solana?: unknown): Promise<UiResponse<Settings>> {
+  async function saveSettings(net: unknown, lcd: unknown, evm: unknown, evmIndex: unknown, prices: unknown, autoLock: unknown, notify?: unknown, solana?: unknown, chain?: unknown): Promise<UiResponse<Settings>> {
     if (!isNetworkId(net)) return err("bad_request", "Unknown network.");
     if (notify !== undefined && !NOTIFY_MODES.includes(notify as NotifyMode)) return err("bad_request", `notify must be one of ${NOTIFY_MODES.join(", ")}.`);
     if (prices !== undefined && typeof prices !== "boolean") return err("bad_request", "prices must be true or false.");
@@ -385,6 +400,21 @@ export function createService(d: Deps) {
     if ("ok" in indexAll) return indexAll as UiResponse<never>;
     const solanaAll = nextEndpoints(stored.solana_endpoints ?? {}, net, solana);
     if ("ok" in solanaAll) return solanaAll as UiResponse<never>;
+    // One EVM chain's endpoints: { key, rpc } (rpc null for its defaults).
+    const { chain_endpoints } = (await d.local.get(["chain_endpoints"])) as { chain_endpoints?: ChainEndpoints };
+    let chainsAll: ChainEndpoints = chain_endpoints ?? {};
+    if (chain !== undefined) {
+      const c = chain as { key?: unknown; rpc?: unknown };
+      const info = typeof c === "object" && c !== null ? chainByKey(net, c.key) : undefined;
+      if (!info || info.kind !== "evm") return err("bad_request", "Unknown chain.");
+      const forChain = nextEndpoints({ [net]: chainsAll[net]?.[info.key] ?? [] } as Endpoints, net, c.rpc);
+      if ("ok" in forChain) return forChain as UiResponse<never>;
+      const mine = { ...(chainsAll[net] ?? {}) };
+      const urls = (forChain as Endpoints)[net];
+      if (urls && urls.length > 0) mine[info.key] = [...urls];
+      else delete mine[info.key];
+      chainsAll = { ...chainsAll, [net]: mine };
+    }
     const before = await network();
     await d.local.set({
       network: net,
@@ -392,6 +422,7 @@ export function createService(d: Deps) {
       evm_endpoints: evmAll,
       evm_index: indexAll,
       solana_endpoints: solanaAll,
+      chain_endpoints: chainsAll,
       ...(prices === undefined ? {} : { prices }),
       ...(autoLock === undefined ? {} : { auto_lock: autoLock }),
       ...(notify === undefined ? {} : { notify }),
@@ -472,15 +503,19 @@ export function createService(d: Deps) {
       case "settings":
         return settings();
       case "pick_chain": {
-        if (r.chain !== "injective" && r.chain !== "solana") return err("bad_request", "Unknown chain.");
         if (r.network !== undefined && !isNetworkId(r.network)) return err("bad_request", "Unknown network.");
         const before = await network();
-        await d.local.set({ chain: r.chain, ...(r.network ? { network: r.network } : {}) });
+        const next = r.network ?? before;
+        // Switching networks keeps the chain where it has one there (no Polygon on the test
+        // networks: Injective's then).
+        if (!chainByKey(next, r.chain) && !(r.network && r.network !== before && chainByKey(before, r.chain))) return err("bad_request", "Unknown chain.");
+        const chain = chainByKey(next, r.chain) ? r.chain : "injective";
+        await d.local.set({ chain, ...(r.network ? { network: r.network } : {}) });
         if (r.network && r.network !== before) d.notify();
         return { ok: true, result: await status() };
       }
       case "save_settings":
-        return saveSettings(r.network, r.lcd, r.evm, r.evmIndex, r.prices, r.autoLock, r.notify, r.solana);
+        return saveSettings(r.network, r.lcd, r.evm, r.evmIndex, r.prices, r.autoLock, r.notify, r.solana, r.chain);
       case "seen":
         await watcher.seen();
         return { ok: true, result: null };
@@ -548,10 +583,12 @@ export function createService(d: Deps) {
         }
         if (r.type === "snapshot") return { ok: true, result: await snapshot(a.net, a.account) };
         if (r.type === "balances") {
-          const [b, held, prices] = await Promise.all([
+          const picked = await wallets.chain();
+          const [b, held, prices, chains] = await Promise.all([
             sender.balances(a.net, a.account),
             solana.holdings(a.net, a.account),
             sender.solanaPrices(a.net).catch(() => new Map<string, string>()),
+            evmChains.all(a.net, a.account, picked),
           ]);
           if (!b.ok) return b;
           const priced = (x: Balance) => {
@@ -559,7 +596,7 @@ export function createService(d: Deps) {
             return p ? { ...x, priceUsd: p, usd: usdValue(x.amount, x.decimals, p) } : x;
           };
           const sol = held ? { ...held, balances: held.balances.map(priced) } : null;
-          const result = { ...b.result, ...(sol ? { solana: sol } : {}) };
+          const result = { ...b.result, ...(sol ? { solana: sol } : {}), chains };
           keep(a.net, a.account, "balances", result);
           return { ok: true, result: { ...result, filter: await tokenFilter(a.net), prices: await showPrices() } };
         }
@@ -572,7 +609,11 @@ export function createService(d: Deps) {
           if (r.page === 1) keep(a.net, a.account, "activity", result);
           return { ok: true, result: { ...result, filter: await tokenFilter(a.net) } };
         }
-        if (r.type === "prepare_send") return isSolanaDenom(r.denom) ? solana.prepareSend(a.net, a.account, r) : sender.prepare(a.net, a.account, r);
+        if (r.type === "prepare_send") {
+          if (isSolanaDenom(r.denom)) return solana.prepareSend(a.net, a.account, r);
+          if (chainDenom(r.denom)) return sender.prepareChainSend(a.net, a.account, r);
+          return sender.prepare(a.net, a.account, r);
+        }
         if (r.type === "prepare_convert") return sender.prepareConvert(a.net, a.account, r);
         if (r.type === "staking") {
           const st = await staking.summary(a.net, a.account);
@@ -612,9 +653,10 @@ export function createService(d: Deps) {
         if (r.type === "ledger_signed") return sender.deviceSigned(r);
         if (r.chain !== undefined && r.chain === NETWORKS[a.net].solana.caip2) return solana.status(a.net, r.hash);
         if (r.chain !== undefined) {
-          const source = bridge.source(a.net, r.chain);
-          if (!source) return err("bad_request", "Not a chain the wallet bridges from.");
-          return sender.status(a.net, r.hash, source);
+          // Any EVM chain on the wallet's list, by key ("base") or CAIP-2 ID.
+          const c = chainByKey(a.net, r.chain) ?? (typeof r.chain === "string" ? chainByCaip2(a.net, r.chain) : undefined);
+          if (!c || c.kind !== "evm") return err("bad_request", "Not a chain the wallet knows.");
+          return sender.status(a.net, r.hash, sourceOfChain(c));
         }
         return sender.status(a.net, r.hash);
       }

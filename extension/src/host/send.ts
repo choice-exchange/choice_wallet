@@ -12,6 +12,8 @@
 import {
   adapterCw20,
   adapterDenom,
+  chainByCaip2,
+  chainDenom,
   ChainError,
   cosmosTxHash,
   cw20Address,
@@ -25,6 +27,7 @@ import {
   word,
   NETWORKS,
   shortDenom,
+  type ChainInfo,
   type Coin,
   type NetworkId,
 } from "@choice-wallet/chain";
@@ -49,12 +52,14 @@ export interface SendDeps extends HoldingsDeps {
   onDeposit?(network: NetworkId, deposit: DepositSent): Promise<void>;
   /** Broadcasts a Solana transaction the vault signed (./solana.ts). */
   solanaBroadcast?(network: NetworkId, p: SolanaPending, signed: { signature: string; index: number }): Promise<Result<Sent>>;
+  /** A client for an EVM chain beside Injective, on the user's endpoints for it
+   *  (./evmchains.ts). Without it, the chain's default endpoints. */
+  chainRpc?(network: NetworkId, key: string): Promise<EvmRpc>;
 }
 
-/** Another EVM chain, where the wallet signs only bridge transfers into Injective (the vault
- *  refuses anything else there): what sending on it needs. */
+/** Another EVM chain than Injective's: what sending on it needs. */
 export interface SourceChain {
-  /** The bridge registry's key ("base"). */
+  /** The chain's key ("base"), as chain/src/chains.ts and the bridge registry name it. */
   key: string;
   name: string;
   /** CAIP-2 ID, as the vault names it. */
@@ -95,6 +100,14 @@ export async function dataFeeBound(rpc: EvmRpc, s: Pick<SourceChain, "opStack">,
   if (!s.opStack) return 0n;
   return quantity(await rpc.call("eth_call", [{ to: GAS_PRICE_ORACLE, data: `0xf1c7a58b${bytes.toString(16).padStart(64, "0")}` }, "latest"]), "data fee");
 }
+
+/** An EVM chain from the wallet's list, as the sender needs it. */
+export function sourceOfChain(c: ChainInfo): SourceChain {
+  return { key: c.key, name: c.name, caip2: c.caip2, chainId: c.chainId ?? 0, symbol: c.native.symbol, gasIsUsdc: c.gasIsUsdc === true, opStack: c.opStack === true, usdc: c.usdc, rpcUrls: c.rpc, explorerTx: c.explorerTx };
+}
+
+/** Left on Arc for the fee, which is paid in the same USDC, when sending all of it. */
+const ARC_FEE_RESERVE = 50_000n;
 
 /** The wallet keys of a source chain's coin (the review's fee) and of its USDC. */
 export const sourceCoin = (s: Pick<SourceChain, "caip2">) => `native:${s.caip2}`;
@@ -168,6 +181,8 @@ const MAX_GAS = 3_000_000n;
 export function createSender(d: SendDeps) {
   const holdings = createHoldings(d);
   const { lcd, evm, sourceRpc, erc20Token, token, tokensFor, pairsFor, choiceFor, chainFailure } = holdings;
+  /** A client for another EVM chain: the user's endpoints for it, else its defaults. */
+  const rpcOn = (network: NetworkId, source: SourceChain): Promise<EvmRpc> => (d.chainRpc ? d.chainRpc(network, source.key) : Promise.resolve(sourceRpc(source)));
 
   async function prepare(network: NetworkId, account: AccountInfo, req: { denom: string; to: string; amount: string; memo?: unknown }): Promise<Result<SendReview>> {
     if (typeof req.denom !== "string" || !req.denom) return fail("bad_request", "Pick a token.");
@@ -529,12 +544,12 @@ export function createSender(d: SendDeps) {
     }
   }
 
-  /** One step of a bridge transfer into Injective, on the chain the USDC comes from: the
-   *  vault's own-call spec (`build_evm` on that chain), which it builds, shows and signs only
-   *  as an exact USDC approval for Circle's bridge or a deposit into this account on
-   *  Injective. The fee is that chain's EIP-1559 price (twice the base fee, plus its tip),
-   *  paid in its coin; `burns` is the USDC a burn takes, which on Arc comes out of the same
-   *  balance as the fee. `expect` holds the vault's reading to what the host asked for. */
+  /** A transaction on another EVM chain than Injective's: the vault's own-call spec
+   *  (`build_evm` on that chain), a plain send of its coin, or of a token there (`token`).
+   *  The fee is that chain's EIP-1559 price (twice the base fee, plus its tip), paid in its
+   *  coin, plus an OP Stack chain's Ethereum data fee; `burns` is USDC that leaves with it,
+   *  which on Arc comes out of the same balance as the fee. With `max`, the coin sent is all
+   *  of it less the fee. `expect` holds the vault's reading to what the host asked for. */
   async function prepareSourceCall(
     network: NetworkId,
     account: AccountInfo,
@@ -542,19 +557,21 @@ export function createSender(d: SendDeps) {
     spec: {
       to: string;
       amount: bigint;
-      call: unknown;
-      usdcHeld: bigint;
-      burns: bigint;
-      expect: (display: EvmDisplayLike) => string | null;
+      call?: unknown;
+      token?: string;
+      max?: boolean;
+      usdcHeld?: bigint;
+      burns?: bigint;
+      expect?: (display: EvmDisplayLike) => string | null;
       extra?: Partial<SendReview>;
       deposit?: { amount: string; account: string };
     },
   ): Promise<Result<SendReview>> {
     const net = NETWORKS[network];
-    const from = account.addresses[net.evm];
+    const from = account.addresses[source.caip2] ?? account.addresses[net.evm];
     if (!from) return fail("bad_request", "This account has no EVM address.");
     try {
-      const rpc = sourceRpc(source);
+      const rpc = await rpcOn(network, source);
       const [nonce, block, tip, native] = await Promise.all([
         rpc.call("eth_getTransactionCount", [from, "pending"]),
         rpc.call("eth_getBlockByNumber", ["latest", false]),
@@ -565,13 +582,17 @@ export function createSender(d: SendDeps) {
       const base = isObject(block) ? quantity(block["baseFeePerGas"], "base fee") : 0n;
       const priority = quantity(tip, "tip");
       const maxFee = base * 2n + priority;
+      // "All of it" is known only once the fee is: the gas is estimated with 1 wei (a plain
+      // transfer's gas doesn't depend on its value), then the rest is sent.
+      let amount = spec.max ? 1n : spec.amount;
       const build = (gas: bigint) =>
         d.vault<{ request: { evm_transaction: { tx: { to: string; data: string; value: string } } } }>("build_evm", {
           chain: source.caip2,
           from,
           to: spec.to,
-          amount: spec.amount.toString(),
-          call: spec.call,
+          amount: amount.toString(),
+          ...(spec.call === undefined ? {} : { call: spec.call }),
+          ...(spec.token === undefined ? {} : { token: spec.token }),
           nonce: Number(quantity(nonce, "nonce")),
           gas_limit: Number(gas),
           max_fee_per_gas: maxFee.toString(),
@@ -584,25 +605,37 @@ export function createSender(d: SendDeps) {
       try {
         used = quantity(await rpc.call("eth_estimateGas", [{ from, to: t.to, data: t.data, value: t.value }]), "gas estimate");
       } catch (e) {
-        if (e instanceof ChainError && /revert|exceeds balance|insufficient/i.test(e.message)) return fail("reverts", `This would fail on ${source.name} now. Check your USDC there and try again.`);
+        if (e instanceof ChainError && /revert|exceeds balance|insufficient/i.test(e.message)) return fail("reverts", `This would fail on ${source.name} now. Check your balance there and try again.`);
         throw e;
       }
-      let gas = (used * 13n) / 10n;
-      if (gas < 50_000n) gas = 50_000n;
+      // A plain coin transfer costs exactly what it estimates; contract calls get headroom.
+      const plain = spec.call === undefined && spec.token === undefined;
+      let gas = plain ? used : (used * 13n) / 10n;
+      if (!plain && gas < 50_000n) gas = 50_000n;
       if (gas > SOURCE_MAX_GAS) return fail("chain", `The gas estimate on ${source.name} looks wrong. Try again later.`);
-      const built = await build(gas);
+      let built = await build(gas);
       if (!built.ok) return built;
       // An unsigned EIP-1559 transaction is its calldata and about 120 bytes more.
       const dataFee = await dataFeeBound(rpc, source, (built.result.request.evm_transaction.tx.data.length - 2) / 2 + 120);
-      const coin = gas * maxFee + dataFee + (source.gasIsUsdc ? spec.burns * 10n ** 12n : 0n);
-      if (coin > held) return fail("gas", `Not enough ${source.symbol} on ${source.name} for the fee.`);
+      const fee = gas * maxFee + dataFee;
+      if (spec.max && plain) {
+        amount = held - fee;
+        if (amount <= 0n) return fail("gas", `Not enough ${source.symbol} on ${source.name} for the fee.`);
+        built = await build(gas);
+        if (!built.ok) return built;
+      }
+      const burns = spec.burns ?? 0n;
+      const coin = fee + (plain ? amount : 0n) + (source.gasIsUsdc ? burns * 10n ** 12n : 0n);
+      if (coin > held) return fail("gas", plain ? `Not enough ${source.symbol} on ${source.name} for that and the fee.` : `Not enough ${source.symbol} on ${source.name} for the fee.`);
+      // A send's recipient is checked against the address book like any other.
+      const facts = spec.token || plain ? await d.riskFacts(network, spec.to) : {};
       const decoded = await d.vault<Pick<SendReview, "digest" | "display" | "risk">>("decode", {
         request: built.result.request,
-        context: { balances: { native: held.toString(), [source.usdc]: spec.usdcHeld.toString() } },
+        context: { ...facts, balances: { native: held.toString(), ...(spec.usdcHeld === undefined ? {} : { [source.usdc]: spec.usdcHeld.toString() }) } },
       });
       if (!decoded.ok) return decoded;
       const { digest, display, risk } = decoded.result;
-      const wrong = spec.expect(display as unknown as EvmDisplayLike);
+      const wrong = spec.expect?.(display as unknown as EvmDisplayLike) ?? null;
       if (wrong) return fail("mismatch", wrong);
       await d.session.set({
         pending_send: {
@@ -628,6 +661,33 @@ export function createSender(d: SendDeps) {
     } catch (e) {
       return chainFailure(e);
     }
+  }
+
+  /** A send of an EVM chain's coin or its USDC (`native:<caip2>`, `usdc:<caip2>`) to a 0x
+   *  address there. `amount` is base units, or "max". */
+  async function prepareChainSend(network: NetworkId, account: AccountInfo, req: { denom?: unknown; to?: unknown; amount?: unknown }): Promise<Result<SendReview>> {
+    const which = typeof req.denom === "string" ? chainDenom(req.denom) : null;
+    const c = which ? chainByCaip2(network, which.caip2) : undefined;
+    if (!which || !c || c.kind !== "evm") return fail("bad_request", "Not a token the wallet sends.");
+    const from = account.addresses[c.caip2];
+    if (!from) return fail("bad_request", `This account has no address on ${c.name}.`);
+    const to = typeof req.to === "string" ? req.to.trim() : "";
+    if (!/^0x[0-9a-fA-F]{40}$/.test(to)) return fail("invalid_address", `Enter a 0x address on ${c.name}.`);
+    const max = req.amount === "max";
+    if (!max && (typeof req.amount !== "string" || !/^[0-9]{1,40}$/.test(req.amount) || BigInt(req.amount) === 0n)) return fail("invalid_amount", "Enter an amount above zero.");
+    let amount = max ? 0n : BigInt(req.amount as string);
+    const source = sourceOfChain(c);
+    if (which.what === "native") return prepareSourceCall(network, account, source, { to, amount, max });
+    let held: bigint;
+    try {
+      held = quantity(await (await rpcOn(network, source)).call("eth_call", [{ to: c.usdc, data: `0x70a08231${word(from)}` }, "latest"]), "balance");
+    } catch (e) {
+      return chainFailure(e);
+    }
+    if (max) amount = c.gasIsUsdc ? held - ARC_FEE_RESERVE : held;
+    if (amount <= 0n) return fail("invalid_amount", held === 0n ? `This account has no USDC on ${c.name}.` : "Enter an amount above zero.");
+    if (amount > held) return fail("insufficient", `That's more USDC than you have on ${c.name}.`);
+    return prepareSourceCall(network, account, source, { to, amount, token: c.usdc, burns: amount, usdcHeld: held });
   }
 
   /** Sign the send the review showed, with the wallet that prepared it, then broadcast. */
@@ -696,7 +756,7 @@ export function createSender(d: SendDeps) {
       // deposit's burn is followed by ./bridge/ instead.
       const hash = signed.hash.toLowerCase();
       try {
-        await sourceRpc(p.source).call("eth_sendRawTransaction", [signed.raw]);
+        await (await rpcOn(p.network, p.source)).call("eth_sendRawTransaction", [signed.raw]);
       } catch (e) {
         if (!(e instanceof ChainError && /already known|already imported|known transaction/i.test(e.message))) return chainFailure(e);
       }
@@ -728,7 +788,7 @@ export function createSender(d: SendDeps) {
   async function status(network: NetworkId, hash: string, source?: SourceChain): Promise<Result<TxState>> {
     if (typeof hash === "string" && /^0x[0-9a-fA-F]{64}$/.test(hash)) {
       try {
-        const r = await (source ? sourceRpc(source) : await evm(network)).call("eth_getTransactionReceipt", [hash]);
+        const r = await (source ? await rpcOn(network, source) : await evm(network)).call("eth_getTransactionReceipt", [hash]);
         if (!isObject(r)) return { ok: true, result: { state: "pending" } };
         return { ok: true, result: r["status"] === "0x1" ? { state: "success" } : { state: "failed", log: "The transaction reverted." } };
       } catch (e) {
@@ -755,6 +815,7 @@ export function createSender(d: SendDeps) {
     prepareEvm,
     prepareEvmCall,
     prepareSourceCall,
+    prepareChainSend,
     sourceRpc,
     pairs: async (network: NetworkId) => pairsFor(network, await lcd(network)),
     solanaPrices: holdings.solanaPrices,

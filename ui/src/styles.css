@@ -610,6 +610,10 @@ details.raw summary {
 .chain-row[aria-current="true"] { background: rgba(253, 199, 12, 0.06); }
 .chain-row:disabled { opacity: 0.5; }
 .chain-check { color: var(--gold); display: inline-flex; }
+/* Eighteen chains: the list scrolls inside the sheet, the switch stays in view. */
+.sheet { max-height: 88%; }
+.sheet .token-list { overflow-x: hidden; overflow-y: auto; min-height: 0; flex: 1 1 auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--hairline) transparent; }
+.chain-mark { color: #fff; font-weight: 700; letter-spacing: 0; }
 @keyframes fade-in { from { opacity: 0; } }
 @keyframes sheet-up { from { transform: translateY(24px); opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .sheet-backdrop, .sheet { animation: none; } }

@@ -167,11 +167,24 @@ test("settings: network and endpoints, https only", async () => {
   assert.deepEqual(saved.lcd["mainnet"], ["https://my-node.example"]);
   assert.deepEqual(saved.evm["mainnet"], ["https://my-evm.example"]);
   assert.deepEqual(saved.evm["testnet"], saved.evmDefault["testnet"]);
+  // One EVM chain's endpoints: Base's.
+  ok(await service.handle({ type: "save_settings", network: "mainnet", chain: { key: "base", rpc: ["https://my-base.example"] } }));
+  assert.equal(code(await service.handle({ type: "save_settings", network: "mainnet", chain: { key: "base", rpc: ["http://base.example"] } })), "invalid_endpoint");
+  assert.equal(code(await service.handle({ type: "save_settings", network: "mainnet", chain: { key: "injective", rpc: null } })), "bad_request");
+  const chains = ok<{ chains: Record<string, Record<string, string[]>>; chainsDefault: Record<string, Record<string, string[]>> }>(await service.handle({ type: "settings" }));
+  assert.deepEqual(chains.chains["mainnet"]?.["base"], ["https://my-base.example"]);
+  assert.deepEqual(chains.chains["mainnet"]?.["arbitrum"], chains.chainsDefault["mainnet"]?.["arbitrum"]);
   net.state.hosts.clear();
   ok(await service.handle({ type: "balances" }));
-  // Chain reads go only to the user's endpoints (Solana's too); the one other host is
-  // Choice's price list.
-  assert.deepEqual([...net.state.hosts].sort(), ["evm-api.choice.exchange", "my-evm.example", "my-node.example", "my-solana.example"]);
+  // Chain reads go only to the user's endpoints for each chain (each EVM chain's defaults,
+  // where unchanged); the other hosts are the price lists (Choice's, Jupiter's, and
+  // DefiLlama's once some EVM chain answers).
+  const hosts = [...net.state.hosts];
+  for (const h of ["my-evm.example", "my-node.example", "my-solana.example", "my-base.example", "evm-api.choice.exchange", "lite-api.jup.ag", "arb1.arbitrum.io"]) assert.ok(hosts.includes(h), h);
+  for (const h of ["sentry.lcd.injective.network", "sentry.evm-rpc.injective.network", "solana-rpc.publicnode.com", "mainnet.base.org"]) assert.ok(!hosts.includes(h), h);
+  // Back to Base's defaults.
+  ok(await service.handle({ type: "save_settings", network: "mainnet", chain: { key: "base", rpc: null } }));
+  assert.deepEqual(ok<typeof chains>(await service.handle({ type: "settings" })).chains["mainnet"]?.["base"], chains.chainsDefault["mainnet"]?.["base"]);
   // Leaving `evm` out leaves it as it was.
   const kept = ok<{ evm: Record<string, string[]> }>(await service.handle({ type: "save_settings", network: "mainnet", lcd: ["https://my-node.example"] }));
   assert.deepEqual(kept.evm["mainnet"], ["https://my-evm.example"]);

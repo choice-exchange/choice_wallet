@@ -28,11 +28,12 @@ test("the account's Solana side: its address (Phantom's for the phrase), SOL and
       [`spl:${SOL_USDC}`, "USDC", "5000000", SOLANA_MAINNET],
     ],
   );
-  // SOL at the mark price of Injective's SOL/USDC perpetual; USDC unpriced (Choice has no
-  // price for it here).
+  // Priced where Solana's tokens trade: Jupiter, asked about SOL and the two dollars only.
   const sol = b.solana?.balances.find((x) => x.denom === "sol") as { priceUsd?: string; usd?: number } | undefined;
-  assert.deepEqual([sol?.priceUsd, sol?.usd], ["150.000000", 300]);
-  assert.equal((b.solana?.balances[1] as { usd?: number }).usd, undefined);
+  assert.deepEqual([sol?.priceUsd, sol?.usd], ["150", 300]);
+  assert.equal((b.solana?.balances[1] as { priceUsd?: string }).priceUsd, "0.9999");
+  const asked = net.state.priceAsks.find((u) => u.includes("lite-api.jup.ag"));
+  assert.equal(new URL(asked!).searchParams.get("ids"), `So11111111111111111111111111111111111111112,${SOL_USDC},Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB`);
   // The cluster down: Injective's side still stands.
   net.state.solana.down = true;
   const down = ok<{ balances: unknown[]; solana?: Holdings }>(await service.handle({ type: "balances" }));
@@ -130,8 +131,17 @@ test("the chain Home shows, and the test networks, picked without touching endpo
   assert.deepEqual([test.chain, test.network], ["solana", "testnet"]);
   ok(await service.handle({ type: "pick_chain", chain: "injective", network: "mainnet" }));
   assert.deepEqual(ok<{ lcd: { mainnet: string[] } }>(await service.handle({ type: "settings" })).lcd.mainnet, ["https://my-lcd.example"]);
-  assert.equal(code(await service.handle({ type: "pick_chain", chain: "ethereum" })), "bad_request");
+  assert.equal(code(await service.handle({ type: "pick_chain", chain: "dogechain" })), "bad_request");
   assert.equal(code(await service.handle({ type: "pick_chain", chain: "solana", network: "devnet" })), "bad_request");
+  // Any EVM chain on the list. On the test networks Base is Base Sepolia; Polygon has none,
+  // so switching there lands on Injective.
+  assert.equal(ok<S>(await service.handle({ type: "pick_chain", chain: "base" })).chain, "base");
+  const sepolia = ok<S>(await service.handle({ type: "pick_chain", chain: "base", network: "testnet" }));
+  assert.deepEqual([sepolia.chain, sepolia.network], ["base", "testnet"]);
+  ok(await service.handle({ type: "pick_chain", chain: "polygon", network: "mainnet" }));
+  const away = ok<S>(await service.handle({ type: "pick_chain", chain: "polygon", network: "testnet" }));
+  assert.deepEqual([away.chain, away.network], ["injective", "testnet"]);
+  assert.equal(code(await service.handle({ type: "pick_chain", chain: "polygon" })), "bad_request");
 });
 
 test("an account saved before Solana keys gets its Solana addresses at the next unlock", async () => {

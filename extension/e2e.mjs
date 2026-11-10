@@ -1040,6 +1040,28 @@ try {
   await p.waitText("Manage", 15000);
   console.log("bridge in: the form opens on Injective's side; every source chain's balance read live from its public endpoint");
 
+  // 7h. Another EVM chain: Base, picked in the chain sheet (each chain's total read live from
+  // its public endpoints), its own Home, and Settings showing only Base's endpoints.
+  await p.click("Chain: Injective. Change chain");
+  await p.waitText("Arbitrum");
+  for (let t = 0; t < 150 && (await p.eval(`document.querySelectorAll(".chain-row .skeleton").length`)) > 0; t++) await sleep(100);
+  await p.shot("16za-chains");
+  await p.eval(`[...document.querySelectorAll(".chain-row")].find((b) => b.querySelector(".symbol")?.textContent === "Base").click()`);
+  await p.waitText("USDC to another chain");
+  await p.waitText("Gas on Base");
+  await p.shot("16zb-home-base");
+  if (!(await p.eval(`document.querySelector("[aria-label='Copy address']")?.title ?? ""`)).startsWith("0x")) throw new Error("Base's Home doesn't show the 0x address");
+  await p.click("Settings");
+  await p.waitText("Base (JSON-RPC)");
+  const areas = await p.eval(`document.querySelectorAll("textarea").length`);
+  if (areas !== 1) throw new Error(`Settings on Base shows ${areas} endpoint lists`);
+  await p.shot("16zc-settings-base");
+  await p.click("Wallet");
+  await p.click("Chain: Base. Change chain");
+  await p.eval(`[...document.querySelectorAll(".chain-row")].find((b) => b.querySelector(".symbol")?.textContent === "Injective").click()`);
+  await p.waitText("Manage", 15000);
+  console.log("chains: Base from the sheet, its coin and USDC, and Settings with only Base's endpoints");
+
   await p.click("Settings");
   await settingsLoaded();
   await p.fill("textarea", 1, "https://sentry.evm-rpc.injective.network\nhttps://injective-evm-rpc.publicnode.com");

@@ -1,8 +1,9 @@
 // The chain picker: a pill on Home's top bar, and the sheet it opens. The sheet lists each
-// chain with what the account holds there, so nothing is out of sight while Home shows one
-// chain, and holds the switch between mainnet and the test networks.
+// chain with what the account holds there (those holding something first), so nothing is out
+// of sight while Home shows one chain, and holds the switch between mainnet and the test
+// networks.
 
-import { NETWORKS, type NetworkId } from "@choice-wallet/chain";
+import { chainByKey, type NetworkId } from "@choice-wallet/chain";
 import { useEffect, useRef } from "react";
 
 import { CheckIcon, ChevronDownIcon } from "./icons";
@@ -15,30 +16,38 @@ import { TokenMark } from "./TokenMark";
 /** `add`: the account has no address there yet, but can get one (a Ledger, from its app). */
 export type ChainRow = { chain: ChainView; address?: string; total: string | null; holds?: string; add?: { label: string; run: () => void } };
 
-/** A chain's name on a network: "Injective Testnet", "Solana Devnet". */
+/** A chain's name on a network: "Injective Testnet", "Solana Devnet", "Base Sepolia". */
 export function chainName(chain: ChainView, network: NetworkId): string {
-  if (chain === "solana") return NETWORKS[network].solana.name;
-  return network === "testnet" ? "Injective Testnet" : "Injective";
+  return chainByKey(network, chain)?.name ?? chain;
 }
 
 /** An address short enough to sit beside what's held: "inj1npvw…90dz", "HAgk…Kpqk". */
 function compact(a: string): string {
-  const head = a.startsWith("inj1") ? 8 : 4;
+  const head = a.startsWith("inj1") ? 8 : a.startsWith("0x") ? 6 : 4;
   return a.length > head + 6 ? `${a.slice(0, head)}…${a.slice(-4)}` : a;
 }
 
-export function ChainMark({ chain, small }: { chain: ChainView; small?: boolean }) {
-  return <TokenMark denom={chain === "solana" ? "sol" : "inj"} symbol={chain === "solana" ? "SOL" : "INJ"} known small={small === true} />;
+/** A chain's mark: Injective's and Solana's logos, a monogram on its colour for the rest. */
+export function ChainMark({ chain, small, network = "mainnet" }: { chain: ChainView; small?: boolean; network?: NetworkId }) {
+  if (chain === "injective" || chain === "solana") {
+    return <TokenMark denom={chain === "solana" ? "sol" : "inj"} symbol={chain === "solana" ? "SOL" : "INJ"} known small={small === true} />;
+  }
+  const mark = chainByKey(network, chain)?.mark ?? { letters: chain.slice(0, 2).toUpperCase(), color: "#555" };
+  return (
+    <span className={small ? "mark sm chain-mark" : "mark chain-mark"} aria-hidden="true" style={{ background: mark.color, borderColor: "transparent" }}>
+      {mark.letters}
+    </span>
+  );
 }
 
 export function ChainPill({ chain, network, onClick }: { chain: ChainView; network: NetworkId; onClick: () => void }) {
   return (
     <button className="pill chain-pill" aria-haspopup="dialog" aria-label={`Chain: ${chainName(chain, network)}. Change chain`} onClick={onClick}>
       <span className="chain-pill-mark">
-        <ChainMark chain={chain} small />
+        <ChainMark chain={chain} network={network} small />
         {network === "testnet" && <span className="dot testnet" />}
       </span>
-      {chain === "solana" ? "Solana" : "Injective"}
+      {chainByKey("mainnet", chain)?.name ?? chainName(chain, network)}
       <ChevronDownIcon size={14} />
     </button>
   );
@@ -90,7 +99,7 @@ export function ChainSheet({
               disabled={!r.address && !r.add}
               onClick={() => (r.address ? onPick(r.chain) : r.add?.run())}
             >
-              <ChainMark chain={r.chain} />
+              <ChainMark chain={r.chain} network={network} />
               <span className="name">
                 <span className="symbol">{chainName(r.chain, network)}</span>
                 <span className="sub">{r.address ? [compact(r.address), r.holds].filter(Boolean).join(" · ") : (r.add?.label ?? "Not on this account")}</span>
@@ -103,7 +112,7 @@ export function ChainSheet({
           ))}
         </div>
         <Switch label="Test networks" checked={network === "testnet"} onChange={onTestnet} />
-        <p className="meta">{network === "testnet" ? "Injective Testnet and Solana Devnet. Test tokens only." : "Turn on for Injective Testnet and Solana Devnet."}</p>
+        <p className="meta">{network === "testnet" ? "Each chain's test network. Test tokens only." : "Turn on for each chain's test network."}</p>
       </div>
     </div>
   );

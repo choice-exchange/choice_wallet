@@ -13,7 +13,7 @@
 // device from before vaults has `keystore` and `kind` instead: the first unlock moves it
 // into a vault as "Recovery phrase 1" (or "Imported key 1"), keeping the account list.
 
-import { cleanText, NETWORKS } from "@choice-wallet/chain";
+import { chainByKey, cleanText, NETWORKS } from "@choice-wallet/chain";
 import type { AccountInfo, NewSecret, Result, Status, WalletInfo } from "@choice-wallet/ui/protocol";
 
 import type { Store } from "./service";
@@ -110,9 +110,10 @@ export function createWallets(h: WalletsHost) {
     return typeof unlock_key === "string" ? unlock_key : undefined;
   }
 
+  /** The chain picked on Home, if the network has it; Injective otherwise. */
   async function chain(): Promise<Status["chain"]> {
     const { chain } = await h.local.get(["chain"]);
-    return chain === "solana" ? "solana" : "injective";
+    return chainByKey(await h.network(), chain) ? (chain as string) : "injective";
   }
 
   async function status(): Promise<Status> {
@@ -515,5 +516,5 @@ export function createWallets(h: WalletsHost) {
     return w ? { secret: w.secret, wallet: w.id } : null;
   }
 
-  return { stored, status, unlockKey, create, unlock, addWallet, addAccount, addLedger, addLedgerSolana, addWatch, changeAccount, renameWallet, removeWallet, reveal, changePassword, reset, inUse, signer };
+  return { stored, status, chain, unlockKey, create, unlock, addWallet, addAccount, addLedger, addLedgerSolana, addWatch, changeAccount, renameWallet, removeWallet, reveal, changePassword, reset, inUse, signer };
 }

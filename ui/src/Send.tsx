@@ -1,6 +1,6 @@
 // Send: the form (with its token picker), the review, and the sent screen.
 
-import { cw20Address, evmAddress, formatShort, formatUnits, isSolanaAddress, NETWORKS, parseUnits, shortDenom, usdValue } from "@choice-wallet/chain";
+import { chainByCaip2, cw20Address, evmAddress, formatShort, formatUnits, isSolanaAddress, NETWORKS, parseUnits, shortDenom, usdValue } from "@choice-wallet/chain";
 import { useEffect, useState, type FormEvent } from "react";
 
 import { useBackend } from "./backend";
@@ -137,16 +137,17 @@ export function SendForm({
   }
 
   const { parsed, problem } = parseEntered(amount, max, token);
-  // An EVM-only token moves in an EVM transaction, which has no memo; nor does a Solana send
-  // here.
-  const solana = token.chain !== undefined;
-  const evmOnly = evmAddress(token.denom) !== null || solana;
-  const badAddress = solana && to.trim() !== "" && !isSolanaAddress(to.trim());
+  // An EVM-only token moves in an EVM transaction, which has no memo; nor does a send on
+  // Solana or another EVM chain.
+  const solana = token.chain?.startsWith("solana:") === true;
+  const elsewhere = token.chain?.startsWith("eip155:") ? (chainByCaip2("mainnet", token.chain) ?? chainByCaip2("testnet", token.chain)) : undefined;
+  const evmOnly = evmAddress(token.denom) !== null || token.chain !== undefined;
+  const entered = to.trim();
+  const badAddress = entered !== "" && (solana ? !isSolanaAddress(entered) : elsewhere ? !/^0x[0-9a-fA-F]{40}$/.test(entered) : false);
 
   async function submit(e: FormEvent) {
     e.preventDefault();
     if (!parsed || !token) return;
-    const entered = to.trim();
     const review = await run({ type: "prepare_send", denom: token.denom, to: entered, amount: parsed, ...(evmOnly || !memo.trim() ? {} : { memo: memo.trim() }) });
     if (review) onReview(review, entered, token.denom);
   }
@@ -203,24 +204,25 @@ export function SendForm({
           </div>
           <input
             className="input mono"
-            placeholder={solana ? "Solana address" : "inj1… or 0x…"}
+            placeholder={solana ? "Solana address" : elsewhere ? "0x…" : "inj1… or 0x…"}
             aria-label="To"
             autoComplete="off"
             spellCheck={false}
             value={to}
             onChange={(e) => setTo(e.target.value)}
           />
-          {badAddress && <span className="error">That isn&apos;t a Solana address.</span>}
+          {badAddress && <span className="error">{solana ? "That isn't a Solana address." : `That isn't an address on ${elsewhere?.name ?? "this chain"}.`}</span>}
           {check?.mine && <span className="meta">Your account {check.mine}</span>}
           {check?.contact && <span className="meta">{check.contact.name}, from your address book</span>}
         </div>
-        {check?.takesMemo && evmOnly && !solana && (
+        {check?.takesMemo && evmOnly && !solana && !elsewhere && (
           <Callout level="red">This address needs a memo, which an EVM-only token&apos;s send can&apos;t carry.</Callout>
         )}
         {check?.takesMemo && !evmOnly && !check.contact?.memo && !memo.trim() && (
           <Callout level="amber">This looks like an exchange: its deposits carry a memo. Add yours below.</Callout>
         )}
         {solana && <p className="meta">On {token.chain === NETWORKS.mainnet.solana.caip2 ? "Solana" : "Solana Devnet"}, from this account&apos;s Solana address.</p>}
+        {elsewhere && <p className="meta">On {elsewhere.name}, from this account&apos;s 0x address there.</p>}
         {!evmOnly && (
           <label className="field">
             <span className="eyebrow">Memo</span>
