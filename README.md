@@ -1,6 +1,6 @@
 # Choice Wallet
 
-An open-source, self-custody wallet. Injective first (Cosmos side and Injective EVM), and Solana; other major chains later. Browser extension first, mobile later.
+An open-source, self-custody wallet. Injective first (Cosmos side and Injective EVM), Solana, and every EVM chain Circle's CCTP joins to them (Ethereum, Base, Arbitrum, OP Mainnet, Polygon, Avalanche and more), with native USDC bridged between any two. Browser extension first, mobile later.
 
 - Design: [docs/DESIGN.md](docs/DESIGN.md)
 - Security model, audit process, dependency budget: [docs/SECURITY.md](docs/SECURITY.md)
@@ -17,7 +17,7 @@ An open-source, self-custody wallet. Injective first (Cosmos side and Injective 
 | `crates/policy` | Risk rules: grades every decoded request (grants, allowances, permits, precompile calls, sign-in messages, Solana authorities and delegates, balances, lookalike addresses) |
 | `crates/vault` | The vault protocol: one JSON entry point (`handle`) for every host: keystores, accounts, building sends, decode → approve → sign |
 | `crates/wasm` | The vault compiled to WASM for the extension |
-| `chain` | The chain client (TypeScript, GPL-3.0): user-settable endpoints with failover, bank, CW20 and ERC20 balances, gas estimates, broadcasting, token names, activity (Cosmos and EVM transactions), and Solana's (balances, simulation, history). No keys |
+| `chain` | The chain client (TypeScript, GPL-3.0): the chain list, user-settable endpoints with failover, bank, CW20 and ERC20 balances, gas estimates, broadcasting, token names, prices, activity (Cosmos and EVM transactions, any EVM chain's from its index and its own node), and Solana's (balances, simulation, history). No keys |
 | `ui` | The wallet's screens (React, GPL-3.0), shared by every platform. Talks to its host only through a small `Backend` interface. See [ui/README.md](ui/README.md) |
 | `extension` | The Chrome extension (GPL-3.0): the service worker hosts the vault and answers the UI; the popup is `ui` with a `chrome.runtime` backend. See [extension/README.md](extension/README.md) |
 | `tools/protogen` | Dev only: vendors `.proto` files and regenerates the committed prost code |

@@ -26,9 +26,10 @@ Licensed GPL-3.0 ([LICENSE](LICENSE)); the Rust crates it uses are Apache-2.0.
 
 `src/host/` is the service worker's logic, with no `chrome.*`, so the tests run all of it:
 `service.ts` answers the UI and routes everything else; `wallets.ts` and `vault.ts` the keys;
-then one file (or folder) per feature: `holdings.ts` and `send.ts`, `swap.ts`, `staking.ts`,
-`bridge/` (out, in from EVM chains, in from Solana), `solana.ts`, `dapp/` (sites: EVM,
-Cosmos and Solana requests, and the approval window's side), `approvals.ts`, `rescue.ts`,
+then one file (or folder) per feature: `holdings.ts` and `send.ts`, `evmchains.ts` (the EVM
+chains beside Injective: endpoints, holdings, prices, history), `swap.ts`, `staking.ts`,
+`bridge/` (USDC between any two chains, and Solana's burn-record rent), `solana.ts`, `dapp/`
+(sites: EVM on each site's chain, Cosmos and Solana requests, and the approval window's side), `approvals.ts`, `rescue.ts`,
 `contacts.ts`, `nfts.ts`, `inventory.ts`, and `watch.ts` (the background watcher), with
 `cache.ts` and `snapshots.ts` keeping chain data on disk.
 
@@ -87,8 +88,9 @@ node extension/e2e-live.mjs /path/to/chromium "$PWD/extension/dist" /tmp/shots <
 node extension/e2e-live.mjs /path/to/chromium "$PWD/extension/dist" /tmp/shots <phrase file> none 0 activity
 ```
 
-The other modes (staking, approvals, NFTs, rescue, notifications, swaps, the bridge, Solana
-and a Solana site) are described at the top of `e2e-live.mjs`.
+The other modes (staking, approvals, NFTs, rescue, notifications, swaps, the bridge out, in
+and between two other chains, Solana and a Solana site) are described at the top of
+`e2e-live.mjs`.
 
 ## Dependencies
 
