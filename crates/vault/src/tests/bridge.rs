@@ -84,13 +84,16 @@ fn own_bridge_transfer_builds_decodes_and_signs() {
         "bad_request"
     );
 
-    // Refused: nobody to deliver, a chain Circle doesn't deliver to, a chain the wallet
-    // doesn't name, an EVM recipient no address can be, Circle keeping all of it, INJ sent
-    // with it, another contract, and calldata that isn't a burn.
-    assert_eq!(
-        code("build_evm", bridge(burn_data(&me, 6, Hook::None, 0))),
-        "bad_request"
-    );
+    // Plain, nobody asked to deliver: built, as the wallet can mint it there itself, and
+    // the review says it waits for a claim.
+    let plain = ok("build_evm", bridge(burn_data(&me, 6, Hook::None, 0)))["request"].clone();
+    let d = ok("decode", json!({ "request": plain }));
+    assert_eq!(d["display"]["call"]["delivery"], "claim");
+    assert_eq!(rules_of(&d), ["bridge_claim", "bridge", "bridge_to_self"]);
+
+    // Refused: a chain Circle doesn't deliver to, a chain the wallet doesn't name, an EVM
+    // recipient no address can be, Circle keeping all of it, INJ sent with it, another
+    // contract, and calldata that isn't a burn.
     assert_eq!(
         code("build_evm", bridge(burn_data(&me, 33, Hook::Forward, 200_000))),
         "bad_request"
@@ -129,7 +132,7 @@ fn deposit_data(recipient: &str, hook: choice_wallet_injective::cctp::Hook, mint
         amount: U256::from_u128(25_000_000),
         domain: cctp::INJECTIVE_DOMAIN,
         mint_recipient: word(minter),
-        burn_token: MAINNET.source(8453).unwrap().usdc(),
+        burn_token: MAINNET.evm_chain(8453).unwrap().usdc(),
         destination_caller: if gas_drop { word(minter) } else { [0; 32] },
         max_fee: U256::from_u128(3_000),
         min_finality: cctp::FAST,
@@ -139,7 +142,7 @@ fn deposit_data(recipient: &str, hook: choice_wallet_injective::cctp::Hook, mint
 }
 
 #[test]
-fn deposits_from_other_chains_build_decode_and_sign() {
+fn bridging_from_other_evm_chains_builds_decodes_and_signs() {
     use choice_wallet_core::EthAddress;
     use choice_wallet_evm::U256;
     use choice_wallet_injective::cctp::{Hook, MAINNET};
@@ -148,7 +151,7 @@ fn deposits_from_other_chains_build_decode_and_sign() {
         .unwrap()
         .to_owned();
     let them = "0x2222222222222222222222222222222222222222";
-    let base = MAINNET.source(8453).unwrap();
+    let base = MAINNET.evm_chain(8453).unwrap();
     let (tm, usdc) = (MAINNET.token_messenger, base.usdc);
     let on_base = |to: &str, amount: &str, call: Value| evm_params("eip155:8453", &me, to, amount, call);
 
@@ -165,7 +168,7 @@ fn deposits_from_other_chains_build_decode_and_sign() {
     );
     assert_eq!(d["display"]["chain"], "eip155:8453");
     assert_eq!(
-        d["display"]["source"],
+        d["display"]["network"],
         json!({ "name": "Base", "symbol": "ETH", "decimals": 18 })
     );
     assert_eq!(
@@ -174,22 +177,30 @@ fn deposits_from_other_chains_build_decode_and_sign() {
     );
     assert_eq!(rules_of(&d), ["allowance"]);
     assert!(approve_and_sign(&approve, account(0))["raw"].is_string());
+    // Only on Base's own USDC.
+    assert_eq!(
+        code(
+            "build_evm",
+            on_base(MAINNET.usdc, "25000000", json!({ "type": "bridge_approve" }))
+        ),
+        "bad_request"
+    );
 
     // The burn: minted by anyone, paying this account on Injective.
     let data = deposit_data(&me, Hook::None, None);
     let burn = ok("build_evm", on_base(tm, "0", json!({ "type": "bridge", "data": data })))["request"].clone();
     let d = ok("decode", json!({ "request": burn }));
     let shown = &d["display"]["call"];
-    assert_eq!(shown["type"], "bridge_in");
-    assert_eq!(shown["chain"], "Base");
+    assert_eq!(shown["type"], "bridge");
+    assert_eq!(shown["chain"], "Injective");
     assert_eq!(shown["recipient"], me);
-    assert_eq!(shown["delivery"], "anyone");
+    assert_eq!(shown["delivery"], "claim");
     assert_eq!(shown["least"], "24997000");
     assert_eq!(d["risk"]["level"], "info");
-    assert_eq!(rules_of(&d), ["bridge_in", "bridge_in_delivery"]);
+    assert_eq!(rules_of(&d), ["bridge", "bridge_to_self", "bridge_in_delivery"]);
     let signed = approve_and_sign(&burn, account(0));
     assert!(signed["raw"].as_str().unwrap().starts_with("0x02"));
-    // Another account of the same wallet can't sign it: the burn pays account 0.
+    // Another account of the same wallet can't sign it: it is account 0's transaction.
     let (_, secret, unlock_key) = wallet();
     let wrong = call(
         "sign",
@@ -215,21 +226,25 @@ fn deposits_from_other_chains_build_decode_and_sign() {
     let d = ok("decode", json!({ "request": burn }));
     assert_eq!(d["display"]["call"]["delivery"], "gas_drop");
     assert_eq!(d["display"]["call"]["max_drop_fee"], "500000");
-    assert_eq!(rules_of(&d), ["bridge_in", "bridge_gas_drop"]);
+    assert_eq!(d["display"]["call"]["least"], "24497000");
+    assert_eq!(rules_of(&d), ["bridge", "bridge_to_self", "bridge_gas_drop"]);
 
-    // Refused when built, and when a request comes some other way: paying someone else, a
-    // gas drop through another contract, coin attached, a token transfer, anything else.
-    assert_eq!(
-        code(
-            "build_evm",
-            on_base(
-                tm,
-                "0",
-                json!({ "type": "bridge", "data": deposit_data(them, Hook::None, None) })
-            )
+    // To someone else on Injective: built, and the review says so.
+    let theirs = ok(
+        "build_evm",
+        on_base(
+            tm,
+            "0",
+            json!({ "type": "bridge", "data": deposit_data(them, Hook::None, None) }),
         ),
-        "bad_request"
-    );
+    )["request"]
+        .clone();
+    let d = ok("decode", json!({ "request": theirs }));
+    assert_eq!(d["risk"]["level"], "amber");
+    assert!(rules_of(&d).contains(&"bridge_recipient".to_owned()));
+
+    // Refused when built: a gas drop through another contract, coin attached, a swap
+    // approval (Choice is on Injective only).
     let other_drop = Hook::GasDrop {
         recipient: EthAddress::parse_hex(&me).unwrap(),
         max_drop_fee: U256::from_u128(1),
@@ -251,49 +266,54 @@ fn deposits_from_other_chains_build_decode_and_sign() {
     );
     assert_eq!(
         code("build_evm", on_base(usdc, "25000000", json!({ "type": "approve" }))),
-        "bad_request"
+        "invalid"
     );
+
+    // Base is a wallet chain like any other: USDC and ETH sends, and a site's messages.
+    let send = ok(
+        "build_evm",
+        json!({ "chain": "eip155:8453", "from": me, "to": them, "amount": "1", "token": usdc, "nonce": 0, "gas_limit": 60000, "max_fee_per_gas": "1", "max_priority_fee_per_gas": "0" }),
+    )["request"]
+        .clone();
+    let d = ok("decode", json!({ "request": send }));
+    assert_eq!(d["display"]["call"]["type"], "erc20_transfer");
+    assert!(approve_and_sign(&send, account(0))["raw"].is_string());
+    let send = ok(
+        "build_evm",
+        json!({ "chain": "eip155:8453", "from": me, "to": them, "amount": "1", "nonce": 0, "gas_limit": 21000, "max_fee_per_gas": "1", "max_priority_fee_per_gas": "0" }),
+    )["request"]
+        .clone();
     assert_eq!(
-        code(
-            "build_evm",
-            json!({ "chain": "eip155:8453", "from": me, "to": them, "amount": "1", "token": usdc, "nonce": 0, "gas_limit": 60000, "max_fee_per_gas": "1", "max_priority_fee_per_gas": "0" })
-        ),
-        "bad_request"
+        ok("decode", json!({ "request": send }))["display"]["call"]["type"],
+        "transfer"
     );
-    assert_eq!(
-        code(
-            "build_evm",
-            json!({ "chain": "eip155:8453", "from": me, "to": them, "amount": "1", "nonce": 0, "gas_limit": 21000, "max_fee_per_gas": "1", "max_priority_fee_per_gas": "0" })
-        ),
-        "bad_request"
-    );
+    let message = json!({ "evm_personal_sign": { "chain": "eip155:8453", "signer": me, "message": "hi" } });
+    assert!(call("decode", json!({ "request": message })).is_ok());
+    // A site's burn of another chain's USDC on Base is red.
     let tx = |to: &str, data: &str, value: &str| {
         json!({ "evm_transaction": { "chain": "eip155:8453", "tx": {
             "type": "0x2", "chainId": "0x2105", "from": me, "to": to, "value": value, "data": data,
             "nonce": "0x0", "gas": "0x30d40", "maxFeePerGas": "0x1", "maxPriorityFeePerGas": "0x0",
         } } })
     };
-    assert_eq!(code("decode", json!({ "request": tx(them, "0x", "0x1") })), "invalid");
-    assert_eq!(
-        code(
-            "decode",
-            json!({ "request": tx(tm, &deposit_data(them, Hook::None, None), "0x0") })
-        ),
-        "invalid"
+    let d = ok(
+        "decode",
+        json!({ "request": tx(tm, &burn_data(&me, 3, Hook::Forward, 200_000), "0x0") }),
     );
-    assert!(call("decode", json!({ "request": tx(tm, &data, "0x0") })).is_ok());
-    // No other kind of request on Base.
+    assert_eq!(d["risk"]["level"], "red");
+    assert!(rules_of(&d).contains(&"bridge_token".to_owned()));
+    // A chain the wallet doesn't know is still refused.
     assert_eq!(
         code(
             "decode",
-            json!({ "request": { "evm_personal_sign": { "chain": "eip155:8453", "signer": me, "message": "hi" } } })
+            json!({ "request": { "evm_personal_sign": { "chain": "eip155:56", "signer": me, "message": "hi" } } })
         ),
         "unknown_chain"
     );
 }
 
 #[test]
-fn own_bridge_receive_mints_only_to_this_account() {
+fn own_bridge_receive_mints_attested_transfers() {
     use choice_wallet_core::{EthAddress, hexutil};
     use choice_wallet_evm::U256;
     use choice_wallet_injective::cctp::{self, MAINNET};
@@ -325,7 +345,7 @@ fn own_bridge_receive_mints_only_to_this_account() {
         m.extend_from_slice(&[0; 32]);
         hexutil::encode(&m)
     };
-    let base_usdc = MAINNET.source(8453).unwrap().usdc();
+    let base_usdc = MAINNET.evm_chain(8453).unwrap().usdc();
     let mt = MAINNET.message_transmitter;
     let receive = |m: String| {
         evm_params(
@@ -348,8 +368,12 @@ fn own_bridge_receive_mints_only_to_this_account() {
     assert_eq!(rules_of(&d), ["bridge_receive"]);
     assert!(approve_and_sign(&request, account(0))["raw"].is_string());
 
-    // Someone else's, another token, an unnamed chain, the wrong contract: not built.
-    assert_eq!(code("build_evm", receive(message(them, base_usdc, 6))), "bad_request");
+    // Someone else's: built (the wallet pays the gas, and the review says so).
+    let request = ok("build_evm", receive(message(them, base_usdc, 6)))["request"].clone();
+    let d = ok("decode", json!({ "request": request }));
+    assert_eq!(d["risk"]["level"], "amber");
+    assert!(rules_of(&d).contains(&"bridge_receive_other".to_owned()));
+    // Another token, an unnamed chain, the wrong contract: not built.
     assert_eq!(
         code("build_evm", receive(message(&me, MAINNET.usdc(), 6))),
         "bad_request"

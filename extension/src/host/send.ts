@@ -155,7 +155,7 @@ function quantity(v: unknown, what: string): bigint {
 }
 
 /** The vault's display of an EVM transaction, as far as `prepareEvmCall`'s checks read it. */
-export type EvmDisplayLike = { kind: string; to: string; value: string; call: Record<string, unknown> };
+export type EvmDisplayLike = { kind: string; chain: string; to: string; value: string; call: Record<string, unknown> };
 
 
 /** Gas assumed for the simulation's own fee. */

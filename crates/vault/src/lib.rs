@@ -302,9 +302,18 @@ fn call(request: &str) -> Result<Value, VaultError> {
             // One account on every chain: an address that some chain can't read (a 32-byte
             // contract, another chain's prefix) isn't an account the wallet can follow.
             let Addresses { address } = params(p)?;
+            // An `inj1…` names the same 20 bytes as its 0x, which is the account on every EVM
+            // chain; only Injective's own sides read the `inj1` form.
+            let hex = chains::find("eip155:1776")?.parse_address(&address);
             let list = chains::CHAINS
                 .iter()
-                .map(|c| Ok((c.id.to_owned(), Value::String(c.parse_address(&address)?))))
+                .map(|c| {
+                    let a = match (c.kind, c.injective, &hex) {
+                        (chains::Kind::Evm(_), None, Ok(h)) => h.clone(),
+                        _ => c.parse_address(&address)?,
+                    };
+                    Ok((c.id.to_owned(), Value::String(a)))
+                })
                 .collect::<Result<serde_json::Map<String, Value>, VaultError>>()
                 .map_err(|_| VaultError::bad(format!("{:?} isn't an Injective account address", address.trim())))?;
             Ok(json!({ "addresses": list }))

@@ -34,9 +34,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub use bridge::source_transaction;
 pub use cosmos::{CosmosFee, cosmos};
-pub use evm::evm_transaction;
+pub use evm::{EvmSide, evm_transaction};
 pub use message::{arbitrary_message, personal_message, solana_message};
 pub use solana::solana_transaction;
 pub use typed::typed_data;

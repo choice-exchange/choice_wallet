@@ -22,6 +22,7 @@ import {
   decodeBurnMessage,
   decodeMessage,
   expectedAttestMs,
+  INJECTIVE_DOMAIN,
   injective,
   type EvmChain,
   type Quote,
@@ -344,11 +345,11 @@ function mintsTo(message: string, me: string): boolean {
 /** The vault's reading of a deposit's burn against the quote the user saw. */
 function matchesInQuote(d: EvmDisplayLike, s: StoredIn, chain: EvmChain, me: string): string | null {
   const c = d.call;
-  if (c["type"] !== "bridge_in") return "The transfer isn't one the wallet can read.";
-  if (c["chain"] !== chain.name || !same(String(c["token"]), chain.usdc)) return "The transfer comes from somewhere other than its quote.";
+  if (c["type"] !== "bridge" || c["domain"] !== INJECTIVE_DOMAIN) return "The transfer isn't one the wallet can read.";
+  if (d.chain !== `eip155:${chain.chainId}` || !same(String(c["token"]), chain.usdc)) return "The transfer comes from somewhere other than its quote.";
   if (c["amount"] !== s.amount || c["max_fee"] !== s.maxFee) return "The transfer doesn't match its quote.";
   if (typeof c["recipient"] !== "string" || !same(c["recipient"], me)) return "The transfer pays someone else.";
   const drop = BigInt(s.gasDropFee) > 0n;
-  if (c["delivery"] !== (drop ? "gas_drop" : "anyone") || (drop && c["max_drop_fee"] !== s.gasDropFee)) return "The INJ top-up doesn't match its quote.";
+  if (c["delivery"] !== (drop ? "gas_drop" : "claim") || (drop && c["max_drop_fee"] !== s.gasDropFee)) return "The INJ top-up doesn't match its quote.";
   return null;
 }

@@ -292,8 +292,9 @@ export function Review({
   const { risk, tokens } = review;
   const step = review.swap ?? (review.bridge ? { from: review.bridge.usdc, to: review.bridge.usdc } : review.bridgeIn ? { from: review.bridgeIn.usdc, to: review.bridgeIn.injUsdc } : undefined);
   const view = shown(review.display, network, step);
-  /** Signed on another chain than Injective (a step of a transfer in). */
-  const source = review.display.kind === "evm_transaction" ? (review.display as EvmDisplay).source : undefined;
+  /** Signed on another EVM chain than Injective's (a step of a transfer in, or a send there). */
+  const evmDisplay = review.display.kind === "evm_transaction" ? (review.display as EvmDisplay) : undefined;
+  const source = evmDisplay && evmDisplay.chain !== NETWORKS[network].evm ? evmDisplay.network : undefined;
   const swapping = view.swaps.length > 0;
   const minting = view.mints.length > 0;
   const bridging = view.bridges.length > 0 || view.bridgesIn.length > 0 || minting;

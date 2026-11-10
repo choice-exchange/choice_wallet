@@ -1,12 +1,18 @@
-//! The chains the vault knows, by CAIP-2 ID (`cosmos:injective-1`, `eip155:1776`).
+//! The chains the vault knows, by CAIP-2 ID (`cosmos:injective-1`, `eip155:8453`).
 //!
-//! Adding a chain means adding an entry here (and, for a Cosmos chain, its profile). The
-//! protocol stays the same: every request names its chain by CAIP-2 ID.
+//! Injective's Cosmos side, and every EVM chain on CCTP beside each Injective network
+//! (`choice_wallet_injective::cctp::Cctp::evm`, Injective EVM among them): the same 0x key
+//! signs on each, under the same EVM rules. Adding a chain means adding an entry there (and,
+//! for a Cosmos chain, its profile). The protocol stays the same: every request names its
+//! chain by CAIP-2 ID.
+
+use std::sync::LazyLock;
 
 use choice_wallet_core::{EthAddress, PublicKey};
 use choice_wallet_cosmos::chain::Chain as CosmosChain;
-use choice_wallet_injective::cctp::Source;
+use choice_wallet_injective::cctp::EvmChain;
 use choice_wallet_injective::chain::{MAINNET, Network, TESTNET};
+use choice_wallet_policy::EvmSide;
 use serde::Serialize;
 
 use crate::error::{UNKNOWN_CHAIN, VaultError};
@@ -29,43 +35,51 @@ pub struct Entry {
     pub name: &'static str,
     /// Cosmos or EVM.
     pub kind: Kind,
-    /// The Injective network it belongs to, if any. Injective's two sides share accounts.
+    /// The Injective network it belongs to, if it is one of Injective's two sides (they share
+    /// accounts).
     pub injective: Option<&'static Network>,
+    /// For an EVM chain on CCTP: the Injective network whose CCTP table names it, and the
+    /// chain as that table names it.
+    pub bridge: Option<(&'static Network, &'static EvmChain)>,
     /// Native coin symbol and decimals.
     pub native: (&'static str, u8),
 }
 
-/// Every chain, in display order.
-pub const CHAINS: [Entry; 4] = [
-    Entry {
-        id: "cosmos:injective-1",
-        name: "Injective",
-        kind: Kind::Cosmos(&MAINNET.cosmos),
-        injective: Some(&MAINNET),
-        native: ("INJ", 18),
-    },
-    Entry {
-        id: "eip155:1776",
-        name: "Injective EVM",
-        kind: Kind::Evm(MAINNET.evm_chain_id),
-        injective: Some(&MAINNET),
-        native: ("INJ", 18),
-    },
-    Entry {
-        id: "cosmos:injective-888",
-        name: "Injective Testnet",
-        kind: Kind::Cosmos(&TESTNET.cosmos),
-        injective: Some(&TESTNET),
-        native: ("INJ", 18),
-    },
-    Entry {
-        id: "eip155:1439",
-        name: "Injective EVM Testnet",
-        kind: Kind::Evm(TESTNET.evm_chain_id),
-        injective: Some(&TESTNET),
-        native: ("INJ", 18),
-    },
-];
+/// Every chain, in display order: each network's Cosmos side, then its EVM chains.
+pub static CHAINS: LazyLock<Vec<Entry>> = LazyLock::new(|| {
+    let mut out = Vec::new();
+    for n in [&MAINNET, &TESTNET] {
+        let testnet = std::ptr::eq(n, &TESTNET);
+        out.push(Entry {
+            id: if testnet {
+                "cosmos:injective-888"
+            } else {
+                "cosmos:injective-1"
+            },
+            name: if testnet { "Injective Testnet" } else { "Injective" },
+            kind: Kind::Cosmos(&n.cosmos),
+            injective: Some(n),
+            bridge: None,
+            native: ("INJ", 18),
+        });
+        for c in n.cctp.evm {
+            let own = c.chain_id == n.evm_chain_id;
+            out.push(Entry {
+                id: c.caip2,
+                name: match (own, testnet) {
+                    (true, false) => "Injective EVM",
+                    (true, true) => "Injective EVM Testnet",
+                    (false, _) => c.name,
+                },
+                kind: Kind::Evm(c.chain_id),
+                injective: own.then_some(n),
+                bridge: Some((n, c)),
+                native: c.native,
+            });
+        }
+    }
+    out
+});
 
 /// A Solana cluster the vault signs on, with each account's ed25519 key (SLIP-0010, the path
 /// Phantom uses). Not in [`CHAINS`]: its keys and requests are of their own kind.
@@ -98,20 +112,6 @@ pub fn solana(id: &str) -> Option<&'static SolanaChain> {
     SOLANA.iter().find(|c| c.id == id)
 }
 
-/// A chain USDC can come from into Injective, by CAIP-2 ID (`eip155:8453`), and the network
-/// it comes into. It isn't in [`CHAINS`]: the vault signs nothing there but what
-/// `cctp::source_call` reads as an exact USDC approval for Circle's bridge or a deposit into
-/// the signer's own account on Injective, and no other kind of request.
-pub fn source(id: &str) -> Option<(&'static Network, &'static Source)> {
-    let chain_id: u64 = id.strip_prefix("eip155:")?.parse().ok()?;
-    if id != format!("eip155:{chain_id}") {
-        return None;
-    }
-    [&MAINNET, &TESTNET]
-        .into_iter()
-        .find_map(|n| n.cctp.source(chain_id).map(|s| (n, s)))
-}
-
 /// Find a chain by CAIP-2 ID.
 pub fn find(id: &str) -> Result<&'static Entry, VaultError> {
     CHAINS
@@ -121,6 +121,14 @@ pub fn find(id: &str) -> Result<&'static Entry, VaultError> {
 }
 
 impl Entry {
+    /// The chain as the EVM rules see it.
+    pub fn evm_side(&self) -> EvmSide<'static> {
+        EvmSide {
+            injective: self.injective,
+            cctp: self.bridge.map(|(n, c)| (&n.cctp, c)),
+        }
+    }
+
     /// The Cosmos profile, or an error for an EVM chain.
     pub fn cosmos(&self) -> Result<&'static CosmosChain, VaultError> {
         match self.kind {
@@ -211,38 +219,36 @@ mod tests {
 
     #[test]
     fn ids_match_the_profiles() {
-        for c in CHAINS {
+        for c in CHAINS.iter() {
             let id = match c.kind {
                 Kind::Cosmos(p) => p.caip2(),
                 Kind::Evm(n) => format!("eip155:{n}"),
             };
             assert_eq!(c.id, id);
-            assert_eq!(find(c.id).unwrap(), &c);
+            assert_eq!(find(c.id).unwrap(), c);
         }
-        assert_eq!(find("eip155:1").unwrap_err().code, UNKNOWN_CHAIN);
+        assert_eq!(find("eip155:56").unwrap_err().code, UNKNOWN_CHAIN);
+        for id in ["eip155:08453", "eip155:8453 ", "cosmos:8453", "eip155:"] {
+            assert!(find(id).is_err(), "{id}");
+        }
     }
 
     #[test]
-    fn sources_are_found_by_their_own_id_only() {
-        let (n, s) = source("eip155:8453").unwrap();
-        assert_eq!((n, s.name), (&MAINNET, "Base"));
-        assert_eq!(source("eip155:84532").unwrap().0, &TESTNET);
-        for id in [
-            "eip155:1776",
-            "eip155:08453",
-            "eip155:8453 ",
-            "cosmos:8453",
-            "eip155:",
-            "eip155:99999999",
-        ] {
-            assert!(source(id).is_none(), "{id}");
-        }
-        // No source is a chain the vault signs anything else on.
+    fn every_chain_on_cctp_is_an_evm_chain() {
         for n in [MAINNET, TESTNET] {
-            for s in n.cctp.sources {
-                assert!(find(&format!("eip155:{}", s.chain_id)).is_err());
+            for c in n.cctp.evm {
+                let e = find(c.caip2).unwrap();
+                assert_eq!(e.evm().unwrap(), c.chain_id);
+                assert_eq!(e.bridge.unwrap().1, c);
+                assert_eq!(e.native, c.native);
+                // Only Injective's own EVM side gets Injective's rules (Choice, precompiles).
+                assert_eq!(e.injective.is_some(), c.chain_id == n.evm_chain_id);
             }
         }
+        let base = find("eip155:8453").unwrap();
+        assert_eq!((base.name, base.native.0), ("Base", "ETH"));
+        assert_eq!(find("eip155:1776").unwrap().name, "Injective EVM");
+        assert_eq!(find("eip155:84532").unwrap().bridge.unwrap().0, &TESTNET);
     }
 
     #[test]

@@ -208,7 +208,7 @@ test("in from Base: an exact approval, then a burn into this account; then minte
   assert.equal(approve.bridgeIn?.step, "approve");
   assert.equal(approve.bridgeIn?.left, 1);
   assert.equal(approve.display.chain, "eip155:8453");
-  assert.deepEqual(approve.display.source, { name: "Base", symbol: "ETH", decimals: 18 });
+  assert.deepEqual(approve.display.network, { name: "Base", symbol: "ETH", decimals: 18 });
   assert.equal(approve.display.to.toLowerCase(), BASE_USDC.toLowerCase());
   assert.deepEqual(approve.display.call, { type: "approve", spender: TOKEN_MESSENGER, amount: "25000000" });
   assert.equal(approve.tokens["usdc:eip155:8453"]?.symbol, "USDC");
@@ -227,14 +227,14 @@ test("in from Base: an exact approval, then a burn into this account; then minte
   assert.equal(burn.bridgeIn?.step, "burn");
   assert.equal(burn.display.to, TOKEN_MESSENGER);
   const call = burn.display.call;
-  assert.equal(call["type"], "bridge_in");
-  assert.equal(call["chain"], "Base");
+  assert.equal(call["type"], "bridge");
+  assert.equal(call["chain"], "Injective");
   assert.equal(call["recipient"], ME_EVM);
   assert.equal(call["amount"], "25000000");
   assert.equal(call["max_fee"], "3000");
-  assert.equal(call["delivery"], "anyone");
+  assert.equal(call["delivery"], "claim");
   assert.equal(burn.risk.level, "info");
-  assert.deepEqual(rules(burn), ["bridge_in", "bridge_in_delivery"]);
+  assert.deepEqual(rules(burn), ["bridge", "bridge_to_self", "bridge_in_delivery"]);
   const burned = ok<{ hash: string }>(await service.handle({ type: "confirm_send", digest: burn.digest }));
   assert.equal(net.state.base.sent.length, 2);
   type Pending = { chain: string; chainName: string; hash: string; amount: string }[];
@@ -282,7 +282,7 @@ test("in with the INJ top-up: Choice's BridgeReceiver mints it, and only it can"
   const burn = ok<InReview>(await service.handle({ type: "prepare_bridge_in", quote: q.id }));
   assert.equal(burn.display.call["delivery"], "gas_drop");
   assert.equal(burn.display.call["max_drop_fee"], "500000");
-  assert.deepEqual(rules(burn), ["bridge_in", "bridge_gas_drop"]);
+  assert.deepEqual(rules(burn), ["bridge", "bridge_to_self", "bridge_gas_drop"]);
   const burned = ok<{ hash: string }>(await service.handle({ type: "confirm_send", digest: burn.digest }));
   // Pinned to BridgeReceiver: this account can't mint it (and needn't: it has no INJ).
   const nonce = `0x${"4d".repeat(32)}`;

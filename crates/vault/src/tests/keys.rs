@@ -142,12 +142,20 @@ fn change_password_rewraps_the_vault_and_keeps_its_key() {
 #[test]
 fn addresses_of_an_account_on_every_chain() {
     // The BIP-39 test phrase's first account, given either way.
-    let want = json!({
+    // The same 0x on every EVM chain.
+    let mut want = json!({
         "cosmos:injective-1": "inj1npvwllfr9dqr8erajqqr6s0vxnk2ak55re90dz",
-        "eip155:1776": "0x9858EfFD232B4033E47d90003D41EC34EcaEda94",
         "cosmos:injective-888": "inj1npvwllfr9dqr8erajqqr6s0vxnk2ak55re90dz",
-        "eip155:1439": "0x9858EfFD232B4033E47d90003D41EC34EcaEda94",
     });
+    for n in [
+        choice_wallet_injective::chain::MAINNET,
+        choice_wallet_injective::chain::TESTNET,
+    ] {
+        for c in n.cctp.evm {
+            want[c.caip2] = "0x9858EfFD232B4033E47d90003D41EC34EcaEda94".into();
+        }
+    }
+    assert_eq!(want.as_object().unwrap().len(), 2 + 17 + 4);
     for a in [
         "inj1npvwllfr9dqr8erajqqr6s0vxnk2ak55re90dz",
         " 0x9858effd232b4033e47d90003d41ec34ecaeda94 ",

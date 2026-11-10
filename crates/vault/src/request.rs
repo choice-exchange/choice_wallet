@@ -18,7 +18,7 @@ use choice_wallet_evm::U256;
 use choice_wallet_evm::eip712::TypedData;
 use choice_wallet_evm::personal;
 use choice_wallet_evm::request::{self as evm_request, Call, TxRequest};
-use choice_wallet_injective::cctp::{self, Delivery, Source, SourceCall};
+use choice_wallet_injective::cctp;
 use choice_wallet_injective::eip712::{Web3Tx, decode_v2};
 use choice_wallet_policy::{Assessment, Context, CosmosFee};
 use serde::Deserialize;
@@ -158,10 +158,8 @@ enum Kind {
     },
     EvmTx {
         r: Box<TxRequest>,
-        /// The Injective network, on Injective EVM.
-        network: Option<&'static choice_wallet_injective::chain::Network>,
-        /// On a chain USDC comes from: what the transaction was read as.
-        deposit: Option<Box<SourceTx>>,
+        /// The chain it is signed for.
+        chain: &'static Entry,
     },
     TypedData {
         td: Box<TypedData>,
@@ -209,10 +207,7 @@ impl Checked {
                 };
                 choice_wallet_policy::cosmos(&tx.messages, signer, &tx.memo, fee, ctx)
             }
-            Kind::EvmTx {
-                r, deposit: Some(d), ..
-            } => choice_wallet_policy::source_transaction(r, &d.network.cctp, d.source, &d.call, ctx),
-            Kind::EvmTx { r, network, .. } => choice_wallet_policy::evm_transaction(r, *network, ctx),
+            Kind::EvmTx { r, chain } => choice_wallet_policy::evm_transaction(r, &chain.evm_side(), ctx),
             Kind::TypedData {
                 td,
                 signer,
@@ -275,9 +270,6 @@ pub(crate) fn decode(req: SignRequest) -> Result<Checked, VaultError> {
             })
         }
         SignRequest::EvmTransaction { chain, tx } => {
-            if let Some((network, source)) = chains::source(&chain) {
-                return source_tx(&chain, network, source, tx.get());
-            }
             let entry = chains::find(&chain)?;
             let r = evm_request::parse(tx.get(), entry.evm()?)?;
             let display = evm_tx_display(entry, &r)?;
@@ -286,8 +278,7 @@ pub(crate) fn decode(req: SignRequest) -> Result<Checked, VaultError> {
                 display,
                 kind: Kind::EvmTx {
                     r: Box::new(r),
-                    network: entry.injective,
-                    deposit: None,
+                    chain: entry,
                 },
             })
         }
@@ -410,88 +401,6 @@ pub(crate) fn decode(req: SignRequest) -> Result<Checked, VaultError> {
     }
 }
 
-/// A transaction on a chain USDC comes from, as `cctp::source_call` read it.
-pub(crate) struct SourceTx {
-    network: &'static choice_wallet_injective::chain::Network,
-    source: &'static Source,
-    call: SourceCall,
-}
-
-/// Read `r` as what the vault signs on `source`, or refuse it.
-pub(crate) fn source_call(
-    network: &choice_wallet_injective::chain::Network,
-    source: &Source,
-    r: &TxRequest,
-) -> Result<SourceCall, VaultError> {
-    cctp::source_call(&network.cctp, source, &r.from, &r.tx.to, r.tx.value, &r.tx.data).map_err(|e| {
-        VaultError::new(
-            INVALID,
-            format!(
-                "On {} the wallet signs only USDC bridge transfers to this account on Injective, and this isn't one: {e}.",
-                source.name
-            ),
-        )
-    })
-}
-
-/// `evm_transaction` on a chain USDC comes from: an exact USDC approval for Circle's bridge,
-/// or a deposit into the signer's own account on Injective; anything else is refused here,
-/// before anyone is asked to approve it.
-fn source_tx(
-    id: &str,
-    network: &'static choice_wallet_injective::chain::Network,
-    source: &'static Source,
-    tx: &str,
-) -> Result<Checked, VaultError> {
-    let r = evm_request::parse(tx, source.chain_id)?;
-    let call = source_call(network, source, &r)?;
-    let t = &r.tx;
-    let hex_addr = |a: &EthAddress| a.to_checksum_hex();
-    let shown = match &call {
-        SourceCall::Approve { amount } => json!({
-            "type": "approve",
-            "spender": hex_addr(&network.cctp.token_messenger()),
-            "amount": amount.to_string(),
-        }),
-        SourceCall::Deposit(d) => json!({
-            "type": "bridge_in",
-            "amount": d.burn.amount.to_string(),
-            "token": hex_addr(&d.burn.burn_token),
-            "chain": source.name,
-            "recipient": hex_addr(&r.from),
-            "max_fee": d.burn.max_fee.to_string(),
-            "finality": d.burn.min_finality,
-            "delivery": match d.delivery { Delivery::Anyone => "anyone", Delivery::GasDrop { .. } => "gas_drop" },
-            "max_drop_fee": match d.delivery { Delivery::Anyone => None, Delivery::GasDrop { max_drop_fee } => Some(max_drop_fee.to_string()) },
-            "least": d.least().to_string(),
-        }),
-    };
-    let display = json!({
-        "kind": "evm_transaction",
-        "chain": id,
-        "source": { "name": source.name, "symbol": source.native.0, "decimals": source.native.1 },
-        "from": hex_addr(&r.from),
-        "to": hex_addr(&t.to),
-        "value": t.value.to_string(),
-        "nonce": t.nonce.to_string(),
-        "gas_limit": t.gas_limit.to_string(),
-        "max_fee_per_gas": t.max_fee_per_gas.to_string(),
-        "max_priority_fee_per_gas": t.max_priority_fee_per_gas.to_string(),
-        "max_gas_cost": U256::product(u128::from(t.gas_limit), t.max_fee_per_gas).to_string(),
-        "data": format!("0x{}", hexutil::encode(&t.data)),
-        "call": shown,
-    });
-    Ok(Checked {
-        digest: digest("evm_transaction", id, r.from.as_bytes(), &t.unsigned_bytes()),
-        display,
-        kind: Kind::EvmTx {
-            r: Box::new(r),
-            network: None,
-            deposit: Some(Box::new(SourceTx { network, source, call })),
-        },
-    })
-}
-
 fn cosmos_tx(t: CosmosTx, amino_mode: bool) -> Result<Checked, VaultError> {
     let entry = chains::find(&t.chain)?;
     let chain = entry.cosmos()?;
@@ -560,8 +469,8 @@ fn amino_display(kind: &str, entry: &Entry, pk: &PublicKey, tx: &AminoTx) -> Val
     })
 }
 
-/// A contract call the wallet reads: a Choice swap, a CCTP bridge transfer or its mint, an
-/// ERC20 approval, a Permit2 approval; otherwise just its selector.
+/// A contract call the wallet reads: a Choice swap (on Injective EVM), a CCTP bridge transfer
+/// or its mint, an ERC20 approval, a Permit2 approval; otherwise just its selector.
 fn contract_display(entry: &Entry, r: &TxRequest, selector: Option<[u8; 4]>) -> Value {
     use choice_wallet_evm::abi::{self, Ty};
     use choice_wallet_injective::choice::{self, Executor, Venue};
@@ -571,11 +480,10 @@ fn contract_display(entry: &Entry, r: &TxRequest, selector: Option<[u8; 4]>) -> 
         "type": "contract",
         "selector": selector.map(|s| format!("0x{}", hexutil::encode(&s))),
     });
-    let Some(network) = entry.injective else {
-        return plain;
-    };
-    let c = &network.choice;
-    if let Some(read) = choice::swap(c, &tx.to, tx.value, &tx.data) {
+    let choice = entry.injective.map(|n| &n.choice);
+    if let Some(c) = choice
+        && let Some(read) = choice::swap(c, &tx.to, tx.value, &tx.data)
+    {
         let Ok(s) = read else {
             return json!({ "type": "contract", "selector": plain["selector"], "unreadable_swap": true });
         };
@@ -615,49 +523,67 @@ fn contract_display(entry: &Entry, r: &TxRequest, selector: Option<[u8; 4]>) -> 
             })),
         });
     }
-    if let Some(read) = cctp::burn(&network.cctp, &tx.to, tx.value, &tx.data) {
-        let Ok(b) = read else {
-            return json!({ "type": "contract", "selector": plain["selector"], "unreadable_bridge": true });
-        };
-        return json!({
-            "type": "bridge",
-            "amount": b.amount.to_string(),
-            "token": hex_addr(&b.burn_token),
-            "domain": b.domain,
-            "chain": network.cctp.domain(b.domain).map(|d| d.name),
-            "recipient": b.recipient(&network.cctp).map(|r| r.display()),
-            "max_fee": b.max_fee.to_string(),
-            "finality": b.min_finality,
-            "delivery": match &b.hook {
-                cctp::Hook::Forward | cctp::Hook::ForwardWithAccount { .. } => "circle",
-                cctp::Hook::None => "claim",
-                cctp::Hook::GasDrop { .. } | cctp::Hook::Other(_) => "hook",
-            },
-            "account_owner": match &b.hook {
-                cctp::Hook::ForwardWithAccount { owner } => Some(cctp::base58(owner)),
-                _ => None,
-            },
-            "destination_caller": (!b.permissionless()).then(|| format!("0x{}", hexutil::encode(&b.destination_caller))),
-        });
-    }
-    if let Some(read) = cctp::receive(&network.cctp, &tx.to, tx.value, &tx.data) {
-        let Ok(m) = read else {
-            return json!({ "type": "contract", "selector": plain["selector"], "unreadable_bridge": true });
-        };
-        let source = network.cctp.inbound(m.source_domain);
-        return json!({
-            "type": "bridge_receive",
-            "domain": m.source_domain,
-            "chain": source.map(|s| s.name),
-            "to_injective": m.destination_domain == cctp::INJECTIVE_DOMAIN,
-            "token": hex_addr(&network.cctp.usdc()),
-            "known_token": source.is_some_and(|s| m.burn_token == s.burn_token),
-            "amount": m.amount.to_string(),
-            "fee": m.fee_executed.to_string(),
-            "minted": m.minted().to_string(),
-            "recipient": m.paid().as_ref().map(hex_addr),
-            "nonce": format!("0x{}", hexutil::encode(&m.nonce)),
-        });
+    if let Some((network, local)) = entry.bridge {
+        let c = &network.cctp;
+        if let Some(read) = cctp::burn(c, &tx.to, tx.value, &tx.data) {
+            let Ok(b) = read else {
+                return json!({ "type": "contract", "selector": plain["selector"], "unreadable_bridge": true });
+            };
+            let (recipient, drop) = match &b.hook {
+                cctp::Hook::GasDrop {
+                    recipient,
+                    max_drop_fee,
+                } => (Some(hex_addr(recipient)), Some(*max_drop_fee)),
+                _ => (b.recipient(c).map(|r| r.display()), None),
+            };
+            let least = b
+                .amount
+                .checked_sub(&b.max_fee)
+                .and_then(|v| v.checked_sub(&drop.unwrap_or(U256::ZERO)))
+                .unwrap_or(U256::ZERO);
+            return json!({
+                "type": "bridge",
+                "amount": b.amount.to_string(),
+                "token": hex_addr(&b.burn_token),
+                "domain": b.domain,
+                "chain": c.destination(local.domain, b.domain).map(|d| d.name),
+                "recipient": recipient,
+                "max_fee": b.max_fee.to_string(),
+                "max_drop_fee": drop.map(|d| d.to_string()),
+                "least": least.to_string(),
+                "finality": b.min_finality,
+                "delivery": match &b.hook {
+                    cctp::Hook::Forward | cctp::Hook::ForwardWithAccount { .. } => "circle",
+                    cctp::Hook::None => "claim",
+                    cctp::Hook::GasDrop { .. } => "gas_drop",
+                    cctp::Hook::Other(_) => "hook",
+                },
+                "account_owner": match &b.hook {
+                    cctp::Hook::ForwardWithAccount { owner } => Some(cctp::base58(owner)),
+                    _ => None,
+                },
+                "destination_caller": (!b.permissionless()).then(|| format!("0x{}", hexutil::encode(&b.destination_caller))),
+            });
+        }
+        if let Some(read) = cctp::receive(c, &tx.to, tx.value, &tx.data) {
+            let Ok(m) = read else {
+                return json!({ "type": "contract", "selector": plain["selector"], "unreadable_bridge": true });
+            };
+            let source = c.inbound(m.source_domain);
+            return json!({
+                "type": "bridge_receive",
+                "domain": m.source_domain,
+                "chain": source.map(|s| s.name),
+                "to_here": m.destination_domain == local.domain,
+                "token": hex_addr(&local.usdc()),
+                "known_token": source.is_some_and(|s| m.burn_token == s.burn_token),
+                "amount": m.amount.to_string(),
+                "fee": m.fee_executed.to_string(),
+                "minted": m.minted().to_string(),
+                "recipient": m.paid().as_ref().map(hex_addr),
+                "nonce": format!("0x{}", hexutil::encode(&m.nonce)),
+            });
+        }
     }
     let args = tx.data.get(4..).unwrap_or_default();
     if selector == Some(choice_wallet_evm::erc20::SAFE_TRANSFER_FROM_SELECTOR)
@@ -674,7 +600,7 @@ fn contract_display(entry: &Entry, r: &TxRequest, selector: Option<[u8; 4]>) -> 
                 return json!({ "type": "approve", "spender": hex_addr(&spender), "amount": amount.to_string() });
             }
         }
-        Some(choice::PERMIT2_APPROVE) if tx.to == c.permit2() => {
+        Some(choice::PERMIT2_APPROVE) if choice.is_some_and(|c| tx.to == c.permit2()) => {
             if let Ok(v) = abi::decode(&[Ty::Word, Ty::Word, Ty::Word, Ty::Word], args)
                 && let (Ok(token), Ok(spender), Ok(amount), Ok(expiration)) =
                     (v[0].address(), v[1].address(), v[2].uint_bits(160), v[3].small(48))
@@ -708,6 +634,7 @@ fn evm_tx_display(entry: &Entry, r: &TxRequest) -> Result<Value, VaultError> {
     Ok(json!({
         "kind": "evm_transaction",
         "chain": entry.id,
+        "network": { "name": entry.name, "symbol": entry.native.0, "decimals": entry.native.1 },
         "from": r.from.to_checksum_hex(),
         "to": tx.to.to_checksum_hex(),
         "value": tx.value.to_string(),

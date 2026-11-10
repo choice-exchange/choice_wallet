@@ -5,6 +5,9 @@ import { adapterCw20, adapterDenom, cw20Denom, evmDenom, isContractAddress, NETW
 
 import type { Coin, CosmosDisplay, EvmDisplay, EvmSwapCall, NetworkId, SendReview, SolanaDisplay, SwapStepInfo } from "./protocol";
 
+/** Injective's CCTP domain. */
+const INJECTIVE_DOMAIN = 29;
+
 /** A token turned into its other form by the CW20 adapter, one for one. */
 export type Conversion = { from: Coin; to: Coin; recipient: string };
 
@@ -120,8 +123,8 @@ export function shown(display: SendReview["display"], network: NetworkId, swap?:
   if (display.kind === "solana_transaction") return solanaShown(display as SolanaDisplay, net.solana.name);
   if (display.kind === "evm_transaction") {
     const d = display as EvmDisplay;
-    // Signed on a chain USDC comes from: its fee is in that chain's coin.
-    const feeDenom = d.source ? `native:${d.chain}` : net.feeDenom;
+    // Signed on another EVM chain than Injective's: its fee is in that chain's coin.
+    const feeDenom = d.chain !== net.evm ? `native:${d.chain}` : net.feeDenom;
     const base = { fee: [{ denom: feeDenom, amount: d.max_gas_cost }], memo: "", evm: true, converts: [], stakes: [], revokes: [], swaps: [], bridges: [], bridgesIn: [], mints: [], approvals: [], nfts: [], moves: [] };
     // An address as a wallet key: INJ, or the swap's own tokens, or an EVM token.
     const key = (a: string, side?: "from" | "to") => {
@@ -151,22 +154,21 @@ export function shown(display: SendReview["display"], network: NetworkId, swap?:
     if (d.call.type === "bridge") {
       const c = d.call;
       const usdc = key(c.token, "from");
-      return {
-        ...base,
-        sends: [],
-        others: [],
-        bridges: [{ coin: { denom: usdc, amount: c.amount }, maxFee: { denom: usdc, amount: c.max_fee }, chain: c.chain, recipient: c.recipient, owner: c.account_owner, delivery: c.delivery, caller: c.destination_caller }],
-      };
-    }
-    if (d.call.type === "bridge_in") {
-      const c = d.call;
-      const usdc = key(c.token, "from");
       const at = (amount: string) => ({ denom: usdc, amount });
+      // Into Injective from another chain, minted there by anyone or by Choice's contract.
+      if (c.domain === INJECTIVE_DOMAIN && d.chain !== net.evm && (c.delivery === "claim" || c.delivery === "gas_drop") && c.recipient) {
+        return {
+          ...base,
+          sends: [],
+          others: [],
+          bridgesIn: [{ coin: at(c.amount), maxFee: at(c.max_fee), chain: d.network.name, recipient: c.recipient, delivery: c.delivery === "claim" ? "anyone" : "gas_drop", dropFee: c.max_drop_fee === null ? null : at(c.max_drop_fee), least: at(c.least) }],
+        };
+      }
       return {
         ...base,
         sends: [],
         others: [],
-        bridgesIn: [{ coin: at(c.amount), maxFee: at(c.max_fee), chain: c.chain, recipient: c.recipient, delivery: c.delivery, dropFee: c.max_drop_fee === null ? null : at(c.max_drop_fee), least: at(c.least) }],
+        bridges: [{ coin: at(c.amount), maxFee: at(c.max_fee), chain: c.chain, recipient: c.recipient, owner: c.account_owner, delivery: c.delivery === "gas_drop" ? "hook" : c.delivery, caller: c.destination_caller }],
       };
     }
     if (d.call.type === "bridge_receive") {

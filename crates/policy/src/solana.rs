@@ -12,16 +12,16 @@
 //! - USDC leaving over Circle's CCTP: the destination, the recipient, who delivers, the fee;
 //! - programs the wallet doesn't read: named, and never shown as safe.
 
-use choice_wallet_core::{EthAddress, base58};
+use choice_wallet_core::base58;
 use choice_wallet_evm::U256;
-use choice_wallet_injective::cctp::{self, AddressKind, Cctp, Hook, INJECTIVE_DOMAIN};
+use choice_wallet_injective::cctp::{self, Cctp, Hook};
 use choice_wallet_solana::Read;
 use choice_wallet_solana::message::Pubkey;
 use choice_wallet_solana::pda;
 use choice_wallet_solana::program::{self, CctpBurn, Instruction};
 use serde_json::json;
 
-use crate::addresses::{own_name, recipient};
+use crate::addresses::recipient;
 use crate::amounts::{Outflows, balance};
 use crate::text::short;
 use crate::{Assessment, Context, Finding, Level, finding, site};
@@ -407,14 +407,6 @@ fn assign_away(owner: &Pubkey) -> Finding {
     f
 }
 
-/// A 0x address from a `bytes32` recipient, if its high 12 bytes are zero.
-fn evm_in(w: &[u8; 32]) -> Option<EthAddress> {
-    w[..12]
-        .iter()
-        .all(|&b| b == 0)
-        .then(|| EthAddress::from_bytes(w[12..].try_into().expect("20 bytes")))
-}
-
 fn bridge_burn(
     c: &Cctp,
     b: &CctpBurn,
@@ -432,151 +424,17 @@ fn bridge_burn(
             json!({ "token": b58(&b.mint) }),
         ));
     }
-    let Some(domain) = c.from_solana(b.domain) else {
-        out.push(finding(
-            "bridge_unknown_chain",
-            Level::Red,
-            format!(
-                "Sends USDC to CCTP domain {}, a chain the wallet doesn't know.",
-                b.domain
-            ),
-            json!({ "domain": b.domain }),
-        ));
-        return;
+    let facts = crate::bridge::BurnFacts {
+        amount: U256::from_u128(b.amount.into()),
+        domain: b.domain,
+        mint_recipient: b.mint_recipient,
+        destination_caller: b.destination_caller,
+        max_fee: U256::from_u128(b.max_fee.into()),
+        hook: b.hook.as_deref().map_or(Hook::None, cctp::read_hook),
     };
-    let chain = domain.name;
-    let hook = b.hook.as_deref().map_or(Hook::None, cctp::read_hook);
-    let permissionless = b.destination_caller == [0; 32];
-    let receiver = c.bridge_receiver().map(|r| cctp::word(&r));
-    let drop_fee = match &hook {
-        Hook::GasDrop { max_drop_fee, .. } => *max_drop_fee,
-        _ => U256::ZERO,
-    };
-    // Who ends up with it: the hook's recipient for a gas drop through Choice's contract,
-    // otherwise the mint recipient.
-    let paid = match &hook {
-        Hook::GasDrop { recipient, .. } => {
-            if domain.id != INJECTIVE_DOMAIN
-                || receiver.is_none_or(|r| r != b.mint_recipient || r != b.destination_caller)
-            {
-                out.push(finding(
-                    "bridge_gas_drop_wrong",
-                    Level::Red,
-                    "Asks for INJ for gas, but not through Choice's bridge contract: it may never arrive.".into(),
-                    json!({ "chain": chain }),
-                ));
-                return;
-            }
-            Some(*recipient)
-        }
-        _ => match domain.kind {
-            AddressKind::Evm => evm_in(&b.mint_recipient),
-            AddressKind::Solana => None,
-        },
-    };
-    let Some(paid) = paid else {
-        out.push(finding(
-            "bridge_recipient_unusable",
-            Level::Red,
-            format!("The recipient on {chain} isn't an address: the USDC would be lost."),
-            json!({ "chain": chain }),
-        ));
-        return;
-    };
-    let to = paid.to_checksum_hex();
-    out.push(finding(
-        "bridge",
-        Level::Info,
-        format!("Bridges USDC to {chain} over Circle's CCTP."),
-        json!({
-            "chain": chain,
-            "domain": b.domain,
-            "recipient": to,
-            "amount": b.amount.to_string(),
-            "max_fee": b.max_fee.to_string(),
-        }),
-    ));
-    let own = own_name(ctx, &to);
-    match &own {
-        Some(name) => out.push(finding(
-            "bridge_to_self",
-            Level::Info,
-            format!("Arrives at {name} on {chain}."),
-            json!({ "chain": chain, "recipient": to }),
-        )),
-        None => out.push(finding(
-            "bridge_recipient",
-            Level::Amber,
-            format!("Arrives at {} on {chain}, not at one of your accounts.", short(&to)),
-            json!({ "chain": chain, "recipient": to }),
-        )),
-    }
-    if &b.owner == signer && own.is_none() {
-        outflows.add(&b58(&b.mint), U256::from_u128(b.amount.into()));
-    }
-    match (&hook, permissionless) {
-        (Hook::GasDrop { .. }, _) => out.push(finding(
-            "bridge_gas_drop",
-            Level::Info,
-            "Choice's bridge contract completes it, and buys INJ for gas with at most the fee shown.".into(),
-            json!({ "max_drop_fee": drop_fee.to_string() }),
-        )),
-        (Hook::None, true) if domain.id == INJECTIVE_DOMAIN => out.push(delivery_on_injective(c)),
-        (Hook::Forward | Hook::ForwardWithAccount { .. }, true) if domain.forwarding => out.push(finding(
-            "bridge_forward",
-            Level::Info,
-            format!("Circle delivers it on {chain}, for a fee of at most the one shown."),
-            json!({ "chain": chain, "max_fee": b.max_fee.to_string() }),
-        )),
-        (_, false) => out.push(finding(
-            "bridge_caller",
-            Level::Amber,
-            format!(
-                "Only {} can deliver it on {chain}; nobody else can complete it.",
-                short(&format!("0x{}", hex32(&b.destination_caller)))
-            ),
-            json!({ "chain": chain }),
-        )),
-        (Hook::None, true) => out.push(finding(
-            "bridge_claim",
-            Level::Amber,
-            format!("Nobody is asked to deliver it: it waits on {chain} until someone claims it, with gas there."),
-            json!({ "chain": chain }),
-        )),
-        (Hook::Forward | Hook::ForwardWithAccount { .. }, true) => out.push(finding(
-            "bridge_no_forwarding",
-            Level::Amber,
-            format!("Asks Circle to deliver on {chain}, which it doesn't: someone must claim it there."),
-            json!({ "chain": chain }),
-        )),
-        (Hook::Other(_), true) => out.push(finding(
-            "bridge_hook",
-            Level::Amber,
-            format!("Carries instructions for a contract on {chain}, and nobody is asked to deliver it."),
-            json!({ "chain": chain }),
-        )),
-    }
-    let amount = U256::from_u128(b.amount.into());
-    let fees = U256::from_u128(b.max_fee.into())
-        .checked_add(&drop_fee)
-        .unwrap_or(U256::MAX);
-    if fees >= amount {
-        out.push(finding(
-            "bridge_fee_all",
-            Level::Red,
-            "The fees could take all of it.".into(),
-            json!({ "amount": b.amount.to_string(), "fees": fees.to_string() }),
-        ));
-    } else if (1..20u32)
-        .try_fold(fees, |acc, _| acc.checked_add(&fees))
-        .is_none_or(|x| x > amount)
-    {
-        out.push(finding(
-            "bridge_fee_high",
-            Level::Amber,
-            "The fees could take more than 5% of it.".into(),
-            json!({ "amount": b.amount.to_string(), "fees": fees.to_string() }),
-        ));
+    let own = crate::bridge::burn_findings(c, cctp::SOLANA_DOMAIN, None, &facts, ctx, out);
+    if &b.owner == signer && own == Some(false) {
+        outflows.add(&b58(&b.mint), facts.amount);
     }
     if &b.rent_payer == signer {
         out.push(finding(
@@ -588,34 +446,11 @@ fn bridge_burn(
     }
 }
 
-/// Who completes a plain deposit on Injective. Choice's bridge service runs where Choice's
-/// `BridgeReceiver` is (mainnet); elsewhere only the wallet, or anyone, does.
-pub(crate) fn delivery_on_injective(c: &Cctp) -> Finding {
-    if c.bridge_receiver().is_some() {
-        finding(
-            "bridge_in_delivery",
-            Level::Info,
-            "Choice's bridge service completes it on Injective; anyone can, this wallet too.".into(),
-            json!({}),
-        )
-    } else {
-        finding(
-            "bridge_in_delivery",
-            Level::Info,
-            "Nobody completes it on its own on this network; this wallet can.".into(),
-            json!({ "service": false }),
-        )
-    }
-}
-
-fn hex32(b: &[u8; 32]) -> String {
-    b.iter().map(|x| format!("{x:02x}")).collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{Contact, SolanaTokenAccount};
+    use choice_wallet_core::EthAddress;
     use choice_wallet_injective::cctp::{MAINNET, TESTNET};
     use choice_wallet_solana::message::Account;
     use choice_wallet_solana::program::{SYSTEM, TOKEN};

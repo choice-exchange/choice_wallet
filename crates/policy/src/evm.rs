@@ -5,8 +5,9 @@ use choice_wallet_core::EthAddress;
 use choice_wallet_evm::U256;
 use choice_wallet_evm::abi;
 use choice_wallet_evm::request::{Call, TxRequest};
+use choice_wallet_injective::cctp::{self, Cctp};
 use choice_wallet_injective::chain::Network;
-use choice_wallet_injective::{cctp, choice};
+use choice_wallet_injective::choice;
 use serde_json::json;
 
 use crate::addresses::{known_contract, recipient};
@@ -221,13 +222,33 @@ fn system_address(to: &EthAddress) -> Option<u8> {
     b[..19].iter().all(|&x| x == 0).then_some(b[19])
 }
 
-/// Grade an EVM transaction. `network` is the Injective network when the chain is
-/// Injective EVM, where the precompiles and Choice's swap contracts exist.
-pub fn evm_transaction(req: &TxRequest, network: Option<&Network>, ctx: &Context) -> Assessment {
+/// The EVM chain a transaction is for, as the rules need it.
+#[derive(Debug, Clone, Copy)]
+pub struct EvmSide<'a> {
+    /// The Injective network, when the chain is Injective EVM: its precompiles and Choice's
+    /// swap contracts are there.
+    pub injective: Option<&'a Network>,
+    /// CCTP on the chain's network, and the chain as CCTP names it.
+    pub cctp: Option<(&'a Cctp, &'a cctp::EvmChain)>,
+}
+
+impl<'a> EvmSide<'a> {
+    /// Injective EVM on network `n`.
+    pub fn injective(n: &'a Network) -> Self {
+        Self {
+            injective: Some(n),
+            cctp: Some((&n.cctp, &n.cctp.evm[0])),
+        }
+    }
+}
+
+/// Grade an EVM transaction on `chain`.
+pub fn evm_transaction(req: &TxRequest, chain: &EvmSide<'_>, ctx: &Context) -> Assessment {
     let tx = &req.tx;
     let to = tx.to.to_checksum_hex();
     let mut out = site(ctx);
     let mut outflows = Outflows::default();
+    let network = chain.injective;
     let swapped = network.and_then(|n| choice::swap(&n.choice, &tx.to, tx.value, &tx.data));
     // A swap that pays this account trades value rather than giving it away: its input isn't
     // counted as leaving. Its findings say what comes back.
@@ -235,26 +256,23 @@ pub fn evm_transaction(req: &TxRequest, network: Option<&Network>, ctx: &Context
     if !tx.value.is_zero() && !to_self {
         outflows.add("native", tx.value);
     }
-    let bridged = network.and_then(|n| cctp::burn(&n.cctp, &tx.to, tx.value, &tx.data));
-    let minted = network.and_then(|n| cctp::receive(&n.cctp, &tx.to, tx.value, &tx.data));
-    match (&swapped, &bridged, &minted, network) {
-        (Some(read), _, _, Some(n)) => swap::swap(&n.choice, &req.from, tx.value, read, &mut out),
-        (_, Some(read), _, Some(n)) => {
-            bridge::burn(&n.cctp, &req.from, read, &mut out);
-            if let Ok(b) = read
-                && let Some(amount) = bridge::outflow(&n.cctp, b, &req.from)
-            {
-                outflows.add(&b.burn_token.to_checksum_hex(), amount);
-            }
+    let bridged = chain.cctp.and_then(|(c, _)| cctp::burn(c, &tx.to, tx.value, &tx.data));
+    let minted = chain
+        .cctp
+        .and_then(|(c, _)| cctp::receive(c, &tx.to, tx.value, &tx.data));
+    match (&swapped, &bridged, &minted, network, chain.cctp) {
+        (Some(read), _, _, Some(n), _) => swap::swap(&n.choice, &req.from, tx.value, read, &mut out),
+        (_, Some(read), _, _, Some((c, local))) => {
+            bridge::burn(c, local, &req.from, read, ctx, &mut out, &mut outflows);
         }
-        (_, _, Some(read), Some(n)) => bridge::receive(&n.cctp, &req.from, read, &mut out),
+        (_, _, Some(read), _, Some((c, local))) => bridge::receive(c, local, &req.from, read, &mut out),
         _ => match tx.call_kind() {
             Call::Transfer => recipient(ctx, &to, None, &mut out),
             Call::Erc20Transfer { to: r, amount } => {
                 recipient(ctx, &r.to_checksum_hex(), None, &mut out);
                 outflows.add(&to, amount);
             }
-            Call::Contract { selector } => contract_call(req, selector, network, ctx, &mut out),
+            Call::Contract { selector } => contract_call(req, selector, chain, ctx, &mut out),
         },
     }
     outflows.check(ctx, &mut out);
@@ -276,10 +294,11 @@ pub fn evm_transaction(req: &TxRequest, network: Option<&Network>, ctx: &Context
 fn contract_call(
     req: &TxRequest,
     selector: Option<[u8; 4]>,
-    network: Option<&Network>,
+    chain: &EvmSide<'_>,
     ctx: &Context,
     out: &mut Vec<Finding>,
 ) {
+    let network = chain.injective;
     let tx = &req.tx;
     let data = tx.data.as_slice();
     let to = tx.to.to_checksum_hex();
@@ -300,9 +319,9 @@ fn contract_call(
     match sel {
         APPROVE | INCREASE_ALLOWANCE if data.len() == 68 => {
             if let (Some(spender), Some(amount)) = (address_arg(data, 0), uint_arg(data, 1)) {
-                let named = network.and_then(|n| {
-                    swap::known_name(&n.choice, &spender).or_else(|| bridge::known_name(&n.cctp, &spender))
-                });
+                let named = network
+                    .and_then(|n| swap::known_name(&n.choice, &spender))
+                    .or_else(|| chain.cctp.and_then(|(c, _)| bridge::known_name(c, &spender)));
                 out.push(erc20_allowance(
                     ctx,
                     &to,
@@ -588,7 +607,7 @@ mod tests {
     }
 
     fn grade(r: &TxRequest) -> Assessment {
-        evm_transaction(r, Some(&MAINNET), &Context::default())
+        evm_transaction(r, &EvmSide::injective(&MAINNET), &Context::default())
     }
 
     fn precompile(n: u8) -> EthAddress {
@@ -644,7 +663,14 @@ mod tests {
         assert_eq!(a.findings[0].message, "Stakes INJ with a validator.");
         assert_eq!(grade(&req(precompile(BANK), vec![0; 4])).level, Level::Amber);
         // Off Injective, a system address is just unusual.
-        let a = evm_transaction(&req(precompile(EXCHANGE), vec![0; 4]), None, &Context::default());
+        let a = evm_transaction(
+            &req(precompile(EXCHANGE), vec![0; 4]),
+            &EvmSide {
+                injective: None,
+                cctp: None,
+            },
+            &Context::default(),
+        );
         assert_eq!(a.findings[0].rule, "system_address");
     }
 
@@ -656,7 +682,7 @@ mod tests {
             balances: [("native".to_owned(), "100".to_owned())].into(),
             ..Default::default()
         };
-        let rules: Vec<_> = evm_transaction(&r, Some(&MAINNET), &ctx)
+        let rules: Vec<_> = evm_transaction(&r, &EvmSide::injective(&MAINNET), &ctx)
             .findings
             .iter()
             .map(|f| f.rule)
@@ -698,7 +724,7 @@ mod tests {
             balances: [("native".to_owned(), value.to_string())].into(),
             ..Context::default()
         };
-        let a = evm_transaction(&r, Some(&MAINNET), &ctx);
+        let a = evm_transaction(&r, &EvmSide::injective(&MAINNET), &ctx);
         // The gas is on top of a balance the swap takes whole; nothing about the swap itself.
         assert_eq!(rules_of(&a), ["gas_over_balance", "swap"]);
         assert_eq!(
@@ -715,7 +741,7 @@ mod tests {
         let mut t = req(to, data);
         t.tx.chain_id = 1439;
         assert_eq!(
-            rules_of(&evm_transaction(&t, Some(&TESTNET), &Context::default())),
+            rules_of(&evm_transaction(&t, &EvmSide::injective(&TESTNET), &Context::default())),
             ["new_contract"]
         );
         // Junk to the aggregator.
@@ -728,7 +754,7 @@ mod tests {
         let mut rr = req(rt, rdata);
         rr.tx.chain_id = 1439;
         rr.tx.value = U256::from_u128(1);
-        let a = evm_transaction(&rr, Some(&TESTNET), &Context::default());
+        let a = evm_transaction(&rr, &EvmSide::injective(&TESTNET), &Context::default());
         assert_eq!(rules_of(&a), ["swap_value", "swap"]);
     }
 
@@ -805,15 +831,35 @@ mod tests {
         let other = grade(&burn_req(6, addr_word([0x33; 20]), cctp::Hook::Forward, 200_000));
         assert_eq!(other.level, Level::Amber);
         assert!(rules_of(&other).contains(&"bridge_recipient"));
-        // Solana: the owner Circle opens the account for is the one named.
+        // Solana: the owner Circle opens the account for is the one named, when the account
+        // is that owner's USDC account; otherwise the account paid, with a warning.
+        let ata = choice_wallet_solana::pda::associated_token_address(
+            &[9; 32],
+            &MAINNET.cctp.solana.usdc_mint(),
+            &choice_wallet_solana::program::TOKEN.key(),
+        );
         let sol = grade(&burn_req(
             5,
-            [7; 32],
+            ata,
             cctp::Hook::ForwardWithAccount { owner: [9; 32] },
             300_000,
         ));
         let named = sol.findings.iter().find(|f| f.rule == "bridge_recipient").unwrap();
         assert_eq!(named.params["recipient"], cctp::base58(&[9; 32]));
+        assert!(!rules_of(&sol).contains(&"bridge_solana_account"));
+        let elsewhere = grade(&burn_req(
+            5,
+            [7; 32],
+            cctp::Hook::ForwardWithAccount { owner: [9; 32] },
+            300_000,
+        ));
+        let named = elsewhere
+            .findings
+            .iter()
+            .find(|f| f.rule == "bridge_recipient")
+            .unwrap();
+        assert_eq!(named.params["recipient"], cctp::base58(&[7; 32]));
+        assert!(rules_of(&elsewhere).contains(&"bridge_solana_account"));
         // Nobody delivers; a chain Circle doesn't forward to; an unknown domain; an EVM
         // recipient no address can be; Circle keeping all of it, or more than 5%.
         assert!(rules_of(&grade(&burn_req(6, me, cctp::Hook::None, 0))).contains(&"bridge_claim"));
@@ -857,13 +903,111 @@ mod tests {
             balances: [(MAINNET.cctp.usdc().to_checksum_hex(), "25000000".to_owned())].into(),
             ..Context::default()
         };
-        let mine = evm_transaction(&burn_req(6, me, cctp::Hook::Forward, 200_000), Some(&MAINNET), &ctx);
+        let mine = evm_transaction(
+            &burn_req(6, me, cctp::Hook::Forward, 200_000),
+            &EvmSide::injective(&MAINNET),
+            &ctx,
+        );
         assert!(!rules_of(&mine).contains(&"most_of_balance"));
         let theirs = evm_transaction(
             &burn_req(6, addr_word([0x33; 20]), cctp::Hook::Forward, 200_000),
-            Some(&MAINNET),
+            &EvmSide::injective(&MAINNET),
             &ctx,
         );
         assert!(rules_of(&theirs).contains(&"most_of_balance"));
+    }
+
+    /// The same burns from another EVM chain: Base's USDC, read against Base.
+    #[test]
+    fn cctp_from_any_evm_chain() {
+        let base = MAINNET.cctp.evm_chain(8453).unwrap();
+        let side = EvmSide {
+            injective: None,
+            cctp: Some((&MAINNET.cctp, base)),
+        };
+        let me = addr_word(FROM);
+        let on_base = |domain: u32, recipient: [u8; 32], hook: cctp::Hook, token: EthAddress| {
+            let b = cctp::Burn {
+                amount: U256::from_u128(25_000_000),
+                domain,
+                mint_recipient: recipient,
+                burn_token: token,
+                destination_caller: [0; 32],
+                max_fee: U256::from_u128(3_000),
+                min_finality: cctp::FAST,
+                hook,
+            };
+            evm_transaction(
+                &req(MAINNET.cctp.token_messenger(), cctp::burn_calldata(&b)),
+                &side,
+                &Context::default(),
+            )
+        };
+        // To this account on Injective, minted by Choice's bridge service or the wallet.
+        let a = on_base(29, me, cctp::Hook::None, base.usdc());
+        assert_eq!(rules_of(&a), ["bridge", "bridge_to_self", "bridge_in_delivery"]);
+        assert_eq!(a.findings[0].params["chain"], "Injective");
+        // Base to Arbitrum, forwarded.
+        assert_eq!(
+            rules_of(&on_base(3, me, cctp::Hook::Forward, base.usdc())),
+            ["bridge", "bridge_to_self", "bridge_forward"]
+        );
+        // To Base itself; Injective's USDC burned on Base.
+        assert_eq!(
+            rules_of(&on_base(6, me, cctp::Hook::Forward, base.usdc())),
+            ["bridge_unknown_chain"]
+        );
+        assert_eq!(
+            on_base(3, me, cctp::Hook::Forward, MAINNET.cctp.usdc()).level,
+            Level::Red
+        );
+        // A gas drop through Choice's contract pays its recipient; through anything else, red.
+        let receiver = addr_word(*MAINNET.cctp.bridge_receiver().unwrap().as_bytes());
+        let mut b = cctp::Burn {
+            amount: U256::from_u128(25_000_000),
+            domain: 29,
+            mint_recipient: receiver,
+            burn_token: base.usdc(),
+            destination_caller: receiver,
+            max_fee: U256::from_u128(3_000),
+            min_finality: cctp::FAST,
+            hook: cctp::Hook::GasDrop {
+                recipient: EthAddress::from_bytes(FROM),
+                max_drop_fee: U256::from_u128(500_000),
+            },
+        };
+        let drop = evm_transaction(
+            &req(MAINNET.cctp.token_messenger(), cctp::burn_calldata(&b)),
+            &side,
+            &Context::default(),
+        );
+        assert_eq!(rules_of(&drop), ["bridge", "bridge_to_self", "bridge_gas_drop"]);
+        b.mint_recipient = me;
+        let wrong = evm_transaction(
+            &req(MAINNET.cctp.token_messenger(), cctp::burn_calldata(&b)),
+            &side,
+            &Context::default(),
+        );
+        assert_eq!(rules_of(&wrong), ["bridge_gas_drop_wrong"]);
+        // The approval names Circle's bridge on Base too.
+        let approve = evm_transaction(
+            &req(
+                base.usdc(),
+                call(
+                    APPROVE,
+                    &[
+                        addr_word(*MAINNET.cctp.token_messenger().as_bytes()),
+                        U256::from_u128(25_000_000).to_be_bytes(),
+                    ],
+                ),
+            ),
+            &side,
+            &Context::default(),
+        );
+        assert!(
+            approve.findings[0]
+                .message
+                .starts_with("Circle's bridge (CCTP) could spend")
+        );
     }
 }

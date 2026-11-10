@@ -361,40 +361,20 @@ export type EvmDisplay = {
     | { type: "permit2_approve"; token: string; spender: string; amount: string; expiration: number }
     | EvmSwapCall
     | EvmBridgeCall
-    | EvmBridgeInCall
     | EvmBridgeReceiveCall;
-  /** Signed on a chain USDC comes from, not Injective: its name, and its gas coin. */
-  source?: { name: string; symbol: string; decimals: number };
+  /** The chain it is signed on: its name, and its gas coin. */
+  network: { name: string; symbol: string; decimals: number };
 };
 
-/** On a chain USDC comes from: a burn into this account on Injective (the only kind of
- *  transfer the vault signs there). */
-export type EvmBridgeInCall = {
-  type: "bridge_in";
-  amount: string;
-  /** USDC on that chain. */
-  token: string;
-  chain: string;
-  /** This account, on Injective. */
-  recipient: string;
-  max_fee: string;
-  finality: number;
-  /** Who mints it on Injective: anyone (Choice's bridge service), or Choice's BridgeReceiver,
-   *  which also buys INJ for gas with at most `max_drop_fee`. */
-  delivery: "anyone" | "gas_drop";
-  max_drop_fee: string | null;
-  /** The least that arrives. */
-  least: string;
-};
-
-/** On Injective: the mint of a transfer Circle attested (`receiveMessage`). */
+/** The mint of a transfer Circle attested (`receiveMessage`), on the chain it is signed on. */
 export type EvmBridgeReceiveCall = {
   type: "bridge_receive";
   domain: number;
   /** Where it was burned, when the wallet knows the chain. */
   chain: string | null;
-  to_injective: boolean;
-  /** USDC on Injective. */
+  /** The transfer is for this chain. */
+  to_here: boolean;
+  /** USDC on this chain. */
   token: string;
   known_token: boolean;
   amount: string;
@@ -405,7 +385,8 @@ export type EvmBridgeReceiveCall = {
   nonce: string;
 };
 
-/** USDC burned on Injective over Circle's CCTP, as the vault reads its calldata. */
+/** USDC burned over Circle's CCTP on the chain it is signed on, as the vault reads its
+ *  calldata. */
 export type EvmBridgeCall = {
   type: "bridge";
   amount: string;
@@ -417,9 +398,14 @@ export type EvmBridgeCall = {
   recipient: string | null;
   /** The most Circle keeps. */
   max_fee: string;
+  /** For a gas drop on Injective: the most the INJ may cost. */
+  max_drop_fee: string | null;
+  /** The least that arrives. */
+  least: string;
   finality: number;
-  /** Who mints on the destination: Circle (forwarding), whoever claims, or a hook's contract. */
-  delivery: "circle" | "claim" | "hook";
+  /** Who mints on the destination: Circle (forwarding), whoever claims, Choice's
+   *  BridgeReceiver (a gas drop on Injective), or a hook's contract. */
+  delivery: "circle" | "claim" | "gas_drop" | "hook";
   /** Solana: the wallet whose USDC account Circle opens. */
   account_owner: string | null;
   /** Set when only this address may mint. */

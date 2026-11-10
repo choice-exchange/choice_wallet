@@ -213,7 +213,7 @@ fn solana_step(cluster: &SolanaChain, r: &choice_wallet_solana::Read, s: &choice
 fn solana_bridge(c: &cctp::Cctp, b: &choice_wallet_solana::program::CctpBurn) -> Value {
     use cctp::{AddressKind, Hook};
     let hook = b.hook.as_deref().map_or(Hook::None, cctp::read_hook);
-    let domain = c.from_solana(b.domain);
+    let domain = c.destination(cctp::SOLANA_DOMAIN, b.domain);
     let evm_in = |w: &[u8; 32]| {
         w[..12]
             .iter()
