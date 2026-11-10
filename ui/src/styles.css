@@ -193,6 +193,20 @@ button.pill:hover { color: var(--text); border-color: #2a2b33; }
 .pill-tabs { display: flex; gap: 6px; margin: 16px 0 2px; overflow-x: auto; scrollbar-width: none; }
 .pill-tabs::-webkit-scrollbar { display: none; }
 .pill-tabs .pill { height: 32px; padding: 0 6px; font-size: 13px; flex: 1 1 0; justify-content: center; min-width: 0; }
+.vote-choice { font-size: 28px; margin-top: 4px; }
+.vote-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.proposal-row .name { min-width: 0; }
+.proposal-row .symbol { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.proposal-id { flex-shrink: 0; min-width: 40px; height: 32px; padding: 0 6px; border-radius: 10px; background: var(--inner); border: 1px solid var(--hairline); color: var(--muted); font: 600 12px var(--mono); display: inline-flex; align-items: center; justify-content: center; }
+.proposal-title { font-size: 18px; font-weight: 700; line-height: 24px; margin-top: 6px; overflow-wrap: anywhere; }
+.proposal-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; line-height: 19px; color: var(--muted); }
+.tally-row { display: grid; grid-template-columns: 96px 1fr 52px; align-items: center; gap: 10px; font-size: 13px; }
+.tally-row > :last-child { text-align: right; }
+.tally-bar { height: 6px; border-radius: 3px; background: var(--raised); overflow: hidden; }
+.tally-fill { display: block; height: 100%; border-radius: 3px; background: var(--muted); }
+.tally-fill.yes { background: var(--positive); }
+.tally-fill.no { background: var(--negative); }
+.tally-fill.no_with_veto { background: #b4475e; }
 .pane-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 4px; }
 .dot { width: 7px; height: 7px; border-radius: 99px; background: var(--positive); box-shadow: 0 0 8px rgba(52, 211, 153, 0.5); }
 .dot.testnet { background: var(--warning); box-shadow: 0 0 8px rgba(251, 191, 36, 0.5); }

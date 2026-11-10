@@ -15,6 +15,7 @@ import { DEFAULT_FILTER } from "@choice-wallet/ui/token-filter";
 
 import { createDapps, type DappReply } from "./dapp";
 import { createAddedChains } from "./addedchains";
+import { createGov } from "./gov";
 import { createEvmChains, evmChains as evmChainsOf, type ChainEndpoints } from "./evmchains";
 import { createSender, sourceOfChain } from "./send";
 import { createApprovals } from "./approvals";
@@ -70,7 +71,7 @@ export const AUTO_LOCK_MINUTES = 15;
 const LOCK_CHOICES = [5, 15, 60, 240];
 /** Local storage that belongs to the wallet, not the device: removing the wallet clears it.
  *  Endpoints, the network and other settings stay. */
-const WALLET_KEYS = ["vault", "wallets", "keystore", "kind", "accounts", "active_account", "connections", "custom_tokens", "custom_nfts", "rescue", "token_filter", "address_book", "watch", "watch_own", "bridge_transfers", "chain_sent"];
+const WALLET_KEYS = ["vault", "wallets", "keystore", "kind", "accounts", "active_account", "connections", "custom_tokens", "custom_nfts", "rescue", "token_filter", "address_book", "watch", "watch_own", "bridge_transfers", "chain_sent", "votes_cast"];
 const NOTIFY_MODES: readonly NotifyMode[] = ["off", "active", "all"];
 /** The shortest password, as the keystore takes it. */
 const MIN_PASSWORD = 8;
@@ -179,8 +180,10 @@ export function createService(d: Deps) {
     solanaBroadcast: (n, p, signed) => solana.broadcast(n, p, signed),
     chainRpc: (n, key) => evmChains.rpc(n, key),
     onChainSent: (n, key, from, hash) => evmChains.recordSent(n, key, from, hash),
+    onVoted: (n, voter, vote) => gov.voted(n, voter, vote),
   });
   const staking = createStaking(sender);
+  const gov = createGov({ sender, local: d.local });
   const swaps = createSwaps(sender, d.session, d.fetch, async (net) => (await tokenFilter(net)).shown);
   const bridge = createBridge(sender, d.session, d.local, d.fetch, Date.now, solana);
   const approvals = createApprovals(sender);
@@ -593,6 +596,8 @@ export function createService(d: Deps) {
       case "prepare_convert":
       case "staking":
       case "prepare_stake":
+      case "governance":
+      case "prepare_vote":
       case "approvals":
       case "swap_tokens":
       case "swap_quote":
@@ -621,7 +626,7 @@ export function createService(d: Deps) {
       case "tx_status": {
         const a = await active();
         if ("ok" in a) return a;
-        if ((r.type === "prepare_send" || r.type === "prepare_convert" || r.type === "prepare_stake" || r.type === "prepare_revoke" || r.type === "prepare_revoke_erc20" || r.type === "prepare_swap" || r.type === "prepare_bridge" || r.type === "prepare_bridge_receive" || r.type === "prepare_bridge_reclaim" || r.type === "prepare_nft_send" || r.type === "prepare_rescue" || r.type === "prepare_rescue_grant" || r.type === "prepare_subaccount_withdraw") && isWatch(a.account)) {
+        if ((r.type === "prepare_send" || r.type === "prepare_convert" || r.type === "prepare_stake" || r.type === "prepare_vote" || r.type === "prepare_revoke" || r.type === "prepare_revoke_erc20" || r.type === "prepare_swap" || r.type === "prepare_bridge" || r.type === "prepare_bridge_receive" || r.type === "prepare_bridge_reclaim" || r.type === "prepare_nft_send" || r.type === "prepare_rescue" || r.type === "prepare_rescue_grant" || r.type === "prepare_subaccount_withdraw") && isWatch(a.account)) {
           return err("watch_only", "This account is watch-only. Switch to one that can sign.");
         }
         if (r.type === "snapshot") return { ok: true, result: await snapshot(a.net, a.account) };
@@ -665,6 +670,8 @@ export function createService(d: Deps) {
           return st;
         }
         if (r.type === "prepare_stake") return staking.prepare(a.net, a.account, r);
+        if (r.type === "governance") return gov.summary(a.net, a.account);
+        if (r.type === "prepare_vote") return gov.prepareVote(a.net, a.account, r);
         if (r.type === "approvals") return approvals.summary(a.net, a.account);
         if (r.type === "swap_tokens") return swaps.tokens(a.net, a.account);
         if (r.type === "swap_quote") return swaps.quote(a.net, a.account, r);

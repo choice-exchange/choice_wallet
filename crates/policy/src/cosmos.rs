@@ -344,6 +344,15 @@ fn message(
         }
         // Staking keeps the coins the signer's: not outflows, so no "most of your balance".
         Msg::WithdrawRewards { .. } | Msg::Redelegate { .. } | Msg::CancelUnbonding { .. } => {}
+        // A vote moves nothing; it can be changed while voting is open.
+        Msg::Vote {
+            proposal_id, option, ..
+        } => out.push(finding(
+            "vote",
+            Level::Info,
+            "You can change your vote until voting ends.".into(),
+            json!({ "proposal_id": proposal_id, "option": option }),
+        )),
         Msg::Delegate { validator, amount, .. } => out.push(finding(
             "stake",
             Level::Info,
@@ -817,9 +826,25 @@ mod tests {
     }
 
     #[test]
+    fn a_vote_is_info() {
+        let vote = |voter: &str| {
+            grade(&[Msg::Vote {
+                voter: voter.into(),
+                proposal_id: 713,
+                option: choice_wallet_cosmos::gov::VoteOption::NoWithVeto,
+                metadata: String::new(),
+                v1: false,
+            }])
+        };
+        let a = vote(ME);
+        assert_eq!((a.level, rules(&a)), (Level::Info, vec!["vote"]));
+        assert_eq!(a.findings[0].params["option"], "no_with_veto");
+    }
+
+    #[test]
     fn unknown_messages_are_red_even_inside_exec() {
         let unknown = Msg::Unknown {
-            type_url: "/cosmos.gov.v1beta1.MsgVote".into(),
+            type_url: "/cosmos.gov.v1beta1.MsgDeposit".into(),
             value: vec![],
         };
         let a = grade(&[Msg::AuthzExec {

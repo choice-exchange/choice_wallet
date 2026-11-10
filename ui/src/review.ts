@@ -67,6 +67,9 @@ export type MintLine = { coin: Coin; fee: Coin; chain: string | null; recipient:
 /** Coins the signer moves from one of its trading accounts back to its balance. */
 export type MoveLine = { nonce: number; coin: Coin };
 
+/** The signer's vote on a governance proposal. */
+export type VoteLine = { proposal: string; option: "yes" | "no" | "abstain" | "no_with_veto" };
+
 /** One NFT the signer gives away. */
 export type NftLine = { collection: string; tokenId: string; to: string };
 
@@ -81,6 +84,7 @@ export type Shown = {
   converts: Conversion[];
   stakes: StakeLine[];
   revokes: RevokeLine[];
+  votes: VoteLine[];
   /** One line each for anything else. */
   others: string[];
   /** For EVM: gas limit × max fee per gas, which is what Injective charges (no refund of
@@ -113,7 +117,7 @@ export function shown(display: SendReview["display"], network: NetworkId, swap?:
     const d = display as EvmDisplay;
     // Signed on another EVM chain than Injective's: its fee is in that chain's coin.
     const feeDenom = d.chain !== net.evm ? `native:${d.chain}` : net.feeDenom;
-    const base = { fee: [{ denom: feeDenom, amount: d.max_gas_cost }], memo: "", evm: true, converts: [], stakes: [], revokes: [], swaps: [], bridges: [], mints: [], approvals: [], nfts: [], moves: [] };
+    const base = { fee: [{ denom: feeDenom, amount: d.max_gas_cost }], memo: "", evm: true, converts: [], stakes: [], revokes: [], votes: [], swaps: [], bridges: [], mints: [], approvals: [], nfts: [], moves: [] };
     // On another EVM chain than Injective's: its coin and its USDC have their own keys.
     const here = chainByCaip2(network, d.chain);
     const away = here?.kind === "evm" ? here : undefined;
@@ -180,7 +184,7 @@ export function shown(display: SendReview["display"], network: NetworkId, swap?:
     return { ...base, sends: [], others: [`Contract call to ${d.to}`] };
   }
   const c = display as CosmosDisplay;
-  const out: Shown = { sends: [], nfts: [], moves: [], swaps: [], bridges: [], mints: [], approvals: [], converts: [], stakes: [], revokes: [], others: [], fee: c.fee.amount, memo: c.memo, evm: false };
+  const out: Shown = { sends: [], nfts: [], moves: [], swaps: [], bridges: [], mints: [], approvals: [], converts: [], stakes: [], revokes: [], votes: [], others: [], fee: c.fee.amount, memo: c.memo, evm: false };
   for (const msg of c.messages) {
     const m = msg as Record<string, unknown>;
     const kind = STAKE_KINDS[String(m["type"])];
@@ -214,6 +218,11 @@ export function shown(display: SendReview["display"], network: NetworkId, swap?:
     const decrease = obj(m["call"]);
     if (m["type"] === "execute_contract" && m["sender"] === c.signer && decrease?.["type"] === "cw20_decrease_allowance" && text(m["contract"]) && text(decrease["spender"])) {
       out.revokes.push({ kind: "allowance", token: cw20Denom(text(m["contract"])!), spender: text(decrease["spender"])! });
+      continue;
+    }
+    const option = text(m["option"]);
+    if (m["type"] === "vote" && m["voter"] === c.signer && (typeof m["proposal_id"] === "number" || typeof m["proposal_id"] === "string") && (option === "yes" || option === "no" || option === "abstain" || option === "no_with_veto")) {
+      out.votes.push({ proposal: String(m["proposal_id"]), option });
       continue;
     }
     if (kind && validator && m["delegator"] === c.signer) {
@@ -268,7 +277,7 @@ const short = (a: string) => (a.length > 12 ? `${a.slice(0, 4)}…${a.slice(-4)}
  *  the wallet whose account it is, when the vault could tell), approvals, a CCTP burn to
  *  Injective, and one line for anything else. Compute budget instructions are its fee. */
 function solanaShown(d: SolanaDisplay, cluster: string): Shown {
-  const out: Shown = { sends: [], nfts: [], moves: [], swaps: [], bridges: [], mints: [], approvals: [], converts: [], stakes: [], revokes: [], others: [], fee: [{ denom: "sol", amount: d.fee.total }], memo: "", evm: false };
+  const out: Shown = { sends: [], nfts: [], moves: [], swaps: [], bridges: [], mints: [], approvals: [], converts: [], stakes: [], revokes: [], votes: [], others: [], fee: [{ denom: "sol", amount: d.fee.total }], memo: "", evm: false };
   for (const s of d.instructions) {
     const name = s.program_name ?? short(s.program);
     switch (s.type) {

@@ -5,6 +5,7 @@
 use choice_wallet_core::PublicKey;
 use choice_wallet_core::hexutil;
 use choice_wallet_cosmos::builder::{self, Fee, TxOptions};
+use choice_wallet_cosmos::gov::VoteOption;
 use choice_wallet_cosmos::msg::Coin;
 use choice_wallet_evm::{Eip1559Tx, U256};
 use choice_wallet_injective::adapter;
@@ -56,6 +57,8 @@ pub(crate) enum OwnMsg {
     },
     /// Claim the rewards of the stake with `validator`.
     WithdrawRewards { validator: String },
+    /// Vote `option` (`yes`, `abstain`, `no`, `no_with_veto`) on proposal `proposal`.
+    Vote { proposal: U64, option: String },
     /// Take back the authz permission for `msg_type_url` given to `grantee`.
     AuthzRevoke { grantee: String, msg_type_url: String },
     /// Take back the fee allowance given to `grantee`.
@@ -177,6 +180,11 @@ pub(crate) fn cosmos(p: CosmosParams) -> Result<Value, VaultError> {
                 builder::cancel_unbonding(chain, &from, &validator, &amount, h)?
             }
             OwnMsg::WithdrawRewards { validator } => builder::withdraw_rewards(chain, &from, &validator)?,
+            OwnMsg::Vote { proposal, option } => {
+                let option = VoteOption::from_name(&option)
+                    .ok_or_else(|| VaultError::bad("option must be yes, abstain, no or no_with_veto"))?;
+                builder::vote(chain, &from, proposal.0, option)?
+            }
             OwnMsg::AuthzRevoke { grantee, msg_type_url } => {
                 builder::authz_revoke(chain, &from, &addr(&grantee)?, &msg_type_url)?
             }

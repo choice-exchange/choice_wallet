@@ -10,6 +10,7 @@ use crate::Error;
 use crate::canonical::decode_exact;
 use crate::chain::Chain;
 use crate::cosmwasm::{self, ContractCall};
+use crate::gov::{self, VoteOption};
 use crate::proto::cosmos::bank::v1beta1::{self as bank, MsgSend};
 use crate::proto::cosmos::base::v1beta1::Coin as ProtoCoin;
 use crate::proto::cosmos::{
@@ -338,6 +339,21 @@ pub enum Msg {
         /// The coin given.
         amount: Coin,
     },
+    /// `cosmos.gov.v1beta1.MsgVote` or `cosmos.gov.v1.MsgVote`: the signer's vote on a
+    /// governance proposal.
+    Vote {
+        /// The signer.
+        voter: String,
+        /// The proposal.
+        proposal_id: u64,
+        /// The vote.
+        option: VoteOption,
+        /// The voter's note (gov v1 only).
+        metadata: String,
+        /// Sent as gov v1's message (else v1beta1's).
+        #[serde(skip)]
+        v1: bool,
+    },
     /// Injective's exchange `MsgWithdraw`: coins from a trading subaccount to the bank balance.
     ExchangeWithdraw {
         /// The signer.
@@ -486,6 +502,24 @@ impl Msg {
                 delegator: m.delegator_address,
                 validator: m.validator_address,
             }
+        } else if t == gov::MsgVoteV1beta1::type_url() {
+            let m: gov::MsgVoteV1beta1 = decode_exact(v, "MsgVote")?;
+            Self::Vote {
+                voter: m.voter,
+                proposal_id: m.proposal_id,
+                option: VoteOption::from_number(m.option).ok_or(Error::Decode("MsgVote.option"))?,
+                metadata: String::new(),
+                v1: false,
+            }
+        } else if t == gov::MsgVoteV1::type_url() {
+            let m: gov::MsgVoteV1 = decode_exact(v, "MsgVote")?;
+            Self::Vote {
+                voter: m.voter,
+                proposal_id: m.proposal_id,
+                option: VoteOption::from_number(m.option).ok_or(Error::Decode("MsgVote.option"))?,
+                metadata: m.metadata,
+                v1: true,
+            }
         } else if t == staking::MsgDelegate::type_url() {
             let m: staking::MsgDelegate = decode_exact(v, "MsgDelegate")?;
             Self::Delegate {
@@ -587,6 +621,8 @@ impl Msg {
             Self::WasmUpdateAdmin { .. } => "/cosmwasm.wasm.v1.MsgUpdateAdmin",
             Self::WasmClearAdmin { .. } => "/cosmwasm.wasm.v1.MsgClearAdmin",
             Self::ExchangeWithdraw { .. } => EXCHANGE_WITHDRAW,
+            Self::Vote { v1: true, .. } => "/cosmos.gov.v1.MsgVote",
+            Self::Vote { v1: false, .. } => "/cosmos.gov.v1beta1.MsgVote",
             Self::TokenfactoryChangeAdmin { type_url, .. }
             | Self::Unknown { type_url, .. }
             | Self::UnknownJson { type_url, .. } => type_url,
@@ -608,6 +644,7 @@ impl Msg {
             | Self::FeeGrant { granter, .. }
             | Self::FeeRevoke { granter, .. } => Some(granter),
             Self::AuthzExec { grantee, .. } => Some(grantee),
+            Self::Vote { voter, .. } => Some(voter),
             Self::SetWithdrawAddress { delegator, .. }
             | Self::WithdrawRewards { delegator, .. }
             | Self::Delegate { delegator, .. }

@@ -237,7 +237,7 @@ fn decode_amino_msg(m: AminoMsg, chain: &Chain) -> Result<Msg, Error> {
 }
 
 /// The amino JSON of a message we know, as `x/tx` renders it.
-fn render_msg(m: &Msg) -> Result<Value, Error> {
+pub(crate) fn render_msg(m: &Msg) -> Result<Value, Error> {
     match m {
         Msg::BankSend { from, to, amount } => {
             let mut v = Map::new();
@@ -294,6 +294,31 @@ fn render_msg(m: &Msg) -> Result<Value, Error> {
             insert_nonempty(&mut v, "validator_dst_address", to_validator);
             insert_nonempty(&mut v, "validator_src_address", from_validator);
             Ok(json!({ "type": "cosmos-sdk/MsgBeginRedelegate", "value": v }))
+        }
+        Msg::Vote {
+            voter,
+            proposal_id,
+            option,
+            metadata,
+            v1,
+        } => {
+            // As the SDK's amino JSON writes it: the option as its number, the id as a string
+            // (gov v1's even when 0), empty fields left out.
+            let mut v = Map::new();
+            if *v1 {
+                insert_nonempty(&mut v, "metadata", metadata);
+            }
+            v.insert("option".into(), option.number().into());
+            if *v1 || *proposal_id != 0 {
+                v.insert("proposal_id".into(), proposal_id.to_string().into());
+            }
+            insert_nonempty(&mut v, "voter", voter);
+            let name = if *v1 {
+                "cosmos-sdk/v1/MsgVote"
+            } else {
+                "cosmos-sdk/MsgVote"
+            };
+            Ok(json!({ "type": name, "value": v }))
         }
         Msg::CancelUnbonding {
             delegator,

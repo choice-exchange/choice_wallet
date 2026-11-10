@@ -15,6 +15,7 @@ use crate::Error;
 use crate::chain::Chain;
 use crate::cosmwasm;
 use crate::direct::Request;
+use crate::gov::{self, VoteOption};
 use crate::msg::{Coin, is_canonical_amount};
 use crate::proto::cosmos::bank::v1beta1::MsgSend;
 use crate::proto::cosmos::crypto::secp256k1::PubKey;
@@ -97,6 +98,20 @@ pub fn cw20_send(chain: &Chain, from: &str, cw20: &str, to: &str, amount: &str, 
     check_amount(amount)?;
     chain.check_address(to)?;
     execute_contract(chain, from, cw20, cosmwasm::send(to, amount, msg), &[])
+}
+
+/// Vote on proposal `proposal_id`, as gov v1beta1's `MsgVote` (what every Ledger Cosmos app and
+/// SDK version reads).
+pub fn vote(chain: &Chain, voter: &str, proposal_id: u64, option: VoteOption) -> Result<Any, Error> {
+    chain.check_address(voter)?;
+    if proposal_id == 0 {
+        return Err(Error::Decode("proposal_id"));
+    }
+    Ok(Any::pack(&gov::MsgVoteV1beta1 {
+        proposal_id,
+        voter: voter.into(),
+        option: option.number(),
+    }))
 }
 
 /// Stake `amount` with `validator`.

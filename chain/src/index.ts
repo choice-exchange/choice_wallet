@@ -70,6 +70,7 @@ export { clmmAmounts, clmmPositions, decFloor, subaccountId, subaccounts, SUBACC
 export { cw721Collections, cw721Info, cw721Tokens, CW721_PAGE, erc721Collections, isTokenId, MAX_PER_COLLECTION, type Nft, type NftCollection, type NftStandard } from "./nfts.ts";
 export { grantedMsg, type AuthzGrant, type Cw20Allowance, type FeeGrant } from "./grants.ts";
 export { floorDecimal, type Delegation, type Unbonding, type Validator } from "./staking.ts";
+export { bondedTokens, currentTally, proposal, proposalOf, proposals, voteOf, VOTE_OPTIONS, type Proposal, type ProposalStatus, type Tally, type VoteCast, type VoteOptionName } from "./gov.ts";
 export { checkRoute, DEFAULT_SLIPPAGE_BPS, fetchRoute, MAX_SLIPPAGE_BPS, NATIVE, RouteError, type Route, type RouteLeg, type RouteRequest } from "./swap.ts";
 export {
   adapterCw20,

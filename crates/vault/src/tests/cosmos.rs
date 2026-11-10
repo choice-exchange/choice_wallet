@@ -337,6 +337,45 @@ fn own_staking_builds_decodes_and_signs_both_ways() {
 }
 
 #[test]
+fn own_votes_build_decode_and_sign_both_ways() {
+    let me = vectors("direct")["accounts"][0]["inj"].clone();
+    let vote = json!([{ "type": "vote", "proposal": "713", "option": "no_with_veto" }]);
+    for mode in ["direct", "amino_json"] {
+        let request = build_staking(vote.clone(), mode).unwrap()["request"].clone();
+        let d = ok("decode", json!({ "request": request }));
+        assert_eq!(
+            d["display"]["messages"],
+            json!([{ "type": "vote", "voter": me, "proposal_id": 713, "option": "no_with_veto", "metadata": "" }]),
+            "{mode}"
+        );
+        assert_eq!(d["risk"]["findings"][0]["rule"], "vote", "{mode}");
+        assert_eq!(d["risk"]["level"], "info", "{mode}");
+        if mode == "amino_json" {
+            // What Ledger's Cosmos app shows: the SDK's amino JSON, the option by number.
+            let dev = ok("device_request", json!({ "request": request, "digest": d["digest"] }));
+            let payload =
+                String::from_utf8(choice_wallet_core::hexutil::decode(dev["payload"].as_str().unwrap()).unwrap())
+                    .unwrap();
+            let want =
+                format!(r#"{{"type":"cosmos-sdk/MsgVote","value":{{"option":4,"proposal_id":"713","voter":{me}}}}}"#);
+            assert!(payload.contains(&want), "{payload}");
+        }
+        let signed = approve_and_sign(&request, account(0));
+        assert!(
+            signed["tx_raw"].as_str().is_some_and(|t| !t.is_empty()),
+            "{mode}: {signed}"
+        );
+    }
+    for bad in [
+        json!([{ "type": "vote", "proposal": "0", "option": "yes" }]),
+        json!([{ "type": "vote", "proposal": "713", "option": "maybe" }]),
+        json!([{ "type": "vote", "proposal": "713", "option": "unspecified" }]),
+    ] {
+        assert!(build_staking(bad.clone(), "direct").is_err(), "{bad}");
+    }
+}
+
+#[test]
 fn own_revokes_build_decode_and_sign() {
     let v = vectors("direct");
     let them = v["accounts"][1]["inj"].as_str().unwrap();

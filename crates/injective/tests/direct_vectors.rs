@@ -315,7 +315,7 @@ fn refuses_other_pubkey_types() {
 #[test]
 fn unknown_messages_are_kept_raw() {
     let unknown = Any {
-        type_url: "/cosmos.gov.v1beta1.MsgVote".into(),
+        type_url: "/cosmos.gov.v1beta1.MsgDeposit".into(),
         value: vec![0x08, 0x01],
     };
     let req = with_body(|b| b.messages.push(unknown.clone()));

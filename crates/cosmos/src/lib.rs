@@ -22,6 +22,7 @@ pub mod chain;
 pub mod cosmwasm;
 pub mod direct;
 mod error;
+pub mod gov;
 mod json;
 pub mod msg;
 #[allow(missing_docs, clippy::all, clippy::pedantic, rustdoc::all)]

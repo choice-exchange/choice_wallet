@@ -185,6 +185,30 @@ const lcd = createServer((req, res) => {
     if (p === "/injective/erc20/v1beta1/all_token_pairs") {
       return reply(200, { token_pairs: [{ bank_denom: USDT, erc20_address: "0x88f7F2b685F9692caf8c478f5BADF09eE9B1Cc13" }], pagination: null });
     }
+    // Governance: proposal 714 in voting, 713 passed. Once a vote is broadcast, the chain has
+    // it as Yes.
+    const proposalJson = (id, status, title) => ({
+      id, messages: [], status, title, summary: `${title}.\n\nLaunches the markets on the INJ orderbook.`, expedited: false, failed_reason: "",
+      final_tally_result: { yes_count: "600000000000000000000", abstain_count: "100000000000000000000", no_count: "200000000000000000000", no_with_veto_count: "0" },
+      voting_start_time: "2026-11-09T10:00:00Z", voting_end_time: status === "PROPOSAL_STATUS_VOTING_PERIOD" ? "2026-11-14T10:00:00Z" : "2026-11-05T10:00:00Z",
+    });
+    const props = [proposalJson("714", "PROPOSAL_STATUS_VOTING_PERIOD", "Launch INJ/WBTC and NEXO/USDC"), proposalJson("713", "PROPOSAL_STATUS_PASSED", "OLP Reward Disbursement Epoch 64")];
+    if (p === "/cosmos/gov/v1/proposals") {
+      const voting = url.searchParams.get("proposal_status") === "PROPOSAL_STATUS_VOTING_PERIOD";
+      return reply(200, { proposals: props.filter((x) => !voting || x.status === "PROPOSAL_STATUS_VOTING_PERIOD"), pagination: { next_key: null } });
+    }
+    const gov = /^\/cosmos\/gov\/v1\/proposals\/([0-9]+)(\/tally|\/votes\/(inj1[0-9a-z]+))?$/.exec(p);
+    if (gov) {
+      const prop = props.find((x) => x.id === gov[1]);
+      if (!prop) return reply(404, { code: 5, message: "proposal doesn't exist", details: [] });
+      if (gov[2] === "/tally") return reply(200, { tally: prop.final_tally_result });
+      if (gov[3]) {
+        const voted = gov[1] === "714" && broadcasts.some((b) => Buffer.from(b, "base64").includes(Buffer.from("/cosmos.gov.v1beta1.MsgVote")));
+        return voted ? reply(200, { vote: { proposal_id: "714", voter: gov[3], options: [{ option: "VOTE_OPTION_YES", weight: "1.000000000000000000" }], metadata: "" } }) : reply(404, { code: 5, message: "vote not found", details: [] });
+      }
+      return reply(200, { proposal: prop });
+    }
+    if (p === "/cosmos/staking/v1beta1/pool") return reply(200, { pool: { bonded_tokens: "2000000000000000000000", not_bonded_tokens: "0" } });
     // The account's default trading account (nonce 0): 10 USDT, 4 of it free, and a long.
     if (p === "/injective/exchange/v2/exchange/subaccountDeposits") {
       const mine = (url.searchParams.get("subaccount_id") ?? "").endsWith("0".repeat(24));
@@ -834,6 +858,35 @@ try {
   await p.waitText("Account 1");
   if (broadcasts.length !== 2) throw new Error("a cancelled claim was broadcast");
   console.log("staking: home row 3.05 INJ, screen, picker search, stake max with Bravo reviewed and broadcast, claim reviewed and cancelled");
+
+  // 7b1. Governance, the Stake tab's other pane: the proposal in voting with its count so far
+  // and the passed one; a Yes vote reviewed as a vote, signed and broadcast, then shown as
+  // this account's.
+  await p.click("Stake");
+  await p.click("Governance");
+  await p.waitText("Not voted", 15000);
+  await p.waitText("Passed");
+  await p.shot("16g3-governance");
+  await p.eval(`[...document.querySelectorAll(".proposal-row")].find((b) => b.querySelector(".proposal-id")?.textContent === "714").click()`);
+  await p.waitText("You haven't voted.");
+  await p.waitText("Launches the markets on the INJ orderbook.");
+  await p.shot("16g4-proposal");
+  await p.click("Yes");
+  await p.waitText("Review vote", 15000);
+  await p.waitText("YOU VOTE");
+  await p.waitText("ON PROPOSAL 714");
+  await p.waitText("Launch INJ/WBTC and NEXO/USDC");
+  await p.waitText("You can change your vote until voting ends.");
+  await p.shot("16g5-review-vote");
+  await p.click("Confirm vote");
+  await p.waitText("Voted", 15000);
+  if (broadcasts.length !== 3 || !Buffer.from(broadcasts[2], "base64").includes(Buffer.from("/cosmos.gov.v1beta1.MsgVote"))) throw new Error("the vote wasn't broadcast");
+  await p.click("Done");
+  await p.waitText("You voted Yes", 15000);
+  await p.shot("16g6-voted");
+  await p.click("Staking");
+  await toWallet(p);
+  console.log("governance: 714 in voting and 713 passed listed, a Yes vote reviewed as a vote, broadcast, shown as this account's");
 
   // 7b2. Trading and Liquidity, the Wallet tab's other panes: the default trading account's
   // USDT (part of it backing orders) and its long; no Choice liquidity.

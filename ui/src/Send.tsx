@@ -12,7 +12,7 @@ import { BridgeCard, MintCard } from "./Bridge";
 import type { AccountInfo, Balance, BridgeStatus, BridgeStepInfo, Coin, EvmDisplay, Contact, DeviceRequest, DeviceSignature, NetworkId, RecipientCheck, SendReview, Sent, SwapStepInfo, TokenInfo, TxState } from "./protocol";
 import { errorText, useRequest } from "./request";
 import { permissionName } from "./permissions";
-import { shown, spenderName, type Shown, type StakeLine } from "./review";
+import { shown, spenderName, type Shown, type StakeLine, type VoteLine } from "./review";
 import { TokenMark } from "./TokenMark";
 
 /** An amount typed into a form: base units (or "max"), or what's wrong with it. */
@@ -280,6 +280,7 @@ export function Review({
   onCancel,
   validators = {},
   rewards = {},
+  proposals = {},
 }: {
   review: SendReview;
   entered: string;
@@ -290,6 +291,8 @@ export function Review({
   validators?: Record<string, string>;
   /** Unclaimed rewards by validator when the review was made, for a claim. */
   rewards?: Record<string, string>;
+  /** Proposal titles by ID, for a vote. */
+  proposals?: Record<string, string>;
 }) {
   const { risk, tokens } = review;
   const step = review.swap ?? (review.bridge ? { from: review.bridge.usdc, to: review.bridge.arriving } : undefined);
@@ -304,6 +307,7 @@ export function Review({
   const converting = view.converts.length > 0 && view.sends.length === 0;
   const staking = view.stakes.length > 0 && view.sends.length === 0 && view.converts.length === 0;
   const revoking = view.revokes.length > 0 && view.sends.length === 0 && view.converts.length === 0 && view.stakes.length === 0;
+  const voting = view.votes.length > 0 && view.sends.length === 0 && view.converts.length === 0 && view.stakes.length === 0;
   const gasGrant = review.display.kind !== "evm_transaction" && ((review.display as { messages?: { type?: string }[] }).messages ?? []).some((m) => m.type === "fee_grant");
   const symbol = (key: string) => tokens[key]?.symbol ?? shortDenom(key);
   const named = (v: string) => validators[v] || shortAddress(v);
@@ -346,7 +350,7 @@ export function Review({
     <Screen
       top={
         <BackBar
-          title={review.rescue ? "Review rescue" : gasGrant ? "Review gas" : view.moves.length > 0 ? "Review move" : bridging ? "Review bridge" : swapping ? "Review swap" : approving ? "Review approval" : revoking ? "Review revoke" : staking ? "Review staking" : converting ? "Review conversion" : "Review send"}
+          title={review.rescue ? "Review rescue" : gasGrant ? "Review gas" : view.moves.length > 0 ? "Review move" : bridging ? "Review bridge" : swapping ? "Review swap" : approving ? "Review approval" : revoking ? "Review revoke" : voting ? "Review vote" : staking ? "Review staking" : converting ? "Review conversion" : "Review send"}
           onBack={onCancel}
         />
       }
@@ -375,17 +379,21 @@ export function Review({
                 ? busy
                   ? "Sending…"
                   : "Approve"
-                : staking || revoking || view.moves.length > 0
+                : voting
                   ? busy
                     ? "Sending…"
-                    : "Confirm"
-                  : converting
+                    : "Confirm vote"
+                  : staking || revoking || view.moves.length > 0
                     ? busy
-                      ? "Converting…"
-                      : "Confirm and convert"
-                    : busy
                       ? "Sending…"
-                      : "Confirm and send"}
+                      : "Confirm"
+                    : converting
+                      ? busy
+                        ? "Converting…"
+                        : "Confirm and convert"
+                      : busy
+                        ? "Sending…"
+                        : "Confirm and send"}
           </button>
           <button className="btn btn-quiet" onClick={onCancel} disabled={busy}>
             Cancel
@@ -496,6 +504,15 @@ export function Review({
           <p className="meta" style={{ marginTop: 10 }}>
             Same token, other form, one for one. Through Injective&apos;s CW20 adapter.
           </p>
+        </div>
+      ))}
+      {view.votes.map((v, i) => (
+        <div className="surface-hero" key={`v${i}`}>
+          <div className="eyebrow">You vote</div>
+          <div className="hero vote-choice">{VOTE_LABEL[v.option]}</div>
+          <hr className="divider" style={{ margin: "14px 0 12px" }} />
+          <div className="eyebrow">On proposal {v.proposal}</div>
+          {proposals[v.proposal] && <div className="validator-name">{proposals[v.proposal]}</div>}
         </div>
       ))}
       {view.stakes.map((st, i) => (
@@ -704,6 +721,8 @@ export function SwapCards({
     </>
   );
 }
+
+export const VOTE_LABEL: Record<VoteLine["option"], string> = { yes: "Yes", no: "No", abstain: "Abstain", no_with_veto: "No with veto" };
 
 const STAKE_VERB: Record<StakeLine["kind"], string> = {
   stake: "You stake",

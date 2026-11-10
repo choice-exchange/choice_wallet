@@ -163,7 +163,9 @@ test("staking, rewards, IBC, the orderbook, and anything else by its name", () =
   assert.deepEqual(kind({ "@type": "/cosmos.distribution.v1beta1.MsgWithdrawDelegatorReward" }), ["rewards", undefined, undefined]);
   assert.deepEqual(kind({ "@type": "/ibc.applications.transfer.v1.MsgTransfer", receiver: "cosmos1abc" }), ["ibc", undefined, "cosmos1abc"]);
   assert.deepEqual(kind({ "@type": "/injective.exchange.v2.MsgCreateSpotLimitOrder" }), ["orderbook", undefined, undefined]);
-  assert.deepEqual(kind({ "@type": "/cosmos.gov.v1.MsgVote" }), ["other", "Vote", undefined]);
+  assert.deepEqual(kind({ "@type": "/cosmos.gov.v1beta1.MsgVote", proposal_id: "714", voter: ME, option: "VOTE_OPTION_NO_WITH_VETO" }), ["other", "Voted No with veto on proposal 714", undefined]);
+  assert.deepEqual(kind({ "@type": "/cosmos.gov.v1.MsgVote" }), ["other", "Voted", undefined]);
+  assert.deepEqual(kind({ "@type": "/cosmos.gov.v1.MsgDeposit" }), ["other", "Deposit", undefined]);
   // An IBC transfer arriving: relayed by someone else.
   const relayed = summarize(
     tx(17, [{ "@type": "/ibc.core.client.v1.MsgUpdateClient" }, { "@type": "/ibc.core.channel.v1.MsgRecvPacket" }], [...feePaidBy(THEM), ...move(POOL, ME, "5ibc/ABC")]),

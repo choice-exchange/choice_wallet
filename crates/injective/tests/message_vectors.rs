@@ -250,13 +250,13 @@ fn nested_messages_are_checked_too() {
     );
 
     // Unknown inner messages are kept raw, not dropped.
-    let vote = Any {
-        type_url: "/cosmos.gov.v1beta1.MsgVote".into(),
+    let deposit = Any {
+        type_url: "/cosmos.gov.v1beta1.MsgDeposit".into(),
         value: vec![0x08, 0x01],
     };
-    let msgs = decode(vec![exec(&a0, vec![vote.clone()])]).unwrap();
+    let msgs = decode(vec![exec(&a0, vec![deposit.clone()])]).unwrap();
     assert!(
-        matches!(&msgs[0], Msg::AuthzExec { msgs, .. } if msgs[0] == Msg::Unknown { type_url: vote.type_url.clone(), value: vote.value.clone() })
+        matches!(&msgs[0], Msg::AuthzExec { msgs, .. } if msgs[0] == Msg::Unknown { type_url: deposit.type_url.clone(), value: deposit.value.clone() })
     );
 
     // One level of nesting is fine, three is refused, and an empty exec is refused.

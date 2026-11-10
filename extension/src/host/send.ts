@@ -51,6 +51,9 @@ export interface SendDeps extends HoldingsDeps {
   onBroadcast?(network: NetworkId, hash: string, from: string): void;
   /** A deposit's burn just broadcast on the chain it comes from (./bridge/ follows it). */
   onDeposit?(network: NetworkId, deposit: DepositSent): Promise<void>;
+  /** A vote just broadcast by `voter` (./gov.ts keeps it: the chain forgets votes once a
+   *  proposal's voting ends). */
+  onVoted?(network: NetworkId, voter: string, vote: { proposal: string; option: string }): Promise<void>;
   /** Broadcasts a Solana transaction the vault signed (./solana.ts). */
   solanaBroadcast?(network: NetworkId, p: SolanaPending, signed: { signature: string; index: number }): Promise<Result<Sent>>;
   /** A client for an EVM chain beside Injective, on the user's endpoints for it
@@ -145,6 +148,8 @@ interface Pending {
   source?: SourceChain;
   /** A deposit's burn, followed once broadcast. */
   deposit?: Omit<DepositSent, "chain" | "hash">;
+  /** A governance vote, kept once broadcast. */
+  vote?: { proposal: string; option: string };
   /** A Solana transaction, signed with the account's Solana key (./solana.ts). */
   solana?: SolanaPending;
 }
@@ -264,6 +269,8 @@ export function createSender(d: SendDeps) {
       /** A "max" that comes to nothing is fine (a rescue with no INJ left still moves the
        *  rest). */
       allowZero?: boolean;
+      /** A governance vote: kept once broadcast. */
+      vote?: { proposal: string; option: string };
     },
   ): Promise<Result<SendReview>> {
     const net = NETWORKS[network];
@@ -363,6 +370,7 @@ export function createSender(d: SendDeps) {
         from: account.addresses[NETWORKS[network].cosmos] ?? "",
         confirm: risk.confirm ?? null,
         blocked: risk.level === "blocked",
+        ...(spec.vote ? { vote: spec.vote } : {}),
       };
       await d.session.set({ pending_send: pending });
       const tokens = await tokensFor(network, displayDenoms(network, display));
@@ -796,6 +804,7 @@ export function createSender(d: SendDeps) {
       return chainFailure(e);
     }
     d.onBroadcast?.(p.network, hash, p.from ?? "");
+    if (p.vote && p.from) await d.onVoted?.(p.network, p.from, p.vote).catch(() => {});
     return { ok: true, result: { hash, explorer: explorerTxUrl(NETWORKS[p.network], hash) } };
   }
 

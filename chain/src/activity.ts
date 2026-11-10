@@ -299,6 +299,11 @@ export function summarize(tx: IndexedTx, address: string, evm?: EvmView): Activi
     return kindOf("contract", str("contract"));
   }
   if (t === "/cosmos.bank.v1beta1.MsgMultiSend") return kindOf(up ? "receive" : "send");
+  if (t === "/cosmos.gov.v1beta1.MsgVote" || t === "/cosmos.gov.v1.MsgVote") {
+    const option = ({ VOTE_OPTION_YES: "Yes", VOTE_OPTION_NO: "No", VOTE_OPTION_ABSTAIN: "Abstain", VOTE_OPTION_NO_WITH_VETO: "No with veto" } as Record<string, string>)[str("option") ?? ""];
+    const id = str("proposal_id");
+    return { ...kindOf("other"), label: option && id && /^[1-9][0-9]{0,19}$/.test(id) ? `Voted ${option} on proposal ${id}` : "Voted" };
+  }
   const name = t.split(".").pop() ?? "";
   return { ...kindOf("other"), label: name.replace(/^Msg/, "") || "Transaction" };
 }

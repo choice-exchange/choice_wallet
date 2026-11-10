@@ -38,7 +38,7 @@ export type LedgerSolana = { path: string; public_key: string };
 export type NewSecret = { mnemonic: string } | { private_key: string };
 
 export type { Nft, NftCollection, NftStandard } from "@choice-wallet/chain";
-import type { AddedChain, NftCollection, NftStandard } from "@choice-wallet/chain";
+import type { AddedChain, NftCollection, NftStandard, Proposal, VoteCast, VoteOptionName } from "@choice-wallet/chain";
 /** The account's NFTs by collection; `evmDown`: no EVM endpoint answered, so ERC721s may be
  *  missing. */
 export type NftList = { collections: NftCollection[]; evmDown?: true };
@@ -168,6 +168,9 @@ export type UiRequest =
    *  a CW20 into its bank denom through the CW20 adapter, or back. Confirmed like a send. */
   | { type: "prepare_convert"; denom: string; amount: string }
   | { type: "staking" }
+  /** Proposals in voting and the newest finished ones, and this account's votes. */
+  | { type: "governance" }
+  | { type: "prepare_vote"; proposal: string; option: VoteOptionName }
   | { type: "approvals" }
   | { type: "prepare_revoke"; items: RevokeItem[] }
   | { type: "prepare_revoke_erc20"; token: string; spender: string }
@@ -843,6 +846,12 @@ export type DappRequest = {
   siteName?: string;
 };
 
+/** Governance: proposals in voting (with the count so far), the newest finished ones, how
+ *  this account voted by proposal ID (the chain's word while voting is open, the wallet's
+ *  record after), and the INJ bonded, which turnout is a share of. */
+export type GovView = { voting: Proposal[]; past: Proposal[]; votes: Record<string, VoteCast>; bonded: string | null };
+export type { Proposal, VoteCast, VoteOptionName } from "@choice-wallet/chain";
+
 /** A chain to add, as the form (or a site) gives it. */
 export type NewChain = { chainId: number; name: string; symbol: string; rpc: string[]; explorer?: string; testnet: boolean };
 
@@ -940,6 +949,8 @@ export type Replies = {
   prepare_bridge_receive: SendReview;
   prepare_convert: SendReview;
   staking: StakingSummary;
+  governance: GovView;
+  prepare_vote: SendReview;
   approvals: ApprovalsSummary;
   prepare_revoke: SendReview;
   prepare_revoke_erc20: SendReview;

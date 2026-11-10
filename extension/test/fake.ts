@@ -162,6 +162,23 @@ export const USDC = "erc20:0xa00C59fF5a080D2b954d0c75e46E22a0c371235a";
 export const TOKEN_MESSENGER = "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d";
 export const MESSAGE_TRANSMITTER = "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64";
 export const BRIDGE_RECEIVER = "0xcA5A96ECF72B3656eF7cF60BDAA42FCdb218cd4A";
+/** A governance proposal as the LCD gives it. */
+export function proposalRecord(id: string, status: string, extra: Record<string, unknown> = {}) {
+  return {
+    id,
+    messages: [],
+    status,
+    final_tally_result: { yes_count: "600", abstain_count: "100", no_count: "200", no_with_veto_count: "100" },
+    voting_start_time: "2026-11-08T10:00:00Z",
+    voting_end_time: "2026-11-12T10:00:00Z",
+    title: `Proposal number ${id}`,
+    summary: "What it does.",
+    expedited: false,
+    failed_reason: "",
+    ...extra,
+  };
+}
+
 /** A 1×1 PNG: a chain's logo as DefiLlama serves it. */
 export const TINY_PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
 
@@ -328,6 +345,9 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
       /** What a test's Base index finds: hashes of transactions and of token transfers. */
       index: { txs: [] as string[], transfers: [] as string[] },
     },
+    /** Governance: proposals as the LCD gives them (`proposalRecord`), each one's count so
+     *  far, votes by "id voter" (`VOTE_OPTION_…`, while voting is open), INJ bonded. */
+    gov: { proposals: [] as ReturnType<typeof proposalRecord>[], tallies: {} as Record<string, Record<string, string>>, votes: {} as Record<string, string>, bonded: (1000n * INJ).toString() },
     /** BNB Smart Chain (56), a chain the user can add: ME's BNB there, what was broadcast. */
     bnb: { coin: 3n * 10n ** 17n, sent: [] as string[] },
     /** chainlist.org's list (null: it doesn't answer), and the logo hosts asked. */
@@ -697,6 +717,23 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
     }
     if (p === `/cosmos/staking/v1beta1/validators/${VAL_JAILED}`) return json(200, { validator: validatorJson(VAL_JAILED, "Jailed", 5n * INJ, true) });
     if (p === "/cosmos/staking/v1beta1/params") return json(200, { params: { unbonding_time: "1814400s", bond_denom: "inj" } });
+    if (p === "/cosmos/gov/v1/proposals") {
+      const voting = url.searchParams.get("proposal_status") === "PROPOSAL_STATUS_VOTING_PERIOD";
+      return json(200, { proposals: state.gov.proposals.filter((x) => !voting || x.status === "PROPOSAL_STATUS_VOTING_PERIOD"), pagination: { next_key: null } });
+    }
+    const govOne = /^\/cosmos\/gov\/v1\/proposals\/([0-9]+)(\/tally|\/votes\/(inj1[0-9a-z]+))?$/.exec(p);
+    if (govOne) {
+      const [, id, part, voter] = govOne;
+      const prop = state.gov.proposals.find((x) => x.id === id);
+      if (!prop) return json(404, { code: 5, message: `proposal ${id} doesn't exist: key not found`, details: [] });
+      if (part === "/tally") return json(200, { tally: state.gov.tallies[id!] ?? prop.final_tally_result });
+      if (voter) {
+        const v = state.gov.votes[`${id} ${voter}`];
+        return v ? json(200, { vote: { proposal_id: id, voter, options: [{ option: v, weight: "1.000000000000000000" }], metadata: "" } }) : json(404, { code: 5, message: `voter: ${voter} not found for proposal: ${id}`, details: [] });
+      }
+      return json(200, { proposal: prop });
+    }
+    if (p === "/cosmos/staking/v1beta1/pool") return json(200, { pool: { bonded_tokens: state.gov.bonded, not_bonded_tokens: "0" } });
     const stakingOf = /^\/cosmos\/(?:staking\/v1beta1\/delegations|staking\/v1beta1\/delegators|distribution\/v1beta1\/delegators)\/(inj1[0-9a-z]+)/.exec(p)?.[1];
     if (stakingOf && stakingOf !== ME) {
       // Anyone else has nothing staked.

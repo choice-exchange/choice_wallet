@@ -6,6 +6,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { AccountMark, AccountsView, isWatch } from "./Accounts";
 import { AddChainView } from "./AddChain";
+import { GovernanceView } from "./Governance";
 import { ApprovalsView } from "./Approvals";
 import { BridgeView, newBridgeDraft, type BridgeDraft } from "./Bridge";
 import { ChainPill, ChainSheet, chainName, type ChainRow } from "./Chains";
@@ -45,7 +46,7 @@ type View =
   | { name: "token"; denom: string }
   | { name: "send"; denom?: string }
   | { name: "convert"; denom: string }
-  | { name: "review"; review: SendReview; entered: string; back: View; validators?: Record<string, string>; rewards?: Record<string, string>; quote?: string; bridgeQuote?: string; done?: string }
+  | { name: "review"; review: SendReview; entered: string; back: View; validators?: Record<string, string>; rewards?: Record<string, string>; proposals?: Record<string, string>; quote?: string; bridgeQuote?: string; done?: string }
   | { name: "sent"; sent: Sent; converting: boolean; done?: string; save?: Draft; next?: string; nextBridge?: string; bridge?: { from: string; to: string; waitMs: number } }
   | { name: "settings" }
   | { name: "approvals" }
@@ -84,6 +85,8 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
   const backend = useBackend();
   const [tab, setTab] = useState<Tab>("wallet");
   const [pane, setPane] = useState<Pane>("tokens");
+  /** The Stake tab's pane: staking, or governance. */
+  const [stakePane, setStakePane] = useState<"staking" | "governance">("staking");
   const [view, setView] = useState<View>({ name: "home" });
   const [balances, setBalances] = useState<Balance[] | null>(null);
   const [filter, setFilter] = useState<TokenFilter>(DEFAULT_FILTER);
@@ -453,6 +456,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
             network={status.network}
             {...(view.validators ? { validators: view.validators } : {})}
             {...(view.rewards ? { rewards: view.rewards } : {})}
+            {...(view.proposals ? { proposals: view.proposals } : {})}
             onSent={(sent) => {
               activityStale();
               const back = view.back;
@@ -548,6 +552,29 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
           );
         }
         if (tab === "stake") {
+          const stakePills = (
+            <PillTabs
+              label="Stake"
+              options={[
+                ["staking", "Staking"],
+                ["governance", "Governance"],
+              ]}
+              value={stakePane}
+              onChange={setStakePane}
+            />
+          );
+          if (stakePane === "governance") {
+            return (
+              <GovernanceView
+                key={`${address} ${status.network}`}
+                canSign={!watch}
+                staked={BigInt(staking?.staked ?? "0")}
+                tabs={tabs}
+                head={stakePills}
+                onReview={(review, proposals) => setView({ name: "review", review, entered: "", back: { name: "home" }, proposals, done: "Voted" })}
+              />
+            );
+          }
           return (
             <StakingView
               key={`${address} ${status.network}`}
@@ -555,7 +582,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
               canSign={!watch}
               onReview={(review, validators, rewards) => setView({ name: "review", review, entered: "", back: { name: "home" }, validators, rewards, done: "Confirmed" })}
               tabs={tabs}
-              head={null}
+              head={stakePills}
             />
           );
         }

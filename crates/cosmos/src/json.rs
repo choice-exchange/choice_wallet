@@ -49,6 +49,8 @@ const UNDELEGATE: &str = "/cosmos.staking.v1beta1.MsgUndelegate";
 const REDELEGATE: &str = "/cosmos.staking.v1beta1.MsgBeginRedelegate";
 const CANCEL_UNBONDING: &str = "/cosmos.staking.v1beta1.MsgCancelUnbondingDelegation";
 const TRANSFER_DELEGATION: &str = "/cosmos.staking.v1beta1.MsgTransferDelegation";
+const VOTE: &str = "/cosmos.gov.v1beta1.MsgVote";
+const VOTE_V1: &str = "/cosmos.gov.v1.MsgVote";
 
 /// Amino names (`option (amino.name)` in the vendored protos) and their type URLs.
 const AMINO_NAMES: &[(&str, &str)] = &[
@@ -73,6 +75,8 @@ const AMINO_NAMES: &[(&str, &str)] = &[
     ("cosmos-sdk/MsgBeginRedelegate", REDELEGATE),
     ("cosmos-sdk/MsgCancelUnbondingDelegation", CANCEL_UNBONDING),
     ("cosmos-sdk/MsgTransferDelegation", TRANSFER_DELEGATION),
+    ("cosmos-sdk/MsgVote", VOTE),
+    ("cosmos-sdk/v1/MsgVote", VOTE_V1),
 ];
 
 /// Split a packed JSON value into its type URL and fields. An amino name we don't know is
@@ -291,6 +295,38 @@ struct CancelUnbondingF {
 
 #[derive(Deserialize, Default)]
 #[serde(default, deny_unknown_fields)]
+struct VoteF {
+    /// uint64, a string in both JSON forms (amino omits it when 0).
+    proposal_id: String,
+    voter: String,
+    /// A number in amino JSON, the enum's name in proto JSON.
+    option: Value,
+    /// gov v1 only.
+    metadata: String,
+}
+
+/// A vote option as either JSON form writes it.
+fn vote_option(v: &Value) -> Result<crate::gov::VoteOption, Error> {
+    let bad = || Error::Json(format!("not a vote option: {v}"));
+    match v {
+        Value::Number(n) => n
+            .as_i64()
+            .and_then(|n| i32::try_from(n).ok())
+            .and_then(crate::gov::VoteOption::from_number)
+            .ok_or_else(bad),
+        Value::String(s) => crate::gov::VoteOption::from_name(s).ok_or_else(bad),
+        _ => Err(bad()),
+    }
+}
+
+/// A canonical uint64 written as a JSON string; empty reads as 0.
+fn uint64(s: &str) -> Result<u64, Error> {
+    let n = int64(s)?;
+    u64::try_from(n).map_err(|_| Error::Json(format!("not a uint64: {s:?}")))
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
 struct TransferDelegationF {
     delegator_address: String,
     validator_address: String,
@@ -501,6 +537,17 @@ pub(crate) fn message(v: &Value, form: Form, chain: &Chain, depth: usize) -> Res
             },
             None => return unknown(),
         },
+        VOTE | VOTE_V1 => match fields::<VoteF>(&f) {
+            // v1beta1's has no metadata.
+            Some(m) if t == VOTE_V1 || m.metadata.is_empty() => Msg::Vote {
+                voter: m.voter,
+                proposal_id: uint64(&m.proposal_id)?,
+                option: vote_option(&m.option)?,
+                metadata: m.metadata,
+                v1: t == VOTE_V1,
+            },
+            _ => return unknown(),
+        },
         TRANSFER_DELEGATION => match fields::<TransferDelegationF>(&f) {
             Some(m) => Msg::TransferDelegation {
                 delegator: m.delegator_address,
@@ -610,6 +657,87 @@ mod tests {
         tokenfactory: None,
         amino_names: &[],
     };
+
+    #[test]
+    fn votes_in_both_json_forms_and_versions() {
+        use crate::gov::VoteOption;
+        let want = |v1, metadata: &str| Msg::Vote {
+            voter: "inj1me".into(),
+            proposal_id: 713,
+            option: VoteOption::Yes,
+            metadata: metadata.into(),
+            v1,
+        };
+        let amino = |name: &str, value: serde_json::Value| {
+            message(
+                &serde_json::json!({ "type": name, "value": value }),
+                Form::Amino,
+                &INJ,
+                0,
+            )
+        };
+        // Proto JSON names the option; amino JSON numbers it.
+        let proto =
+            serde_json::json!({ "@type": VOTE, "proposal_id": "713", "voter": "inj1me", "option": "VOTE_OPTION_YES" });
+        assert_eq!(message(&proto, Form::Proto, &INJ, 0).unwrap(), want(false, ""));
+        assert_eq!(
+            amino(
+                "cosmos-sdk/MsgVote",
+                serde_json::json!({ "option": 1, "proposal_id": "713", "voter": "inj1me" })
+            )
+            .unwrap(),
+            want(false, "")
+        );
+        assert_eq!(
+            amino(
+                "cosmos-sdk/v1/MsgVote",
+                serde_json::json!({ "metadata": "hi", "option": 1, "proposal_id": "713", "voter": "inj1me" })
+            )
+            .unwrap(),
+            want(true, "hi")
+        );
+        // v1beta1's has no metadata; an option outside the enum is refused.
+        assert!(matches!(
+            amino(
+                "cosmos-sdk/MsgVote",
+                serde_json::json!({ "metadata": "x", "option": 1, "proposal_id": "713", "voter": "inj1me" })
+            )
+            .unwrap(),
+            Msg::UnknownJson { .. }
+        ));
+        for bad in [
+            serde_json::json!(0),
+            serde_json::json!(9),
+            serde_json::json!("VOTE_OPTION_MAYBE"),
+            serde_json::json!(null),
+        ] {
+            assert!(
+                amino(
+                    "cosmos-sdk/MsgVote",
+                    serde_json::json!({ "option": bad, "proposal_id": "713", "voter": "inj1me" })
+                )
+                .is_err(),
+                "{bad}"
+            );
+        }
+        // The wallet's own amino JSON reads back as the same vote, and gov v1's protobuf too.
+        for m in [want(false, ""), want(true, "hi")] {
+            let back = crate::amino::render_msg(&m).unwrap();
+            assert_eq!(message(&back, Form::Amino, &INJ, 0).unwrap(), m);
+        }
+        let v1 = crate::wkt::Any::pack(&crate::gov::MsgVoteV1 {
+            proposal_id: 713,
+            voter: "inj1me".into(),
+            option: 1,
+            metadata: "hi".into(),
+        });
+        let decoded = Msg::decode(&v1, &INJ).unwrap();
+        assert_eq!(
+            (decoded.type_url(), decoded.signer()),
+            ("/cosmos.gov.v1.MsgVote", Some("inj1me"))
+        );
+        assert_eq!(decoded, want(true, "hi"));
+    }
 
     #[test]
     fn staking_in_both_json_forms() {
