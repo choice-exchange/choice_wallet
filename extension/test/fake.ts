@@ -290,7 +290,17 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
       down: false,
     },
     /** Base: ME's USDC and ETH there, what TokenMessengerV2 may take, what was broadcast. */
-    base: { usdc: 0n, eth: 10n ** 16n, allowance: 0n, sent: [] as string[], down: false },
+    base: {
+      usdc: 0n,
+      eth: 10n ** 16n,
+      allowance: 0n,
+      sent: [] as string[],
+      down: false,
+      /** Transactions on Base by hash, for history. */
+      txs: {} as Record<string, { from: string; to: string; value: bigint; input: string; logs: { address: string; topics: string[]; data: string }[]; block: bigint }>,
+      /** What a test's Base index finds: hashes of transactions and of token transfers. */
+      index: { txs: [] as string[], transfers: [] as string[] },
+    },
     /** Injective's MessageTransmitterV2: the nonces it has used (minted). */
     usedNonces: new Set<string>(),
     /** BridgeReceiver's INJ top-up: wei, its fee in USDC, paused. */
@@ -319,7 +329,18 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
       state.base.sent.push(r.params[0] as unknown as string);
       return answer(`0x${"ba".repeat(31)}${state.base.sent.length.toString(16).padStart(2, "0")}`);
     }
-    if (r.method === "eth_getTransactionReceipt") return answer(state.base.sent.length ? { status: "0x1" } : null);
+    // Transactions by hash, as a test lays them out in `base.txs`.
+    const known = (hash: string) => state.base.txs[hash];
+    if (r.method === "eth_getTransactionByHash") {
+      const t = known(String(r.params[0]));
+      return answer(t ? { from: t.from.toLowerCase(), to: t.to.toLowerCase(), value: `0x${t.value.toString(16)}`, input: t.input, gasPrice: "0x5f5e100" } : null);
+    }
+    if (r.method === "eth_getTransactionReceipt") {
+      const t = known(String(r.params[0]));
+      if (t) return answer({ status: "0x1", blockNumber: `0x${t.block.toString(16)}`, gasUsed: "0xc350", effectiveGasPrice: "0x5f5e100", logs: t.logs });
+      return answer(state.base.sent.length ? { status: "0x1" } : null);
+    }
+    if (r.method === "eth_getBlockByNumber" && r.params[0] !== ("latest" as unknown)) return answer({ number: r.params[0], timestamp: "0x6911c000" });
     const { to, data } = r.params[0]!;
     // OP Stack's GasPriceOracle: the most a transaction's Ethereum data fee can be.
     if (r.method === "eth_call" && to.toLowerCase() === "0x420000000000000000000000000000000000000f" && data.startsWith("0xf1c7a58b")) return answer(word(4_660_000_000n));
@@ -408,6 +429,11 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
       const known: Record<string, number> = { [`base:${BASE_USDC}`.toLowerCase()]: 0.9998, "base:0x0000000000000000000000000000000000000000": 3000 };
       const keys = decodeURIComponent(p.slice("/prices/current/".length)).split(",");
       return json(200, { coins: Object.fromEntries(keys.filter((k) => known[k.toLowerCase()]).map((k) => [k, { price: known[k.toLowerCase()], symbol: "?", confidence: 0.99 }])) });
+    }
+    // An Etherscan-style index for Base, at the address a test sets in Settings.
+    if (url.host === "base-index.example" && p === "/api") {
+      const list = url.searchParams.get("action") === "tokentx" ? state.base.index.transfers : state.base.index.txs;
+      return json(200, { status: list.length ? "1" : "0", message: list.length ? "OK" : "No transactions found", result: list.map((hash, i) => ({ hash, blockNumber: String(5000 - i) })) });
     }
     // The other EVM chains' endpoints (all but Base's first): down.
     if (init?.method === "POST" && OTHER_EVM_HOSTS.has(url.host)) return new Response("down", { status: 503 });

@@ -530,13 +530,7 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
           // This session's, or else the copy saved on disk (shown, then read again).
           const kept = activity.current ?? (savedActivity ? merge(null, savedActivity, 1, 0) : null);
           if (chain === "solana") return <ActivityView key={`${address} solana`} network={status.network} chain="solana" tabs={tabs} />;
-          if (evmChain) {
-            return (
-              <Screen tabs={tabs} top={<span className="title">Activity</span>}>
-                <p className="empty">Activity on {evmChain.name} isn&apos;t in the wallet yet.</p>
-              </Screen>
-            );
-          }
+          if (evmChain) return <ActivityView key={`${address} ${evmChain.key}`} network={status.network} chain={evmChain.key} tabs={tabs} />;
           return <ActivityView key={address} network={status.network} chain="injective" tabs={tabs} kept={kept} onKeep={(s) => (activity.current = s)} />;
         }
         if (tab === "swap" && chain !== "injective") {

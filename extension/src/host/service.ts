@@ -174,6 +174,7 @@ export function createService(d: Deps) {
     onDeposit: (n, deposit) => bridge.track(n, deposit),
     solanaBroadcast: (n, p, signed) => solana.broadcast(n, p, signed),
     chainRpc: (n, key) => evmChains.rpc(n, key),
+    onChainSent: (n, key, from, hash) => evmChains.recordSent(n, key, from, hash),
   });
   const staking = createStaking(sender);
   const swaps = createSwaps(sender, d.session, d.fetch, async (net) => (await tokenFilter(net)).shown);
@@ -347,6 +348,8 @@ export function createService(d: Deps) {
         solanaDefault: { mainnet: [...NETWORKS.mainnet.solana.rpc], testnet: [...NETWORKS.testnet.solana.rpc] },
         chains: { mainnet: await chainEndpoints("mainnet"), testnet: await chainEndpoints("testnet") },
         chainsDefault: { mainnet: chainDefaults("mainnet"), testnet: chainDefaults("testnet") },
+        chainHistory: { mainnet: await chainHistory("mainnet"), testnet: await chainHistory("testnet") },
+        chainHistoryDefault: { mainnet: historyDefaults("mainnet"), testnet: historyDefaults("testnet") },
         prices: await showPrices(),
         autoLock: await lockAfter(),
         notify: await notifyMode(),
@@ -362,6 +365,15 @@ export function createService(d: Deps) {
   }
   function chainDefaults(net: NetworkId): Record<string, string[]> {
     return Object.fromEntries(evmChainsOf(net).map((c) => [c.key, [...c.rpc]]));
+  }
+  /** Each EVM chain's history indexes in use (empty: off), and the defaults. */
+  async function chainHistory(net: NetworkId): Promise<Record<string, string[]>> {
+    const out: Record<string, string[]> = {};
+    for (const c of evmChainsOf(net)) out[c.key] = [...(await evmChains.historyEndpoints(net, c.key))];
+    return out;
+  }
+  function historyDefaults(net: NetworkId): Record<string, string[]> {
+    return Object.fromEntries(evmChainsOf(net).map((c) => [c.key, [...(c.history ?? [])]]));
   }
 
   /** A network's endpoint list after a change: `null` is the defaults; `undefined` leaves it.
@@ -400,20 +412,31 @@ export function createService(d: Deps) {
     if ("ok" in indexAll) return indexAll as UiResponse<never>;
     const solanaAll = nextEndpoints(stored.solana_endpoints ?? {}, net, solana);
     if ("ok" in solanaAll) return solanaAll as UiResponse<never>;
-    // One EVM chain's endpoints: { key, rpc } (rpc null for its defaults).
-    const { chain_endpoints } = (await d.local.get(["chain_endpoints"])) as { chain_endpoints?: ChainEndpoints };
+    // One EVM chain's endpoints and history indexes: { key, rpc?, index? } (null for its
+    // defaults; an empty index list turns its history off).
+    const { chain_endpoints, chain_history } = (await d.local.get(["chain_endpoints", "chain_history"])) as { chain_endpoints?: ChainEndpoints; chain_history?: ChainEndpoints };
     let chainsAll: ChainEndpoints = chain_endpoints ?? {};
+    let historyAll: ChainEndpoints = chain_history ?? {};
     if (chain !== undefined) {
-      const c = chain as { key?: unknown; rpc?: unknown };
+      const c = chain as { key?: unknown; rpc?: unknown; index?: unknown };
       const info = typeof c === "object" && c !== null ? chainByKey(net, c.key) : undefined;
       if (!info || info.kind !== "evm") return err("bad_request", "Unknown chain.");
-      const forChain = nextEndpoints({ [net]: chainsAll[net]?.[info.key] ?? [] } as Endpoints, net, c.rpc);
-      if ("ok" in forChain) return forChain as UiResponse<never>;
-      const mine = { ...(chainsAll[net] ?? {}) };
-      const urls = (forChain as Endpoints)[net];
-      if (urls && urls.length > 0) mine[info.key] = [...urls];
-      else delete mine[info.key];
-      chainsAll = { ...chainsAll, [net]: mine };
+      const apply = (all: ChainEndpoints, urls: unknown, canBeEmpty: boolean): ChainEndpoints | UiResponse<never> => {
+        const before = all[net]?.[info.key];
+        const next = nextEndpoints(before === undefined ? {} : ({ [net]: before } as Endpoints), net, urls, canBeEmpty);
+        if ("ok" in next) return next as UiResponse<never>;
+        const mine = { ...(all[net] ?? {}) };
+        const list = (next as Endpoints)[net];
+        if (list === undefined) delete mine[info.key];
+        else mine[info.key] = [...list];
+        return { ...all, [net]: mine };
+      };
+      const rpcNext = apply(chainsAll, c.rpc, false);
+      if ("ok" in rpcNext) return rpcNext as UiResponse<never>;
+      const indexNext = apply(historyAll, c.index, true);
+      if ("ok" in indexNext) return indexNext as UiResponse<never>;
+      chainsAll = rpcNext as ChainEndpoints;
+      historyAll = indexNext as ChainEndpoints;
     }
     const before = await network();
     await d.local.set({
@@ -423,6 +446,7 @@ export function createService(d: Deps) {
       evm_index: indexAll,
       solana_endpoints: solanaAll,
       chain_endpoints: chainsAll,
+      chain_history: historyAll,
       ...(prices === undefined ? {} : { prices }),
       ...(autoLock === undefined ? {} : { auto_lock: autoLock }),
       ...(notify === undefined ? {} : { notify }),
@@ -541,6 +565,7 @@ export function createService(d: Deps) {
       case "snapshot":
       case "activity":
       case "solana_activity":
+      case "chain_activity":
       case "prepare_send":
       case "prepare_convert":
       case "staking":
@@ -601,6 +626,7 @@ export function createService(d: Deps) {
           return { ok: true, result: { ...result, filter: await tokenFilter(a.net), prices: await showPrices() } };
         }
         if (r.type === "solana_activity") return solana.activity(a.net, a.account, typeof r.before === "string" ? r.before : undefined);
+        if (r.type === "chain_activity") return evmChains.activity(a.net, a.account, String(r.chain), typeof r.page === "number" ? r.page : 1);
         if (r.type === "activity") {
           const page = await sender.activity(a.net, a.account, r.page);
           if (!page.ok) return page;

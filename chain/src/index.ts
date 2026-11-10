@@ -28,6 +28,7 @@ export {
 export { joinSolanaTransaction, lookupTableAddresses, LOOKUP_TABLE_PROGRAM, readSolanaMessage, splitSolanaTransaction, type SolanaMessageKeys } from "./solanaWire.ts";
 export { abiString, EvmRpc, word, type Call } from "./evm.ts";
 export { EvmIndex } from "./evmindex.ts";
+export { erc20Meta, readEvmTxs, summarizeEvmTx, type EvmTxRecord, type HistoryKeys } from "./evmhistory.ts";
 export { erc20Event, evmCall, evmResults, type Erc20Event, type EvmCall, type EvmLog } from "./evmtx.ts";
 export {
   cleanMessage,

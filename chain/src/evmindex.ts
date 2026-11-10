@@ -80,6 +80,33 @@ export class EvmIndex {
     })) as { txs: { hash: string; height: bigint }[]; done: boolean };
   }
 
+  /** A page of `holder`'s history on a chain with an Etherscan-style index: the hashes of
+   *  its transactions (sent, and coin received) and of its token transfers, merged, newest
+   *  first, each once. `done` says no later page holds more. */
+  async history(holder: string, page: number, limit: number): Promise<{ hashes: string[]; done: boolean }> {
+    if (!/^0x[0-9a-fA-F]{40}$/.test(holder)) throw new RangeError(`not an address: ${holder}`);
+    const list = (action: string) =>
+      this.pool.run(async (base) => {
+        const q = new URLSearchParams({ module: "account", action, address: holder, page: String(page), offset: String(limit), sort: "desc" });
+        const { status, body } = await this.pool.json(`${base}/api?${q}`);
+        if (status !== 200 || !isObject(body)) throw new Down(`HTTP ${status}`);
+        const result = body["result"];
+        // "No transactions found" comes back as an empty list with status 0.
+        if (!Array.isArray(result)) throw new Down(`index: ${String(body["message"] ?? "no result").slice(0, 80)}`);
+        return result;
+      }) as Promise<unknown[]>;
+    const [txs, transfers] = await Promise.all([list("txlist"), list("tokentx")]);
+    const seen = new Map<string, bigint>();
+    for (const t of [...txs.slice(0, limit), ...transfers.slice(0, limit)]) {
+      if (!isObject(t) || typeof t["hash"] !== "string" || typeof t["blockNumber"] !== "string") continue;
+      const hash = t["hash"].toLowerCase();
+      if (!/^0x[0-9a-f]{64}$/.test(hash) || !/^[0-9]{1,20}$/.test(t["blockNumber"])) continue;
+      if (!seen.has(hash)) seen.set(hash, BigInt(t["blockNumber"]));
+    }
+    const hashes = [...seen].sort((a, b) => (a[1] === b[1] ? 0 : a[1] > b[1] ? -1 : 1)).map(([h]) => h);
+    return { hashes, done: txs.length < limit && transfers.length < limit };
+  }
+
   /** ERC721 tokens Blockscout says came to `holder` (its latest `limit` NFT transfers):
    *  places to look. Whether each is still held is for `ownerOf` to say. */
   async nftTransfers(holder: string, limit = 200): Promise<{ contract: string; tokenId: string }[]> {

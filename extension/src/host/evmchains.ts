@@ -5,10 +5,31 @@
 // Every chain is asked about the account's address, so each endpoint learns it, as any
 // wallet's would. The prices list is the same for everyone: every chain's coin and USDC.
 
-import { CHAINS, chainByKey, chainCoin, chainUsdc, ChainError, EvmRpc, fetchLlamaPrices, usdValue, word, type ChainInfo, type Fetch, type NetworkId } from "@choice-wallet/chain";
-import type { AccountInfo, Balance, ChainHoldings } from "@choice-wallet/ui/protocol";
+import {
+  CHAINS,
+  chainByKey,
+  chainCoin,
+  chainUsdc,
+  ChainError,
+  Down,
+  erc20Meta,
+  EvmIndex,
+  EvmRpc,
+  fetchLlamaPrices,
+  NETWORKS,
+  readEvmTxs,
+  summarizeEvmTx,
+  Unreachable,
+  usdValue,
+  word,
+  type ChainInfo,
+  type Fetch,
+  type NetworkId,
+} from "@choice-wallet/chain";
+import type { AccountInfo, ActivityItem, Balance, ChainHoldings, Result, TokenInfo } from "@choice-wallet/ui/protocol";
 
 import type { Store } from "./service";
+import { fail } from "./util";
 
 /** A chain's endpoints as the user set them, per network and chain key. */
 export type ChainEndpoints = Partial<Record<NetworkId, Record<string, string[]>>>;
@@ -27,6 +48,10 @@ const HELD_TTL_MS = 60_000;
 /** Prices are asked again after a minute. */
 const PRICE_TTL_MS = 60_000;
 const ZERO = "0x0000000000000000000000000000000000000000";
+/** Rows per Activity page. */
+const PAGE = 25;
+/** Transactions the wallet sent on each chain, kept for its history there. */
+const MAX_SENT = 100;
 
 /** The EVM chains other than Injective's own EVM side on a network. */
 export function evmChains(network: NetworkId): ChainInfo[] {
@@ -125,7 +150,97 @@ export function createEvmChains(d: EvmChainsDeps) {
     return out.filter((h): h is ChainHoldings => h !== null);
   }
 
-  return { endpoints, rpc, prices, holdings, all };
+  /** The user's history indexes for a chain (empty: off), or its defaults. */
+  async function historyEndpoints(network: NetworkId, key: string): Promise<readonly string[]> {
+    const { chain_history } = (await d.local.get(["chain_history"])) as { chain_history?: ChainEndpoints };
+    return chain_history?.[network]?.[key] ?? chainByKey(network, key)?.history ?? [];
+  }
+
+  /** What the wallet sent on a chain, newest first, for its history there. */
+  type Sent = Partial<Record<string, string[]>>;
+  const sentKey = (network: NetworkId, key: string, address: string) => `${network} ${key} ${address.toLowerCase()}`;
+  async function recordSent(network: NetworkId, key: string, address: string, hash: string): Promise<void> {
+    const { chain_sent } = (await d.local.get(["chain_sent"])) as { chain_sent?: Sent };
+    const id = sentKey(network, key, address);
+    const list = [hash.toLowerCase(), ...(chain_sent?.[id] ?? []).filter((h) => h !== hash.toLowerCase())].slice(0, MAX_SENT);
+    await d.local.set({ chain_sent: { ...(chain_sent ?? {}), [id]: list } });
+  }
+
+  const metaCache = new Map<string, Promise<{ symbol: string; decimals: number } | null>>();
+  /** A page of the account's history on an EVM chain: what its index finds (where it has
+   *  one) and what the wallet sent there, each read from the chain itself. */
+  async function activity(
+    network: NetworkId,
+    account: AccountInfo,
+    key: string,
+    page: number,
+  ): Promise<Result<{ items: ActivityItem[]; tokens: Record<string, TokenInfo>; next: number | null; indexed: boolean; indexDown?: true }>> {
+    const c = chainByKey(network, key);
+    const me = c ? account.addresses[c.caip2] : undefined;
+    if (!c || c.kind !== "evm" || !me) return fail("bad_request", "Not a chain this account is on.");
+    if (!Number.isSafeInteger(page) || page < 1 || page > 100) return fail("bad_request", "No such page.");
+    const urls = await historyEndpoints(network, key);
+    let found: string[] = [];
+    let done = true;
+    let indexDown = false;
+    if (urls.length > 0) {
+      try {
+        const h = await new EvmIndex(urls, d.fetch).history(me, page, PAGE);
+        found = h.hashes;
+        done = h.done;
+      } catch (e) {
+        if (!(e instanceof Down || e instanceof ChainError || e instanceof Unreachable || e instanceof RangeError)) throw e;
+        indexDown = true;
+      }
+    }
+    const { chain_sent } = (await d.local.get(["chain_sent"])) as { chain_sent?: Sent };
+    const own = page === 1 ? (chain_sent?.[sentKey(network, key, me)] ?? []) : [];
+    const hashes = [...new Set([...own, ...found])];
+    let client: EvmRpc;
+    try {
+      client = await rpc(network, key);
+    } catch {
+      return fail("unreachable", `Couldn't reach ${c.name}.`);
+    }
+    let records;
+    try {
+      records = await readEvmTxs(client, hashes);
+    } catch {
+      return fail("unreachable", `Couldn't reach ${c.name}. Try again.`);
+    }
+    const usdc = c.usdc.toLowerCase();
+    const keys = {
+      coin: chainCoin(c.caip2),
+      token: (a: string) => (a.toLowerCase() === usdc ? chainUsdc(c.caip2) : `token:${c.caip2}:${a.toLowerCase()}`),
+      tokenMessenger: NETWORKS[network].cctp.tokenMessenger,
+      messageTransmitter: NETWORKS[network].cctp.messageTransmitter,
+    };
+    const all = records.map((r) => summarizeEvmTx(r, me, c.caip2, keys)).sort((a, b) => (BigInt(b.height) > BigInt(a.height) ? 1 : BigInt(b.height) < BigInt(a.height) ? -1 : 0));
+    const tokens: Record<string, TokenInfo> = {
+      [keys.coin]: { denom: keys.coin, symbol: c.native.symbol, name: c.native.symbol, decimals: c.native.decimals, known: true, chain: c.caip2 },
+      [chainUsdc(c.caip2)]: { denom: chainUsdc(c.caip2), symbol: "USDC", name: "USD Coin", decimals: 6, known: true, chain: c.caip2 },
+    };
+    const others = [...new Set(all.flatMap((a) => a.changes.map((x) => x.denom)).filter((x) => x.startsWith("token:")))];
+    await Promise.all(
+      others.map(async (denom) => {
+        const address = denom.split(":").pop()!;
+        const id = `${c.caip2} ${address}`;
+        let m = metaCache.get(id);
+        if (!m) {
+          m = erc20Meta(client, address).catch(() => null);
+          metaCache.set(id, m);
+        }
+        const meta = await m;
+        tokens[denom] = { denom, symbol: meta?.symbol ?? address.slice(0, 8), name: meta?.symbol ?? address, decimals: meta?.decimals ?? 0, known: false, chain: c.caip2 };
+      }),
+    );
+    // Tokens nobody asked for, sent by someone else and only of unlisted kinds, are spam
+    // more often than not: left out.
+    const items = all.filter((a) => a.signed || a.changes.length === 0 || a.changes.some((x) => tokens[x.denom]?.known));
+    return { ok: true, result: { items: items as ActivityItem[], tokens, next: done ? null : page + 1, indexed: urls.length > 0, ...(indexDown ? { indexDown: true as const } : {}) } };
+  }
+
+  return { endpoints, rpc, prices, holdings, all, historyEndpoints, recordSent, activity };
 }
 
 function priced(b: Balance, prices: Map<string, string>): Balance {

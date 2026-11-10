@@ -48,8 +48,9 @@ export function SettingsView({
   const [evmText, setEvmText] = useState("");
   const [indexText, setIndexText] = useState("");
   const [solanaText, setSolanaText] = useState("");
-  /** The picked EVM chain's endpoints (not Injective's own EVM side). */
+  /** The picked EVM chain's endpoints (not Injective's own EVM side), and its history indexes. */
   const [chainText, setChainText] = useState("");
+  const [historyText, setHistoryText] = useState("");
   const [prices, setPrices] = useState(true);
   const [lockAfter, setLockAfter] = useState("15");
   const [notify, setNotify] = useState<NotifyMode>("active");
@@ -71,6 +72,7 @@ export function SettingsView({
       setIndexText(s.evmIndex[s.network].join("\n"));
       setSolanaText(s.solana[s.network].join("\n"));
       setChainText((s.chains[s.network][status.chain] ?? []).join("\n"));
+      setHistoryText((s.chainHistory[s.network][status.chain] ?? []).join("\n"));
       setPrices(s.prices);
       setLockAfter(String(s.autoLock));
       setNotify(s.notify);
@@ -91,7 +93,7 @@ export function SettingsView({
       kind === "solana"
         ? { solana: own(solanaText, settings.solanaDefault[net]) }
         : kind === "evm"
-          ? { chain: { key: status.chain, rpc: own(chainText, settings.chainsDefault[net][status.chain] ?? []) } }
+          ? { chain: { key: status.chain, rpc: own(chainText, settings.chainsDefault[net][status.chain] ?? []), index: own(historyText, settings.chainHistoryDefault[net][status.chain] ?? []) ?? null } }
           : { lcd: own(text, settings.lcdDefault[net]), evm: own(evmText, settings.evmDefault[net]), evmIndex: own(indexText, settings.evmIndexDefault[net]) };
     if (
       await run({
@@ -218,6 +220,19 @@ export function SettingsView({
               value={chainText}
               onChange={(e) => setChainText(e.target.value)}
             />
+            <label className="meta" htmlFor="chain-history">
+              {picked.name} history (Blockscout or Etherscan-style)
+            </label>
+            <textarea
+              id="chain-history"
+              className="textarea"
+              rows={1}
+              spellCheck={false}
+              aria-label={`${picked.name} history`}
+              value={historyText}
+              onChange={(e) => setHistoryText(e.target.value)}
+            />
+            <span className="meta">Finds your history there. Empty: only what this wallet sent.</span>
           </>
         )}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
@@ -234,7 +249,10 @@ export function SettingsView({
                 setIndexText(settings.evmIndexDefault[net].join("\n"));
               }
               if (kind === "solana") setSolanaText(settings.solanaDefault[net].join("\n"));
-              if (kind === "evm") setChainText((settings.chainsDefault[net][status.chain] ?? []).join("\n"));
+              if (kind === "evm") {
+                setChainText((settings.chainsDefault[net][status.chain] ?? []).join("\n"));
+                setHistoryText((settings.chainHistoryDefault[net][status.chain] ?? []).join("\n"));
+              }
             }}
           >
             Use the defaults

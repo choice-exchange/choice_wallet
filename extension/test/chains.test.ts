@@ -104,3 +104,55 @@ test("a send on Base: ETH or USDC to a 0x address, read by the vault, signed and
   assert.equal(code(await service.handle({ type: "prepare_send", denom: "usdc:eip155:8453", to: them, amount: "99000000" })), "insufficient");
   assert.equal(code(await service.handle({ type: "prepare_send", denom: "usdc:eip155:56", to: them, amount: "1" })), "bad_request");
 });
+
+test("history on Base: what the wallet sent, and what an index finds, each read from the chain", async () => {
+  const net = chain({ balances: { inj: INJ } });
+  net.state.base.usdc = 30_000_000n;
+  const { service } = await wallet(net);
+  type Item = { hash: string; kind: string; signed: boolean; changes: { denom: string; amount: string }[]; counterparty?: string; chain?: string };
+  type Page = { items: Item[]; tokens: Record<string, { symbol: string; known: boolean }>; next: number | null; indexed: boolean };
+  const BASE_USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
+  const pad = (a: string) => `0x${a.slice(2).toLowerCase().padStart(64, "0")}`;
+  const log = (token: string, from: string, to: string, amount: bigint) => ({
+    address: token.toLowerCase(),
+    topics: ["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef", pad(from), pad(to)],
+    data: `0x${amount.toString(16).padStart(64, "0")}`,
+  });
+  // No index for Base by default: only what the wallet sent there.
+  let page = ok<Page>(await service.handle({ type: "chain_activity", chain: "base" }));
+  assert.deepEqual([page.items, page.indexed], [[], false]);
+  const them = "0x2222222222222222222222222222222222222222";
+  const r = ok<Review>(await service.handle({ type: "prepare_send", denom: "usdc:eip155:8453", to: them, amount: "5000000" }));
+  const sent = ok<{ hash: string }>(await service.handle({ type: "confirm_send", digest: r.digest }));
+  // Base, asked about it, says what it did.
+  net.state.base.txs[sent.hash] = { from: ME_EVM, to: BASE_USDC, value: 0n, input: "0xa9059cbb", logs: [log(BASE_USDC, ME_EVM, them, 5_000_000n)], block: 0x1000n };
+  page = ok<Page>(await service.handle({ type: "chain_activity", chain: "base" }));
+  assert.deepEqual(
+    page.items.map((i) => [i.hash, i.kind, i.signed, i.changes, i.counterparty, i.chain]),
+    [[sent.hash, "send", true, [{ denom: "usdc:eip155:8453", amount: "-5000000" }], them, "eip155:8453"]],
+  );
+  assert.equal(page.tokens["usdc:eip155:8453"]?.symbol, "USDC");
+
+  // An index, set in Settings: an incoming USDC transfer it finds is read from Base; one of
+  // a token nobody listed, from a stranger, is left out; a hash Base doesn't know is too.
+  ok(await service.handle({ type: "save_settings", network: "mainnet", chain: { key: "base", index: ["https://base-index.example"] } }));
+  const usdcIn = `0x${"a1".repeat(32)}`;
+  const spam = `0x${"a2".repeat(32)}`;
+  const ghost = `0x${"a3".repeat(32)}`;
+  net.state.base.txs[usdcIn] = { from: them, to: BASE_USDC, value: 0n, input: "0xa9059cbb", logs: [log(BASE_USDC, them, ME_EVM, 7_000_000n)], block: 0x2000n };
+  net.state.base.txs[spam] = { from: them, to: "0x3333333333333333333333333333333333333333", value: 0n, input: "0x", logs: [log("0x3333333333333333333333333333333333333333", them, ME_EVM, 1n)], block: 0x2001n };
+  net.state.base.index = { txs: [], transfers: [spam, usdcIn, ghost] };
+  page = ok<Page>(await service.handle({ type: "chain_activity", chain: "base" }));
+  assert.equal(page.indexed, true);
+  assert.deepEqual(
+    page.items.map((i) => [i.hash, i.kind, i.changes]),
+    [
+      [usdcIn, "receive", [{ denom: "usdc:eip155:8453", amount: "7000000" }]],
+      [sent.hash, "send", [{ denom: "usdc:eip155:8453", amount: "-5000000" }]],
+    ],
+  );
+  // Off again: an empty list.
+  ok(await service.handle({ type: "save_settings", network: "mainnet", chain: { key: "base", index: [] } }));
+  assert.equal(ok<Page>(await service.handle({ type: "chain_activity", chain: "base" })).indexed, false);
+  assert.equal(code(await service.handle({ type: "chain_activity", chain: "solana" })), "bad_request");
+});

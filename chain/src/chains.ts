@@ -46,6 +46,9 @@ export interface ChainInfo {
   mark: { letters: string; color: string };
   /** DefiLlama's name for it (`base`), where its coin and USDC are priced (mainnet). */
   llama?: string;
+  /** Free Etherscan-style indexes (Blockscout, Routescan) that find its history: each
+   *  answered an extension origin on 2026-11-10. Many chains have none without a key. */
+  history?: readonly string[];
 }
 
 type Evm = Omit<ChainInfo, "kind" | "caip2" | "native"> & { chainId: number; symbol: string };
@@ -102,6 +105,7 @@ const MAINNET_EVM: readonly ChainInfo[] = [
     usdc: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
     rpc: ["https://ethereum-rpc.publicnode.com", "https://eth.drpc.org", "https://mainnet.gateway.tenderly.co"],
     explorerTx: "https://etherscan.io/tx/{hash}",
+    history: ["https://eth.blockscout.com", "https://api.routescan.io/v2/network/mainnet/evm/1/etherscan"],
     forwarding: true,
     fast: true,
     mark: { letters: "E", color: "#627EEA" },
@@ -145,6 +149,7 @@ const MAINNET_EVM: readonly ChainInfo[] = [
     usdc: "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85",
     rpc: ["https://mainnet.optimism.io", "https://optimism-rpc.publicnode.com", "https://optimism.gateway.tenderly.co"],
     explorerTx: "https://optimistic.etherscan.io/tx/{hash}",
+    history: ["https://explorer.optimism.io"],
     forwarding: true,
     fast: true,
     opStack: true,
@@ -174,6 +179,7 @@ const MAINNET_EVM: readonly ChainInfo[] = [
     usdc: "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",
     rpc: ["https://api.avax.network/ext/bc/C/rpc", "https://avalanche-c-chain-rpc.publicnode.com", "https://avalanche.gateway.tenderly.co"],
     explorerTx: "https://snowtrace.io/tx/{hash}",
+    history: ["https://api.routescan.io/v2/network/mainnet/evm/43114/etherscan"],
     forwarding: true,
     fast: false,
     mark: { letters: "AV", color: "#E84142" },
@@ -231,6 +237,7 @@ const MAINNET_EVM: readonly ChainInfo[] = [
     usdc: "0x078D782b760474a361dDA0AF3839290b0EF57AD6",
     rpc: ["https://mainnet.unichain.org"],
     explorerTx: "https://uniscan.xyz/tx/{hash}",
+    history: ["https://unichain.blockscout.com"],
     forwarding: true,
     fast: true,
     opStack: true,
@@ -260,6 +267,7 @@ const MAINNET_EVM: readonly ChainInfo[] = [
     usdc: "0x79A02482A880bCE3F13e09Da970dC34db4CD24d1",
     rpc: ["https://worldchain-mainnet.g.alchemy.com/public"],
     explorerTx: "https://worldscan.org/tx/{hash}",
+    history: ["https://worldchain-mainnet.explorer.alchemy.com"],
     forwarding: true,
     fast: true,
     opStack: true,
@@ -317,6 +325,7 @@ const MAINNET_EVM: readonly ChainInfo[] = [
     usdc: "0x2D270e6886d130D724215A266106e6832161EAEd",
     rpc: ["https://rpc-gel.inkonchain.com"],
     explorerTx: "https://explorer.inkonchain.com/tx/{hash}",
+    history: ["https://explorer.inkonchain.com"],
     forwarding: true,
     fast: true,
     opStack: true,
@@ -334,6 +343,7 @@ const TESTNET_EVM: readonly ChainInfo[] = [
     usdc: "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
     rpc: ["https://ethereum-sepolia-rpc.publicnode.com"],
     explorerTx: "https://sepolia.etherscan.io/tx/{hash}",
+    history: ["https://eth-sepolia.blockscout.com"],
     forwarding: true,
     fast: true,
     mark: { letters: "E", color: "#627EEA" },
@@ -347,6 +357,7 @@ const TESTNET_EVM: readonly ChainInfo[] = [
     usdc: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
     rpc: ["https://sepolia.base.org"],
     explorerTx: "https://sepolia.basescan.org/tx/{hash}",
+    history: ["https://base-sepolia.blockscout.com"],
     forwarding: true,
     fast: true,
     opStack: true,

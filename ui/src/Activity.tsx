@@ -3,7 +3,7 @@
 // the say). Junk (not signed here, and only tokens the filter hides, in or out) sits behind
 // a row, like on the home screen. A row opens the explorer: Blockscout for an EVM one.
 
-import { explorerTxUrl, formatShort, NETWORKS, shortDenom } from "@choice-wallet/chain";
+import { chainByCaip2, chainByKey, explorerTxUrl, formatShort, NETWORKS, shortDenom } from "@choice-wallet/chain";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { useBackend } from "./backend";
@@ -91,10 +91,14 @@ export function ActivityView({
   /** The account's Solana history (its own key), when that's the chain shown. */
   const [sol, setSol] = useState<Replies["solana_activity"] | null>(null);
   const onSolana = chain === "solana";
+  /** An EVM chain beside Injective: its history, page by page. */
+  const evmChain = chainByKey(network, chain)?.kind === "evm" ? chainByKey(network, chain) : undefined;
+  const [evm, setEvm] = useState<Replies["chain_activity"] | null>(null);
   const live = useRef(true);
 
   async function load(p: number) {
     if (onSolana) return loadSolana();
+    if (evmChain) return loadChain(1);
     const r = await run({ type: "activity", page: p });
     if (r && live.current) setSt((prev) => merge(prev, r, p, Date.now()));
   }
@@ -105,6 +109,12 @@ export function ActivityView({
     setSol((prev) => (before && prev ? { items: [...prev.items, ...r.items], tokens: { ...prev.tokens, ...r.tokens }, next: r.next } : r));
   }
 
+  async function loadChain(p: number) {
+    const r = await run({ type: "chain_activity", chain, page: p });
+    if (!r || !live.current) return;
+    setEvm((prev) => (p > 1 && prev ? { ...r, items: [...prev.items, ...r.items.filter((i) => !prev.items.some((x) => x.hash === i.hash))], tokens: { ...prev.tokens, ...r.tokens } } : r));
+  }
+
   useEffect(() => {
     if (st) onKeep?.(st);
   }, [st]);
@@ -112,7 +122,7 @@ export function ActivityView({
   // Shown at once; asked again only when it is old, or when something happened.
   useEffect(() => {
     live.current = true;
-    if (onSolana || !kept || Date.now() - kept.at > ACTIVITY_FRESH_MS) void load(1);
+    if (onSolana || evmChain || !kept || Date.now() - kept.at > ACTIVITY_FRESH_MS) void load(1);
     const off = backend.onRefresh?.(() => void load(1));
     return () => {
       live.current = false;
@@ -125,8 +135,9 @@ export function ActivityView({
     if (kept && st === null) setSt(kept);
   }, [kept]);
 
-  const items = onSolana ? (sol?.items ?? null) : (st?.items ?? null);
-  const tokens: Tokens = onSolana ? (sol?.tokens ?? {}) : (st?.tokens ?? {});
+  const other = onSolana || evmChain !== undefined;
+  const items = onSolana ? (sol?.items ?? null) : evmChain ? (evm?.items ?? null) : (st?.items ?? null);
+  const tokens: Tokens = onSolana ? (sol?.tokens ?? {}) : evmChain ? (evm?.tokens ?? {}) : (st?.tokens ?? {});
   const validators = st?.validators ?? {};
   const filter = st?.filter ?? null;
   const page = st?.page ?? 1;
@@ -146,7 +157,7 @@ export function ActivityView({
       const b: Balance = { denom: c.denom, symbol: t?.symbol ?? "", name: t?.name ?? "", decimals: t?.decimals ?? 0, known: t?.known ?? false, amount: "0", ...(t?.onChoice ? { onChoice: true } : {}) };
       return hiddenWhy(b, filter, fee) !== null;
     });
-  const loaded = onSolana ? (items ?? []) : (items ?? []).filter((a) => cutoff === null || BigInt(a.height) >= BigInt(cutoff));
+  const loaded = other ? (items ?? []) : (items ?? []).filter((a) => cutoff === null || BigInt(a.height) >= BigInt(cutoff));
   const hiddenCount = loaded.filter(junk).length;
   const visible = showHidden ? loaded : loaded.filter((a) => !junk(a));
 
@@ -164,7 +175,7 @@ export function ActivityView({
       tabs={tabs}
       top={
         <>
-          <ChainMark chain={chain} small />
+          <ChainMark chain={chain} network={network} small />
           <span className="title">Activity</span>
           <button className={busy ? "icon-btn busy" : "icon-btn"} aria-label="Refresh" disabled={busy} onClick={() => void load(1)}>
             <RefreshIcon />
@@ -175,7 +186,7 @@ export function ActivityView({
       {error && <Callout level="amber">{error}</Callout>}
       {items === null ? (
         !error && [0, 1, 2, 3].map((i) => <div key={i} className="skeleton" style={{ height: 44 }} />)
-      ) : visible.length === 0 && hiddenCount === 0 && !more && !sol?.next ? (
+      ) : visible.length === 0 && hiddenCount === 0 && !more && !sol?.next && !evm?.next ? (
         <p className="empty">No activity yet.</p>
       ) : (
         <>
@@ -190,7 +201,15 @@ export function ActivityView({
                     tokens={tokens}
                     validators={validators}
                     dim={junk(a)}
-                    onOpen={() => backend.openLink(a.chain ? NETWORKS[network].solana.explorerTx.replace("{hash}", a.hash) : explorerTxUrl(NETWORKS[network], a.evmHash ?? a.hash))}
+                    onOpen={() =>
+                      backend.openLink(
+                        a.chain?.startsWith("eip155:")
+                          ? (chainByCaip2(network, a.chain)?.explorerTx ?? "").replace("{hash}", a.hash)
+                          : a.chain
+                            ? NETWORKS[network].solana.explorerTx.replace("{hash}", a.hash)
+                            : explorerTxUrl(NETWORKS[network], a.evmHash ?? a.hash),
+                      )
+                    }
                   />
                 ))}
               </div>
@@ -203,15 +222,20 @@ export function ActivityView({
               <ChevronDownIcon size={16} />
             </button>
           )}
-          {(onSolana ? sol?.next : more) && (
-            <button className="btn btn-quiet" disabled={busy} onClick={() => void (onSolana ? loadSolana(sol!.next!) : load(page + 1))}>
+          {(onSolana ? sol?.next : evmChain ? evm?.next : more) && (
+            <button className="btn btn-quiet" disabled={busy} onClick={() => void (onSolana ? loadSolana(sol!.next!) : evmChain ? loadChain(evm!.next!) : load(page + 1))}>
               {busy ? "Loading…" : "Load more"}
             </button>
           )}
         </>
       )}
-      {!onSolana && indexDown && <p className="footnote">Blockscout didn't answer, so some EVM transfers may be missing.</p>}
-      <p className="footnote">From your endpoints. How far back depends on the node.</p>
+      {!other && indexDown && <p className="footnote">Blockscout didn't answer, so some EVM transfers may be missing.</p>}
+      {evmChain && evm?.indexDown && <p className="footnote">The index didn&apos;t answer: only what this wallet sent shows.</p>}
+      {evmChain && evm && !evm.indexed ? (
+        <p className="footnote">Only what this wallet sent on {evmChain.name}. Add an index in Settings for the rest.</p>
+      ) : (
+        <p className="footnote">From your endpoints. How far back depends on the node.</p>
+      )}
     </Screen>
   );
 }

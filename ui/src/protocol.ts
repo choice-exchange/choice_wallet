@@ -92,8 +92,20 @@ export type UiRequest =
   /** The chain Home shows, and mainnet or test networks; endpoints stay as they are. */
   | { type: "pick_chain"; chain: ChainView; network?: NetworkId }
   /** Each endpoint list: `null` for the defaults, absent to leave it. `chain` is one EVM
-   *  chain's (not Injective's own EVM side, which is `evm`). */
-  | { type: "save_settings"; network: NetworkId; lcd?: string[] | null; evm?: string[] | null; evmIndex?: string[] | null; solana?: string[] | null; chain?: { key: string; rpc: string[] | null }; prices?: boolean; autoLock?: number; notify?: NotifyMode }
+   *  chain's (not Injective's own EVM side, which is `evm`): its endpoints, and the indexes
+   *  that find its history (an empty list turns that off). */
+  | {
+      type: "save_settings";
+      network: NetworkId;
+      lcd?: string[] | null;
+      evm?: string[] | null;
+      evmIndex?: string[] | null;
+      solana?: string[] | null;
+      chain?: { key: string; rpc?: string[] | null; index?: string[] | null };
+      prices?: boolean;
+      autoLock?: number;
+      notify?: NotifyMode;
+    }
   | { type: "balances" }
   /** What the account in use showed last (balances, staking, the first page of activity),
    *  from disk: drawn at once while the chain is asked again. */
@@ -109,6 +121,8 @@ export type UiRequest =
   | { type: "activity"; page: number }
   /** The account's Solana history, newest first; `before` continues after a page. */
   | { type: "solana_activity"; before?: string }
+  /** A page of the account's history on an EVM chain beside Injective (by its key). */
+  | { type: "chain_activity"; chain: string; page?: number }
   /** Burns on Solana whose record's rent comes back (5 days on), and taking one back. */
   | { type: "bridge_reclaims" }
   | { type: "prepare_bridge_reclaim"; hash: string }
@@ -805,6 +819,9 @@ export type Settings = {
   /** Each EVM chain's endpoints by chain key, and the defaults. */
   chains: Record<NetworkId, Record<string, string[]>>;
   chainsDefault: Record<NetworkId, Record<string, string[]>>;
+  /** Each EVM chain's history indexes (Etherscan-style; empty: off), and the defaults. */
+  chainHistory: Record<NetworkId, Record<string, string[]>>;
+  chainHistoryDefault: Record<NetworkId, Record<string, string[]>>;
   /** Show USD values (Choice's price index). */
   prices: boolean;
   /** Minutes without activity before the wallet locks: 5, 15, 60 or 240. */
@@ -893,6 +910,8 @@ export type Replies = {
     chains?: ChainHoldings[];
   };
   solana_activity: { items: ActivityItem[]; tokens: Record<string, TokenInfo>; next: string | null };
+  /** `indexed`: an index looked for history; without one, only what the wallet sent there. */
+  chain_activity: { items: ActivityItem[]; tokens: Record<string, TokenInfo>; next: number | null; indexed: boolean; indexDown?: true };
   bridge_reclaims: { hash: string; event: string; ready: boolean; at: number }[];
   prepare_bridge_reclaim: SendReview;
   snapshot: SnapshotView | null;

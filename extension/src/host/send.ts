@@ -55,6 +55,8 @@ export interface SendDeps extends HoldingsDeps {
   /** A client for an EVM chain beside Injective, on the user's endpoints for it
    *  (./evmchains.ts). Without it, the chain's default endpoints. */
   chainRpc?(network: NetworkId, key: string): Promise<EvmRpc>;
+  /** A transaction just broadcast on another EVM chain, for that chain's history. */
+  onChainSent?(network: NetworkId, key: string, from: string, hash: string): Promise<void>;
 }
 
 /** Another EVM chain than Injective's: what sending on it needs. */
@@ -761,6 +763,9 @@ export function createSender(d: SendDeps) {
         if (!(e instanceof ChainError && /already known|already imported|known transaction/i.test(e.message))) return chainFailure(e);
       }
       if (p.deposit) await d.onDeposit?.(p.network, { chain: p.source.key, hash, ...p.deposit });
+      // The signer's 0x address, as the request the vault read names it.
+      const signer = (p.request as { evm_transaction?: { tx?: { from?: unknown } } }).evm_transaction?.tx?.from;
+      if (typeof signer === "string") await d.onChainSent?.(p.network, p.source.key, signer, hash).catch(() => {});
       return { ok: true, result: { hash, explorer: p.source.explorerTx.replace("{hash}", hash), chain: p.source.key } };
     }
     if (p.evm) {

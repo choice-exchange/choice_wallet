@@ -1051,16 +1051,19 @@ try {
   await p.waitText("Gas on Base");
   await p.shot("16zb-home-base");
   if (!(await p.eval(`document.querySelector("[aria-label='Copy address']")?.title ?? ""`)).startsWith("0x")) throw new Error("Base's Home doesn't show the 0x address");
+  await p.click("Activity");
+  await p.waitText("Only what this wallet sent on Base");
+  await p.shot("16zd-activity-base");
   await p.click("Settings");
   await p.waitText("Base (JSON-RPC)");
-  const areas = await p.eval(`document.querySelectorAll("textarea").length`);
-  if (areas !== 1) throw new Error(`Settings on Base shows ${areas} endpoint lists`);
+  const areas = await p.eval(`[...document.querySelectorAll("textarea")].map((t) => t.getAttribute("aria-label")).join(",")`);
+  if (areas !== "Base endpoints,Base history") throw new Error(`Settings on Base shows: ${areas}`);
   await p.shot("16zc-settings-base");
   await p.click("Wallet");
   await p.click("Chain: Base. Change chain");
   await p.eval(`[...document.querySelectorAll(".chain-row")].find((b) => b.querySelector(".symbol")?.textContent === "Injective").click()`);
   await p.waitText("Manage", 15000);
-  console.log("chains: Base from the sheet, its coin and USDC, and Settings with only Base's endpoints");
+  console.log("chains: Base from the sheet, its coin and USDC, its Activity, and Settings with only Base's endpoints");
 
   await p.click("Settings");
   await settingsLoaded();
