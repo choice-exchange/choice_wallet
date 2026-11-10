@@ -198,6 +198,11 @@ export function ApproveView({ id }: { id: string }) {
           <code className="mono address meta" style={{ display: "block", marginTop: 4 }}>
             {account?.addresses[net.evm]}
           </code>
+          {account?.addresses[net.solana.caip2] && (
+            <code className="mono address meta" style={{ display: "block", marginTop: 4 }}>
+              {account.addresses[net.solana.caip2]}
+            </code>
+          )}
           <p className="meta" style={{ marginTop: 12 }}>
             Connect only to sites you trust. You can disconnect in Settings.
           </p>
@@ -241,7 +246,8 @@ function SignBody({ review, network, typed, onTyped }: { review: DappReview; net
         messages: (injTx["messages"] ?? []) as CosmosDisplay["messages"],
       }
     : null;
-  const isTx = d["kind"] === "evm_transaction" || d["kind"] === "cosmos_direct" || d["kind"] === "cosmos_amino" || txLike !== null;
+  const solana = d["kind"] === "solana_transaction";
+  const isTx = d["kind"] === "evm_transaction" || d["kind"] === "cosmos_direct" || d["kind"] === "cosmos_amino" || solana || txLike !== null;
   const view = isTx ? shown((txLike ?? display) as CosmosDisplay, network) : null;
   const messages = (txLike ?? (display as CosmosDisplay)).messages ?? [];
 
@@ -306,6 +312,16 @@ function SignBody({ review, network, typed, onTyped }: { review: DappReview; net
 
       {view && <SwapCards view={view} tokens={tokens} network={network} from={String(d["from"] ?? "")} />}
       {d["kind"] === "evm_transaction" && view?.sends.length === 0 && view.swaps.length === 0 && view.approvals.length === 0 && <EvmCall d={d} />}
+      {solana && view && view.others.length > 0 && (
+        <div className="surface">
+          <div className="eyebrow">It also</div>
+          <ul className="grant-list">
+            {view.others.map((o, i) => (
+              <li key={i}>{o}</li>
+            ))}
+          </ul>
+        </div>
+      )}
       {isTx &&
         d["kind"] !== "evm_transaction" &&
         messages
@@ -316,7 +332,7 @@ function SignBody({ review, network, typed, onTyped }: { review: DappReview; net
           })
           .map((m, i) => <MessageCard key={`m${i}`} m={m as Record<string, unknown>} />)}
 
-      {(d["kind"] === "evm_personal_sign" || d["kind"] === "cosmos_arbitrary") && (
+      {(d["kind"] === "evm_personal_sign" || d["kind"] === "cosmos_arbitrary" || d["kind"] === "solana_message") && (
         <div className="surface-hero">
           <div className="eyebrow">Message</div>
           <pre className="message-box">{typeof d["text"] === "string" ? d["text"] : String(d["hex"])}</pre>
@@ -335,7 +351,7 @@ function SignBody({ review, network, typed, onTyped }: { review: DappReview; net
         <div className="row">
           <span>Network</span>
           <span>
-            {net.name}
+            {solana || d["kind"] === "solana_message" ? net.solana.name : net.name}
             {d["kind"] === "evm_transaction" ? " (EVM)" : ""}
           </span>
         </div>

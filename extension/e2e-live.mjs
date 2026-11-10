@@ -81,6 +81,26 @@ window.__signAndSend = async ({ from, to, amount, pubKey, accountNumber, sequenc
     window.__sent = { error: String(e && e.message || e) };
   }
 };
+// Solana wallets, through the Wallet Standard; a SOL transfer built by hand, as a library would.
+window.__std = [];
+{
+  const api = { register: (w) => { window.__std.push(w); return () => {}; } };
+  addEventListener("wallet-standard:register-wallet", (e) => e.detail(api));
+  dispatchEvent(new CustomEvent("wallet-standard:app-ready", { detail: api }));
+}
+const B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+const fromB58 = (s) => { let n = 0n; for (const c of s) n = n * 58n + BigInt(B58.indexOf(c)); return hex(n.toString(16).padStart(64, "0")); };
+const toB58 = (b) => { let n = 0n; for (const x of b) n = n * 256n + BigInt(x); let o = ""; while (n > 0n) { o = B58[Number(n % 58n)] + o; n /= 58n; } for (const x of b) { if (x !== 0) break; o = "1" + o; } return o; };
+window.__solSend = ({ to, lamports, blockhash, v0 }) => {
+  const w = window.__std[0];
+  const me = w.accounts[0];
+  const data = new Uint8Array(12);
+  new DataView(data.buffer).setUint32(0, 2, true);
+  new DataView(data.buffer).setBigUint64(4, BigInt(lamports), true);
+  const msg = cat(v0 ? [0x80] : [], [1, 0, 1, 3], me.publicKey, fromB58(to), new Uint8Array(32), fromB58(blockhash), [1, 2, 2, 0, 1, 12], data, v0 ? [0] : []);
+  const tx = cat([1], new Uint8Array(64), msg);
+  window.__r = w.features["solana:signAndSendTransaction"].signAndSendTransaction({ account: me, chain: "solana:devnet", transaction: tx }).then((r) => ({ ok: toB58(r[0].signature) }), (e) => ({ code: e.code, message: e.message }));
+};
 </script>`;
 
 const LCD = "https://testnet.sentry.lcd.injective.network";
@@ -1369,6 +1389,44 @@ try {
     await waitText("Use Injective");
     await shot("live-sol6-swap");
     console.log("LIVE SOLANA OK");
+  } else if (tokenContract === "solsite") {
+    // A site on Solana Devnet, through the Wallet Standard: connect, then a v0 transfer of
+    // `amount` SOL to `recipient` that the site builds, signed and sent by the wallet.
+    const sol = async (method, params) => {
+      const r = await fetch("https://api.devnet.solana.com", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) });
+      return (await r.json()).result;
+    };
+    const { server, onSite, approve, reply } = await startSite();
+    for (let n = 0; !(await onSite("window.__std.length > 0")); n += 200) {
+      if (n > 10000) throw new Error("the site didn't find a Wallet Standard wallet");
+      await sleep(200);
+    }
+    const wallet = await onSite(`window.__std.map((w) => w.name + "|" + w.chains.join(",")).join(" ")`);
+    if (wallet !== "Choice Wallet|solana:mainnet,solana:devnet") throw new Error(`the site sees ${wallet}`);
+    await onSite(`void (window.__r = window.__std[0].features["standard:connect"].connect().then((r) => ({ ok: r.accounts.map((a) => a.address + "|" + a.chains.join()) }), (e) => ({ code: e.code, message: e.message })))`);
+    await approve("wants to connect", "Connect", "live-ss1-connect");
+    const [connectedAs] = await reply();
+    const [me, chains] = connectedAs.split("|");
+    if (chains !== "solana:devnet") throw new Error(`the account is on ${chains}`);
+    const lamports = BigInt(Math.round(Number(amount) * 1e9));
+    const before = { me: BigInt((await sol("getBalance", [me])).value), to: BigInt((await sol("getBalance", [recipient])).value) };
+    const { blockhash } = (await sol("getLatestBlockhash", [{ commitment: "confirmed" }])).value;
+    await onSite(`window.__solSend(${JSON.stringify({ to: recipient, lamports: lamports.toString(), blockhash, v0: true })})`);
+    const body = await approve("Simulated on", "Sign", "live-ss2-solana-tx");
+    if (!body.includes("Solana Devnet")) throw new Error(`the approval isn't for Solana Devnet: ${body}`);
+    console.log("approval:", body.split("\n").filter((l) => /SOL|Simulated|fee/i.test(l)).join(" | "));
+    const signature = await reply();
+    let tx = null;
+    for (let n = 0; !tx; n += 2000) {
+      if (n > 90000) throw new Error(`${signature} didn't land`);
+      await sleep(2000);
+      tx = await sol("getTransaction", [signature, { encoding: "json", maxSupportedTransactionVersion: 0, commitment: "confirmed" }]);
+    }
+    const after = { me: BigInt((await sol("getBalance", [me])).value), to: BigInt((await sol("getBalance", [recipient])).value) };
+    console.log(`site's v0 transfer ${signature}: recipient +${after.to - before.to} (asked ${lamports}), sender -${before.me - after.me} (fee ${tx.meta.fee}), version ${tx.version}`);
+    if (tx.meta.err !== null || after.to - before.to !== lamports || before.me - after.me !== lamports + BigInt(tx.meta.fee)) throw new Error("the site's transfer didn't land as asked");
+    server.close();
+    console.log("LIVE SOLANA SITE OK");
   } else if (tokenContract === "activity") {
     // 3a. Activity, read back from testnet's own endpoints and Blockscout.
     await click("Activity");

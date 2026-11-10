@@ -124,6 +124,11 @@ const lcd = createServer((req, res) => {
         window.__wallets = [];
         addEventListener("eip6963:announceProvider", (e) => window.__wallets.push(e.detail));
         dispatchEvent(new Event("eip6963:requestProvider"));
+        // Solana wallets, through the Wallet Standard (the app says it's ready).
+        window.__std = [];
+        const api = { register: (w) => { window.__std.push(w); return () => {}; } };
+        addEventListener("wallet-standard:register-wallet", (e) => e.detail(api));
+        dispatchEvent(new CustomEvent("wallet-standard:app-ready", { detail: api }));
         window.__ask = (method, params) => { const w = window.__wallets.find((d) => d.info.rdns === "exchange.choice.wallet"); window.__r = w.provider.request({ method, params }).then((r) => ({ ok: r }), (e) => ({ code: e.code, message: e.message })); };
       </script>`);
     }
@@ -1125,6 +1130,27 @@ try {
   if (Buffer.from(stdSig.signature, "base64").toString("hex") !== arbExpected) throw new Error("signArbitrary: the page's signature isn't the vault's");
   await site.eval(`void (window.__r = window.choice.verifyArbitrary("injective-1", ${JSON.stringify(addrs[0])}, ${JSON.stringify(arbitraryText)}, ${JSON.stringify(stdSig)}).then((r) => ({ ok: r }), (e) => ({ code: e.code, message: e.message })))`);
   if ((await answer()).ok !== true) throw new Error("verifyArbitrary didn't accept the wallet's own signature");
+  // Solana through the Wallet Standard: the site, connected already, sees the account's
+  // Solana address, and a message it signs is the vault's ed25519 signature of its bytes.
+  const std = await site.eval(`window.__std.map((w) => w.name + "|" + w.chains.join(",") + "|" + Object.keys(w.features).sort().join(",")).join(" ")`);
+  const wantStd = "Choice Wallet|solana:mainnet,solana:devnet|solana:signAndSendTransaction,solana:signMessage,solana:signTransaction,standard:connect,standard:disconnect,standard:events";
+  if (std !== wantStd) throw new Error(`Wallet Standard: the site sees ${std}`);
+  const solAddr = v("accounts", { secret, wallet: "w", unlock_key, accounts: [{ derivation: "default", index: 0 }] }).accounts[0].addresses["solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"];
+  await site.eval(`void (window.__r = window.__std[0].features["standard:connect"].connect().then((r) => ({ ok: r.accounts.map((a) => a.address + ":" + a.publicKey.length + ":" + a.chains.join()) }), (e) => ({ code: e.code, message: e.message })))`);
+  const solAccounts = (await answer()).ok;
+  if (JSON.stringify(solAccounts) !== JSON.stringify([`${solAddr}:32:solana:mainnet`])) throw new Error(`standard:connect: ${JSON.stringify(await answer())}`);
+  const solText = "Sign in with Solana to the test dapp";
+  await site.eval(`void (window.__r = (() => { const w = window.__std[0]; return w.features["solana:signMessage"].signMessage({ account: w.accounts[0], message: new TextEncoder().encode(${JSON.stringify(solText)}) }).then((r) => ({ ok: Array.from(r[0].signature, (b) => b.toString(16).padStart(2, "0")).join("") + "|" + new TextDecoder().decode(r[0].signedMessage) }), (e) => ({ code: e.code, message: e.message })); })())`);
+  const solSign = await approval();
+  await solSign.waitText(solText, 15000);
+  await solSign.waitText("Solana");
+  await solSign.shot("18c-site-solana-sign-message");
+  await sleep(900);
+  await solSign.click("Sign");
+  const solRequest = { solana_message: { chain: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp", signer: solAddr, message: Buffer.from(solText).toString("hex") } };
+  const solExpected = v("sign", { secret, wallet: "w", unlock_key, account: { derivation: "default", index: 0 }, request: solRequest, digest: v("decode", { request: solRequest }).digest }).signature;
+  for (let t = 0; t < 50 && !(await answer()); t++) await sleep(100);
+  if ((await answer()).ok !== `${solExpected}|${solText}`) throw new Error(`solana:signMessage: ${JSON.stringify(await answer())}, the vault signs ${solExpected}`);
   await p.click("Settings");
   await p.waitText(lcdUrl);
   await p.eval(`document.querySelector(".site-row")?.scrollIntoView()`);
@@ -1133,7 +1159,7 @@ try {
   await p.waitText("None. A site asks first, in its own window.");
   await ask("eth_accounts");
   if (JSON.stringify((await answer()).ok) !== "[]") throw new Error("a disconnected site still sees the account");
-  console.log("site: found by EIP-6963, connect rejected then approved, personal_sign and signArbitrary = the vault's signatures (verifyArbitrary agrees), disconnected");
+  console.log("site: found by EIP-6963, connect rejected then approved, personal_sign and signArbitrary = the vault's signatures (verifyArbitrary agrees); Solana found by the Wallet Standard, signMessage = the vault's ed25519 signature; disconnected");
 
   // 9. Accounts: a second one from the phrase (the same address the vault derives in Node),
   // renamed; an address to watch, which can't send; then back to the first.

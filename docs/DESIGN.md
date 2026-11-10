@@ -347,6 +347,10 @@ Built (2026-11-09) and checked on testnet through the extension: a test site con
   - `signDirect` is simulated first, unsigned, on the user's endpoints: the approval shows what this account would see (from the bank and CW20 events, the fee apart), or why it would fail.
   - The wallet signs exactly what the dapp sent and never changes its fee.
   - Later: `signEthereum`, `experimentalSuggestChain` (other chains come with phase 3).
+- **Solana:** a wallet registered by the Wallet Standard (answering `wallet-standard:app-ready` too), with the chains `solana:mainnet` and `solana:devnet`; a site sees the cluster beside the wallet's network.
+  - `standard:connect` (a silent connect asks nobody and returns only what a connected site sees), `standard:disconnect` (the site's one grant, so its EVM and Cosmos connection too), `standard:events` (`change` with the accounts), `solana:signTransaction` and `solana:signAndSendTransaction` (legacy and v0), `solana:signMessage`.
+  - A site's transaction is signed as sent: its other signatures are kept, and the account's goes in its place. The lookup tables a v0 message reads come from the user's Solana endpoint, and the vault reads the message with them. Before the window shows, the transaction is simulated with what the account and each token account it writes hold after it, so the review says what the account would see (or why it fails) beside the vault's reading. `signAndSendTransaction` sends through the user's endpoint and refuses a transaction still missing another signature.
+  - `signMessage`: the vault refuses bytes that read as a transaction; Sign In With Solana text gets the same checks as SIWE.
 - **Later adapters:** Interchain Kit (Cosmos Kit's successor) and graz. EIP-5792 `wallet_sendCalls` with `atomicRequired: false`.
 - **Choice apps first:** choice.exchange and the Choice bridge integrate first.
 - **Mobile (phase 2):** Reown WalletKit and an in-app browser.

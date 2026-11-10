@@ -129,6 +129,11 @@ export function SettingsView({
           </>
         }
       >
+        {/* Shown once the saved settings are read, so nothing chosen before then is put back. */}
+        {!settings ? (
+          [0, 1, 2].map((k) => <div key={k} className="skeleton" style={{ height: 56 }} />)
+        ) : (
+          <>
         <div className="eyebrow">Endpoints · {net === "testnet" ? "Test networks" : "Mainnet"}</div>
         <label className="meta" htmlFor="lcd-endpoints">
           Injective (LCD)
@@ -229,6 +234,8 @@ export function SettingsView({
               ? "Every account, each minute. Your endpoint sees them together."
               : "Tokens in and out, checked each minute, even while locked."}
         </span>
+          </>
+        )}
         <div className="eyebrow" style={{ marginTop: 8 }}>
           Connected sites
         </div>
@@ -275,7 +282,7 @@ export function SettingsView({
         <div className="eyebrow" style={{ marginTop: 8 }}>
           Security
         </div>
-        <Segmented label="Lock after" options={LOCK_AFTER} value={lockAfter as (typeof LOCK_AFTER)[number][0]} onChange={setLockAfter} />
+        {settings && <Segmented label="Lock after" options={LOCK_AFTER} value={lockAfter as (typeof LOCK_AFTER)[number][0]} onChange={setLockAfter} />}
         <span className="meta">Locks after this long without use.</span>
         <button type="button" className="btn" onClick={onLock}>
           <LockIcon /> Lock now
