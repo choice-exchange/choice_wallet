@@ -690,6 +690,15 @@ const ok_err = (id: number, code: number, message: string) => new Response(JSON.
 
 const B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 /** A 32-byte Solana address's bytes. */
+/** A legacy SOL transfer from the account, as a site would build it: unsigned. */
+export function solTransfer(lamports: bigint): Uint8Array {
+  const data = new Uint8Array(12);
+  new DataView(data.buffer).setUint32(0, 2, true);
+  new DataView(data.buffer).setBigUint64(4, lamports, true);
+  const keys = [ME_SOL, THEM_SOL, "11111111111111111111111111111111"].map(base58Decode);
+  const message = Uint8Array.from([1, 0, 1, 3, ...keys.flatMap((k) => [...k]), ...new Uint8Array(32).fill(9), 1, 2, 2, 0, 1, 12, ...data]);
+  return Uint8Array.from([1, ...new Uint8Array(64), ...message]);
+}
 export function base58Decode(s: string): Uint8Array {
   let n = 0n;
   for (const c of s) n = n * 58n + BigInt(B58.indexOf(c));

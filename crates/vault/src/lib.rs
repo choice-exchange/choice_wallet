@@ -31,9 +31,9 @@
 //! | `build_evm` | chain, from, to, amount, token, fees | a sign request |
 //! | `decode` | `request`, `context` (optional) | `display`, `risk`, `digest` |
 //! | `sign` | `secret`, `wallet`, `unlock_key`, `account`, `request`, `digest` | signature and signed tx |
-//! | `key_addresses` | `public_key` (a hardware wallet's account, from the device) | its addresses on every chain |
-//! | `device_request` | `request`, `digest` | what a hardware wallet signs: `app` (`cosmos`, `ethereum`), `kind`, `payload` |
-//! | `device_sign` | `request`, `digest`, `public_key`, `signature`, `format` (`der`, `rs`) | as `sign`, from the device's signature |
+//! | `key_addresses` | `public_key` (a hardware wallet's account, from the device), `solana_public_key` (optional, from its Solana app) | its addresses on every chain |
+//! | `device_request` | `request`, `digest` | what a hardware wallet signs: `app` (`cosmos`, `ethereum`, `solana`), `kind`, `payload` |
+//! | `device_sign` | `request`, `digest`, `public_key`, `signature`, `format` (`der`, `rs`; Solana's 64 bytes are `rs`) | as `sign`, from the device's signature |
 //! | `verify_arbitrary` | `chain`, `address`, `data`, `public_key`, `signature` (`r \|\| s`) | `valid`: an ADR-036 signature of `data` by `address` |
 //!
 //! A hardware wallet's account has no secret here. The host keeps its public key (read from
@@ -127,6 +127,9 @@ struct Addresses {
 #[serde(deny_unknown_fields)]
 struct KeyAddresses {
     public_key: String,
+    /// The account's key from the device's Solana app (32 bytes, hex), if it was read.
+    #[serde(default)]
+    solana_public_key: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -353,15 +356,26 @@ fn call(request: &str) -> Result<Value, VaultError> {
             request::sign(checked, &digest, &key)
         }
         "key_addresses" => {
-            let KeyAddresses { public_key } = params(p)?;
+            let KeyAddresses {
+                public_key,
+                solana_public_key,
+            } = params(p)?;
             let pk = device_key(&public_key)?;
-            Ok(json!({
-                "public_key": hexutil::encode(&pk.compressed()),
-                "addresses": chains::CHAINS
-                    .iter()
-                    .map(|c| (c.id.to_owned(), Value::String(c.address(&pk))))
-                    .collect::<serde_json::Map<String, Value>>(),
-            }))
+            let mut addresses = chains::CHAINS
+                .iter()
+                .map(|c| (c.id.to_owned(), Value::String(c.address(&pk))))
+                .collect::<serde_json::Map<String, Value>>();
+            if let Some(k) = solana_public_key {
+                let k: [u8; 32] = util::hex(&k, "solana_public_key")?
+                    .try_into()
+                    .ok()
+                    .filter(choice_wallet_core::ed25519::on_curve)
+                    .ok_or_else(|| VaultError::bad("solana_public_key is not an ed25519 public key"))?;
+                for c in chains::SOLANA {
+                    addresses.insert(c.id.to_owned(), Value::String(choice_wallet_core::base58::encode(&k)));
+                }
+            }
+            Ok(json!({ "public_key": hexutil::encode(&pk.compressed()), "addresses": addresses }))
         }
         "verify_arbitrary" => {
             let VerifyArbitrary {

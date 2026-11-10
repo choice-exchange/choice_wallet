@@ -277,6 +277,10 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
     {
       chain: "solana",
       ...(solAddress ? { address: solAddress } : {}),
+      // A Ledger account's Solana key comes from the device's Solana app.
+      ...(!solAddress && account?.account.derivation === "ledger" && backend.ledger && backend.openLedgerPage
+        ? { add: { label: "Add from your Ledger", run: () => backend.openLedgerPage?.("solana") } }
+        : {}),
       total: solTotal?.text ?? (balances === null ? null : "0 SOL"),
       holds: solana ? holdsLine(solana.balances) : "",
     },

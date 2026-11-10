@@ -646,10 +646,14 @@ export function createDapps(h: DappHost) {
       const { digest, display, risk } = d.result;
       // What a Ledger can't sign is said before the user reads the whole request.
       const kind = (display as { kind?: unknown }).kind;
-      if (u.account.account.derivation === "ledger" && (kind === "cosmos_direct" || kind === "evm_typed_data")) {
+      if (u.account.account.derivation === "ledger" && (kind === "cosmos_direct" || kind === "evm_typed_data" || kind === "solana_message")) {
         return fail(
           "device_unsupported",
-          kind === "cosmos_direct" ? "This account is on a Ledger, which signs amino JSON only. The site must ask for an amino signature." : "A Ledger account can't sign typed data in Choice Wallet yet.",
+          kind === "cosmos_direct"
+            ? "This account is on a Ledger, which signs amino JSON only. The site must ask for an amino signature."
+            : kind === "solana_message"
+              ? "A Ledger account can't sign Solana messages in Choice Wallet."
+              : "A Ledger account can't sign typed data in Choice Wallet yet.",
         );
       }
       w.prepared = { request: built.request, digest, confirm: risk.confirm ?? null, blocked: risk.level === "blocked" };
@@ -696,8 +700,11 @@ export function createDapps(h: DappHost) {
       // The device signs: it gets the vault's bytes; the request waits for its signature.
       const dev = await h.vault<Omit<DeviceRequest, "path">>("device_request", { request: p.request, digest: p.digest });
       if (!dev.ok) return dev;
-      const request: DeviceRequest = { ...dev.result, path: u.account.account.path };
-      w.device = { request, publicKey: u.account.public_key };
+      // A Solana request goes to the Solana app, with the key read from there.
+      const sol = dev.result.app === "solana" ? u.account.ledger_solana : undefined;
+      if (dev.result.app === "solana" && !sol) return fail("device_unsupported", "Add this account's Solana key from your Ledger first.");
+      const request: DeviceRequest = { ...dev.result, path: sol?.path ?? u.account.account.path };
+      w.device = { request, publicKey: sol?.public_key ?? u.account.public_key };
       return { ok: true, result: { device: request } };
     }
     // Answered once: from here the request is the page's, whatever happens.

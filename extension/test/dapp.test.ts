@@ -8,7 +8,7 @@ import { test } from "node:test";
 import { dappOrigin } from "../src/service";
 import { ed25519 } from "@noble/curves/ed25519";
 
-import { base58Decode, bs58, callVault, chain, code, handle, INJ, ME, ME_EVM, ME_SOL, ok, PASSWORD, PHRASE, THEM, THEM_EVM, THEM_SOL, wallet } from "./fake";
+import { base58Decode, bs58, callVault, chain, code, handle, INJ, ME, ME_EVM, ME_SOL, ok, PASSWORD, PHRASE, solTransfer, THEM, THEM_EVM, THEM_SOL, wallet } from "./fake";
 
 const SITE = "https://app.example";
 const OTHER = "https://other.example";
@@ -255,15 +255,6 @@ test("signArbitrary (ADR-036): the window shows the text; the page gets injectiv
   assert.equal(await site("choice_verifyArbitrary", { chainId: "injective-1", signer: ME, data: "00", signature: got }).then((r) => r.result), false);
 });
 
-/** A legacy SOL transfer from the account, as a site would build it: unsigned. */
-function solTransfer(lamports: bigint): Uint8Array {
-  const data = new Uint8Array(12);
-  new DataView(data.buffer).setUint32(0, 2, true);
-  new DataView(data.buffer).setBigUint64(4, lamports, true);
-  const keys = [ME_SOL, THEM_SOL, "11111111111111111111111111111111"].map(base58Decode);
-  const message = Uint8Array.from([1, 0, 1, 3, ...keys.flatMap((k) => [...k]), ...new Uint8Array(32).fill(9), 1, 2, 2, 0, 1, 12, ...data]);
-  return Uint8Array.from([1, ...new Uint8Array(64), ...message]);
-}
 const hexOf = (b: Uint8Array) => Buffer.from(b).toString("hex");
 
 test("Solana sites (Wallet Standard): connect, a transfer read by the vault and simulated, signed and sent; a message", async () => {

@@ -17,7 +17,10 @@ export interface LedgerHost {
   pair(): Promise<void>;
   /** Public keys for these paths, from the Cosmos app, without showing them. */
   publicKeys(paths: string[], onStep?: (s: LedgerStep) => void): Promise<{ path: string; public_key: string; address: string }[]>;
-  /** Show the address at `path` on the device, to compare with the screen. */
+  /** Keys for these paths (`m/44'/501'/n'`), from the Solana app, without showing them. */
+  solanaKeys(paths: string[], onStep?: (s: LedgerStep) => void): Promise<{ path: string; public_key: string }[]>;
+  /** Show the address at `path` on the device (a Solana path: in the Solana app), to compare
+   *  with the screen. */
   show(path: string, onStep?: (s: LedgerStep) => void): Promise<void>;
   /** Sign what the vault gave, on the device. */
   sign(req: DeviceRequest, onStep?: (s: LedgerStep) => void): Promise<DeviceSignature>;
@@ -33,8 +36,8 @@ export interface Backend {
   /** A Ledger, where the platform can reach one. */
   ledger?: LedgerHost;
   /** Open the wallet's Ledger screen where pairing works (the extension: a tab, since the
-   *  device chooser closes a popup). */
-  openLedgerPage?(): void;
+   *  device chooser closes a popup): to add accounts, or the Solana keys of those here. */
+  openLedgerPage?(step?: "solana"): void;
   /** Call `listener` when the host says what the wallet shows has changed (a transaction
    *  landed, tokens came in). Returns the unsubscribe. */
   onRefresh?(listener: () => void): () => void;

@@ -255,6 +255,8 @@ export function createSolana(d: SolanaDeps) {
         request,
         account: account.account,
         wallet: account.wallet,
+        // A Ledger signs in its Solana app, with the key read from there.
+        ...(account.account.derivation === "ledger" && account.ledger_solana ? { ledgerKey: account.ledger_solana.public_key, ledgerPath: account.ledger_solana.path } : {}),
         confirm: risk.confirm ?? null,
         blocked: risk.level === "blocked",
         ...(spec.deposit ? { deposit: spec.deposit } : {}),

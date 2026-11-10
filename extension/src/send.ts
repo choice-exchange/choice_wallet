@@ -154,6 +154,9 @@ interface Pending {
   evm?: boolean;
   /** A Ledger account's public key: the device signs, and the vault checks it against this. */
   ledgerKey?: string;
+  /** Where the device signs, when not at the account's own path (a Solana transaction: its
+   *  key in the Solana app). */
+  ledgerPath?: string;
   /** The signer's inj1 address, for following the transaction once it is broadcast. */
   from?: string;
   /** Signed on another chain, where USDC comes from: broadcast there. */
@@ -1165,7 +1168,7 @@ export function createSender(d: SendDeps) {
       // The device signs: hand it the vault's bytes, and wait for its signature.
       const dev = await d.vault<Omit<DeviceRequest, "path">>("device_request", { request: p.request, digest: p.digest });
       if (!dev.ok) return dev;
-      const device: DeviceRequest = { ...dev.result, path: p.account.path };
+      const device: DeviceRequest = { ...dev.result, path: p.ledgerPath ?? p.account.path };
       await d.session.set({ pending_device: { pending: p, device } satisfies PendingDevice });
       return { ok: true, result: { device } };
     }

@@ -8,14 +8,24 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { callVault, chain, code, handle, INJ, LUMA, ok, PASSWORD, PHRASE, THEM, THEM_EVM, wallet } from "./fake";
+import { base58Decode, callVault, chain, code, handle, INJ, LUMA, ME_SOL, ok, PASSWORD, PHRASE, SOLANA_MAINNET, solTransfer, THEM, THEM_EVM, THEM_SOL, wallet } from "./fake";
 
 const SITE = "https://app.example";
 type Reply = { result?: unknown; error?: { code: number; message: string } };
 
 const PATH = "m/44'/60'/1'/0/0";
 type Device = { app: string; kind: string; payload: string; path: string };
-type Status = { wallets: { id: string; type: string; name: string }[]; accounts: { wallet: string; account: Record<string, unknown>; name: string; public_key: string; addresses: Record<string, string> }[]; active: number };
+type Status = {
+  wallets: { id: string; type: string; name: string }[];
+  accounts: { wallet: string; account: Record<string, unknown>; name: string; public_key: string; addresses: Record<string, string>; ledger_solana?: { path: string; public_key: string } }[];
+  active: number;
+};
+/** Its key in the Solana app, as the Ledger tab reads it for PATH: Ledger Live's account 1. */
+const SOLANA_PATH = "m/44'/501'/1'";
+/** That key. (The phrase's Phantom key stands in for the device's: the fake cluster knows
+ *  that account.) */
+const SOLANA_KEY = Buffer.from(base58Decode(ME_SOL)).toString("hex");
+const hexOf = (b: Uint8Array) => Buffer.from(b).toString("hex");
 
 /** The test phrase as a Ledger: its key on the Ledger Live path (`m/44'/60'/1'/0/0`). */
 function device() {
@@ -40,6 +50,15 @@ function device() {
       assert.ok(s.ok, JSON.stringify(s));
       const rs = s.result.signature.replace(/^0x/, "").slice(0, 128);
       return format === "rs" ? rs : der(rs);
+    },
+    /** What the Solana app returns for a transaction's message: its 64-byte signature. */
+    solanaSign(message: string): string {
+      const request = { solana_transaction: { chain: SOLANA_MAINNET, signer: ME_SOL, message } };
+      const d = callVault<{ digest: string }>(handle, "decode", { request });
+      assert.ok(d.ok);
+      const s = callVault<{ signature: string }>(handle, "sign", { secret: sealed.result.secret, wallet: "d", unlock_key: v.result.unlock_key, account: { derivation: "default", index: 0 }, request, digest: d.result.digest });
+      assert.ok(s.ok, JSON.stringify(s));
+      return s.result.signature;
     },
   };
 }
@@ -163,4 +182,64 @@ test("a site's request on a Ledger: the device gets the message, the page gets i
   const direct = await nextWindow(2);
   assert.equal(ui.opened.length, 3, "signDirect from the Ledger account opens its window");
   assert.equal(code(await service.handle({ type: "dapp_review", id: direct })), "device_unsupported");
+});
+
+test("a Ledger's Solana: its key read from the Solana app, its sends signed there and checked", async () => {
+  const net = chain({ balances: { inj: INJ } });
+  const { service } = await wallet(net);
+  const dev = device();
+  ok(await service.handle({ type: "add_ledger", accounts: [{ path: PATH, public_key: dev.publicKey }] }));
+  // No Solana address until its Solana app's key is read.
+  assert.equal(code(await service.handle({ type: "prepare_send", denom: "sol", to: THEM_SOL, amount: "1000" })), "no_solana");
+  const add = (path: string, account = dev.publicKey, key = SOLANA_KEY) => service.handle({ type: "add_ledger_solana", accounts: [{ public_key: account, solana: { path, public_key: key } }] });
+  assert.equal(code(await add("m/44'/501'/1'/0'")), "bad_request");
+  assert.equal(code(await add(SOLANA_PATH, "02" + "11".repeat(32))), "bad_request");
+  // A program-derived address is no key a device holds.
+  assert.equal(code(await add(SOLANA_PATH, dev.publicKey, hexOf(base58Decode("45hzrGLQ2EGo1Ln7QpXjDwb589GDQ9H2aEXXw6ds6BFE")))), "bad_request");
+  const s = ok<Status>(await add(SOLANA_PATH));
+  const a = s.accounts[s.active]!;
+  assert.deepEqual([a.addresses[SOLANA_MAINNET], a.ledger_solana], [ME_SOL, { path: SOLANA_PATH, public_key: SOLANA_KEY }]);
+
+  // A send: the Solana app gets the message at its path; a bad signature sends nothing.
+  const review = ok<{ digest: string; display: { signer: string } }>(await service.handle({ type: "prepare_send", denom: "sol", to: THEM_SOL, amount: "250000000" }));
+  assert.equal(review.display.signer, ME_SOL);
+  const r = ok<{ device: Device }>(await service.handle({ type: "confirm_send", digest: review.digest }));
+  assert.deepEqual([r.device.app, r.device.kind, r.device.path], ["solana", "transaction", SOLANA_PATH]);
+  assert.equal(code(await service.handle({ type: "ledger_signed", digest: review.digest, signature: "00".repeat(64), format: "rs" })), "bad_signature");
+  assert.equal(net.state.solana.sent.length, 0);
+  const sent = ok<{ chain?: string }>(await service.handle({ type: "ledger_signed", digest: review.digest, signature: dev.solanaSign(r.device.payload), format: "rs" }));
+  assert.equal(sent.chain, SOLANA_MAINNET);
+  assert.equal(net.state.solana.sent.length, 1);
+});
+
+test("a Solana site on a Ledger: its transaction to the Solana app, a message refused before review", async () => {
+  const net = chain({ balances: { inj: INJ } });
+  const { service, ui } = await wallet(net);
+  const dev = device();
+  ok(await service.handle({ type: "add_ledger", accounts: [{ path: PATH, public_key: dev.publicKey }] }));
+  ok(await service.handle({ type: "add_ledger_solana", accounts: [{ public_key: dev.publicKey, solana: { path: SOLANA_PATH, public_key: SOLANA_KEY } }] }));
+  const site = (method: string, params?: unknown) => service.dapp(SITE, { method, params }) as Promise<Reply>;
+  const nextWindow = async (seen: number) => {
+    for (let i = 0; i < 200 && ui.opened.length <= seen; i++) await new Promise((r) => setTimeout(r, 5));
+    return ui.opened.at(-1)!;
+  };
+  const connecting = site("solana_connect", {});
+  ok(await service.handle({ type: "dapp_answer", id: await nextWindow(0), approve: true }));
+  assert.deepEqual(((await connecting).result as { accounts: { address: string }[] }).accounts.map((x) => x.address), [ME_SOL]);
+
+  net.state.solana.simulateSpend = 250_005_000n;
+  const sending = site("solana_signAndSendTransaction", { account: ME_SOL, chain: "solana:mainnet", transaction: hexOf(solTransfer(250_000_000n)) });
+  const id = await nextWindow(1);
+  const review = ok<{ digest: string }>(await service.handle({ type: "dapp_review", id }));
+  const r = ok<{ device: Device }>(await service.handle({ type: "dapp_answer", id, approve: true, digest: review.digest }));
+  assert.deepEqual([r.device.app, r.device.kind, r.device.path], ["solana", "transaction", SOLANA_PATH]);
+  assert.equal(code(await service.handle({ type: "dapp_ledger_signed", id, digest: review.digest, signature: "00".repeat(64), format: "rs" })), "bad_signature");
+  assert.equal(net.state.solana.sent.length, 0);
+  ok(await service.handle({ type: "dapp_ledger_signed", id, digest: review.digest, signature: dev.solanaSign(r.device.payload), format: "rs" }));
+  assert.equal(((await sending).result as { signature: string }).signature, dev.solanaSign(r.device.payload));
+  assert.equal(net.state.solana.sent.length, 1);
+
+  // The Solana app signs no plain messages here: the window says so before the request.
+  void site("solana_signMessage", { account: ME_SOL, message: hexOf(new TextEncoder().encode("Sign in")) });
+  assert.equal(code(await service.handle({ type: "dapp_review", id: await nextWindow(2) })), "device_unsupported");
 });

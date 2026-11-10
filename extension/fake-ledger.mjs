@@ -2,16 +2,20 @@
 //
 // The page gets a fake `navigator.hid` (PAGE_SCRIPT, installed before the page loads) whose
 // one device passes every 64-byte HID report to Node over a DevTools binding. Node plays the
-// device: Ledger's HID framing, the dashboard, and the Cosmos and Ethereum apps' commands as
-// Ledger's Device Management Kit sends them, signing with the BIP-39 test phrase's keys (the
+// device: Ledger's HID framing, the dashboard, and the Cosmos, Ethereum and Solana apps'
+// commands as Ledger's Device Management Kit (or ledger.ts) sends them, signing with the
+// BIP-39 test phrase's keys (the
 // "abandon … about" phrase, which belongs to no one). So the real kit, its WebHID transport
 // and the vault's signature checks all run; only the device is pretend.
 //
 // It needs @noble/curves, @noble/hashes and @scure/* from tools/vectors (npm install there).
 
+import { ed25519 } from "../tools/vectors/node_modules/@noble/curves/esm/ed25519.js";
 import { secp256k1 } from "../tools/vectors/node_modules/@noble/curves/esm/secp256k1.js";
+import { hmac } from "../tools/vectors/node_modules/@noble/hashes/esm/hmac.js";
+import { sha512 } from "../tools/vectors/node_modules/@noble/hashes/esm/sha2.js";
 import { keccak_256 } from "../tools/vectors/node_modules/@noble/hashes/esm/sha3.js";
-import { bech32 } from "../tools/vectors/node_modules/@scure/base/lib/esm/index.js";
+import { base58, bech32 } from "../tools/vectors/node_modules/@scure/base/lib/esm/index.js";
 import { HDKey } from "../tools/vectors/node_modules/@scure/bip32/lib/esm/index.js";
 import { mnemonicToSeedSync } from "../tools/vectors/node_modules/@scure/bip39/esm/index.js";
 
@@ -57,15 +61,29 @@ const u16 = (n) => [(n >> 8) & 0xff, n & 0xff];
 
 /** The device: give it `report(hex)` for each HID report; it answers with reports. */
 export function createFakeLedger({ log = () => {} } = {}) {
-  const root = HDKey.fromMasterSeed(mnemonicToSeedSync(TEST_PHRASE));
+  const seed = mnemonicToSeedSync(TEST_PHRASE);
+  const root = HDKey.fromMasterSeed(seed);
   let app = "BOLOS";
   let rx = null; // { channel, length, data[] } while an APDU arrives
   const signed = []; // what each app was asked to sign: { app, kind, path, payload }
   let cosmosSign = null; // { path, hrp, chunks[] }
   let confirming = false; // the last APDU asked the user to approve something
   let ethSign = null; // { ins, path, data[] }
+  let solSign = null; // { chunks[] }
 
   const keyAt = (path) => root.derive(path);
+  /** The Solana app's key at `path` (SLIP-0010 ed25519, every level hardened). */
+  const edKeyAt = (path) => {
+    let i = hmac(sha512, new TextEncoder().encode("ed25519 seed"), seed);
+    for (const part of path.slice(2).split("/")) {
+      if (!part.endsWith("'")) throw new Error(`ed25519 levels are hardened: ${path}`);
+      const data = new Uint8Array(37);
+      data.set(i.subarray(0, 32), 1);
+      new DataView(data.buffer).setUint32(33, (parseInt(part, 10) | 0x80000000) >>> 0);
+      i = hmac(sha512, i.subarray(32), data);
+    }
+    return i.subarray(0, 32);
+  };
   const pathFromLE = (b) => "m/" + Array.from({ length: 5 }, (_, i) => b.readUInt32LE(4 * i)).map((v) => (v & 0x80000000 ? `${v & 0x7fffffff}'` : `${v}`)).join("/");
   const pathFromBE = (b) => {
     const n = b[0];
@@ -85,12 +103,12 @@ export function createFakeLedger({ log = () => {} } = {}) {
     // Dashboard and OS.
     if (cla === 0xb0 && ins === 0x01) {
       const name = Buffer.from(app);
-      const version = Buffer.from(app === "BOLOS" ? "2.4.2" : app === "Cosmos" ? "2.38.0" : "1.15.0");
+      const version = Buffer.from(app === "BOLOS" ? "2.4.2" : app === "Cosmos" ? "2.38.0" : app === "Solana" ? "1.10.1" : "1.15.0");
       return ok([0x01, name.length, ...name, version.length, ...version, 0x01, 0x00]);
     }
     if (cla === 0xe0 && ins === 0xd8) {
       const name = data.toString();
-      if (name !== "Cosmos" && name !== "Ethereum") return sw(0x6807);
+      if (name !== "Cosmos" && name !== "Ethereum" && name !== "Solana") return sw(0x6807);
       app = name;
       return ok();
     }
@@ -186,6 +204,31 @@ export function createFakeLedger({ log = () => {} } = {}) {
       const v = ins === 0x08 ? 27 + sig.recovery : sig.recovery;
       return ok([v, ...sig.toCompactRawBytes()]);
     }
+    // The Solana app: GET_PUBKEY (P1 1 shows the address and waits), and SIGN_MESSAGE in
+    // chunks (P2 0x02: more follow; 0x01: this one continues), `[1][path][message]`.
+    if (app === "Solana" && cla === 0xe0) {
+      if (ins === 0x05) {
+        const { path, rest } = pathFromBE(data);
+        if (rest.length > 0 || !path.startsWith("m/44'/501'/")) return sw(0x6a80);
+        if (p1 === 0x01) confirming = true;
+        return ok([...ed25519.getPublicKey(edKeyAt(path))]);
+      }
+      if (ins === 0x06) {
+        if (!(p2 & 0x01)) solSign = { chunks: [] };
+        else if (!solSign) return sw(0x6a80);
+        solSign.chunks.push(Buffer.from(data));
+        if (p2 & 0x02) return ok();
+        const all = Buffer.concat(solSign.chunks);
+        solSign = null;
+        if (all[0] !== 1) return sw(0x6a80);
+        const { path, rest } = pathFromBE(all.subarray(1));
+        signed.push({ app: "solana", kind: "transaction", path, payload: hex(rest) });
+        log(`ledger: Solana app signs a ${rest.length}-byte message at ${path}`);
+        confirming = true;
+        return ok([...ed25519.sign(rest, edKeyAt(path))]);
+      }
+      return sw(0x6d00);
+    }
     log(`ledger: no answer for APDU ${hex(a.subarray(0, 4))} in ${app}`);
     return sw(0x6d00);
   }
@@ -224,6 +267,10 @@ export function createFakeLedger({ log = () => {} } = {}) {
       const c = confirming;
       confirming = false;
       return c;
+    },
+    /** The phrase's Solana address at `path`, as the Solana app derives it. */
+    solanaAddress(path) {
+      return base58.encode(ed25519.getPublicKey(edKeyAt(path)));
     },
     /** The phrase's public key at `path` (compressed, hex) and its inj1 address. */
     account(path) {

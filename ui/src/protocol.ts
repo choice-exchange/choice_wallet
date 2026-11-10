@@ -28,7 +28,12 @@ export type AccountInfo = {
   addresses: Record<string, string>;
   /** The user's name for it ("Account 2" until renamed). */
   name: string;
+  /** On a Ledger, its key in the device's Solana app (`m/44'/501'/…`, 32 bytes hex), once
+   *  read: its Solana address, and what that app signs with. */
+  ledger_solana?: LedgerSolana;
 };
+
+export type LedgerSolana = { path: string; public_key: string };
 
 export type NewSecret = { mnemonic: string } | { private_key: string };
 
@@ -38,10 +43,11 @@ import type { NftCollection, NftStandard } from "@choice-wallet/chain";
  *  missing. */
 export type NftList = { collections: NftCollection[]; evmDown?: true };
 
-/** What a hardware wallet signs, as the vault gave it: the app (Ledger's Cosmos or Ethereum
- *  app), what kind of thing it is, the exact bytes (hex), and the account's path. */
-export type DeviceRequest = { app: "cosmos" | "ethereum"; kind: "amino" | "transaction" | "message"; payload: string; path: string };
-/** A device's signature, as it wrote it: DER (the Cosmos app) or `r || s` (hex). */
+/** What a hardware wallet signs, as the vault gave it: the app (Ledger's Cosmos, Ethereum or
+ *  Solana app), what kind of thing it is, the exact bytes (hex), and the path it signs at. */
+export type DeviceRequest = { app: "cosmos" | "ethereum" | "solana"; kind: "amino" | "transaction" | "message"; payload: string; path: string };
+/** A device's signature, as it wrote it: DER (the Cosmos app) or 64 bytes, `r || s` (the
+ *  Ethereum app) or ed25519's (the Solana app), hex. */
 export type DeviceSignature = { signature: string; format: "der" | "rs" };
 /** A Ledger account found on the device: its path and public key (compressed, hex). */
 export type LedgerKey = { path: string; public_key: string };
@@ -63,6 +69,8 @@ export type UiRequest =
   | { type: "add_watch"; address: string }
   /** Accounts read from a Ledger: a new Ledger wallet, or more of `wallet`'s. */
   | { type: "add_ledger"; accounts: LedgerKey[]; wallet?: string }
+  /** Solana keys read from a Ledger's Solana app, for its accounts here (by `public_key`). */
+  | { type: "add_ledger_solana"; accounts: { public_key: string; solana: LedgerSolana }[] }
   /** Another wallet behind the same password: a new phrase (`created`), or an imported phrase
    *  (its accounts with history found and added) or private key. */
   | { type: "add_wallet"; secret: NewSecret; created?: boolean }
@@ -932,6 +940,7 @@ export type Replies = {
   confirm_send: Sent | { device: DeviceRequest };
   ledger_signed: Sent;
   add_ledger: Status;
+  add_ledger_solana: Status;
   tx_status: TxState;
   dapp_request: DappRequest;
   dapp_review: DappReview;

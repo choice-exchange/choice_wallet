@@ -1181,7 +1181,8 @@ fn a_ledger_signs_what_the_vault_decoded() {
         "accounts",
         json!({ "secret": secret, "wallet": "w1", "unlock_key": unlock_key, "accounts": [LEDGER_0()] }),
     );
-    // (Its Solana address comes from the device's Solana app, a key of its own.)
+    // Its Solana address comes from the device's Solana app, a key of its own: without it,
+    // only the others.
     let secp: serde_json::Map<String, Value> = soft["accounts"][0]["addresses"]
         .as_object()
         .unwrap()
@@ -1191,6 +1192,20 @@ fn a_ledger_signs_what_the_vault_decoded() {
         .collect();
     assert_eq!(info["addresses"], Value::Object(secp));
     assert_eq!(info["public_key"], soft["accounts"][0]["public_key"]);
+    // With the Solana app's key at Ledger Live's path, every address the phrase gives.
+    let m = choice_wallet_core::Mnemonic::parse(vectors("direct")["phrase"].as_str().unwrap()).unwrap();
+    let sol = choice_wallet_core::ed25519::derive(&m, "m/44'/501'/0'").unwrap();
+    let both = ok(
+        "key_addresses",
+        json!({ "public_key": pk, "solana_public_key": hex::encode(sol.public_key()) }),
+    );
+    assert_eq!(both["addresses"], soft["accounts"][0]["addresses"]);
+    // A hash off the curve (a program-derived address) isn't a key anyone holds.
+    let pda = choice_wallet_core::base58::decode32("45hzrGLQ2EGo1Ln7QpXjDwb589GDQ9H2aEXXw6ds6BFE").unwrap();
+    assert_eq!(
+        code("key_addresses", json!({ "public_key": pk, "solana_public_key": hex::encode(pda) })),
+        "bad_request"
+    );
 
     // A Cosmos send in amino JSON: the device gets the exact sign bytes, and its signature
     // (either S) makes the same transaction the software key would.

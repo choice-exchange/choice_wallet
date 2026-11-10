@@ -1218,7 +1218,8 @@ try {
       const { id, hex } = JSON.parse(m.params.payload);
       const frames = device.report(hex);
       // A signature waits while "the user" reads the device, so the screen shows that step.
-      setTimeout(() => void send("Runtime.evaluate", { expression: `window.__ledgerReply(${id}, ${JSON.stringify(frames)})` }, m.sessionId), device.confirming() ? 1500 : 0);
+      // (A page closed meanwhile has nobody to answer.)
+      setTimeout(() => send("Runtime.evaluate", { expression: `window.__ledgerReply(${id}, ${JSON.stringify(frames)})` }, m.sessionId).catch(() => {}), device.confirming() ? 1500 : 0);
     };
     /** An extension page with the fake device in its navigator.hid. */
     const ledgerPage = async (path) => {
@@ -1241,7 +1242,16 @@ try {
     await tab.eval(`document.querySelector('input[aria-label="Account 1"]').click()`);
     await tab.shot("21c-ledger-pick");
     await tab.click("Add 1 account");
-    await tab.waitText("Ledger added");
+    // Then its Solana key, from the Solana app: Ledger Live's Solana account of the same number.
+    const firstSol = device.solanaAddress("m/44'/501'/0'");
+    await tab.waitText("Solana on your Ledger");
+    await tab.shot("21d-ledger-solana");
+    await tab.click("Add Solana");
+    await tab.waitText(firstSol.slice(-4), 15000);
+    await tab.click("Show on Ledger");
+    await tab.shot("21d1-ledger-solana-added");
+    await tab.click("Done");
+    await tab.waitText("One account added, with Solana.");
     await tab.shot("21d-ledger-added");
     await tab.close();
 
@@ -1249,6 +1259,11 @@ try {
     await lp.waitText("Manage", 15000);
     const inUse = await lp.eval(`document.querySelector("[aria-label='Copy address']")?.title ?? ""`);
     if (inUse !== first.address) throw new Error(`the Ledger account isn't in use: ${inUse}`);
+    // Its Solana address, in the chain sheet.
+    await lp.click("Chain: Injective. Change chain");
+    await lp.waitText(firstSol.slice(-4));
+    await lp.shot("21d3-ledger-chains");
+    await lp.eval(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
     // A send, signed in the Cosmos app.
     const before = broadcasts.length;
     await lp.click("Send");
@@ -1306,7 +1321,7 @@ try {
     await lp.waitText("Manage", 15000);
     await evmEndpoints("https://sentry.evm-rpc.injective.network\nhttps://injective-evm-rpc.publicnode.com");
     await lp.close();
-    console.log(`ledger: account added from the device (${first.address}), a send signed in its Cosmos app and a swap in its Ethereum app, each checked by the vault`);
+    console.log(`ledger: account added from the device (${first.address}, Solana ${firstSol} from its Solana app), a send signed in its Cosmos app and a swap in its Ethereum app, each checked by the vault`);
     // Back to the phrase's first account for the rest.
     await p.close();
     p = await openPopup();

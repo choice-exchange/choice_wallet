@@ -38,6 +38,8 @@ export const isWatch = (a: AccountInfo) => a.account.derivation === "watch";
 export const isLedger = (a: AccountInfo) => a.account.derivation === "ledger";
 /** The paths a Ledger account may use: Injective's coin type, either layout. */
 const LEDGER_PATH = /^m\/44'\/60'\/\d{1,9}'\/0\/\d{1,9}$/;
+/** A Ledger account's key in its Solana app: Ledger Live's layout, `m/44'/501'/n'`. */
+const SOLANA_LEDGER_PATH = /^m\/44'\/501'\/\d{1,9}'$/;
 /** Ledger accounts added at once. */
 const MAX_LEDGER_ADD = 10;
 
@@ -336,6 +338,29 @@ export function createWallets(h: WalletsHost) {
     return save({ wallets, accounts, active });
   }
 
+  /** Solana keys read from a Ledger's Solana app for its accounts here (found by their
+   *  Cosmos app key): each gets its Solana address, and its Solana transactions go to that
+   *  app at that path. The vault checks every signature against the key. */
+  async function addLedgerSolana(keys: unknown): Promise<UiResponse<Status>> {
+    const s = await open();
+    if ("ok" in s) return s;
+    if (!Array.isArray(keys) || keys.length === 0 || keys.length > MAX_ACCOUNTS) return err("bad_request", "Which accounts?");
+    const accounts = [...s.accounts];
+    for (const k of keys as unknown[]) {
+      const key = k as { public_key?: unknown; solana?: { path?: unknown; public_key?: unknown } } | null;
+      const path = key?.solana?.path;
+      const solanaKey = key?.solana?.public_key;
+      if (typeof path !== "string" || !SOLANA_LEDGER_PATH.test(path) || typeof solanaKey !== "string") return err("bad_request", "Not a Ledger Solana key.");
+      const i = accounts.findIndex((a) => isLedger(a) && a.public_key === key?.public_key);
+      if (i < 0) return err("bad_request", "No such Ledger account.");
+      const a = accounts[i]!;
+      const r = await h.vault<{ addresses: Record<string, string> }>("key_addresses", { public_key: a.public_key, solana_public_key: solanaKey });
+      if (!r.ok) return r;
+      accounts[i] = { ...a, addresses: r.result.addresses, ledger_solana: { path, public_key: solanaKey.toLowerCase() } };
+    }
+    return save({ wallets: s.wallets, accounts, active: s.active });
+  }
+
   /** The next account of a phrase wallet (the one in use, unless named), in use at once. */
   async function addAccount(walletId: unknown): Promise<UiResponse<Status>> {
     const s = await open();
@@ -490,5 +515,5 @@ export function createWallets(h: WalletsHost) {
     return w ? { secret: w.secret, wallet: w.id } : null;
   }
 
-  return { stored, status, unlockKey, create, unlock, addWallet, addAccount, addLedger, addWatch, changeAccount, renameWallet, removeWallet, reveal, changePassword, reset, inUse, signer };
+  return { stored, status, unlockKey, create, unlock, addWallet, addAccount, addLedger, addLedgerSolana, addWatch, changeAccount, renameWallet, removeWallet, reveal, changePassword, reset, inUse, signer };
 }

@@ -12,7 +12,8 @@ import { TokenMark } from "./TokenMark";
 
 /** One chain in the sheet. No address: the account has no key there (an imported key, a
  *  watched address, a Ledger account). `total` is null while it loads. */
-export type ChainRow = { chain: ChainView; address?: string; total: string | null; holds?: string };
+/** `add`: the account has no address there yet, but can get one (a Ledger, from its app). */
+export type ChainRow = { chain: ChainView; address?: string; total: string | null; holds?: string; add?: { label: string; run: () => void } };
 
 /** A chain's name on a network: "Injective Testnet", "Solana Devnet". */
 export function chainName(chain: ChainView, network: NetworkId): string {
@@ -82,11 +83,17 @@ export function ChainSheet({
         </div>
         <div className="token-list">
           {rows.map((r) => (
-            <button key={r.chain} className="token chain-row" aria-current={r.chain === chain ? "true" : undefined} disabled={!r.address} onClick={() => onPick(r.chain)}>
+            <button
+              key={r.chain}
+              className="token chain-row"
+              aria-current={r.chain === chain ? "true" : undefined}
+              disabled={!r.address && !r.add}
+              onClick={() => (r.address ? onPick(r.chain) : r.add?.run())}
+            >
               <ChainMark chain={r.chain} />
               <span className="name">
                 <span className="symbol">{chainName(r.chain, network)}</span>
-                <span className="sub">{r.address ? [compact(r.address), r.holds].filter(Boolean).join(" · ") : "Not on this account"}</span>
+                <span className="sub">{r.address ? [compact(r.address), r.holds].filter(Boolean).join(" · ") : (r.add?.label ?? "Not on this account")}</span>
               </span>
               <span className="value">
                 {r.address && (r.total === null ? <span className="skeleton" style={{ width: 56, height: 16 }} /> : <span className="amount">{r.total}</span>)}

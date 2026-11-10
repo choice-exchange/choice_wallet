@@ -16,11 +16,11 @@ export type { Backend, LedgerHost, LedgerStep } from "./backend";
 
 /** Render the wallet UI into `root`: the wallet, or (with `approve`) the approval window
  *  for that site request, or (with `ledger`) the page that adds a Ledger's accounts. */
-export function mount(root: HTMLElement | null, backend: Backend, opts: { approve?: string; ledger?: boolean } = {}): void {
+export function mount(root: HTMLElement | null, backend: Backend, opts: { approve?: string; ledger?: "add" | "solana" } = {}): void {
   if (!root) throw new Error("mount: no root element");
   createRoot(root).render(
     <StrictMode>
-      <BackendContext value={backend}>{opts.approve ? <ApproveView id={opts.approve} /> : opts.ledger ? <LedgerAddView /> : <App />}</BackendContext>
+      <BackendContext value={backend}>{opts.approve ? <ApproveView id={opts.approve} /> : opts.ledger ? <LedgerAddView start={opts.ledger} /> : <App />}</BackendContext>
     </StrictMode>,
   );
 }

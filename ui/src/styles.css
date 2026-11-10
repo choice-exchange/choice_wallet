@@ -580,6 +580,7 @@ details.raw summary {
 .device-step .device-text { margin: 0; font-size: 15px; }
 .steps { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 8px; line-height: 1.4; }
 .ledger-row { display: flex; align-items: center; gap: 8px; }
+.ledger-row > .name { flex: 1; min-width: 0; }
 .ledger-pick { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; cursor: pointer; }
 .ledger-pick input { width: 18px; height: 18px; accent-color: var(--gold, #c9a227); }
 

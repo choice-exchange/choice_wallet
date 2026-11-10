@@ -440,6 +440,8 @@ export function createService(d: Deps) {
         return wallets.addWatch(r.address);
       case "add_ledger":
         return wallets.addLedger(r.accounts, r.wallet);
+      case "add_ledger_solana":
+        return wallets.addLedgerSolana(r.accounts);
       case "add_wallet":
         return wallets.addWallet(r.secret, r.created === true);
       case "rename_wallet":

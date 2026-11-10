@@ -10,6 +10,7 @@ const device = () => (ledger ??= import("./ledger").then((m) => m.createLedger()
 const lazyLedger: LedgerHost = {
   pair: async () => (await device()).pair(),
   publicKeys: async (paths, onStep) => (await device()).publicKeys(paths, onStep),
+  solanaKeys: async (paths, onStep) => (await device()).solanaKeys(paths, onStep),
   show: async (path, onStep) => (await device()).show(path, onStep),
   sign: async (req, onStep) => (await device()).sign(req, onStep),
 };
@@ -27,8 +28,8 @@ const backend: Backend = {
   // WebHID reaches a Ledger from the wallet's pages; picking one needs a tab, since the
   // browser's device chooser closes the popup.
   ...("hid" in navigator ? { ledger: lazyLedger } : {}),
-  openLedgerPage() {
-    void chrome.tabs.create({ url: chrome.runtime.getURL("popup.html?ledger=add") });
+  openLedgerPage(step) {
+    void chrome.tabs.create({ url: chrome.runtime.getURL(`popup.html?ledger=${step === "solana" ? "solana" : "add"}`) });
   },
   onRefresh(listener) {
     const on = (message: unknown, sender: chrome.runtime.MessageSender) => {
@@ -41,8 +42,9 @@ const backend: Backend = {
 
 const params = new URLSearchParams(location.search);
 const approve = params.get("approve");
+const ledgerStep = params.get("ledger");
 mount(
   document.getElementById("root"),
   backend,
-  approve && /^[0-9a-f]{32}$/.test(approve) ? { approve } : params.get("ledger") === "add" ? { ledger: true } : {},
+  approve && /^[0-9a-f]{32}$/.test(approve) ? { approve } : ledgerStep === "add" || ledgerStep === "solana" ? { ledger: ledgerStep } : {},
 );
