@@ -10,7 +10,7 @@
 
 import type { Activity, ActivityKind } from "./activity.ts";
 import type { Coin } from "./lcd.ts";
-import { base58ToBytes, bytesToHex } from "./encoding.ts";
+import { base58ToBytes, base64ToBytes, bytesToBase58, bytesToHex } from "./encoding.ts";
 import { ChainError, Down, isObject, Pool, type Fetch } from "./pool.ts";
 
 export const SYSTEM_PROGRAM = "11111111111111111111111111111111";
@@ -57,6 +57,26 @@ export interface SignatureInfo {
   slot: number;
   blockTime: number | null;
   ok: boolean;
+}
+
+/** An account as `getMultipleAccounts` (base64) gives it. */
+export interface RawAccount {
+  lamports: bigint;
+  /** The program that owns it. */
+  owner: string;
+  data: Uint8Array;
+}
+
+function raw(a: unknown): RawAccount | null {
+  if (!isObject(a) || typeof a["lamports"] !== "number" || typeof a["owner"] !== "string" || !Array.isArray(a["data"]) || typeof a["data"][0] !== "string") return null;
+  return { lamports: BigInt(a["lamports"]), owner: a["owner"], data: base64ToBytes(a["data"][0]) };
+}
+
+/** A token account's mint, owner and amount, from its bytes (both token programs keep these
+ *  first). Null for anything shorter. */
+export function tokenAccountOf(a: RawAccount): { mint: string; owner: string; amount: bigint } | null {
+  if ((a.owner !== TOKEN_PROGRAM && a.owner !== TOKEN_2022_PROGRAM) || a.data.length < 165) return null;
+  return { mint: bytesToBase58(a.data.slice(0, 32)), owner: bytesToBase58(a.data.slice(32, 64)), amount: new DataView(a.data.buffer, a.data.byteOffset + 64, 8).getBigUint64(0, true) };
 }
 
 export class SolanaRpc {
@@ -113,6 +133,34 @@ export class SolanaRpc {
       out.push(...v.map((a) => (isObject(a) ? a : null)));
     }
     return out;
+  }
+
+  /** Accounts as their bytes, 100 a request; null where there is none. */
+  async rawAccounts(addresses: readonly string[]): Promise<(RawAccount | null)[]> {
+    const out: (RawAccount | null)[] = [];
+    for (let i = 0; i < addresses.length; i += 100) {
+      const r = await this.call("getMultipleAccounts", [addresses.slice(i, i + 100), { encoding: "base64", commitment: "confirmed" }]);
+      const v = isObject(r) ? r["value"] : undefined;
+      if (!Array.isArray(v)) throw new Down("getMultipleAccounts: no value");
+      out.push(...v.map(raw));
+    }
+    return out;
+  }
+
+  /** Simulate a transaction (base64, unsigned or partly signed), with what `addresses` hold
+   *  after it (at most 100). */
+  async simulateWith(tx: string, addresses: readonly string[]): Promise<{ err: unknown; logs: string[]; after: (RawAccount | null)[] }> {
+    const r = await this.call("simulateTransaction", [
+      tx,
+      { encoding: "base64", sigVerify: false, replaceRecentBlockhash: true, commitment: "confirmed", accounts: { encoding: "base64", addresses: addresses.slice(0, 100) } },
+    ]);
+    const v = isObject(r) ? r["value"] : undefined;
+    if (!isObject(v)) throw new Down("simulateTransaction: no value");
+    return {
+      err: v["err"] ?? null,
+      logs: Array.isArray(v["logs"]) ? v["logs"].filter((l): l is string => typeof l === "string") : [],
+      after: Array.isArray(v["accounts"]) ? v["accounts"].map(raw) : [],
+    };
   }
 
   /** `owner`'s token accounts, under both token programs. Endpoints that refuse to list them

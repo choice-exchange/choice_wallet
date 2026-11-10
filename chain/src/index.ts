@@ -19,9 +19,12 @@ export {
   SYSTEM_PROGRAM,
   TOKEN_2022_PROGRAM,
   TOKEN_PROGRAM,
+  tokenAccountOf,
+  type RawAccount,
   type SignatureInfo,
   type SolanaTokenAccount,
 } from "./solana.ts";
+export { joinSolanaTransaction, lookupTableAddresses, LOOKUP_TABLE_PROGRAM, readSolanaMessage, splitSolanaTransaction, type SolanaMessageKeys } from "./solanaWire.ts";
 export { abiString, EvmRpc, word, type Call } from "./evm.ts";
 export { EvmIndex } from "./evmindex.ts";
 export { erc20Event, evmCall, evmResults, type Erc20Event, type EvmCall, type EvmLog } from "./evmtx.ts";
