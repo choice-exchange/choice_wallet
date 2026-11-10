@@ -8,7 +8,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { base58Decode, callVault, chain, code, handle, INJ, LUMA, ME_SOL, ok, PASSWORD, PHRASE, SOLANA_MAINNET, solTransfer, THEM, THEM_EVM, THEM_SOL, wallet } from "./fake";
+import { base58Decode, callVault, chain, code, handle, INJ, LUMA, ME_EVM, ME_SOL, ok, PASSWORD, PHRASE, SOLANA_MAINNET, solTransfer, THEM, THEM_EVM, THEM_KEY, THEM_SOL, wallet } from "./fake";
 
 const SITE = "https://app.example";
 type Reply = { result?: unknown; error?: { code: number; message: string } };
@@ -90,6 +90,36 @@ test("a Ledger's accounts are added from its public keys, and never show a key",
   assert.equal(code(await service.handle({ type: "reveal_secret", password: PASSWORD, wallet: w.id })), "ledger");
   assert.equal(code(await service.handle({ type: "reveal_secret", password: PASSWORD, index: s.active })), "ledger");
   assert.equal(code(await service.handle({ type: "add_account", wallet: w.id })), "ledger");
+});
+
+test("accounts saved before the vault knew a chain get its addresses at the next unlock, if the rest match", async () => {
+  const { service, local } = await wallet(chain({ balances: { inj: INJ } }));
+  const dev = device();
+  ok(await service.handle({ type: "add_wallet", secret: { private_key: THEM_KEY } }));
+  ok(await service.handle({ type: "add_ledger", accounts: [{ path: PATH, public_key: dev.publicKey }] }));
+  ok(await service.handle({ type: "add_ledger_solana", accounts: [{ public_key: dev.publicKey, solana: { path: SOLANA_PATH, public_key: SOLANA_KEY } }] }));
+  ok(await service.handle({ type: "add_watch", address: "0x" + "ab".repeat(20) }));
+  ok(await service.handle({ type: "add_watch", address: "0x" + "cd".repeat(20) }));
+  const { accounts } = (await local.get(["accounts"])) as { accounts: Status["accounts"] };
+  assert.deepEqual(
+    accounts.map((a) => a.account.derivation),
+    ["default", "imported", "ledger", "watch", "watch"],
+  );
+  assert.equal(accounts[0]!.addresses["eip155:8453"], ME_EVM);
+  assert.equal(accounts[2]!.addresses[SOLANA_MAINNET], ME_SOL);
+  // As saved before the EVM chains: Injective's two sides, and Solana where there was a key.
+  const before = (a: Status["accounts"][number]) => Object.fromEntries(Object.entries(a.addresses).filter(([k]) => /^(cosmos:|solana:|eip155:(1776|1439)$)/.test(k)));
+  const old = accounts.map((a) => ({ ...a, addresses: before(a) }));
+  // The last one's saved address isn't what its own gives: it stays as saved.
+  old[4]!.addresses["eip155:1776"] = THEM_EVM;
+  await local.set({ accounts: old });
+  ok(await service.handle({ type: "lock" }));
+  const s = ok<Status>(await service.handle({ type: "unlock", password: PASSWORD }));
+  assert.deepEqual(
+    s.accounts.slice(0, 4).map((a) => a.addresses),
+    accounts.slice(0, 4).map((a) => a.addresses),
+  );
+  assert.deepEqual(s.accounts[4]!.addresses, old[4]!.addresses);
 });
 
 test("a Ledger send: amino JSON for the Cosmos app, its signature checked before broadcast", async () => {

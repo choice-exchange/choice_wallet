@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { CHAINS, chainByCaip2, chainByKey, chainDenom, NETWORKS, type NetworkId } from "@choice-wallet/chain";
 import { chains as registry } from "injective-usdc-bridge";
 
-import { chain, code, INJ, ME_EVM, ok, wallet } from "./fake";
+import { callVault, chain, code, handle, INJ, ME_EVM, ok, wallet } from "./fake";
 
 type Review = { digest: string; display: { chain: string }; tokens: Record<string, { symbol: string }> };
 
@@ -49,6 +49,15 @@ test("the chain list is the bridge registry's, with Injective and Solana first",
   assert.equal(chainByKey("testnet", "polygon"), undefined);
   assert.deepEqual(chainDenom("usdc:eip155:8453"), { caip2: "eip155:8453", what: "usdc" });
   assert.equal(chainDenom("erc20:0xa00C59fF5a080D2b954d0c75e46E22a0c371235a"), null);
+});
+
+test("the vault's chains are the list's: Injective's two sides, then each EVM chain", () => {
+  // An account is read again at unlock while it lacks one of the list's chains (wallets.ts),
+  // so the vault must give an address on each.
+  const r = callVault<{ id: string }[]>(handle, "chains", {});
+  assert.ok(r.ok);
+  const want = (["mainnet", "testnet"] as NetworkId[]).flatMap((n) => [NETWORKS[n].cosmos, NETWORKS[n].evm, ...CHAINS[n].filter((c) => c.kind === "evm").map((c) => c.caip2)]);
+  assert.deepEqual(new Set(r.result.map((c) => c.id)), new Set(want));
 });
 
 test("each EVM chain beside Injective: the account's coin and USDC, priced by DefiLlama", async () => {

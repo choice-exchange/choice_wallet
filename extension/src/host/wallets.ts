@@ -13,7 +13,7 @@
 // device from before vaults has `keystore` and `kind` instead: the first unlock moves it
 // into a vault as "Recovery phrase 1" (or "Imported key 1"), keeping the account list.
 
-import { chainByKey, cleanText, NETWORKS } from "@choice-wallet/chain";
+import { CHAINS, chainByKey, cleanText, NETWORKS, type NetworkId } from "@choice-wallet/chain";
 import type { AccountInfo, NewSecret, Result, Status, WalletInfo } from "@choice-wallet/ui/protocol";
 
 import type { Store } from "./service";
@@ -33,6 +33,13 @@ const MAX_NAME = 24;
 /** A phrase's indexes looked at for history when it is imported (0 is always added). */
 const DISCOVER = 10;
 const WATCH = "watch";
+
+/** Chains every account has an address on, beside Injective's two sides: each EVM chain (any
+ *  secp256k1 key, or a watched 0x), from the registry, which matches the vault's list. Solana
+ *  only for a phrase's account, or a Ledger once its Solana app's key is read. */
+const BOTH: readonly NetworkId[] = ["mainnet", "testnet"];
+const EVM_IDS = BOTH.flatMap((n) => CHAINS[n].filter((c) => c.kind === "evm").map((c) => c.caip2));
+const SOLANA_IDS = BOTH.map((n) => NETWORKS[n].solana.caip2);
 
 export const isWatch = (a: AccountInfo) => a.account.derivation === "watch";
 export const isLedger = (a: AccountInfo) => a.account.derivation === "ledger";
@@ -202,26 +209,38 @@ export function createWallets(h: WalletsHost) {
     return { ok: true, result: await status() };
   }
 
-  /** Accounts saved before the vault derived Solana keys have no Solana address: their
-   *  phrase's accounts are read again from the vault and the missing addresses added (the
-   *  ones saved are kept, and must match). A failure leaves the list as it was. */
+  /** Accounts keep the addresses the vault gave when they were added, so one saved before
+   *  the vault knew a chain (Solana, then each EVM chain on CCTP) has none there. At unlock
+   *  each such account is read again and the missing addresses added: a phrase's or an
+   *  imported key's from its sealed secret, a Ledger's from its public keys, a watched one's
+   *  from its address. The ones saved are kept, and must match; a failure leaves the account
+   *  as it was. */
   async function fillAddresses(s: Stored, key: string): Promise<void> {
-    const solana = (a: AccountInfo) => Object.keys(a.addresses).some((k) => k.startsWith("solana:"));
-    const stale = s.accounts.filter((a) => !isWatch(a) && !isLedger(a) && a.account.derivation !== "imported" && !solana(a) && s.wallets.some((w) => w.id === a.wallet && w.type === "mnemonic"));
+    const phrase = (a: AccountInfo) => !isWatch(a) && !isLedger(a) && a.account.derivation !== "imported";
+    const wants = (a: AccountInfo) => (phrase(a) || a.ledger_solana ? [...EVM_IDS, ...SOLANA_IDS] : EVM_IDS);
+    const stale = s.accounts.filter((a) => wants(a).some((id) => !a.addresses[id]));
     if (stale.length === 0) return;
     const accounts = [...s.accounts];
+    const merge = (a: AccountInfo, got: Record<string, string> | undefined) => {
+      const saved = Object.entries(a.addresses).filter(([k]) => got?.[k] !== undefined);
+      if (!got || saved.length === 0 || saved.some(([k, v]) => got[k] !== v)) return;
+      accounts[accounts.indexOf(a)] = { ...a, addresses: { ...got, ...a.addresses } };
+    };
     for (const w of s.wallets) {
-      const mine = stale.filter((a) => a.wallet === w.id);
+      const mine = stale.filter((a) => a.wallet === w.id && !isWatch(a) && !isLedger(a));
       if (mine.length === 0) continue;
       const r = await derive(w, key, mine.map((a) => a.account));
-      if (!r.ok) continue;
-      mine.forEach((a, i) => {
-        const got = r.result.accounts[i]?.addresses ?? {};
-        if (Object.entries(a.addresses).some(([k, v]) => got[k] !== v)) return;
-        accounts[accounts.indexOf(a)] = { ...a, addresses: { ...got, ...a.addresses } };
-      });
+      if (r.ok) mine.forEach((a, i) => merge(a, r.result.accounts[i]?.addresses));
     }
-    await h.local.set({ accounts });
+    for (const a of stale.filter(isLedger)) {
+      const r = await h.vault<{ addresses: Record<string, string> }>("key_addresses", { public_key: a.public_key, ...(a.ledger_solana ? { solana_public_key: a.ledger_solana.public_key } : {}) });
+      if (r.ok) merge(a, r.result.addresses);
+    }
+    for (const a of stale.filter(isWatch)) {
+      const r = await h.vault<{ addresses: Record<string, string> }>("addresses", { address: a.addresses[NETWORKS.mainnet.cosmos] ?? "" });
+      if (r.ok) merge(a, r.result.addresses);
+    }
+    if (accounts.some((a, i) => a !== s.accounts[i])) await h.local.set({ accounts });
   }
 
   async function unlock(password: string): Promise<UiResponse<Status>> {
