@@ -7,9 +7,9 @@ import { clmmPositions, NETWORKS, subaccountId, subaccounts, xykPositions, type 
 import type { AccountInfo, InventoryView, Result, SendReview } from "@choice-wallet/ui/protocol";
 
 import type { createSender } from "./send";
+import { fail } from "./util";
 
 type Sender = ReturnType<typeof createSender>;
-const fail = (code: string, message: string): Result<never> => ({ ok: false, error: { code, message } });
 
 export function createInventory(d: { sender: Sender }) {
   async function summary(network: NetworkId, account: AccountInfo): Promise<Result<InventoryView>> {

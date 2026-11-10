@@ -118,7 +118,10 @@ const NAMED: [Program; 8] = [
 
 /// How the review names a program, if the wallet knows it.
 pub fn name(program: &Pubkey) -> Option<&'static str> {
-    READ.iter().chain(NAMED.iter()).find(|p| p.key() == *program).map(|p| p.name)
+    READ.iter()
+        .chain(NAMED.iter())
+        .find(|p| p.key() == *program)
+        .map(|p| p.name)
 }
 
 /// Anchor's instruction discriminator: the first 8 bytes of `sha256("global:<name>")`.
@@ -365,7 +368,8 @@ pub fn read(program: &Pubkey, accounts: &[Account], data: &[u8]) -> Instruction 
     let acct = |i: usize| accounts.get(i).map(|a| a.key);
     let p = *program;
     if p == SYSTEM.key() {
-        system(accounts, data).unwrap_or_else(|| unreadable("a System instruction that isn't laid out as its kind says"))
+        system(accounts, data)
+            .unwrap_or_else(|| unreadable("a System instruction that isn't laid out as its kind says"))
     } else if p == COMPUTE_BUDGET.key() {
         match (data.first(), data.len()) {
             (Some(2), 5) => Instruction::ComputeUnitLimit(u32_at(data, 1).expect("4 bytes")),
@@ -374,7 +378,8 @@ pub fn read(program: &Pubkey, accounts: &[Account], data: &[u8]) -> Instruction 
             _ => unreadable("a Compute Budget instruction the wallet can't read"),
         }
     } else if p == TOKEN.key() || p == TOKEN_2022.key() {
-        token(&p, accounts, data).unwrap_or_else(|| unreadable("a token instruction that isn't laid out as its kind says"))
+        token(&p, accounts, data)
+            .unwrap_or_else(|| unreadable("a token instruction that isn't laid out as its kind says"))
     } else if p == ASSOCIATED_TOKEN.key() {
         let idempotent = match data {
             [] | [0] => false,
@@ -383,21 +388,26 @@ pub fn read(program: &Pubkey, accounts: &[Account], data: &[u8]) -> Instruction 
             _ => return unreadable("an Associated Token Account instruction the wallet can't read"),
         };
         match (acct(0), acct(1), acct(2), acct(3), acct(5)) {
-            (Some(payer), Some(account), Some(owner), Some(mint), Some(token_program)) => Instruction::CreateTokenAccount {
-                payer,
-                account,
-                owner,
-                mint,
-                token_program,
-                idempotent,
-            },
+            (Some(payer), Some(account), Some(owner), Some(mint), Some(token_program)) => {
+                Instruction::CreateTokenAccount {
+                    payer,
+                    account,
+                    owner,
+                    mint,
+                    token_program,
+                    idempotent,
+                }
+            }
             _ => unreadable("a token account creation without its accounts"),
         }
     } else if p == MEMO.key() || p == MEMO_V1.key() {
         Instruction::Memo(data.to_vec())
     } else if p == TOKEN_MESSENGER_MINTER.key() {
         cctp_burn(accounts, data).unwrap_or_else(|| {
-            let burn = [anchor_discriminator("deposit_for_burn"), anchor_discriminator("deposit_for_burn_with_hook")];
+            let burn = [
+                anchor_discriminator("deposit_for_burn"),
+                anchor_discriminator("deposit_for_burn_with_hook"),
+            ];
             if data.len() >= 8 && burn.iter().any(|d| d[..] == data[..8]) {
                 unreadable("a CCTP burn that isn't laid out as a burn")
             } else {
@@ -641,7 +651,10 @@ mod tests {
             assert_eq!(base58::encode(&p.key()), p.id);
         }
         // From Circle's IDL (and the bridge package, which computes them the same way).
-        assert_eq!(anchor_discriminator("deposit_for_burn"), [215, 60, 61, 46, 114, 55, 128, 176]);
+        assert_eq!(
+            anchor_discriminator("deposit_for_burn"),
+            [215, 60, 61, 46, 114, 55, 128, 176]
+        );
     }
 
     #[test]
@@ -650,26 +663,65 @@ mod tests {
         let accts = [acct(a), acct(b), acct(c), acct([4; 32])];
         let mut assign = 1u32.to_le_bytes().to_vec();
         assign.extend_from_slice(&c);
-        assert_eq!(read(&SYSTEM.key(), &accts, &assign), Instruction::Assign { account: a, owner: c });
+        assert_eq!(
+            read(&SYSTEM.key(), &accts, &assign),
+            Instruction::Assign { account: a, owner: c }
+        );
         // SetAuthority: account owner (2) to `c`, then removed.
         let mut set = vec![6, 2, 1];
         set.extend_from_slice(&c);
         assert_eq!(
             read(&TOKEN.key(), &accts, &set),
-            Instruction::TokenSetAuthority { program: TOKEN.key(), account: a, kind: 2, new_authority: Some(c), current: b }
+            Instruction::TokenSetAuthority {
+                program: TOKEN.key(),
+                account: a,
+                kind: 2,
+                new_authority: Some(c),
+                current: b
+            }
         );
-        assert!(matches!(read(&TOKEN.key(), &accts, &[6, 3, 0]), Instruction::TokenSetAuthority { new_authority: None, kind: 3, .. }));
+        assert!(matches!(
+            read(&TOKEN.key(), &accts, &[6, 3, 0]),
+            Instruction::TokenSetAuthority {
+                new_authority: None,
+                kind: 3,
+                ..
+            }
+        ));
         // Approve u64::MAX.
         let mut approve = vec![4];
         approve.extend_from_slice(&u64::MAX.to_le_bytes());
-        assert!(matches!(read(&TOKEN_2022.key(), &accts, &approve), Instruction::TokenApprove { amount: u64::MAX, delegate, .. } if delegate == b));
+        assert!(
+            matches!(read(&TOKEN_2022.key(), &accts, &approve), Instruction::TokenApprove { amount: u64::MAX, delegate, .. } if delegate == b)
+        );
         // Wrong lengths are unreadable, not guessed at.
-        assert!(matches!(read(&TOKEN.key(), &accts, &[3, 1]), Instruction::Unreadable { .. }));
-        assert!(matches!(read(&SYSTEM.key(), &accts, &[2, 0, 0, 0, 1]), Instruction::Unreadable { .. }));
-        assert!(matches!(read(&TOKEN.key(), &accts, &[6, 2, 1]), Instruction::Unreadable { .. }));
+        assert!(matches!(
+            read(&TOKEN.key(), &accts, &[3, 1]),
+            Instruction::Unreadable { .. }
+        ));
+        assert!(matches!(
+            read(&SYSTEM.key(), &accts, &[2, 0, 0, 0, 1]),
+            Instruction::Unreadable { .. }
+        ));
+        assert!(matches!(
+            read(&TOKEN.key(), &accts, &[6, 2, 1]),
+            Instruction::Unreadable { .. }
+        ));
         // Too few accounts for the layout.
-        assert!(matches!(read(&TOKEN.key(), &accts[..1], &[9]), Instruction::Unreadable { .. }));
-        assert_eq!(read(&TOKEN.key(), &accts, &[7, 0]), Instruction::TokenOther { program: TOKEN.key(), kind: 7 });
-        assert_eq!(read(&[9; 32], &accts, &[1, 2, 3]), Instruction::Other { program: [9; 32] });
+        assert!(matches!(
+            read(&TOKEN.key(), &accts[..1], &[9]),
+            Instruction::Unreadable { .. }
+        ));
+        assert_eq!(
+            read(&TOKEN.key(), &accts, &[7, 0]),
+            Instruction::TokenOther {
+                program: TOKEN.key(),
+                kind: 7
+            }
+        );
+        assert_eq!(
+            read(&[9; 32], &accts, &[1, 2, 3]),
+            Instruction::Other { program: [9; 32] }
+        );
     }
 }

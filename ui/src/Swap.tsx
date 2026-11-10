@@ -11,7 +11,7 @@ import { ArrowDownIcon, ChevronDownIcon } from "./icons";
 import { useKept } from "./kept";
 import { BackBar, Callout, Screen, Segmented, tokenSub } from "./kit";
 import type { NetworkId, SendReview, SwapQuote, SwapToken } from "./protocol";
-import { useRequest } from "./request";
+import { errorText, useRequest } from "./request";
 import { TokenMark } from "./TokenMark";
 
 /** What the user has typed, kept while they review and come back. */
@@ -79,7 +79,7 @@ export function SwapView({
       else if (v > BigInt(from.amount ?? "0")) problem = `That's more ${from.symbol} than you have.`;
       else amount = v.toString();
     } catch (e) {
-      problem = e instanceof Error ? e.message : String(e);
+      problem = errorText(e);
     }
   }
 

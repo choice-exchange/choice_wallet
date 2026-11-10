@@ -52,7 +52,10 @@ fn wallet() -> &'static (String, String, String) {
         let v = ok("create_vault", json!({ "password": PASSWORD }));
         let vault = v["vault"].as_str().unwrap().to_owned();
         let unlock_key = v["unlock_key"].as_str().unwrap().to_owned();
-        let sealed = ok("seal_secret", json!({ "unlock_key": unlock_key, "wallet": "w1", "secret": { "mnemonic": phrase } }));
+        let sealed = ok(
+            "seal_secret",
+            json!({ "unlock_key": unlock_key, "wallet": "w1", "secret": { "mnemonic": phrase } }),
+        );
         assert_eq!(sealed["kind"], "mnemonic");
         (vault, sealed["secret"].as_str().unwrap().to_owned(), unlock_key)
     })
@@ -95,7 +98,10 @@ fn coins(v: &Value) -> Value {
 /// A fresh vault with one wallet, "w1", holding `secret`: (vault, sealed secret, unlock key).
 fn vault_with(secret: Value) -> (Value, Value, Value) {
     let v = ok("create_vault", json!({ "password": PASSWORD }));
-    let sealed = ok("seal_secret", json!({ "unlock_key": v["unlock_key"], "wallet": "w1", "secret": secret }));
+    let sealed = ok(
+        "seal_secret",
+        json!({ "unlock_key": v["unlock_key"], "wallet": "w1", "secret": secret }),
+    );
     (v["vault"].clone(), sealed["secret"].clone(), v["unlock_key"].clone())
 }
 
@@ -103,18 +109,45 @@ fn vault_with(secret: Value) -> (Value, Value, Value) {
 fn several_wallets_behind_one_password() {
     let phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
     let (vault, a, uk) = vault_with(json!({ "mnemonic": phrase }));
-    let b = ok("seal_secret", json!({ "unlock_key": uk, "wallet": "w2", "secret": { "private_key": "46".repeat(32) } }));
+    let b = ok(
+        "seal_secret",
+        json!({ "unlock_key": uk, "wallet": "w2", "secret": { "private_key": "46".repeat(32) } }),
+    );
     assert_eq!(b["kind"], "private_key");
     // One unlock opens both.
     let key = ok("unlock", json!({ "vault": vault, "password": PASSWORD }))["unlock_key"].clone();
     assert_eq!(key, uk);
-    let first = ok("accounts", json!({ "secret": a, "wallet": "w1", "unlock_key": key, "accounts": [account(0)] }));
-    assert_eq!(first["accounts"][0]["addresses"]["eip155:1776"], "0x9858EfFD232B4033E47d90003D41EC34EcaEda94");
-    let imported = ok("accounts", json!({ "secret": b["secret"], "wallet": "w2", "unlock_key": key, "accounts": [{ "derivation": "imported" }] }));
-    assert_eq!(imported["accounts"][0]["addresses"]["eip155:1776"], "0x9d8A62f656a8d1615C1294fd71e9CFb3E4855A4F");
+    let first = ok(
+        "accounts",
+        json!({ "secret": a, "wallet": "w1", "unlock_key": key, "accounts": [account(0)] }),
+    );
+    assert_eq!(
+        first["accounts"][0]["addresses"]["eip155:1776"],
+        "0x9858EfFD232B4033E47d90003D41EC34EcaEda94"
+    );
+    let imported = ok(
+        "accounts",
+        json!({ "secret": b["secret"], "wallet": "w2", "unlock_key": key, "accounts": [{ "derivation": "imported" }] }),
+    );
+    assert_eq!(
+        imported["accounts"][0]["addresses"]["eip155:1776"],
+        "0x9d8A62f656a8d1615C1294fd71e9CFb3E4855A4F"
+    );
     // A secret opens only as the wallet it was sealed for.
-    assert_eq!(code("accounts", json!({ "secret": a, "wallet": "w2", "unlock_key": key, "accounts": [account(0)] })), "wrong_password");
-    assert_eq!(code("seal_secret", json!({ "unlock_key": key, "wallet": "W 1", "secret": { "mnemonic": phrase } })), "keystore");
+    assert_eq!(
+        code(
+            "accounts",
+            json!({ "secret": a, "wallet": "w2", "unlock_key": key, "accounts": [account(0)] })
+        ),
+        "wrong_password"
+    );
+    assert_eq!(
+        code(
+            "seal_secret",
+            json!({ "unlock_key": key, "wallet": "W 1", "secret": { "mnemonic": phrase } })
+        ),
+        "keystore"
+    );
 }
 
 #[test]
@@ -129,28 +162,83 @@ fn reveal_needs_the_password_and_shows_the_phrase_or_a_key() {
     assert_eq!(ok("reveal", reveal(json!({})))["phrase"], phrase);
     // The second account's key (m/44'/60'/0'/0/1, the published test phrase's 0x6Fac…b9C0),
     // sealed on its own, is that account.
-    let key = ok("reveal", reveal(json!({ "account": { "derivation": "default", "index": 1 } })))["private_key"].as_str().unwrap().to_owned();
+    let key = ok(
+        "reveal",
+        reveal(json!({ "account": { "derivation": "default", "index": 1 } })),
+    )["private_key"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     assert_eq!(key.len(), 64);
-    let b = ok("seal_secret", json!({ "unlock_key": uk, "wallet": "w2", "secret": { "private_key": key } }));
-    let a = ok("accounts", json!({ "secret": b["secret"], "wallet": "w2", "unlock_key": uk, "accounts": [{ "derivation": "imported" }] }));
-    assert_eq!(a["accounts"][0]["addresses"]["eip155:1776"], "0x6Fac4D18c912343BF86fa7049364Dd4E424Ab9C0");
-    assert_eq!(ok("reveal", json!({ "vault": vault, "password": PASSWORD, "secret": b["secret"], "wallet": "w2" }))["private_key"], key);
-    assert_eq!(code("reveal", reveal(json!({ "password": "not the password" }))), "wrong_password");
+    let b = ok(
+        "seal_secret",
+        json!({ "unlock_key": uk, "wallet": "w2", "secret": { "private_key": key } }),
+    );
+    let a = ok(
+        "accounts",
+        json!({ "secret": b["secret"], "wallet": "w2", "unlock_key": uk, "accounts": [{ "derivation": "imported" }] }),
+    );
+    assert_eq!(
+        a["accounts"][0]["addresses"]["eip155:1776"],
+        "0x6Fac4D18c912343BF86fa7049364Dd4E424Ab9C0"
+    );
+    assert_eq!(
+        ok(
+            "reveal",
+            json!({ "vault": vault, "password": PASSWORD, "secret": b["secret"], "wallet": "w2" })
+        )["private_key"],
+        key
+    );
+    assert_eq!(
+        code("reveal", reveal(json!({ "password": "not the password" }))),
+        "wrong_password"
+    );
     // The unlock key alone isn't enough: the method takes no such field.
-    assert_eq!(code("reveal", json!({ "vault": vault, "unlock_key": uk, "secret": sealed, "wallet": "w1" })), "bad_request");
+    assert_eq!(
+        code(
+            "reveal",
+            json!({ "vault": vault, "unlock_key": uk, "secret": sealed, "wallet": "w1" })
+        ),
+        "bad_request"
+    );
 }
 
 #[test]
 fn change_password_rewraps_the_vault_and_keeps_its_key() {
     let (vault, sealed, uk) = vault_with(json!({ "private_key": "46".repeat(32) }));
-    let next = ok("change_password", json!({ "vault": vault, "password": PASSWORD, "new_password": "a whole new password" }))["vault"].clone();
+    let next = ok(
+        "change_password",
+        json!({ "vault": vault, "password": PASSWORD, "new_password": "a whole new password" }),
+    )["vault"]
+        .clone();
     assert_ne!(next, vault);
-    assert_eq!(code("unlock", json!({ "vault": next, "password": PASSWORD })), "wrong_password");
-    assert_eq!(ok("unlock", json!({ "vault": next, "password": "a whole new password" }))["unlock_key"], uk);
-    let shown = ok("reveal", json!({ "vault": next, "password": "a whole new password", "secret": sealed, "wallet": "w1" }));
+    assert_eq!(
+        code("unlock", json!({ "vault": next, "password": PASSWORD })),
+        "wrong_password"
+    );
+    assert_eq!(
+        ok("unlock", json!({ "vault": next, "password": "a whole new password" }))["unlock_key"],
+        uk
+    );
+    let shown = ok(
+        "reveal",
+        json!({ "vault": next, "password": "a whole new password", "secret": sealed, "wallet": "w1" }),
+    );
     assert_eq!(shown["private_key"], "46".repeat(32));
-    assert_eq!(code("change_password", json!({ "vault": vault, "password": "wrong one", "new_password": "a whole new password" })), "wrong_password");
-    assert_eq!(code("change_password", json!({ "vault": vault, "password": PASSWORD, "new_password": "short" })), "keystore");
+    assert_eq!(
+        code(
+            "change_password",
+            json!({ "vault": vault, "password": "wrong one", "new_password": "a whole new password" })
+        ),
+        "wrong_password"
+    );
+    assert_eq!(
+        code(
+            "change_password",
+            json!({ "vault": vault, "password": PASSWORD, "new_password": "short" })
+        ),
+        "keystore"
+    );
 }
 
 #[test]
@@ -216,10 +304,7 @@ fn accounts_match_injective_ts() {
         let eth = got["addresses"]["eip155:1776"].as_str().unwrap().to_lowercase();
         assert_eq!(eth, want["eth"].as_str().unwrap(), "{i}");
     }
-    let wrong = code(
-        "unlock",
-        json!({ "vault": vault, "password": "not the password" }),
-    );
+    let wrong = code("unlock", json!({ "vault": vault, "password": "not the password" }));
     assert_eq!(wrong, "wrong_password");
     let imported = code(
         "accounts",
@@ -429,14 +514,23 @@ fn imported_keys() {
         "accounts",
         json!({ "secret": sealed, "wallet": "w1", "unlock_key": uk, "accounts": [{ "derivation": "imported" }] }),
     );
-    assert_eq!(r["accounts"][0]["addresses"]["eip155:1776"], "0x9d8A62f656a8d1615C1294fd71e9CFb3E4855A4F");
+    assert_eq!(
+        r["accounts"][0]["addresses"]["eip155:1776"],
+        "0x9d8A62f656a8d1615C1294fd71e9CFb3E4855A4F"
+    );
     let hd = code(
         "accounts",
         json!({ "secret": sealed, "wallet": "w1", "unlock_key": uk, "accounts": [account(0)] }),
     );
     assert_eq!(hd, "keystore");
     assert_eq!(code("create_vault", json!({ "password": "short" })), "keystore");
-    assert_eq!(code("seal_secret", json!({ "unlock_key": uk, "wallet": "w2", "secret": { "private_key": "00".repeat(32) } })), "keystore");
+    assert_eq!(
+        code(
+            "seal_secret",
+            json!({ "unlock_key": uk, "wallet": "w2", "secret": { "private_key": "00".repeat(32) } })
+        ),
+        "keystore"
+    );
 }
 
 #[test]
@@ -452,12 +546,30 @@ fn a_keystore_from_before_vaults_moves_into_one() {
     )
     .unwrap();
     let old = choice_wallet_core::hexutil::encode(&old);
-    assert_eq!(code("migrate", json!({ "keystore": old, "password": "not the password", "wallet": "w1" })), "wrong_password");
-    let m = ok("migrate", json!({ "keystore": old, "password": PASSWORD, "wallet": "w1" }));
+    assert_eq!(
+        code(
+            "migrate",
+            json!({ "keystore": old, "password": "not the password", "wallet": "w1" })
+        ),
+        "wrong_password"
+    );
+    let m = ok(
+        "migrate",
+        json!({ "keystore": old, "password": PASSWORD, "wallet": "w1" }),
+    );
     assert_eq!(m["kind"], "mnemonic");
-    assert_eq!(ok("unlock", json!({ "vault": m["vault"], "password": PASSWORD }))["unlock_key"], m["unlock_key"]);
-    let a = ok("accounts", json!({ "secret": m["secret"], "wallet": "w1", "unlock_key": m["unlock_key"], "accounts": [account(0)] }));
-    assert_eq!(a["accounts"][0]["addresses"]["eip155:1776"], "0x9858EfFD232B4033E47d90003D41EC34EcaEda94");
+    assert_eq!(
+        ok("unlock", json!({ "vault": m["vault"], "password": PASSWORD }))["unlock_key"],
+        m["unlock_key"]
+    );
+    let a = ok(
+        "accounts",
+        json!({ "secret": m["secret"], "wallet": "w1", "unlock_key": m["unlock_key"], "accounts": [account(0)] }),
+    );
+    assert_eq!(
+        a["accounts"][0]["addresses"]["eip155:1776"],
+        "0x9858EfFD232B4033E47d90003D41EC34EcaEda94"
+    );
 }
 
 #[test]
@@ -695,17 +807,35 @@ fn own_staking_builds_decodes_and_signs_both_ways() {
             .collect();
         assert_eq!(
             shown,
-            [("delegate", &me), ("undelegate", &me), ("redelegate", &me), ("cancel_unbonding", &me), ("withdraw_rewards", &me)],
+            [
+                ("delegate", &me),
+                ("undelegate", &me),
+                ("redelegate", &me),
+                ("cancel_unbonding", &me),
+                ("withdraw_rewards", &me)
+            ],
             "{mode}"
         );
         let m = &d["display"]["messages"];
-        assert_eq!((&m[2]["from_validator"], &m[2]["to_validator"]), (&json!(VAL_A), &json!(VAL_B)), "{mode}");
+        assert_eq!(
+            (&m[2]["from_validator"], &m[2]["to_validator"]),
+            (&json!(VAL_A), &json!(VAL_B)),
+            "{mode}"
+        );
         assert_eq!(m[3]["creation_height"], 1234, "{mode}");
-        let rules: Vec<&str> = d["risk"]["findings"].as_array().unwrap().iter().map(|f| f["rule"].as_str().unwrap()).collect();
+        let rules: Vec<&str> = d["risk"]["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f["rule"].as_str().unwrap())
+            .collect();
         assert_eq!(rules, ["stake", "unstake"], "{mode}");
         assert_eq!(d["risk"]["level"], "info", "{mode}");
         let signed = approve_and_sign(&request, account(0));
-        assert!(signed["tx_raw"].as_str().is_some_and(|t| !t.is_empty()), "{mode}: {signed}");
+        assert!(
+            signed["tx_raw"].as_str().is_some_and(|t| !t.is_empty()),
+            "{mode}: {signed}"
+        );
     }
 
     // An account address where a validator goes, and a move to the same validator, are refused.
@@ -736,11 +866,25 @@ fn own_revokes_build_decode_and_sign() {
         let request = build_staking(messages.clone(), mode).unwrap()["request"].clone();
         let d = ok("decode", json!({ "request": request }));
         let m = &d["display"]["messages"];
-        let types: Vec<&str> = m.as_array().unwrap().iter().map(|x| x["type"].as_str().unwrap()).collect();
-        assert_eq!(types, ["authz_revoke", "fee_revoke", "set_withdraw_address", "execute_contract"], "{mode}");
+        let types: Vec<&str> = m
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x["type"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            types,
+            ["authz_revoke", "fee_revoke", "set_withdraw_address", "execute_contract"],
+            "{mode}"
+        );
         assert_eq!(m[2]["withdraw_address"], m[2]["delegator"], "{mode}");
         assert_eq!(m[3]["call"]["type"], "cw20_decrease_allowance", "{mode}");
-        let rules: Vec<&str> = d["risk"]["findings"].as_array().unwrap().iter().map(|f| f["rule"].as_str().unwrap()).collect();
+        let rules: Vec<&str> = d["risk"]["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f["rule"].as_str().unwrap())
+            .collect();
         assert_eq!(rules, ["authz_revoke", "fee_revoke", "allowance_decrease"], "{mode}");
         assert_eq!(d["risk"]["level"], "info", "{mode}");
         assert!(approve_and_sign(&request, account(0))["tx_raw"].is_string(), "{mode}");
@@ -772,15 +916,32 @@ fn own_revokes_build_decode_and_sign() {
         p
     };
     let request = ok("build_evm", params(token, "0", Some(spender), Some(token)))["request"].clone();
-    assert_eq!(request["evm_transaction"]["tx"]["data"], format!("0x095ea7b3{:0>64}{}", spender[2..].to_lowercase(), "0".repeat(64)));
+    assert_eq!(
+        request["evm_transaction"]["tx"]["data"],
+        format!("0x095ea7b3{:0>64}{}", spender[2..].to_lowercase(), "0".repeat(64))
+    );
     let d = ok("decode", json!({ "request": request }));
-    let rules: Vec<&str> = d["risk"]["findings"].as_array().unwrap().iter().map(|f| f["rule"].as_str().unwrap()).collect();
+    let rules: Vec<&str> = d["risk"]["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["rule"].as_str().unwrap())
+        .collect();
     assert!(rules.contains(&"allowance_revoke"), "{rules:?}");
     assert!(approve_and_sign(&request, account(0))["raw"].is_string());
     // Only to the token itself, only for 0, only with a token.
-    assert_eq!(code("build_evm", params(spender, "0", Some(spender), Some(token))), "bad_request");
-    assert_eq!(code("build_evm", params(token, "1", Some(spender), Some(token))), "bad_request");
-    assert_eq!(code("build_evm", params(token, "0", Some(spender), None)), "bad_request");
+    assert_eq!(
+        code("build_evm", params(spender, "0", Some(spender), Some(token))),
+        "bad_request"
+    );
+    assert_eq!(
+        code("build_evm", params(token, "1", Some(spender), Some(token))),
+        "bad_request"
+    );
+    assert_eq!(
+        code("build_evm", params(token, "0", Some(spender), None)),
+        "bad_request"
+    );
 }
 
 /// A bridge transfer's calldata on mainnet, as `injective-usdc-bridge` builds it.
@@ -806,7 +967,10 @@ fn burn_data(recipient: &str, domain: u32, hook: choice_wallet_injective::cctp::
 #[test]
 fn own_bridge_transfer_builds_decodes_and_signs() {
     use choice_wallet_injective::cctp::{Hook, MAINNET};
-    let me = choice_route("m-inj-usdt")["api"]["recipient"].as_str().unwrap().to_owned();
+    let me = choice_route("m-inj-usdt")["api"]["recipient"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     let tm = MAINNET.token_messenger;
     let bridge = |data: String| evm_params("eip155:1776", &me, tm, "0", json!({ "type": "bridge", "data": data }));
     let data = burn_data(&me, 6, Hook::Forward, 200_000);
@@ -825,25 +989,71 @@ fn own_bridge_transfer_builds_decodes_and_signs() {
     assert!(approve_and_sign(&request, account(0))["raw"].is_string());
 
     // Its approval: on USDC, for Circle's TokenMessengerV2, the exact amount.
-    let approve = ok("build_evm", evm_params("eip155:1776", &me, MAINNET.usdc, "25000000", json!({ "type": "bridge_approve" })))["request"].clone();
+    let approve = ok(
+        "build_evm",
+        evm_params(
+            "eip155:1776",
+            &me,
+            MAINNET.usdc,
+            "25000000",
+            json!({ "type": "bridge_approve" }),
+        ),
+    )["request"]
+        .clone();
     let d = ok("decode", json!({ "request": approve }));
     assert_eq!(d["display"]["call"]["type"], "approve");
     assert_eq!(d["display"]["call"]["spender"], tm);
     assert_eq!(d["display"]["call"]["amount"], "25000000");
-    assert_eq!(code("build_evm", evm_params("eip155:1776", &me, tm, "25000000", json!({ "type": "bridge_approve" }))), "bad_request");
-    assert_eq!(code("build_evm", evm_params("eip155:1776", &me, MAINNET.usdc, "0", json!({ "type": "bridge_approve" }))), "bad_request");
+    assert_eq!(
+        code(
+            "build_evm",
+            evm_params("eip155:1776", &me, tm, "25000000", json!({ "type": "bridge_approve" }))
+        ),
+        "bad_request"
+    );
+    assert_eq!(
+        code(
+            "build_evm",
+            evm_params(
+                "eip155:1776",
+                &me,
+                MAINNET.usdc,
+                "0",
+                json!({ "type": "bridge_approve" })
+            )
+        ),
+        "bad_request"
+    );
 
     // Refused: nobody to deliver, a chain Circle doesn't deliver to, a chain the wallet
     // doesn't name, an EVM recipient no address can be, Circle keeping all of it, INJ sent
     // with it, another contract, and calldata that isn't a burn.
-    assert_eq!(code("build_evm", bridge(burn_data(&me, 6, Hook::None, 0))), "bad_request");
-    assert_eq!(code("build_evm", bridge(burn_data(&me, 33, Hook::Forward, 200_000))), "bad_request");
-    assert_eq!(code("build_evm", bridge(burn_data(&me, 12, Hook::Forward, 200_000))), "bad_request");
-    assert_eq!(code("build_evm", bridge(burn_data(&me, 6, Hook::Forward, 25_000_000))), "bad_request");
+    assert_eq!(
+        code("build_evm", bridge(burn_data(&me, 6, Hook::None, 0))),
+        "bad_request"
+    );
+    assert_eq!(
+        code("build_evm", bridge(burn_data(&me, 33, Hook::Forward, 200_000))),
+        "bad_request"
+    );
+    assert_eq!(
+        code("build_evm", bridge(burn_data(&me, 12, Hook::Forward, 200_000))),
+        "bad_request"
+    );
+    assert_eq!(
+        code("build_evm", bridge(burn_data(&me, 6, Hook::Forward, 25_000_000))),
+        "bad_request"
+    );
     let mut sent_inj = bridge(data.clone());
     sent_inj["amount"] = "1".into();
     assert_eq!(code("build_evm", sent_inj), "bad_request");
-    let elsewhere = evm_params("eip155:1776", &me, MAINNET.usdc, "0", json!({ "type": "bridge", "data": data }));
+    let elsewhere = evm_params(
+        "eip155:1776",
+        &me,
+        MAINNET.usdc,
+        "0",
+        json!({ "type": "bridge", "data": data }),
+    );
     assert_eq!(code("build_evm", elsewhere), "bad_request");
     assert_eq!(code("build_evm", bridge("0x12345678".into())), "bad_request");
 }
@@ -874,19 +1084,35 @@ fn deposits_from_other_chains_build_decode_and_sign() {
     use choice_wallet_core::EthAddress;
     use choice_wallet_evm::U256;
     use choice_wallet_injective::cctp::{Hook, MAINNET};
-    let me = choice_route("m-inj-usdt")["api"]["recipient"].as_str().unwrap().to_owned();
+    let me = choice_route("m-inj-usdt")["api"]["recipient"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     let them = "0x2222222222222222222222222222222222222222";
     let base = MAINNET.source(8453).unwrap();
     let (tm, usdc) = (MAINNET.token_messenger, base.usdc);
     let on_base = |to: &str, amount: &str, call: Value| evm_params("eip155:8453", &me, to, amount, call);
 
     // The approval: Base's USDC, for Circle's TokenMessengerV2, the exact amount.
-    let approve = ok("build_evm", on_base(usdc, "25000000", json!({ "type": "bridge_approve" })))["request"].clone();
+    let approve = ok(
+        "build_evm",
+        on_base(usdc, "25000000", json!({ "type": "bridge_approve" })),
+    )["request"]
+        .clone();
     assert_eq!(approve["evm_transaction"]["tx"]["chainId"], "0x2105");
-    let d = ok("decode", json!({ "request": approve, "context": { "balances": { usdc: "30000000", "native": "1000000000000000" } } }));
+    let d = ok(
+        "decode",
+        json!({ "request": approve, "context": { "balances": { usdc: "30000000", "native": "1000000000000000" } } }),
+    );
     assert_eq!(d["display"]["chain"], "eip155:8453");
-    assert_eq!(d["display"]["source"], json!({ "name": "Base", "symbol": "ETH", "decimals": 18 }));
-    assert_eq!(d["display"]["call"], json!({ "type": "approve", "spender": tm, "amount": "25000000" }));
+    assert_eq!(
+        d["display"]["source"],
+        json!({ "name": "Base", "symbol": "ETH", "decimals": 18 })
+    );
+    assert_eq!(
+        d["display"]["call"],
+        json!({ "type": "approve", "spender": tm, "amount": "25000000" })
+    );
     assert_eq!(rules_of(&d), ["allowance"]);
     assert!(approve_and_sign(&approve, account(0))["raw"].is_string());
 
@@ -918,7 +1144,15 @@ fn deposits_from_other_chains_build_decode_and_sign() {
         recipient: EthAddress::parse_hex(&me).unwrap(),
         max_drop_fee: U256::from_u128(500_000),
     };
-    let burn = ok("build_evm", on_base(tm, "0", json!({ "type": "bridge", "data": deposit_data(&me, drop, Some(receiver)) })))["request"].clone();
+    let burn = ok(
+        "build_evm",
+        on_base(
+            tm,
+            "0",
+            json!({ "type": "bridge", "data": deposit_data(&me, drop, Some(receiver)) }),
+        ),
+    )["request"]
+        .clone();
     let d = ok("decode", json!({ "request": burn }));
     assert_eq!(d["display"]["call"]["delivery"], "gas_drop");
     assert_eq!(d["display"]["call"]["max_drop_fee"], "500000");
@@ -926,16 +1160,54 @@ fn deposits_from_other_chains_build_decode_and_sign() {
 
     // Refused when built, and when a request comes some other way: paying someone else, a
     // gas drop through another contract, coin attached, a token transfer, anything else.
-    assert_eq!(code("build_evm", on_base(tm, "0", json!({ "type": "bridge", "data": deposit_data(them, Hook::None, None) }))), "bad_request");
+    assert_eq!(
+        code(
+            "build_evm",
+            on_base(
+                tm,
+                "0",
+                json!({ "type": "bridge", "data": deposit_data(them, Hook::None, None) })
+            )
+        ),
+        "bad_request"
+    );
     let other_drop = Hook::GasDrop {
         recipient: EthAddress::parse_hex(&me).unwrap(),
         max_drop_fee: U256::from_u128(1),
     };
-    assert_eq!(code("build_evm", on_base(tm, "0", json!({ "type": "bridge", "data": deposit_data(&me, other_drop, Some(them)) }))), "bad_request");
-    assert_eq!(code("build_evm", on_base(tm, "1", json!({ "type": "bridge", "data": data }))), "bad_request");
-    assert_eq!(code("build_evm", on_base(usdc, "25000000", json!({ "type": "approve" }))), "bad_request");
-    assert_eq!(code("build_evm", json!({ "chain": "eip155:8453", "from": me, "to": them, "amount": "1", "token": usdc, "nonce": 0, "gas_limit": 60000, "max_fee_per_gas": "1", "max_priority_fee_per_gas": "0" })), "bad_request");
-    assert_eq!(code("build_evm", json!({ "chain": "eip155:8453", "from": me, "to": them, "amount": "1", "nonce": 0, "gas_limit": 21000, "max_fee_per_gas": "1", "max_priority_fee_per_gas": "0" })), "bad_request");
+    assert_eq!(
+        code(
+            "build_evm",
+            on_base(
+                tm,
+                "0",
+                json!({ "type": "bridge", "data": deposit_data(&me, other_drop, Some(them)) })
+            )
+        ),
+        "bad_request"
+    );
+    assert_eq!(
+        code("build_evm", on_base(tm, "1", json!({ "type": "bridge", "data": data }))),
+        "bad_request"
+    );
+    assert_eq!(
+        code("build_evm", on_base(usdc, "25000000", json!({ "type": "approve" }))),
+        "bad_request"
+    );
+    assert_eq!(
+        code(
+            "build_evm",
+            json!({ "chain": "eip155:8453", "from": me, "to": them, "amount": "1", "token": usdc, "nonce": 0, "gas_limit": 60000, "max_fee_per_gas": "1", "max_priority_fee_per_gas": "0" })
+        ),
+        "bad_request"
+    );
+    assert_eq!(
+        code(
+            "build_evm",
+            json!({ "chain": "eip155:8453", "from": me, "to": them, "amount": "1", "nonce": 0, "gas_limit": 21000, "max_fee_per_gas": "1", "max_priority_fee_per_gas": "0" })
+        ),
+        "bad_request"
+    );
     let tx = |to: &str, data: &str, value: &str| {
         json!({ "evm_transaction": { "chain": "eip155:8453", "tx": {
             "type": "0x2", "chainId": "0x2105", "from": me, "to": to, "value": value, "data": data,
@@ -943,10 +1215,22 @@ fn deposits_from_other_chains_build_decode_and_sign() {
         } } })
     };
     assert_eq!(code("decode", json!({ "request": tx(them, "0x", "0x1") })), "invalid");
-    assert_eq!(code("decode", json!({ "request": tx(tm, &deposit_data(them, Hook::None, None), "0x0") })), "invalid");
+    assert_eq!(
+        code(
+            "decode",
+            json!({ "request": tx(tm, &deposit_data(them, Hook::None, None), "0x0") })
+        ),
+        "invalid"
+    );
     assert!(call("decode", json!({ "request": tx(tm, &data, "0x0") })).is_ok());
     // No other kind of request on Base.
-    assert_eq!(code("decode", json!({ "request": { "evm_personal_sign": { "chain": "eip155:8453", "signer": me, "message": "hi" } } })), "unknown_chain");
+    assert_eq!(
+        code(
+            "decode",
+            json!({ "request": { "evm_personal_sign": { "chain": "eip155:8453", "signer": me, "message": "hi" } } })
+        ),
+        "unknown_chain"
+    );
 }
 
 #[test]
@@ -954,7 +1238,10 @@ fn own_bridge_receive_mints_only_to_this_account() {
     use choice_wallet_core::{EthAddress, hexutil};
     use choice_wallet_evm::U256;
     use choice_wallet_injective::cctp::{self, MAINNET};
-    let me = choice_route("m-inj-usdt")["api"]["recipient"].as_str().unwrap().to_owned();
+    let me = choice_route("m-inj-usdt")["api"]["recipient"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     let them = "0x2222222222222222222222222222222222222222";
     // A message as MessageTransmitterV2 lays it out: 25 USDC burned on Base, 0.0025 to Circle.
     let message = |recipient: &str, token: EthAddress, source: u32| {
@@ -981,7 +1268,15 @@ fn own_bridge_receive_mints_only_to_this_account() {
     };
     let base_usdc = MAINNET.source(8453).unwrap().usdc();
     let mt = MAINNET.message_transmitter;
-    let receive = |m: String| evm_params("eip155:1776", &me, mt, "0", json!({ "type": "bridge_receive", "message": m, "attestation": "07".repeat(65) }));
+    let receive = |m: String| {
+        evm_params(
+            "eip155:1776",
+            &me,
+            mt,
+            "0",
+            json!({ "type": "bridge_receive", "message": m, "attestation": "07".repeat(65) }),
+        )
+    };
     let request = ok("build_evm", receive(message(&me, base_usdc, 6)))["request"].clone();
     let d = ok("decode", json!({ "request": request }));
     let call = &d["display"]["call"];
@@ -996,9 +1291,24 @@ fn own_bridge_receive_mints_only_to_this_account() {
 
     // Someone else's, another token, an unnamed chain, the wrong contract: not built.
     assert_eq!(code("build_evm", receive(message(them, base_usdc, 6))), "bad_request");
-    assert_eq!(code("build_evm", receive(message(&me, MAINNET.usdc(), 6))), "bad_request");
+    assert_eq!(
+        code("build_evm", receive(message(&me, MAINNET.usdc(), 6))),
+        "bad_request"
+    );
     assert_eq!(code("build_evm", receive(message(&me, base_usdc, 12))), "bad_request");
-    assert_eq!(code("build_evm", evm_params("eip155:1776", &me, MAINNET.token_messenger, "0", json!({ "type": "bridge_receive", "message": message(&me, base_usdc, 6), "attestation": "07" }))), "bad_request");
+    assert_eq!(
+        code(
+            "build_evm",
+            evm_params(
+                "eip155:1776",
+                &me,
+                MAINNET.token_messenger,
+                "0",
+                json!({ "type": "bridge_receive", "message": message(&me, base_usdc, 6), "attestation": "07" })
+            )
+        ),
+        "bad_request"
+    );
     // A site may ask for someone else's mint; it is shown as theirs.
     let mut theirs = ok("build_evm", receive(message(&me, base_usdc, 6)))["request"].clone();
     let data = cctp::receive_calldata(&hexutil::decode(&message(them, base_usdc, 6)).unwrap(), &[7; 65]);
@@ -1021,14 +1331,23 @@ fn own_bridge_receive_mints_only_to_this_account() {
     assert_eq!(d["display"]["call"]["known_token"], true);
     assert_eq!(d["risk"]["level"], "info");
     // Not from Circle's program, or not its USDC: refused.
-    assert_eq!(code("build_evm", receive(solana([9; 32], MAINNET.solana.usdc_mint()))), "bad_request");
+    assert_eq!(
+        code("build_evm", receive(solana([9; 32], MAINNET.solana.usdc_mint()))),
+        "bad_request"
+    );
     assert_eq!(code("build_evm", receive(solana(program, [9; 32]))), "bad_request");
 }
 
 /// A real route from Choice's API (2026-11-09), paying the test phrase's account 0.
 fn choice_route(name: &str) -> Value {
     let v: Value = serde_json::from_str(include_str!("../../injective/tests/choice_routes.json")).unwrap();
-    v["cases"].as_array().unwrap().iter().find(|c| c["name"] == name).unwrap().clone()
+    v["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == name)
+        .unwrap()
+        .clone()
 }
 
 fn evm_params(chain: &str, from: &str, to: &str, amount: &str, call: Value) -> Value {
@@ -1039,14 +1358,27 @@ fn evm_params(chain: &str, from: &str, to: &str, amount: &str, call: Value) -> V
 }
 
 fn rules_of(d: &Value) -> Vec<String> {
-    d["risk"]["findings"].as_array().unwrap().iter().map(|f| f["rule"].as_str().unwrap().to_owned()).collect()
+    d["risk"]["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["rule"].as_str().unwrap().to_owned())
+        .collect()
 }
 
 #[test]
 fn own_choice_swap_builds_decodes_and_signs() {
     let c = choice_route("m-inj-usdt");
     let me = c["api"]["recipient"].as_str().unwrap();
-    let swap = |from: &str, value: &str| evm_params("eip155:1776", from, c["to"].as_str().unwrap(), value, json!({ "type": "swap", "data": c["data"] }));
+    let swap = |from: &str, value: &str| {
+        evm_params(
+            "eip155:1776",
+            from,
+            c["to"].as_str().unwrap(),
+            value,
+            json!({ "type": "swap", "data": c["data"] }),
+        )
+    };
     let request = ok("build_evm", swap(me, c["value"].as_str().unwrap()))["request"].clone();
     assert_eq!(request["evm_transaction"]["tx"]["data"], c["data"]);
     let d = ok("decode", json!({ "request": request }));
@@ -1064,16 +1396,47 @@ fn own_choice_swap_builds_decodes_and_signs() {
 
     // Refused: paying someone else, INJ that doesn't match, a contract that isn't Choice's,
     // and calldata that isn't a swap.
-    assert_eq!(code("build_evm", swap("0x9d8A62f656a8d1615C1294fd71e9CFb3E4855A4F", c["value"].as_str().unwrap())), "bad_request");
+    assert_eq!(
+        code(
+            "build_evm",
+            swap(
+                "0x9d8A62f656a8d1615C1294fd71e9CFb3E4855A4F",
+                c["value"].as_str().unwrap()
+            )
+        ),
+        "bad_request"
+    );
     assert_eq!(code("build_evm", swap(me, "1")), "bad_request");
-    let elsewhere = evm_params("eip155:1776", me, "0x4444444444444444444444444444444444444444", "0", json!({ "type": "swap", "data": c["data"] }));
+    let elsewhere = evm_params(
+        "eip155:1776",
+        me,
+        "0x4444444444444444444444444444444444444444",
+        "0",
+        json!({ "type": "swap", "data": c["data"] }),
+    );
     assert_eq!(code("build_evm", elsewhere), "bad_request");
-    let junk = evm_params("eip155:1776", me, c["to"].as_str().unwrap(), "0", json!({ "type": "swap", "data": "0xddab6e8d00" }));
+    let junk = evm_params(
+        "eip155:1776",
+        me,
+        c["to"].as_str().unwrap(),
+        "0",
+        json!({ "type": "swap", "data": "0xddab6e8d00" }),
+    );
     assert_eq!(code("build_evm", junk), "bad_request");
 
     // The router on testnet: an ERC20 in, so no INJ sent.
     let t = choice_route("t-winj-usdt");
-    let r = ok("build_evm", evm_params("eip155:1439", me, t["to"].as_str().unwrap(), "0", json!({ "type": "swap", "data": t["data"] })))["request"].clone();
+    let r = ok(
+        "build_evm",
+        evm_params(
+            "eip155:1439",
+            me,
+            t["to"].as_str().unwrap(),
+            "0",
+            json!({ "type": "swap", "data": t["data"] }),
+        ),
+    )["request"]
+        .clone();
     let d = ok("decode", json!({ "request": r }));
     assert_eq!(d["display"]["call"]["executor"], "router");
     assert_eq!(rules_of(&d), ["swap"]);
@@ -1086,27 +1449,66 @@ fn own_swap_approvals_are_exact() {
     let permit2 = "0x000000000022D473030F116dDEE9F6B43aC78BA3";
     let aggregator = "0xa705d0D5f549Af25024038dc575E3074B9Bd37c9";
     // approve(Permit2, 5 USDT) on the token.
-    let r = ok("build_evm", evm_params("eip155:1776", me, usdt, "5000000", json!({ "type": "approve" })))["request"].clone();
+    let r = ok(
+        "build_evm",
+        evm_params("eip155:1776", me, usdt, "5000000", json!({ "type": "approve" })),
+    )["request"]
+        .clone();
     let d = ok("decode", json!({ "request": r }));
-    assert_eq!(d["display"]["call"], json!({ "type": "approve", "spender": permit2, "amount": "5000000" }));
-    assert_eq!(d["risk"]["findings"][0]["message"], "Permit2 could spend this token up to the amount shown.");
+    assert_eq!(
+        d["display"]["call"],
+        json!({ "type": "approve", "spender": permit2, "amount": "5000000" })
+    );
+    assert_eq!(
+        d["risk"]["findings"][0]["message"],
+        "Permit2 could spend this token up to the amount shown."
+    );
     assert_eq!(d["risk"]["level"], "amber");
     assert!(approve_and_sign(&r, account(0))["raw"].is_string());
     // Permit2.approve(USDT, aggregator, 5 USDT, an hour).
     let p2 = |to: &str, spender: &str, amount: &str| {
-        evm_params("eip155:1776", me, to, amount, json!({ "type": "permit2_approve", "token": usdt, "spender": spender, "expiration": 1_800_000_000u64 }))
+        evm_params(
+            "eip155:1776",
+            me,
+            to,
+            amount,
+            json!({ "type": "permit2_approve", "token": usdt, "spender": spender, "expiration": 1_800_000_000u64 }),
+        )
     };
     let r = ok("build_evm", p2(permit2, aggregator, "5000000"))["request"].clone();
     let d = ok("decode", json!({ "request": r }));
     assert_eq!(d["display"]["call"]["type"], "permit2_approve");
     assert_eq!(d["display"]["call"]["spender"], aggregator);
     assert_eq!(rules_of(&d), ["permit2_limited"]);
-    assert!(d["risk"]["findings"][0]["message"].as_str().unwrap().starts_with("Choice's aggregator could spend"));
+    assert!(
+        d["risk"]["findings"][0]["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("Choice's aggregator could spend")
+    );
     // Never unlimited, never for anyone but Choice's executors, only at Permit2.
     let unlimited = "1267650600228229401496703205376";
-    assert_eq!(code("build_evm", evm_params("eip155:1776", me, usdt, unlimited, json!({ "type": "approve" }))), "bad_request");
-    assert_eq!(code("build_evm", evm_params("eip155:1776", me, usdt, "0", json!({ "type": "approve" }))), "bad_request");
-    assert_eq!(code("build_evm", p2(permit2, "0x4444444444444444444444444444444444444444", "5")), "bad_request");
+    assert_eq!(
+        code(
+            "build_evm",
+            evm_params("eip155:1776", me, usdt, unlimited, json!({ "type": "approve" }))
+        ),
+        "bad_request"
+    );
+    assert_eq!(
+        code(
+            "build_evm",
+            evm_params("eip155:1776", me, usdt, "0", json!({ "type": "approve" }))
+        ),
+        "bad_request"
+    );
+    assert_eq!(
+        code(
+            "build_evm",
+            p2(permit2, "0x4444444444444444444444444444444444444444", "5")
+        ),
+        "bad_request"
+    );
     assert_eq!(code("build_evm", p2(usdt, aggregator, "5")), "bad_request");
     assert_eq!(code("build_evm", p2(permit2, aggregator, unlimited)), "bad_request");
 }
@@ -1203,7 +1605,10 @@ fn a_ledger_signs_what_the_vault_decoded() {
     // A hash off the curve (a program-derived address) isn't a key anyone holds.
     let pda = choice_wallet_core::base58::decode32("45hzrGLQ2EGo1Ln7QpXjDwb589GDQ9H2aEXXw6ds6BFE").unwrap();
     assert_eq!(
-        code("key_addresses", json!({ "public_key": pk, "solana_public_key": hex::encode(pda) })),
+        code(
+            "key_addresses",
+            json!({ "public_key": pk, "solana_public_key": hex::encode(pda) })
+        ),
         "bad_request"
     );
 
@@ -1352,7 +1757,8 @@ fn sign_arbitrary_matches_injective_ts() {
     assert_eq!(pk, signer_key(0));
     for c in v["cases"].as_array().unwrap() {
         let name = c["name"].as_str().unwrap();
-        let request = json!({ "cosmos_arbitrary": { "chain": "cosmos:injective-1", "signer": pk, "data": c["data_hex"] } });
+        let request =
+            json!({ "cosmos_arbitrary": { "chain": "cosmos:injective-1", "signer": pk, "data": c["data_hex"] } });
         let d = ok("decode", json!({ "request": request }));
         assert_eq!(d["display"]["signer"], v["signer"], "{name}");
         let signed = approve_and_sign(&request, account(0));
@@ -1373,9 +1779,13 @@ fn sign_arbitrary_matches_injective_ts() {
         assert!(!verify(&other, &c["data_hex"], &c["signature"]), "{name}");
     }
     // Shown as text; graded like a message: a transaction's shape is red.
-    let text = json!({ "cosmos_arbitrary": { "chain": "cosmos:injective-1", "signer": pk, "data": hex::encode("hello") } });
+    let text =
+        json!({ "cosmos_arbitrary": { "chain": "cosmos:injective-1", "signer": pk, "data": hex::encode("hello") } });
     let d = ok("decode", json!({ "request": text }));
-    assert_eq!((d["display"]["text"].as_str(), d["risk"]["level"].as_str()), (Some("hello"), Some("info")));
+    assert_eq!(
+        (d["display"]["text"].as_str(), d["risk"]["level"].as_str()),
+        (Some("hello"), Some("info"))
+    );
     let amino = json!({ "cosmos_arbitrary": { "chain": "cosmos:injective-1", "signer": pk, "data": hex::encode(r#"{"chain_id":"injective-1","msgs":[]}"#) } });
     let d = ok("decode", json!({ "request": amino }));
     assert_eq!(d["risk"]["findings"][0]["rule"], "arbitrary_tx");
@@ -1387,10 +1797,14 @@ fn a_ledger_signs_arbitrary_messages_in_the_cosmos_app() {
     use choice_wallet_core::secp256k1::keccak256;
     let ledger = FakeLedger::new(0);
     let pk = ledger.public_key();
-    let request = json!({ "cosmos_arbitrary": { "chain": "cosmos:injective-1", "signer": pk, "data": hex::encode("Sign in") } });
+    let request =
+        json!({ "cosmos_arbitrary": { "chain": "cosmos:injective-1", "signer": pk, "data": hex::encode("Sign in") } });
     let digest = ok("decode", json!({ "request": request }))["digest"].clone();
     let dev = ok("device_request", json!({ "request": request, "digest": digest }));
-    assert_eq!((dev["app"].as_str(), dev["kind"].as_str()), (Some("cosmos"), Some("amino")));
+    assert_eq!(
+        (dev["app"].as_str(), dev["kind"].as_str()),
+        (Some("cosmos"), Some("amino"))
+    );
     let doc = hex::decode(dev["payload"].as_str().unwrap()).unwrap();
     let signed = ok(
         "device_sign",
@@ -1415,14 +1829,30 @@ fn own_nft_sends_build_decode_and_sign() {
             .clone();
         let d = ok("decode", json!({ "request": request }));
         let m = &d["display"]["messages"][0];
-        assert_eq!((&m["call"]["type"], &m["call"]["token_id"], &m["call"]["recipient"]), (&json!("nft_transfer"), &json!("42"), &to), "{mode}");
+        assert_eq!(
+            (&m["call"]["type"], &m["call"]["token_id"], &m["call"]["recipient"]),
+            (&json!("nft_transfer"), &json!("42"), &to),
+            "{mode}"
+        );
         assert_eq!(d["risk"]["findings"][0]["rule"], "nft_send", "{mode}");
         assert!(approve_and_sign(&request, account(0))["tx_raw"].is_string(), "{mode}");
     }
     // To itself, or a token ID with a control character: refused.
     let me = accounts[0]["inj"].clone();
-    assert!(build_staking(json!([{ "type": "nft_transfer", "contract": collection, "to": me, "token_id": "1" }]), "direct").is_err());
-    assert!(build_staking(json!([{ "type": "nft_transfer", "contract": collection, "to": to, "token_id": "a\u{7}" }]), "direct").is_err());
+    assert!(
+        build_staking(
+            json!([{ "type": "nft_transfer", "contract": collection, "to": me, "token_id": "1" }]),
+            "direct"
+        )
+        .is_err()
+    );
+    assert!(
+        build_staking(
+            json!([{ "type": "nft_transfer", "contract": collection, "to": to, "token_id": "a\u{7}" }]),
+            "direct"
+        )
+        .is_err()
+    );
 
     let checksum = |a: &Value| ok("addresses", json!({ "address": a }))["addresses"]["eip155:1776"].clone();
     let from = checksum(&accounts[0]["eth"]);
@@ -1438,7 +1868,10 @@ fn own_nft_sends_build_decode_and_sign() {
         .clone();
     let d = ok("decode", json!({ "request": request }));
     assert_eq!(d["display"]["to"], "0x1111111111111111111111111111111111111111");
-    assert_eq!(d["display"]["call"], json!({ "type": "nft_transfer", "from": from, "to": dest, "token_id": "7" }));
+    assert_eq!(
+        d["display"]["call"],
+        json!({ "type": "nft_transfer", "from": from, "to": dest, "token_id": "7" })
+    );
     assert_eq!(d["risk"]["findings"][0]["rule"], "nft_send");
     assert!(approve_and_sign(&request, account(0))["raw"].is_string());
 }
@@ -1462,10 +1895,32 @@ fn rescue_messages_build_decode_and_sign_both_ways() {
     for mode in ["direct", "amino_json"] {
         let request = build_staking(sweep.clone(), mode).unwrap()["request"].clone();
         let d = ok("decode", json!({ "request": request, "context": mine }));
-        let types: Vec<&str> = d["display"]["messages"].as_array().unwrap().iter().map(|m| m["type"].as_str().unwrap()).collect();
-        assert_eq!(types, ["set_withdraw_address", "withdraw_rewards", "transfer_delegation", "bank_send"], "{mode}");
-        let rules: Vec<&str> = d["risk"]["findings"].as_array().unwrap().iter().map(|f| f["rule"].as_str().unwrap()).collect();
-        assert!(rules.contains(&"withdraw_address_own") && rules.contains(&"transfer_stake_own"), "{mode}: {rules:?}");
+        let types: Vec<&str> = d["display"]["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["type"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            types,
+            [
+                "set_withdraw_address",
+                "withdraw_rewards",
+                "transfer_delegation",
+                "bank_send"
+            ],
+            "{mode}"
+        );
+        let rules: Vec<&str> = d["risk"]["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f["rule"].as_str().unwrap())
+            .collect();
+        assert!(
+            rules.contains(&"withdraw_address_own") && rules.contains(&"transfer_stake_own"),
+            "{mode}: {rules:?}"
+        );
         assert!(approve_and_sign(&request, account(0))["tx_raw"].is_string(), "{mode}");
 
         let request = build_staking(grant.clone(), mode).unwrap()["request"].clone();
@@ -1513,7 +1968,10 @@ fn trading_account_withdrawals_build_decode_and_sign_both_ways() {
     }
     // Another account's subaccount, or a malformed ID, isn't built.
     for bad in [sub(&other, 1), sub(&me, 1).to_uppercase(), format!("0x{me}")] {
-        let r = build_staking(json!([{ "type": "exchange_withdraw", "subaccount_id": bad, "amount": usdt }]), "direct");
+        let r = build_staking(
+            json!([{ "type": "exchange_withdraw", "subaccount_id": bad, "amount": usdt }]),
+            "direct",
+        );
         assert!(r.is_err(), "{bad}");
     }
 }
@@ -1549,7 +2007,10 @@ fn a_phrase_has_solana_accounts_and_an_imported_key_has_none() {
         assert_eq!(addresses[SOLANA_DEVNET], *want, "account {i}");
     }
     let (_, b, uk) = vault_with(json!({ "private_key": "46".repeat(32) }));
-    let imported = ok("accounts", json!({ "secret": b, "wallet": "w1", "unlock_key": uk, "accounts": [{ "derivation": "imported" }] }));
+    let imported = ok(
+        "accounts",
+        json!({ "secret": b, "wallet": "w1", "unlock_key": uk, "accounts": [{ "derivation": "imported" }] }),
+    );
     assert!(imported["accounts"][0]["addresses"].get(SOLANA_MAINNET).is_none());
     let request = json!({ "solana_message": { "chain": SOLANA_MAINNET, "signer": "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk", "message": "6869" } });
     let d = ok("decode", json!({ "request": request }));
@@ -1565,7 +2026,10 @@ fn a_phrase_has_solana_accounts_and_an_imported_key_has_none() {
 fn an_accounts_solana_key_exports_as_phantom_imports_it() {
     let phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
     let (vault, a, _) = vault_with(json!({ "mnemonic": phrase }));
-    let shown = ok("reveal", json!({ "vault": vault, "password": PASSWORD, "secret": a, "wallet": "w1", "account": account(0) }));
+    let shown = ok(
+        "reveal",
+        json!({ "vault": vault, "password": PASSWORD, "secret": a, "wallet": "w1", "account": account(0) }),
+    );
     // base58 of the 32-byte secret, then the public key: Phantom's "private key" import.
     let pair = choice_wallet_core::base58::decode(shown["solana_private_key"].as_str().unwrap()).unwrap();
     assert_eq!(pair.len(), 64);
@@ -1594,15 +2058,24 @@ fn solana_transactions_decode_and_sign() {
     assert_eq!(d["display"]["kind"], "solana_transaction");
     assert_eq!(d["display"]["fee"]["total"], "5200");
     let step = &d["display"]["instructions"][2];
-    assert_eq!((step["type"].as_str(), step["to"].as_str(), step["lamports"].as_str()), (Some("sol_transfer"), v["other"].as_str(), Some("10000000")));
+    assert_eq!(
+        (step["type"].as_str(), step["to"].as_str(), step["lamports"].as_str()),
+        (Some("sol_transfer"), v["other"].as_str(), Some("10000000"))
+    );
     assert_eq!(d["risk"]["level"], "info");
     let signed = sign(&send, account(0)).unwrap();
     let message = hex::decode(v["sol_transfer"].as_str().unwrap()).unwrap();
-    let sig: [u8; 64] = hex::decode(signed["signature"].as_str().unwrap()).unwrap().try_into().unwrap();
+    let sig: [u8; 64] = hex::decode(signed["signature"].as_str().unwrap())
+        .unwrap()
+        .try_into()
+        .unwrap();
     let owner = choice_wallet_core::base58::decode32(v["owner"].as_str().unwrap()).unwrap();
     assert!(choice_wallet_core::ed25519::verify(&owner, &message, &sig));
     assert_eq!(signed["index"], 0);
-    assert_eq!(signed["transaction"].as_str().unwrap(), format!("01{}{}", hex::encode(sig), hex::encode(&message)));
+    assert_eq!(
+        signed["transaction"].as_str().unwrap(),
+        format!("01{}{}", hex::encode(sig), hex::encode(&message))
+    );
     // Another account's key isn't the signer; an approval binds the exact message.
     assert_eq!(sign(&send, account(1)).unwrap_err()["code"], "wrong_account");
     let d = ok("decode", json!({ "request": send }));
@@ -1623,8 +2096,14 @@ fn solana_transactions_decode_and_sign() {
     let d = ok("decode", json!({ "request": burn }));
     let b = &d["display"]["instructions"][2];
     assert_eq!(b["type"], "bridge");
-    assert_eq!((b["chain"].as_str(), b["recipient"].as_str()), (Some("Injective"), v["me_evm"].as_str()));
-    assert_eq!((b["delivery"].as_str(), b["least"].as_str(), b["usdc"].as_bool()), (Some("anyone"), Some("1999700"), Some(true)));
+    assert_eq!(
+        (b["chain"].as_str(), b["recipient"].as_str()),
+        (Some("Injective"), v["me_evm"].as_str())
+    );
+    assert_eq!(
+        (b["delivery"].as_str(), b["least"].as_str(), b["usdc"].as_bool()),
+        (Some("anyone"), Some("1999700"), Some(true))
+    );
     assert_eq!(d["display"]["signers"], json!([v["owner"], v["event"]]));
     let signed = sign(&burn, account(0)).unwrap();
     assert_eq!(signed["index"], 0);
@@ -1639,7 +2118,14 @@ fn solana_transactions_decode_and_sign() {
     assert_eq!(reclaim["display"]["instructions"][0]["type"], "bridge_reclaim");
     let drop = ok("decode", json!({ "request": tx(&v["burn_drop"]) }));
     let b = &drop["display"]["instructions"][2];
-    assert_eq!((b["delivery"].as_str(), b["recipient"].as_str(), b["max_drop_fee"].as_str()), (Some("gas_drop"), v["me_evm"].as_str(), Some("200000")));
+    assert_eq!(
+        (
+            b["delivery"].as_str(),
+            b["recipient"].as_str(),
+            b["max_drop_fee"].as_str()
+        ),
+        (Some("gas_drop"), v["me_evm"].as_str(), Some("200000"))
+    );
 
     // Only the clusters the vault knows.
     let unknown = json!({ "solana_transaction": { "chain": "solana:mainnet", "signer": v["owner"], "message": v["sol_transfer"] } });
@@ -1660,17 +2146,31 @@ fn solana_messages_and_devices() {
         "sign",
         json!({ "secret": secret, "wallet": "w1", "unlock_key": uk, "account": account(0), "request": text, "digest": d["digest"] }),
     );
-    let sig: [u8; 64] = hex::decode(signed["signature"].as_str().unwrap()).unwrap().try_into().unwrap();
+    let sig: [u8; 64] = hex::decode(signed["signature"].as_str().unwrap())
+        .unwrap()
+        .try_into()
+        .unwrap();
     let key = choice_wallet_core::base58::decode32(owner).unwrap();
-    assert!(choice_wallet_core::ed25519::verify(&key, b"Sign in to example.org", &sig));
+    assert!(choice_wallet_core::ed25519::verify(
+        &key,
+        b"Sign in to example.org",
+        &sig
+    ));
     // A transaction dressed as a message is refused.
-    assert_eq!(code("decode", json!({ "request": msg(v["sol_transfer"].as_str().unwrap()) })), "invalid");
+    assert_eq!(
+        code("decode", json!({ "request": msg(v["sol_transfer"].as_str().unwrap()) })),
+        "invalid"
+    );
 
     // A Ledger's Solana app signs the exact message; the vault checks the signature.
-    let send = json!({ "solana_transaction": { "chain": SOLANA_MAINNET, "signer": owner, "message": v["sol_transfer"] } });
+    let send =
+        json!({ "solana_transaction": { "chain": SOLANA_MAINNET, "signer": owner, "message": v["sol_transfer"] } });
     let d = ok("decode", json!({ "request": send }));
     let dev = ok("device_request", json!({ "request": send, "digest": d["digest"] }));
-    assert_eq!((dev["app"].as_str(), dev["payload"].as_str()), (Some("solana"), v["sol_transfer"].as_str()));
+    assert_eq!(
+        (dev["app"].as_str(), dev["payload"].as_str()),
+        (Some("solana"), v["sol_transfer"].as_str())
+    );
     let m = choice_wallet_core::Mnemonic::parse(phrase).unwrap();
     let device = choice_wallet_core::ed25519::derive(&m, "m/44'/501'/0'/0'").unwrap();
     let message = hex::decode(v["sol_transfer"].as_str().unwrap()).unwrap();
@@ -1685,5 +2185,11 @@ fn solana_messages_and_devices() {
     let mut bad = device.sign(&message);
     bad[5] ^= 1;
     assert_eq!(device_sign(&bad).unwrap_err()["code"], "bad_signature");
-    assert_eq!(code("device_request", json!({ "request": text, "digest": ok("decode", json!({ "request": text }))["digest"] })), "device_unsupported");
+    assert_eq!(
+        code(
+            "device_request",
+            json!({ "request": text, "digest": ok("decode", json!({ "request": text }))["digest"] })
+        ),
+        "device_unsupported"
+    );
 }

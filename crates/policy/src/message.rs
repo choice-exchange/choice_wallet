@@ -318,12 +318,34 @@ mod tests {
         );
         let siws = |address: &str| format!("example.org{SIWS_SUFFIX}\n{address}\n\nURI: https://example.org");
         let solana = |m: String, origin: &str| {
-            let ctx = Context { origin: Some(origin.into()), origin_known: true, ..Default::default() };
+            let ctx = Context {
+                origin: Some(origin.into()),
+                origin_known: true,
+                ..Default::default()
+            };
             solana_message(m.as_bytes(), "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk", &ctx).findings[0].rule
         };
-        assert_eq!(solana(siws("HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk"), "https://example.org"), "sign_in");
-        assert_eq!(solana(siws("hagk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk"), "https://example.org"), "sign_in_wrong_account");
-        assert_eq!(solana(siws("HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk"), "https://evil.example"), "sign_in_wrong_site");
+        assert_eq!(
+            solana(
+                siws("HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk"),
+                "https://example.org"
+            ),
+            "sign_in"
+        );
+        assert_eq!(
+            solana(
+                siws("hagk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk"),
+                "https://example.org"
+            ),
+            "sign_in_wrong_account"
+        );
+        assert_eq!(
+            solana(
+                siws("HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk"),
+                "https://evil.example"
+            ),
+            "sign_in_wrong_site"
+        );
         let with_scheme = siwe("https://example.org", ME);
         assert_eq!(
             rule(with_scheme.as_bytes(), Some("https://example.org")),

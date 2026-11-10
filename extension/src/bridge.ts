@@ -69,6 +69,7 @@ import {
 import { dataFeeBound, sourceUsdc, type createSender, type DepositSent, type EvmDisplayLike, type SourceChain } from "./send";
 import type { Store } from "./service";
 import type { createSolana } from "./solana";
+import { fail, randomId } from "./util";
 
 type Sender = ReturnType<typeof createSender>;
 type Solana = ReturnType<typeof createSolana>;
@@ -94,7 +95,6 @@ export const BRIDGE_QUOTE_TTL_MS = 120_000;
 /** Where anyone can follow a transfer, and claim it if Circle never delivers. */
 export const TRACK_URL = "https://bridge.choice.exchange/tx";
 
-const fail = (code: string, message: string): Result<never> => ({ ok: false, error: { code, message } });
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
 /** What waits between the quote and its steps. Amounts are decimal strings. */
@@ -219,7 +219,7 @@ export function createBridge(sender: Sender, session: Store, local: Store, fetch
     if (amount > u.result.balance) return fail("insufficient", "That's more USDC than you have.");
     const q = await ask(network, chain, amount, r.result.setup);
     if (!q.ok) return q;
-    const id = [...crypto.getRandomValues(new Uint8Array(8))].map((b) => b.toString(16).padStart(2, "0")).join("");
+    const id = randomId();
     const stored: Stored = {
       id,
       network,
@@ -470,7 +470,7 @@ export function createBridge(sender: Sender, session: Store, local: Store, fetch
     if (!q.ok) return q;
     const steps: BridgeStep[] = allowed < amount ? ["approve", "burn"] : ["burn"];
     const gasNeed = ((steps.length > 1 ? APPROVE_GAS : 0n) + BURN_GAS) * (fees.base * 2n + fees.tip) + BigInt(steps.length) * fees.data;
-    const id = [...crypto.getRandomValues(new Uint8Array(8))].map((b) => b.toString(16).padStart(2, "0")).join("");
+    const id = randomId();
     const stored: StoredIn = {
       id,
       network,
@@ -751,7 +751,7 @@ export function createBridge(sender: Sender, session: Store, local: Store, fetch
     } catch {
       return fail("unreachable", `Couldn't reach ${name}. Try again.`);
     }
-    const id = [...crypto.getRandomValues(new Uint8Array(8))].map((b) => b.toString(16).padStart(2, "0")).join("");
+    const id = randomId();
     const stored: StoredIn = {
       id,
       network,

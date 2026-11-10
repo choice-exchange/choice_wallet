@@ -27,6 +27,7 @@ import {
 } from "@ledgerhq/device-management-kit";
 import { SignerCosmosBuilder } from "@ledgerhq/device-signer-kit-cosmos";
 import { webHidIdentifier, webHidTransportFactory } from "@ledgerhq/device-transport-kit-web-hid";
+import { bytesToHex } from "@choice-wallet/chain";
 import type { LedgerHost, LedgerStep } from "@choice-wallet/ui";
 import type { DeviceRequest, DeviceSignature } from "@choice-wallet/ui/protocol";
 import { filter, firstValueFrom, timeout, type Observable, type Subscription } from "rxjs";
@@ -67,7 +68,6 @@ const SOLANA_STATUS: Record<string, string> = {
 const P2_MORE = 0x02;
 const P2_EXTEND = 0x01;
 
-const hex = (b: Uint8Array) => Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
 function bytes(h: string): Uint8Array {
   if (!/^(?:[0-9a-f]{2})*$/i.test(h)) throw new LedgerError("Not hex.");
   return Uint8Array.from(h.match(/../g) ?? [], (x) => parseInt(x, 16));
@@ -109,7 +109,7 @@ function deviceError(e: unknown): LedgerError {
     for (const k of ["errorCode", "statusCode"]) {
       const v = o[k];
       if (typeof v === "string" && /^[0-9a-f]{4}$/i.test(v)) return v.toLowerCase();
-      if (v instanceof Uint8Array && v.length === 2) return hex(v);
+      if (v instanceof Uint8Array && v.length === 2) return bytesToHex(v);
     }
     const tag = typeof o["_tag"] === "string" ? o["_tag"] : "";
     if (/Locked/i.test(tag)) return "5515";
@@ -221,7 +221,7 @@ export function createLedger(): LedgerHost {
 
   async function apdu(sessionId: DeviceSessionId, data: Uint8Array, status?: Record<string, string>): Promise<Uint8Array> {
     const r = await kit().sendApdu({ sessionId, apdu: data });
-    const sw = hex(r.statusCode);
+    const sw = bytesToHex(r.statusCode);
     if (sw === "9000") return r.data;
     const said = status?.[sw];
     throw said ? new LedgerError(said) : deviceError({ errorCode: sw });
@@ -261,7 +261,7 @@ export function createLedger(): LedgerHost {
   async function solanaKey(sessionId: DeviceSessionId, path: string, confirm: boolean, onStep?: (s: LedgerStep) => void): Promise<string> {
     const out = await solanaCall(sessionId, 0x05, confirm ? 0x01 : 0x00, solanaPath(path), confirm ? () => onStep?.("confirm") : undefined);
     if (out.length !== 32) throw new LedgerError("The Ledger's answer wasn't a Solana key.");
-    return hex(out);
+    return bytesToHex(out);
   }
 
   /** SIGN_MESSAGE on the Solana app: one signer's path, then the transaction's message; its
@@ -277,7 +277,7 @@ export function createLedger(): LedgerHost {
     data.set(message, 1 + path.length);
     const out = await solanaCall(sessionId, 0x06, 0x01, data, () => onStep?.("confirm"));
     if (out.length !== 64) throw new LedgerError("The Ledger's answer wasn't a signature.");
-    return { signature: hex(out), format: "rs" };
+    return { signature: bytesToHex(out), format: "rs" };
   }
 
   /** SIGN_TX or SIGN_PERSONAL_MESSAGE on the Ethereum app: `v || r || s` comes back. */
@@ -302,7 +302,7 @@ export function createLedger(): LedgerHost {
       out = await apdu(sessionId, a);
     }
     if (out.length !== 65) throw new LedgerError("The Ledger's answer wasn't a signature.");
-    return { signature: hex(out.subarray(1)), format: "rs" };
+    return { signature: bytesToHex(out.subarray(1)), format: "rs" };
   }
 
   return {
@@ -323,7 +323,7 @@ export function createLedger(): LedgerHost {
       for (const path of paths) {
         const { signer, skipOpenApp } = await cosmos(onStep);
         const r = await run(signer.getAddress(kitPath(path), HRP, { checkOnDevice: false, skipOpenApp: skipOpenApp || out.length > 0 }) as Action<{ publicKey: Uint8Array; address: string }>, onStep);
-        out.push({ path, public_key: hex(r.publicKey), address: r.address });
+        out.push({ path, public_key: bytesToHex(r.publicKey), address: r.address });
       }
       return out;
     },
@@ -347,7 +347,7 @@ export function createLedger(): LedgerHost {
       if (req.app === "solana") return solana(req, onStep);
       const { signer, skipOpenApp } = await cosmos(onStep);
       const sig = await run(signer.signTransaction(kitPath(req.path), HRP, bytes(req.payload), { skipOpenApp }) as Action<Uint8Array>, (s) => onStep?.(s === "working" ? "confirm" : s));
-      return { signature: hex(sig), format: "der" };
+      return { signature: bytesToHex(sig), format: "der" };
     },
   };
 }

@@ -52,6 +52,7 @@ import {
 
 import type { RiskFacts } from "./contacts";
 import type { Store } from "./service";
+import { fail } from "./util";
 
 export interface SolanaDeps {
   vault<T>(method: string, params?: unknown): Promise<Result<T>>;
@@ -91,7 +92,6 @@ const METAPLEX = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s";
 const HISTORY_PAGE = 20;
 const HISTORY_PARALLEL = 4;
 
-const fail = (code: string, message: string): Result<never> => ({ ok: false, error: { code, message } });
 const utf8 = (s: string) => new TextEncoder().encode(s);
 
 /** A Solana transaction on the wire: the signatures in the signers' order (all zero where one

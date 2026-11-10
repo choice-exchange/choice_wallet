@@ -8,7 +8,7 @@ import { useEffect, useRef, useState } from "react";
 import { useBackend, type LedgerStep } from "./backend";
 import { BackBar, Callout, Screen, Segmented, shortAddress } from "./kit";
 import type { AccountInfo, DeviceRequest, DeviceSignature, LedgerKey, Status } from "./protocol";
-import { useRequest } from "./request";
+import { errorText, useRequest } from "./request";
 
 /** Accounts read from the device per page of the list. */
 const PAGE = 5;
@@ -86,7 +86,7 @@ export function DeviceStep({
         const bad = await onSignature(sig);
         if (bad) setProblem(bad);
       })
-      .catch((e: unknown) => setProblem(e instanceof Error ? e.message : String(e)));
+      .catch((e: unknown) => setProblem(errorText(e)));
   }, [attempt]);
 
   const hint =
@@ -157,7 +157,7 @@ export function LedgerAddView({ start = "add" }: { start?: "add" | "solana" }) {
       setRows((r) => (from === 0 ? next : [...r, ...next]));
       setStage("pick");
     } catch (e) {
-      setProblem(e instanceof Error ? e.message : String(e));
+      setProblem(errorText(e));
     } finally {
       setStep(null);
     }
@@ -169,7 +169,7 @@ export function LedgerAddView({ start = "add" }: { start?: "add" | "solana" }) {
     try {
       await ledger.pair();
     } catch (e) {
-      setProblem(e instanceof Error ? e.message : String(e));
+      setProblem(errorText(e));
       return;
     }
     await load(layout, 0);
@@ -181,7 +181,7 @@ export function LedgerAddView({ start = "add" }: { start?: "add" | "solana" }) {
     try {
       await ledger.show(path, setStep);
     } catch (e) {
-      setProblem(e instanceof Error ? e.message : String(e));
+      setProblem(errorText(e));
     } finally {
       setStep(null);
     }
@@ -214,7 +214,7 @@ export function LedgerAddView({ start = "add" }: { start?: "add" | "solana" }) {
         setStep,
       );
     } catch (e) {
-      setProblem(e instanceof Error ? e.message : String(e));
+      setProblem(errorText(e));
       return;
     } finally {
       setStep(null);

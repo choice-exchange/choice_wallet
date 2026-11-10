@@ -10,7 +10,7 @@ import { BackBar, Callout, formatUsd, Screen, shortAddress, tokenSub } from "./k
 import { DeviceStep } from "./Ledger";
 import { BridgeCard, BridgeInCard, MintCard } from "./Bridge";
 import type { AccountInfo, Balance, BridgeInStatus, BridgeInStepInfo, BridgeStatus, BridgeStepInfo, Coin, EvmDisplay, Contact, DeviceRequest, DeviceSignature, NetworkId, RecipientCheck, SendReview, Sent, SwapStepInfo, TokenInfo, TxState } from "./protocol";
-import { useRequest } from "./request";
+import { errorText, useRequest } from "./request";
 import { permissionName } from "./permissions";
 import { shown, spenderName, type Shown, type StakeLine } from "./review";
 import { TokenMark } from "./TokenMark";
@@ -33,7 +33,7 @@ export function parseEntered(amount: string, max: boolean, token: Balance): { pa
     if (v > BigInt(token.amount)) return { parsed: null, problem: `That's more ${token.symbol} than you have.` };
     return { parsed: v.toString(), problem: null };
   } catch (e) {
-    return { parsed: null, problem: e instanceof Error ? e.message : String(e) };
+    return { parsed: null, problem: errorText(e) };
   }
 }
 

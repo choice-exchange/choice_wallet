@@ -27,7 +27,7 @@ use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 use zeroize::Zeroizing;
 
-use crate::keystore::{self, KdfParams, KIND_VAULT_KEY, Secret, UnlockKey};
+use crate::keystore::{self, KIND_VAULT_KEY, KdfParams, Secret, UnlockKey};
 use crate::{Error, random};
 
 const MAGIC: &[u8; 4] = b"CWSE";
@@ -38,8 +38,16 @@ const TAG_LEN: usize = 16;
 const MAX_ID: usize = 64;
 
 fn check_id(wallet: &str) -> Result<&[u8], Error> {
-    let ok = !wallet.is_empty() && wallet.len() <= MAX_ID && wallet.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
-    if ok { Ok(wallet.as_bytes()) } else { Err(Error::Keystore("wallet id must be 1 to 64 of a-z, 0-9 and -")) }
+    let ok = !wallet.is_empty()
+        && wallet.len() <= MAX_ID
+        && wallet
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+    if ok {
+        Ok(wallet.as_bytes())
+    } else {
+        Err(Error::Keystore("wallet id must be 1 to 64 of a-z, 0-9 and -"))
+    }
 }
 
 /// A new vault under `password`: the sealed vault and its key.
@@ -63,7 +71,12 @@ pub fn unlock(vault: &[u8], password: &[u8]) -> Result<UnlockKey, Error> {
 }
 
 /// The same vault key, wrapped under a new password (fresh salt and nonce).
-pub fn change_password(vault: &[u8], password: &[u8], new_password: &[u8], params: KdfParams) -> Result<Vec<u8>, Error> {
+pub fn change_password(
+    vault: &[u8],
+    password: &[u8],
+    new_password: &[u8],
+    params: KdfParams,
+) -> Result<Vec<u8>, Error> {
     let key = unlock(vault, password)?;
     let mut plaintext = Zeroizing::new([0u8; 33]);
     plaintext[0] = KIND_VAULT_KEY;
@@ -139,7 +152,12 @@ pub fn migrate(old: &[u8], password: &[u8], wallet: &str, params: KdfParams) -> 
     let secret = keystore::open(old, password)?;
     let (vault, key) = create(password, params)?;
     let sealed = seal_secret(&key, wallet, &secret)?;
-    Ok(Migrated { vault, key, sealed, secret })
+    Ok(Migrated {
+        vault,
+        key,
+        sealed,
+        secret,
+    })
 }
 
 #[cfg(test)]
@@ -149,7 +167,8 @@ mod tests {
 
     const PASSWORD: &[u8] = b"correct horse battery staple";
     const FAST: KdfParams = KdfParams::MINIMUM;
-    const ABANDON: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    const ABANDON: &str =
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 
     fn phrase() -> Secret {
         Secret::Mnemonic(Mnemonic::parse(ABANDON).unwrap())
@@ -160,11 +179,19 @@ mod tests {
         let (vault, key) = create(PASSWORD, FAST).unwrap();
         assert_eq!(unlock(&vault, PASSWORD).unwrap().as_bytes(), key.as_bytes());
         let a = seal_secret(&key, "w1", &phrase()).unwrap();
-        let b = seal_secret(&key, "w2", &Secret::PrivateKey(PrivateKey::from_hex(&"46".repeat(32)).unwrap())).unwrap();
+        let b = seal_secret(
+            &key,
+            "w2",
+            &Secret::PrivateKey(PrivateKey::from_hex(&"46".repeat(32)).unwrap()),
+        )
+        .unwrap();
         let k = unlock(&vault, PASSWORD).unwrap();
         assert!(matches!(open_secret(&k, "w1", &a).unwrap(), Secret::Mnemonic(m) if m.phrase().as_str() == ABANDON));
         assert!(matches!(open_secret(&k, "w2", &b).unwrap(), Secret::PrivateKey(_)));
-        assert_eq!(unlock(&vault, b"correct horse battery stapler").unwrap_err(), Error::Decrypt);
+        assert_eq!(
+            unlock(&vault, b"correct horse battery stapler").unwrap_err(),
+            Error::Decrypt
+        );
     }
 
     #[test]
@@ -203,17 +230,30 @@ mod tests {
         let k = unlock(&next, b"a whole new password").unwrap();
         assert_eq!(k.as_bytes(), key.as_bytes());
         assert!(open_secret(&k, "w1", &sealed).is_ok());
-        assert_eq!(change_password(&vault, b"wrong password", b"a whole new password", FAST).unwrap_err(), Error::Decrypt);
+        assert_eq!(
+            change_password(&vault, b"wrong password", b"a whole new password", FAST).unwrap_err(),
+            Error::Decrypt
+        );
         assert!(change_password(&vault, PASSWORD, b"short", FAST).is_err());
     }
 
     #[test]
     fn an_old_keystore_moves_into_a_vault() {
         let old = keystore::seal(&phrase(), PASSWORD, FAST).unwrap();
-        let Migrated { vault, key, sealed, secret } = migrate(&old, PASSWORD, "w1", FAST).unwrap();
+        let Migrated {
+            vault,
+            key,
+            sealed,
+            secret,
+        } = migrate(&old, PASSWORD, "w1", FAST).unwrap();
         assert!(matches!(secret, Secret::Mnemonic(_)));
         assert_eq!(unlock(&vault, PASSWORD).unwrap().as_bytes(), key.as_bytes());
-        assert!(matches!(open_secret(&key, "w1", &sealed).unwrap(), Secret::Mnemonic(m) if m.phrase().as_str() == ABANDON));
-        assert_eq!(migrate(&old, b"wrong password!", "w1", FAST).err().unwrap(), Error::Decrypt);
+        assert!(
+            matches!(open_secret(&key, "w1", &sealed).unwrap(), Secret::Mnemonic(m) if m.phrase().as_str() == ABANDON)
+        );
+        assert_eq!(
+            migrate(&old, b"wrong password!", "w1", FAST).err().unwrap(),
+            Error::Decrypt
+        );
     }
 }

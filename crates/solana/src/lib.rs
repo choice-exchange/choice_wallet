@@ -116,7 +116,10 @@ pub fn read(bytes: &[u8], tables: &[(Pubkey, Vec<Pubkey>)]) -> Result<Read, Mess
             return Err(MessageError("the compute budget is set twice"));
         }
     }
-    let budgeted = steps.iter().filter(|s| s.program != program::COMPUTE_BUDGET.key()).count() as u64;
+    let budgeted = steps
+        .iter()
+        .filter(|s| s.program != program::COMPUTE_BUDGET.key())
+        .count() as u64;
     let units = limit.map_or((budgeted * DEFAULT_UNITS_PER_INSTRUCTION).min(MAX_UNITS), u64::from);
     let priority = price.map_or(0, |p| {
         let micro = u128::from(units) * u128::from(p);
@@ -160,7 +163,14 @@ mod tests {
         let i: Vec<_> = r.steps.iter().map(|s| &s.instruction).collect();
         assert_eq!(*i[0], Instruction::ComputeUnitLimit(200_000));
         assert_eq!(*i[1], Instruction::ComputeUnitPrice(1_000));
-        assert_eq!(*i[2], Instruction::Transfer { from: key(OWNER), to: key(OTHER), lamports: 10_000_000 });
+        assert_eq!(
+            *i[2],
+            Instruction::Transfer {
+                from: key(OWNER),
+                to: key(OTHER),
+                lamports: 10_000_000
+            }
+        );
         // 200,000 units at 1,000 micro-lamports: 200 lamports, plus 5,000 for the signature.
         assert_eq!(r.fee.total(), 5_200);
         assert!(!r.from_tables() && !r.durable_nonce);
@@ -170,7 +180,14 @@ mod tests {
     fn v0_transfer_reads_its_recipient_from_the_table() {
         let tables = [(key(TABLE), vec![key(RENT), key(OTHER), key(USDC)])];
         let r = read(&hex::decode(V0_TABLE).unwrap(), &tables).unwrap();
-        assert_eq!(r.steps[0].instruction, Instruction::Transfer { from: key(OWNER), to: key(OTHER), lamports: 5_000 });
+        assert_eq!(
+            r.steps[0].instruction,
+            Instruction::Transfer {
+                from: key(OWNER),
+                to: key(OTHER),
+                lamports: 5_000
+            }
+        );
         assert_eq!(r.steps[0].accounts[1].table, Some((key(TABLE), 1)));
         assert_eq!(r.steps[1].instruction, Instruction::Memo(b"hi".to_vec()));
         assert!(r.from_tables());
@@ -212,7 +229,9 @@ mod tests {
         // The owner and the burn's record both sign.
         assert_eq!(plain.message.signers(), &[key(OWNER), key(EVENT)]);
         assert_eq!(plain.fee.total(), 2 * 5_000 + 300);
-        let Instruction::CctpBurn(b) = &plain.steps[2].instruction else { panic!("{:?}", plain.steps[2].instruction) };
+        let Instruction::CctpBurn(b) = &plain.steps[2].instruction else {
+            panic!("{:?}", plain.steps[2].instruction)
+        };
         assert_eq!(
             **b,
             CctpBurn {
@@ -231,16 +250,30 @@ mod tests {
             }
         );
         let drop = read(&hex::decode(BURN_DROP).unwrap(), &[]).unwrap();
-        let Instruction::CctpBurn(b) = &drop.steps[2].instruction else { panic!() };
-        assert_eq!((b.mint_recipient, b.destination_caller, b.min_finality), (word(RECEIVER), word(RECEIVER), 2000));
+        let Instruction::CctpBurn(b) = &drop.steps[2].instruction else {
+            panic!()
+        };
+        assert_eq!(
+            (b.mint_recipient, b.destination_caller, b.min_finality),
+            (word(RECEIVER), word(RECEIVER), 2000)
+        );
         let hook = b.hook.as_ref().unwrap();
-        assert_eq!((hook.len(), &hook[..4], &hook[44..64]), (96, &b"IUB1"[..], &word(ME_EVM)[12..]));
+        assert_eq!(
+            (hook.len(), &hook[..4], &hook[44..64]),
+            (96, &b"IUB1"[..], &word(ME_EVM)[12..])
+        );
     }
 
     #[test]
     fn rent_reclaim() {
         let r = read(&hex::decode(RECLAIM).unwrap(), &[]).unwrap();
-        assert_eq!(r.steps[0].instruction, Instruction::CctpReclaim { payee: key(OWNER), event_account: key(EVENT) });
+        assert_eq!(
+            r.steps[0].instruction,
+            Instruction::CctpReclaim {
+                payee: key(OWNER),
+                event_account: key(EVENT)
+            }
+        );
     }
 
     #[test]
@@ -249,7 +282,11 @@ mod tests {
         let mut m = message::parse(&bytes).unwrap();
         m.instructions.insert(1, m.instructions[0].clone());
         // Re-serialize by hand: header, keys, blockhash, instructions.
-        let mut out = vec![m.header.required_signatures, m.header.readonly_signed, m.header.readonly_unsigned];
+        let mut out = vec![
+            m.header.required_signatures,
+            m.header.readonly_signed,
+            m.header.readonly_unsigned,
+        ];
         out.extend(message::short_vec(m.keys.len()));
         for k in &m.keys {
             out.extend_from_slice(k);

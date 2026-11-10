@@ -13,6 +13,7 @@ import { cw20Address, evmAddress, evmDenom, NETWORKS, type NetworkId } from "@ch
 import type { AccountInfo, ApprovalsSummary, Result, RevokeItem, SendReview } from "@choice-wallet/ui/protocol";
 
 import type { createSender } from "./send";
+import { fail } from "./util";
 
 type Sender = ReturnType<typeof createSender>;
 
@@ -21,7 +22,6 @@ export const MAX_REVOKES = 30;
 /** CW20 contracts asked at once. */
 const CW20_PARALLEL = 6;
 
-const fail = (code: string, message: string): Result<never> => ({ ok: false, error: { code, message } });
 const TYPE_URL = /^\/[A-Za-z0-9._]{1,127}$/;
 
 export function createApprovals(sender: Sender) {

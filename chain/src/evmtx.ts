@@ -11,6 +11,8 @@
 //
 // Shapes recorded 2026-11-09 from both networks' LCDs.
 
+import { bytesToHex } from "./encoding.ts";
+
 export const EVM_MSG = "/injective.evm.v1.MsgEthereumTx";
 const EVM_RESPONSE = "/injective.evm.v1.MsgEthereumTxResponse";
 
@@ -42,7 +44,7 @@ export type Erc20Event =
   | { kind: "transfer"; token: string; from: string; to: string; amount: bigint }
   | { kind: "approval"; token: string; owner: string; spender: string; amount: bigint };
 
-const hexOf = (b: Uint8Array) => `0x${Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("")}`;
+const hexOf = (b: Uint8Array) => `0x${bytesToHex(b)}`;
 function bytesOf(hex: string): Uint8Array | null {
   const h = hex.startsWith("0x") ? hex.slice(2) : hex;
   if (h.length % 2 !== 0 || !/^[0-9a-fA-F]*$/.test(h)) return null;

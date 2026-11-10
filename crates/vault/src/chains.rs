@@ -247,8 +247,14 @@ mod tests {
 
     #[test]
     fn solana_clusters() {
-        assert_eq!(solana("solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp").unwrap().network, &MAINNET);
-        assert_eq!(solana("solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1").unwrap().name, "Solana Devnet");
+        assert_eq!(
+            solana("solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp").unwrap().network,
+            &MAINNET
+        );
+        assert_eq!(
+            solana("solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1").unwrap().name,
+            "Solana Devnet"
+        );
         assert!(solana("solana:mainnet").is_none());
         for c in SOLANA {
             assert!(find(c.id).is_err());

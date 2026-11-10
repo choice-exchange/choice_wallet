@@ -67,20 +67,37 @@ fn parse_secret(secret: NewSecret) -> Result<(Secret, &'static str), VaultError>
 }
 
 /// A new wallet's secret, sealed under the vault key for wallet `wallet`.
-pub(crate) fn seal_secret(unlock_key_hex: &str, wallet: &str, secret: NewSecret) -> Result<(Vec<u8>, &'static str), VaultError> {
+pub(crate) fn seal_secret(
+    unlock_key_hex: &str,
+    wallet: &str,
+    secret: NewSecret,
+) -> Result<(Vec<u8>, &'static str), VaultError> {
     let (secret, kind) = parse_secret(secret)?;
-    Ok((envelope::seal_secret(&unlock_key(unlock_key_hex)?, wallet, &secret)?, kind))
+    Ok((
+        envelope::seal_secret(&unlock_key(unlock_key_hex)?, wallet, &secret)?,
+        kind,
+    ))
 }
 
 /// The private key for `account` of wallet `wallet`, from its sealed secret and the vault key.
-pub(crate) fn key(secret_hex: &str, wallet: &str, unlock_key_hex: &str, account: Account) -> Result<PrivateKey, VaultError> {
+pub(crate) fn key(
+    secret_hex: &str,
+    wallet: &str,
+    unlock_key_hex: &str,
+    account: Account,
+) -> Result<PrivateKey, VaultError> {
     let secret = envelope::open_secret(&unlock_key(unlock_key_hex)?, wallet, &hex(secret_hex, "secret")?)?;
     account_key(secret, account)
 }
 
 /// The Solana key for `account` of wallet `wallet`: a recovery phrase's account has one at
 /// the matching Solana path; one imported key has none.
-pub(crate) fn solana_key(secret_hex: &str, wallet: &str, unlock_key_hex: &str, account: Account) -> Result<Ed25519Key, VaultError> {
+pub(crate) fn solana_key(
+    secret_hex: &str,
+    wallet: &str,
+    unlock_key_hex: &str,
+    account: Account,
+) -> Result<Ed25519Key, VaultError> {
     let secret = envelope::open_secret(&unlock_key(unlock_key_hex)?, wallet, &hex(secret_hex, "secret")?)?;
     account_solana_key(&secret, account)?.ok_or_else(|| {
         VaultError::new(
@@ -112,10 +129,9 @@ fn account_solana_key(secret: &Secret, account: Account) -> Result<Option<Ed2551
         (Secret::Mnemonic(m), Account::LedgerLive { index }) if index <= MAX_INDEX => {
             Ok(Some(ed25519::derive(m, &solana_ledger_live_path(index))?))
         }
-        (Secret::Mnemonic(_), Account::Default { index } | Account::LedgerLive { index }) => Err(VaultError::new(
-            KEYSTORE,
-            format!("account index {index} out of range"),
-        )),
+        (Secret::Mnemonic(_), Account::Default { index } | Account::LedgerLive { index }) => {
+            Err(VaultError::new(KEYSTORE, format!("account index {index} out of range")))
+        }
         _ => Ok(None),
     }
 }
@@ -123,7 +139,13 @@ fn account_solana_key(secret: &Secret, account: Account) -> Result<Option<Ed2551
 /// What the user asked to see, after their password: a wallet's recovery phrase (or its one
 /// imported key), or one account's private key. Never with the vault key alone, so a host
 /// that holds it while unlocked can't show a secret without asking.
-pub(crate) fn reveal(vault_hex: &str, password: &str, secret_hex: &str, wallet: &str, account: Option<Account>) -> Result<Value, VaultError> {
+pub(crate) fn reveal(
+    vault_hex: &str,
+    password: &str,
+    secret_hex: &str,
+    wallet: &str,
+    account: Option<Account>,
+) -> Result<Value, VaultError> {
     let key = unlock(vault_hex, password)?;
     let secret = envelope::open_secret(&key, wallet, &hex(secret_hex, "secret")?)?;
     Ok(match (secret, account) {
@@ -147,13 +169,27 @@ pub(crate) fn reveal(vault_hex: &str, password: &str, secret_hex: &str, wallet: 
 /// The vault under a new password. The vault key, and so every sealed secret and the host's
 /// unlock key, stay as they are.
 pub(crate) fn change_password(vault_hex: &str, password: &str, new_password: &str) -> Result<Vec<u8>, VaultError> {
-    Ok(envelope::change_password(&hex(vault_hex, "vault")?, password.as_bytes(), new_password.as_bytes(), KdfParams::DEFAULT)?)
+    Ok(envelope::change_password(
+        &hex(vault_hex, "vault")?,
+        password.as_bytes(),
+        new_password.as_bytes(),
+        KdfParams::DEFAULT,
+    )?)
 }
 
 /// A keystore from before the envelope moved into a new vault as wallet `wallet`, and the
 /// kind of secret it held.
-pub(crate) fn migrate(keystore_hex: &str, password: &str, wallet: &str) -> Result<(envelope::Migrated, &'static str), VaultError> {
-    let m = envelope::migrate(&hex(keystore_hex, "keystore")?, password.as_bytes(), wallet, KdfParams::DEFAULT)?;
+pub(crate) fn migrate(
+    keystore_hex: &str,
+    password: &str,
+    wallet: &str,
+) -> Result<(envelope::Migrated, &'static str), VaultError> {
+    let m = envelope::migrate(
+        &hex(keystore_hex, "keystore")?,
+        password.as_bytes(),
+        wallet,
+        KdfParams::DEFAULT,
+    )?;
     let kind = match m.secret {
         Secret::Mnemonic(_) => "mnemonic",
         Secret::PrivateKey(_) => "private_key",

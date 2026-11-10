@@ -14,6 +14,7 @@
 import {
   balanceChanges,
   base58ToBytes,
+  base64ToBytes,
   bytesToHex,
   ChainError,
   cosmosTxHash,
@@ -30,6 +31,7 @@ import type { AccountInfo, Connection, CosmosDisplay, DappRequest, DappReview, D
 import { displayDenoms, type createSender } from "./send";
 import type { Store } from "./service";
 import type { createSolana } from "./solana";
+import { fail, randomId } from "./util";
 
 type Sender = ReturnType<typeof createSender>;
 
@@ -47,7 +49,6 @@ export const INTERNAL = -32603;
 export const PENDING = -32002;
 
 const no = (code: number, message: string): DappReply => ({ error: { code, message } });
-const fail = (code: string, message: string): Result<never> => ({ ok: false, error: { code, message } });
 
 /** Read-only JSON-RPC methods passed to the user's own EVM endpoints. */
 const READS = new Set([
@@ -139,7 +140,7 @@ const b64 = (hex: string) => {
 /** Base64 to hex, or null if it isn't base64. */
 const fromB64 = (s: unknown): string | null => {
   if (typeof s !== "string" || !/^[A-Za-z0-9+/]*={0,2}$/.test(s) || s.length % 4 !== 0) return null;
-  return Array.from(atob(s), (c) => c.charCodeAt(0).toString(16).padStart(2, "0")).join("");
+  return bytesToHex(base64ToBytes(s));
 };
 
 export function createDapps(h: DappHost) {
@@ -167,7 +168,7 @@ export function createDapps(h: DappHost) {
     const site = [...waiting.values()].filter((x) => x.req.origin === req.origin);
     if (waiting.size >= MAX_WAITING || site.length >= MAX_PER_SITE) return no(PENDING, "Too many requests are waiting. Answer them in the wallet first.");
     if (req.kind !== "sign" && site.some((x) => x.req.kind === req.kind)) return no(PENDING, "A request like this is already waiting in the wallet.");
-    const id = Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, "0")).join("");
+    const id = randomId(16);
     return new Promise<DappReply>((resolve) => {
       const entry: Waiting = { ...w, req: { ...req, id }, resolve };
       waiting.set(id, entry);
@@ -475,7 +476,7 @@ export function createDapps(h: DappHost) {
         if (n) b |= 0x80;
         out.push(b);
       } while (n);
-      return out.map((b) => b.toString(16).padStart(2, "0")).join("");
+      return bytesToHex(Uint8Array.from(out));
     };
     const raw = `0a${len(body.length / 2)}${body}12${len(auth.length / 2)}${auth}1a00`;
     try {

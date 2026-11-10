@@ -98,7 +98,10 @@ struct Reader<'a>(&'a [u8]);
 
 impl<'a> Reader<'a> {
     fn take(&mut self, n: usize) -> Result<&'a [u8], MessageError> {
-        let (head, rest) = self.0.split_at_checked(n).ok_or(MessageError("the message ends early"))?;
+        let (head, rest) = self
+            .0
+            .split_at_checked(n)
+            .ok_or(MessageError("the message ends early"))?;
         self.0 = rest;
         Ok(head)
     }
@@ -230,7 +233,11 @@ impl Message {
         if listed + loaded > MAX_ACCOUNTS {
             return Err(MessageError("too many accounts"));
         }
-        if self.lookups.iter().any(|l| l.writable.is_empty() && l.readonly.is_empty()) {
+        if self
+            .lookups
+            .iter()
+            .any(|l| l.writable.is_empty() && l.readonly.is_empty())
+        {
             return Err(MessageError("a lookup table that loads nothing"));
         }
         for (i, k) in self.keys.iter().enumerate() {
@@ -354,7 +361,15 @@ mod tests {
         assert_eq!(m.instructions.len(), 3);
         let a = m.accounts(&[]).unwrap();
         // Owner (signer, writable), recipient (writable), then the two programs (read-only).
-        assert_eq!(a[0], Account { key: key(OWNER), signer: true, writable: true, table: None });
+        assert_eq!(
+            a[0],
+            Account {
+                key: key(OWNER),
+                signer: true,
+                writable: true,
+                table: None
+            }
+        );
         assert_eq!(a.iter().filter(|a| a.writable).count(), 2);
         assert!(!m.durable_nonce());
     }
@@ -401,7 +416,14 @@ mod tests {
 
     #[test]
     fn compact_u16() {
-        for (n, enc) in [(0, &[0u8][..]), (0x7f, &[0x7f]), (0x80, &[0x80, 0x01]), (0x3fff, &[0xff, 0x7f]), (0x4000, &[0x80, 0x80, 0x01]), (0xffff, &[0xff, 0xff, 0x03])] {
+        for (n, enc) in [
+            (0, &[0u8][..]),
+            (0x7f, &[0x7f]),
+            (0x80, &[0x80, 0x01]),
+            (0x3fff, &[0xff, 0x7f]),
+            (0x4000, &[0x80, 0x80, 0x01]),
+            (0xffff, &[0xff, 0xff, 0x03]),
+        ] {
             assert_eq!(short_vec(n), enc);
             assert_eq!(Reader(enc).short_vec().unwrap(), n);
         }

@@ -66,8 +66,20 @@ node extension/e2e-live.mjs /path/to/chromium "$PWD/extension/dist" /tmp/shots <
 node extension/e2e-live.mjs /path/to/chromium "$PWD/extension/dist" /tmp/shots <phrase file> none 0 activity
 ```
 
+The other modes (staking, approvals, NFTs, rescue, notifications, swaps, the bridge, Solana
+and a Solana site) are described at the top of `e2e-live.mjs`.
+
 ## Dependencies
 
-What ships: `react`, `react-dom` (and its `scheduler`). Build only: `esbuild`, `typescript`,
-and type definitions. Twelve packages in all, installed with scripts disabled. No
-minification, so what ships can be read.
+What ships, all installed with scripts disabled and none minified, so it can be read:
+
+- `react`, `react-dom` (and its `scheduler`): the UI.
+- `injective-usdc-bridge` with `@noble/curves`, `@noble/hashes` and `@scure/base`: Circle's
+  CCTP and Solana transactions.
+- Ledger's Device Management Kit, its WebHID transport and Cosmos signer (with `rxjs`,
+  `xstate`, `inversify`, `purify-ts`, `uuid`, `semver` and helpers), in a chunk loaded only
+  when a Ledger is used. It brings `@sentry/minimal`, which only hands errors to a Sentry
+  client that nothing here sets up: no Sentry client or transport ships, so nothing is
+  reported.
+
+Build only: `esbuild`, `typescript`, and type definitions.

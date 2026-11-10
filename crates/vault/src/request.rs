@@ -215,9 +215,9 @@ impl Checked {
             } => choice_wallet_policy::typed_data(td, injective_tx.as_deref(), signer, ctx),
             Kind::Personal { message, signer } => choice_wallet_policy::personal_message(message, signer, ctx),
             Kind::Arbitrary { a } => choice_wallet_policy::arbitrary_message(a.data(), ctx),
-            Kind::SolanaTx { read, signer, chain, .. } => {
-                choice_wallet_policy::solana_transaction(read, signer, &chain.network.cctp, ctx)
-            }
+            Kind::SolanaTx {
+                read, signer, chain, ..
+            } => choice_wallet_policy::solana_transaction(read, signer, &chain.network.cctp, ctx),
             Kind::SolanaMessage { message, signer } => {
                 choice_wallet_policy::solana_message(message, &base58::encode(signer), ctx)
             }
@@ -950,14 +950,20 @@ fn solana_tx(chain: &str, signer: &str, message: &str, tables: &[LookupTable]) -
         .map(|t| {
             Ok((
                 solana_key_of(&t.address)?,
-                t.addresses.iter().map(|a| solana_key_of(a)).collect::<Result<Vec<_>, VaultError>>()?,
+                t.addresses
+                    .iter()
+                    .map(|a| solana_key_of(a))
+                    .collect::<Result<Vec<_>, VaultError>>()?,
             ))
         })
         .collect::<Result<Vec<_>, VaultError>>()?;
     let read = choice_wallet_solana::read(&bytes, &tables)
         .map_err(|e| VaultError::new(INVALID, format!("not a Solana transaction the wallet reads: {e}")))?;
     if !read.signs(&signer) {
-        return Err(VaultError::new(WRONG_ACCOUNT, "this account doesn't sign this transaction"));
+        return Err(VaultError::new(
+            WRONG_ACCOUNT,
+            "this account doesn't sign this transaction",
+        ));
     }
     Ok(Checked {
         display: solana_display(cluster, &read, &signer),
@@ -1009,7 +1015,13 @@ fn solana_step(cluster: &SolanaChain, r: &choice_wallet_solana::Read, s: &choice
         I::Transfer { from, to, lamports } => {
             json!({ "type": "sol_transfer", "from": b58(from), "to": b58(to), "lamports": lamports.to_string() })
         }
-        I::CreateAccount { from, account, lamports, space, owner } => json!({
+        I::CreateAccount {
+            from,
+            account,
+            lamports,
+            space,
+            owner,
+        } => json!({
             "type": "create_account", "from": b58(from), "account": b58(account), "lamports": lamports.to_string(),
             "space": space.to_string(), "owner": b58(owner), "owner_name": program::name(owner),
         }),
@@ -1021,34 +1033,79 @@ fn solana_step(cluster: &SolanaChain, r: &choice_wallet_solana::Read, s: &choice
         }
         I::ComputeUnitLimit(n) => json!({ "type": "compute_budget", "unit_limit": n }),
         I::ComputeUnitPrice(p) => json!({ "type": "compute_budget", "unit_price": p.to_string() }),
-        I::TokenTransfer { source, destination, authority, amount, mint, decimals, .. } => json!({
+        I::TokenTransfer {
+            source,
+            destination,
+            authority,
+            amount,
+            mint,
+            decimals,
+            ..
+        } => json!({
             "type": "token_transfer", "source": b58(source), "destination": b58(destination),
             "destination_owner": created_for(destination), "authority": b58(authority),
             "amount": amount.to_string(), "mint": opt(mint), "decimals": decimals,
             "usdc": mint.is_some_and(|m| m == cluster.network.cctp.solana.usdc_mint()),
         }),
-        I::TokenApprove { source, delegate, owner, amount, mint, decimals, .. } => json!({
+        I::TokenApprove {
+            source,
+            delegate,
+            owner,
+            amount,
+            mint,
+            decimals,
+            ..
+        } => json!({
             "type": "token_approve", "source": b58(source), "delegate": b58(delegate), "owner": b58(owner),
             "amount": amount.to_string(), "mint": opt(mint), "decimals": decimals,
         }),
-        I::TokenRevoke { source, owner, .. } => json!({ "type": "token_revoke", "source": b58(source), "owner": b58(owner) }),
-        I::TokenSetAuthority { account, kind, new_authority, current, .. } => json!({
+        I::TokenRevoke { source, owner, .. } => {
+            json!({ "type": "token_revoke", "source": b58(source), "owner": b58(owner) })
+        }
+        I::TokenSetAuthority {
+            account,
+            kind,
+            new_authority,
+            current,
+            ..
+        } => json!({
             "type": "token_set_authority", "account": b58(account), "authority_kind": kind,
             "new_authority": opt(new_authority), "current": b58(current),
         }),
-        I::TokenClose { account, destination, owner, .. } => {
+        I::TokenClose {
+            account,
+            destination,
+            owner,
+            ..
+        } => {
             json!({ "type": "token_close", "account": b58(account), "destination": b58(destination), "owner": b58(owner) })
         }
-        I::TokenBurn { account, mint, owner, amount, decimals, .. } => json!({
+        I::TokenBurn {
+            account,
+            mint,
+            owner,
+            amount,
+            decimals,
+            ..
+        } => json!({
             "type": "token_burn", "account": b58(account), "mint": b58(mint), "owner": b58(owner),
             "amount": amount.to_string(), "decimals": decimals,
         }),
         I::TokenSyncNative { account } => json!({ "type": "token_sync_native", "account": b58(account) }),
-        I::TokenInitializeAccount { account, mint, owner, .. } => {
+        I::TokenInitializeAccount {
+            account, mint, owner, ..
+        } => {
             json!({ "type": "token_init", "account": b58(account), "mint": b58(mint), "owner": b58(owner) })
         }
         I::TokenOther { kind, .. } => json!({ "type": "token_other", "kind": kind }),
-        I::CreateTokenAccount { payer, account, owner, mint, idempotent, .. } => json!({
+        I::CreateTokenAccount {
+            payer,
+            account,
+            owner,
+            mint,
+            idempotent,
+            ..
+        } => json!({
             "type": "create_token_account", "payer": b58(payer), "account": b58(account), "owner": b58(owner),
             "mint": b58(mint), "idempotent": idempotent,
         }),
@@ -1087,7 +1144,10 @@ fn solana_bridge(c: &cctp::Cctp, b: &choice_wallet_solana::program::CctpBurn) ->
             .then(|| EthAddress::from_bytes(w[12..].try_into().expect("20 bytes")).to_checksum_hex())
     };
     let (recipient, delivery, drop) = match &hook {
-        Hook::GasDrop { recipient, max_drop_fee } => (Some(recipient.to_checksum_hex()), "gas_drop", Some(*max_drop_fee)),
+        Hook::GasDrop {
+            recipient,
+            max_drop_fee,
+        } => (Some(recipient.to_checksum_hex()), "gas_drop", Some(*max_drop_fee)),
         _ => (
             match domain.map(|d| d.kind) {
                 Some(AddressKind::Evm) => evm_in(&b.mint_recipient),
@@ -1159,13 +1219,18 @@ fn solana_signed(
 ) -> Result<Value, VaultError> {
     let wrong_account = || VaultError::new(WRONG_ACCOUNT, "this account is not the request's signer");
     match checked.kind {
-        Kind::SolanaTx { read, bytes, signer, .. } => {
+        Kind::SolanaTx {
+            read, bytes, signer, ..
+        } => {
             if *public_key != signer {
                 return Err(wrong_account());
             }
             let sig = sign(&bytes)?;
             let signers = read.message.signers();
-            let index = signers.iter().position(|k| *k == signer).expect("decode checked that it signs");
+            let index = signers
+                .iter()
+                .position(|k| *k == signer)
+                .expect("decode checked that it signs");
             let mut out = json!({ "signature": hexutil::encode(&sig), "index": index });
             // The only signer: the transaction is complete.
             if signers.len() == 1 {

@@ -56,13 +56,23 @@ mod tests {
 
     #[test]
     fn associated_token_accounts_match_web3() {
-        assert_eq!(associated_token_address(&key(OWNER), &key(USDC), &TOKEN.key()), key(ATA_OWNER_USDC));
-        assert_eq!(associated_token_address(&key(OTHER), &key(USDC), &TOKEN.key()), key(ATA_OTHER_USDC));
-        assert_eq!(token_account_of(&key(ATA_OTHER_USDC), &key(OTHER), &key(USDC)), Some(TOKEN.key()));
+        assert_eq!(
+            associated_token_address(&key(OWNER), &key(USDC), &TOKEN.key()),
+            key(ATA_OWNER_USDC)
+        );
+        assert_eq!(
+            associated_token_address(&key(OTHER), &key(USDC), &TOKEN.key()),
+            key(ATA_OTHER_USDC)
+        );
+        assert_eq!(
+            token_account_of(&key(ATA_OTHER_USDC), &key(OTHER), &key(USDC)),
+            Some(TOKEN.key())
+        );
         assert_eq!(token_account_of(&key(ATA_OTHER_USDC), &key(OWNER), &key(USDC)), None);
         assert!(!on_curve(&key(ATA_OWNER_USDC)));
         // web3.js found the owner's at bump 254.
-        let (_, bump) = find_program_address(&[&key(OWNER), &TOKEN.key(), &key(USDC)], &ASSOCIATED_TOKEN.key()).unwrap();
+        let (_, bump) =
+            find_program_address(&[&key(OWNER), &TOKEN.key(), &key(USDC)], &ASSOCIATED_TOKEN.key()).unwrap();
         assert_eq!(bump, 254);
     }
 
@@ -70,12 +80,20 @@ mod tests {
     fn cctp_addresses_match_the_bridge_package() {
         let tmm = key(TOKEN_MESSENGER_MINTER);
         let mt = key(MESSAGE_TRANSMITTER);
-        assert_eq!(find_program_address(&[b"sender_authority"], &tmm).unwrap().0, key(PDA_SENDER_AUTHORITY));
         assert_eq!(
-            find_program_address(&[b"remote_token_messenger", b"29"], &tmm).unwrap().0,
+            find_program_address(&[b"sender_authority"], &tmm).unwrap().0,
+            key(PDA_SENDER_AUTHORITY)
+        );
+        assert_eq!(
+            find_program_address(&[b"remote_token_messenger", b"29"], &tmm)
+                .unwrap()
+                .0,
             key(PDA_REMOTE_TOKEN_MESSENGER_29)
         );
-        assert_eq!(find_program_address(&[b"message_transmitter"], &mt).unwrap().0, key(PDA_MESSAGE_TRANSMITTER));
+        assert_eq!(
+            find_program_address(&[b"message_transmitter"], &mt).unwrap().0,
+            key(PDA_MESSAGE_TRANSMITTER)
+        );
     }
 
     #[test]

@@ -9,6 +9,7 @@
   ],
   "scripts": {
     "check": "tsc -p chain && tsc -p ui && tsc -p extension",
+    "lint": "npm run check && cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings",
     "build": "npm run build -w extension",
     "dev": "npm run dev -w extension",
     "test": "npm test -w chain && npm test -w ui && npm test -w extension",

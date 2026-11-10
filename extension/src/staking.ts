@@ -6,6 +6,7 @@ import { NETWORKS, type Delegation, type Lcd, type NetworkId, type Validator } f
 import type { AccountInfo, Result, SendReview, StakeRequest, StakingSummary, ValidatorInfo } from "@choice-wallet/ui/protocol";
 
 import type { createSender } from "./send";
+import { fail } from "./util";
 
 type Sender = ReturnType<typeof createSender>;
 
@@ -16,7 +17,6 @@ const VALIDATORS_TTL_MS = 5 * 60_000;
 /** Most rewards claimed in one transaction. */
 const MAX_CLAIMS = 30;
 
-const fail = (code: string, message: string): Result<never> => ({ ok: false, error: { code, message } });
 
 const info = (v: Validator, rank: number | null): ValidatorInfo => ({
   address: v.address,

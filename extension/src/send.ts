@@ -50,6 +50,8 @@ import { diskCache } from "./cache";
 import { memoFrom, type RiskFacts } from "./contacts";
 import type { SolanaPending } from "./solana";
 import type { Store } from "./service";
+import { fail } from "./util";
+import { isLedger } from "./wallets";
 
 export interface SendDeps {
   vault<T>(method: string, params?: unknown): Promise<Result<T>>;
@@ -174,7 +176,6 @@ interface PendingDevice {
   device: DeviceRequest;
 }
 
-const isLedger = (a: AccountInfo) => a.account.derivation === "ledger";
 /** Who signs a prepared send, as `confirm` needs it. */
 const signerFields = (a: AccountInfo) => ({ account: a.account, wallet: a.wallet, ...(isLedger(a) ? { ledgerKey: a.public_key } : {}) });
 
@@ -217,7 +218,6 @@ const MIN_GAS = 50_000n;
 /** Above this a simulation result is not believed (a bank send uses about 83k). */
 const MAX_GAS = 3_000_000n;
 
-const fail = (code: string, message: string): Result<never> => ({ ok: false, error: { code, message } });
 
 export function createSender(d: SendDeps) {
   const clients = new Map<string, Lcd>();

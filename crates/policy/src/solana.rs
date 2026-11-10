@@ -197,9 +197,7 @@ pub fn solana_transaction(r: &Read, signer: &Pubkey, c: &Cctp, ctx: &Context) ->
                 if owner != signer {
                     continue;
                 }
-                let token = mint
-                    .or_else(|| token_mint(r, ctx, source))
-                    .map(|m| b58(&m));
+                let token = mint.or_else(|| token_mint(r, ctx, source)).map(|m| b58(&m));
                 let params = json!({ "account": b58(source), "delegate": b58(delegate), "amount": amount.to_string(), "token": token });
                 let name = token.as_deref().map_or("this token", |t| ctx.token_name(t));
                 out.push(if *amount >= UNLIMITED_DELEGATE {
@@ -417,7 +415,14 @@ fn evm_in(w: &[u8; 32]) -> Option<EthAddress> {
         .then(|| EthAddress::from_bytes(w[12..].try_into().expect("20 bytes")))
 }
 
-fn bridge_burn(c: &Cctp, b: &CctpBurn, signer: &Pubkey, ctx: &Context, out: &mut Vec<Finding>, outflows: &mut Outflows) {
+fn bridge_burn(
+    c: &Cctp,
+    b: &CctpBurn,
+    signer: &Pubkey,
+    ctx: &Context,
+    out: &mut Vec<Finding>,
+    outflows: &mut Outflows,
+) {
     let usdc = c.solana.usdc_mint();
     if b.mint != usdc {
         out.push(finding(
@@ -431,7 +436,10 @@ fn bridge_burn(c: &Cctp, b: &CctpBurn, signer: &Pubkey, ctx: &Context, out: &mut
         out.push(finding(
             "bridge_unknown_chain",
             Level::Red,
-            format!("Sends USDC to CCTP domain {}, a chain the wallet doesn't know.", b.domain),
+            format!(
+                "Sends USDC to CCTP domain {}, a chain the wallet doesn't know.",
+                b.domain
+            ),
             json!({ "domain": b.domain }),
         ));
         return;
@@ -448,7 +456,9 @@ fn bridge_burn(c: &Cctp, b: &CctpBurn, signer: &Pubkey, ctx: &Context, out: &mut
     // otherwise the mint recipient.
     let paid = match &hook {
         Hook::GasDrop { recipient, .. } => {
-            if domain.id != INJECTIVE_DOMAIN || receiver.is_none_or(|r| r != b.mint_recipient || r != b.destination_caller) {
+            if domain.id != INJECTIVE_DOMAIN
+                || receiver.is_none_or(|r| r != b.mint_recipient || r != b.destination_caller)
+            {
                 out.push(finding(
                     "bridge_gas_drop_wrong",
                     Level::Red,
@@ -547,7 +557,9 @@ fn bridge_burn(c: &Cctp, b: &CctpBurn, signer: &Pubkey, ctx: &Context, out: &mut
         )),
     }
     let amount = U256::from_u128(b.amount.into());
-    let fees = U256::from_u128(b.max_fee.into()).checked_add(&drop_fee).unwrap_or(U256::MAX);
+    let fees = U256::from_u128(b.max_fee.into())
+        .checked_add(&drop_fee)
+        .unwrap_or(U256::MAX);
     if fees >= amount {
         out.push(finding(
             "bridge_fee_all",
@@ -555,7 +567,10 @@ fn bridge_burn(c: &Cctp, b: &CctpBurn, signer: &Pubkey, ctx: &Context, out: &mut
             "The fees could take all of it.".into(),
             json!({ "amount": b.amount.to_string(), "fees": fees.to_string() }),
         ));
-    } else if (1..20u32).try_fold(fees, |acc, _| acc.checked_add(&fees)).is_none_or(|x| x > amount) {
+    } else if (1..20u32)
+        .try_fold(fees, |acc, _| acc.checked_add(&fees))
+        .is_none_or(|x| x > amount)
+    {
         out.push(finding(
             "bridge_fee_high",
             Level::Amber,
@@ -646,7 +661,11 @@ mod tests {
     }
 
     fn rules(r: &Read, c: &Cctp, ctx: &Context) -> Vec<&'static str> {
-        solana_transaction(r, &ME, c, ctx).findings.iter().map(|f| f.rule).collect()
+        solana_transaction(r, &ME, c, ctx)
+            .findings
+            .iter()
+            .map(|f| f.rule)
+            .collect()
     }
 
     fn word(a: &str) -> [u8; 32] {
@@ -666,9 +685,18 @@ mod tests {
 
     #[test]
     fn handing_the_account_away_is_red() {
-        let r = tx(&[ME], vec![Instruction::Assign { account: ME, owner: THEM }]);
+        let r = tx(
+            &[ME],
+            vec![Instruction::Assign {
+                account: ME,
+                owner: THEM,
+            }],
+        );
         let a = solana_transaction(&r, &ME, &MAINNET, &Context::default());
-        assert_eq!((a.level, a.confirm, a.findings[0].rule), (Level::Red, Some("GIVE"), "solana_assign"));
+        assert_eq!(
+            (a.level, a.confirm, a.findings[0].rule),
+            (Level::Red, Some("GIVE"), "solana_assign")
+        );
         let r = tx(
             &[ME],
             vec![Instruction::TokenSetAuthority {
@@ -679,7 +707,10 @@ mod tests {
                 current: ME,
             }],
         );
-        assert_eq!(rules(&r, &MAINNET, &Context::default())[0], "solana_token_account_owner");
+        assert_eq!(
+            rules(&r, &MAINNET, &Context::default())[0],
+            "solana_token_account_owner"
+        );
         let r = tx(
             &[ME],
             vec![Instruction::TokenApprove {
@@ -774,11 +805,21 @@ mod tests {
         // To this account on Injective: its own, delivered by Choice (mainnet) or this wallet.
         let r = burn(29, word(ME_EVM), [0; 32], None, &MAINNET);
         let got = rules(&r, &MAINNET, &mine());
-        assert!(got.contains(&"bridge_to_self") && got.contains(&"bridge_in_delivery"), "{got:?}");
-        assert!(!got.contains(&"solana_cosigners"), "the burn's record signs too: {got:?}");
+        assert!(
+            got.contains(&"bridge_to_self") && got.contains(&"bridge_in_delivery"),
+            "{got:?}"
+        );
+        assert!(
+            !got.contains(&"solana_cosigners"),
+            "the burn's record signs too: {got:?}"
+        );
         assert_eq!(solana_transaction(&r, &ME, &MAINNET, &mine()).level, Level::Info);
         let testnet = solana_transaction(&burn(29, word(ME_EVM), [0; 32], None, &TESTNET), &ME, &TESTNET, &mine());
-        let delivery = testnet.findings.iter().find(|f| f.rule == "bridge_in_delivery").unwrap();
+        let delivery = testnet
+            .findings
+            .iter()
+            .find(|f| f.rule == "bridge_in_delivery")
+            .unwrap();
         assert!(delivery.message.starts_with("Nobody"));
         // Someone else's address.
         assert!(rules(&r, &MAINNET, &Context::default()).contains(&"bridge_recipient"));
@@ -789,14 +830,23 @@ mod tests {
             max_drop_fee: U256::from_u128(200_000),
         });
         let got = rules(&burn(29, receiver, receiver, hook.clone(), &MAINNET), &MAINNET, &mine());
-        assert!(got.contains(&"bridge_gas_drop") && got.contains(&"bridge_to_self"), "{got:?}");
+        assert!(
+            got.contains(&"bridge_gas_drop") && got.contains(&"bridge_to_self"),
+            "{got:?}"
+        );
         assert_eq!(
             rules(&burn(29, word(ME_EVM), [0; 32], hook, &MAINNET), &MAINNET, &mine())[0],
             "bridge_gas_drop_wrong"
         );
         // Unknown chains, and Solana itself, are red.
-        assert_eq!(rules(&burn(99, word(ME_EVM), [0; 32], None, &MAINNET), &MAINNET, &mine())[0], "bridge_unknown_chain");
-        assert_eq!(rules(&burn(5, word(ME_EVM), [0; 32], None, &MAINNET), &MAINNET, &mine())[0], "bridge_unknown_chain");
+        assert_eq!(
+            rules(&burn(99, word(ME_EVM), [0; 32], None, &MAINNET), &MAINNET, &mine())[0],
+            "bridge_unknown_chain"
+        );
+        assert_eq!(
+            rules(&burn(5, word(ME_EVM), [0; 32], None, &MAINNET), &MAINNET, &mine())[0],
+            "bridge_unknown_chain"
+        );
     }
 
     #[test]
@@ -806,13 +856,29 @@ mod tests {
         let a = solana_transaction(&r, &ME, &MAINNET, &Context::default());
         assert_eq!(a.level, Level::Amber);
         assert!(a.findings.iter().any(|f| f.rule == "new_program"));
-        let r = tx(&[ME], vec![Instruction::Unreadable { program: SYSTEM.key(), reason: "x" }]);
-        assert_eq!(solana_transaction(&r, &ME, &MAINNET, &Context::default()).level, Level::Red);
+        let r = tx(
+            &[ME],
+            vec![Instruction::Unreadable {
+                program: SYSTEM.key(),
+                reason: "x",
+            }],
+        );
+        assert_eq!(
+            solana_transaction(&r, &ME, &MAINNET, &Context::default()).level,
+            Level::Red
+        );
     }
 
     #[test]
     fn sol_against_the_balance() {
-        let r = tx(&[ME], vec![Instruction::Transfer { from: ME, to: THEM, lamports: 1_000_000 }]);
+        let r = tx(
+            &[ME],
+            vec![Instruction::Transfer {
+                from: ME,
+                to: THEM,
+                lamports: 1_000_000,
+            }],
+        );
         let ctx = |bal: &str| Context {
             balances: [("native".to_owned(), bal.to_owned())].into(),
             ..Default::default()

@@ -1,7 +1,7 @@
 // The unlocked wallet: three tabs (Wallet, Activity, Settings), and the flows that open
 // over them full screen (receive, a token, send, convert, manage tokens).
 
-import { formatShort, NETWORKS, shortDenom, usdValue } from "@choice-wallet/chain";
+import { formatShort, NETWORKS, usdValue } from "@choice-wallet/chain";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { AccountMark, AccountsView, isWatch } from "./Accounts";

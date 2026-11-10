@@ -8,9 +8,9 @@ import type { AccountInfo, Result, SendReview } from "@choice-wallet/ui/protocol
 
 import type { createSender } from "./send";
 import type { Store } from "./service";
+import { fail } from "./util";
 
 type Sender = ReturnType<typeof createSender>;
-const fail = (code: string, message: string): Result<never> => ({ ok: false, error: { code, message } });
 
 /** Collections added by hand, per network. */
 const MAX_ADDED = 50;

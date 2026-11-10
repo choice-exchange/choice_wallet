@@ -23,9 +23,9 @@ import type { AccountInfo, Coin, RescueSummary, Result, SendReview } from "@choi
 
 import type { createSender } from "./send";
 import type { Store } from "./service";
+import { fail } from "./util";
 
 type Sender = ReturnType<typeof createSender>;
-const fail = (code: string, message: string): Result<never> => ({ ok: false, error: { code, message } });
 
 /** The most fee the rescue allowance pays in all: 0.1 INJ, hundreds of rescues at today's
  *  gas price, and all a thief could burn. */

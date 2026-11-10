@@ -339,7 +339,8 @@ impl Cctp {
     /// program on Solana), and the USDC it burned there.
     pub fn inbound(&self, domain: u32) -> Option<Inbound> {
         if domain == SOLANA_DOMAIN {
-            let program = choice_wallet_core::base58::decode32(self.solana.token_messenger_minter).expect("pinned programs are valid");
+            let program = choice_wallet_core::base58::decode32(self.solana.token_messenger_minter)
+                .expect("pinned programs are valid");
             return Some(Inbound {
                 name: self.solana.name,
                 sender: program,

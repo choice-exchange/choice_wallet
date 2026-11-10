@@ -18,7 +18,7 @@ import { ArrowDownIcon, ChevronDownIcon } from "./icons";
 import { useKept } from "./kept";
 import { BackBar, Callout, Screen, Segmented, shortAddress, Switch } from "./kit";
 import type { BridgeChain, BridgeInBalance, BridgeInPending, BridgeInQuote, BridgeInStatus, BridgeInStepInfo, BridgeQuote, BridgeSource, BridgeStepInfo, Coin, NetworkId, SendReview, TokenInfo } from "./protocol";
-import { useRequest } from "./request";
+import { errorText, useRequest } from "./request";
 import type { BridgeInLine, BridgeLine, MintLine } from "./review";
 import { about, Figure } from "./Send";
 
@@ -115,7 +115,7 @@ function BridgeOutView({ canSign, draft, onDraft, onReview, onBack, note }: Brid
       else if (v > balance) problem = "That's more USDC than you have.";
       else amount = v.toString();
     } catch (e) {
-      problem = e instanceof Error ? e.message : String(e);
+      problem = errorText(e);
     }
   }
 
@@ -391,7 +391,7 @@ function BridgeInView({ network, canSign, draft, onDraft, onReview, onBack, note
       else if (balance !== null && v > balance) problem = `That's more USDC than you have on ${chain?.name ?? "that chain"}.`;
       else amount = v.toString();
     } catch (e) {
-      problem = e instanceof Error ? e.message : String(e);
+      problem = errorText(e);
     }
   }
 

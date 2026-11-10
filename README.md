@@ -1,6 +1,6 @@
 # Choice Wallet
 
-An open-source, self-custody wallet. Injective first (Cosmos side and Injective EVM), then other major chains. Browser extension first, mobile later.
+An open-source, self-custody wallet. Injective first (Cosmos side and Injective EVM), and Solana; other major chains later. Browser extension first, mobile later.
 
 - Design: [docs/DESIGN.md](docs/DESIGN.md)
 - Security model, audit process, dependency budget: [docs/SECURITY.md](docs/SECURITY.md)
@@ -9,14 +9,15 @@ An open-source, self-custody wallet. Injective first (Cosmos side and Injective 
 
 | Path | What |
 | --- | --- |
-| `crates/core` | Mnemonic, HD derivation, secp256k1 keys, addresses, encrypted keystore |
+| `crates/core` | Mnemonic, HD derivation (BIP-32, and SLIP-0010 for ed25519), secp256k1 and ed25519 keys, addresses, base58, encrypted keystore |
 | `crates/cosmos` | Cosmos SDK sign paths (Direct, amino JSON), message decoding (sends, contract calls, grants, admin changes) and builders, for any chain given its profile |
 | `crates/injective` | Injective networks, CW20 ⇄ bank conversions through the CW20 adapter, EIP-712 v2 decoding |
 | `crates/evm` | EIP-1559 transactions (native INJ and ERC20 transfers), `eth_sendTransaction` requests, EIP-712 typed data |
-| `crates/policy` | Risk rules: grades every decoded request (grants, allowances, permits, precompile calls, sign-in messages, balances, lookalike addresses) |
+| `crates/solana` | Solana messages (legacy and v0, read as strictly as the runtime), their instructions (System, Compute Budget, Token, Token-2022, Associated Token, Memo, Circle's CCTP) and program-derived addresses |
+| `crates/policy` | Risk rules: grades every decoded request (grants, allowances, permits, precompile calls, sign-in messages, Solana authorities and delegates, balances, lookalike addresses) |
 | `crates/vault` | The vault protocol: one JSON entry point (`handle`) for every host: keystores, accounts, building sends, decode → approve → sign |
 | `crates/wasm` | The vault compiled to WASM for the extension |
-| `chain` | The chain client (TypeScript, GPL-3.0): user-settable endpoints with failover, bank, CW20 and ERC20 balances, gas estimates, broadcasting, token names, activity (Cosmos and EVM transactions). No keys |
+| `chain` | The chain client (TypeScript, GPL-3.0): user-settable endpoints with failover, bank, CW20 and ERC20 balances, gas estimates, broadcasting, token names, activity (Cosmos and EVM transactions), and Solana's (balances, simulation, history). No keys |
 | `ui` | The wallet's screens (React, GPL-3.0), shared by every platform. Talks to its host only through a small `Backend` interface. See [ui/README.md](ui/README.md) |
 | `extension` | The Chrome extension (GPL-3.0): the service worker hosts the vault and answers the UI; the popup is `ui` with a `chrome.runtime` backend. See [extension/README.md](extension/README.md) |
 | `tools/protogen` | Dev only: vendors `.proto` files and regenerates the committed prost code |
@@ -37,6 +38,7 @@ The chain client, the UI and the extension are npm workspaces, installed and che
 ```sh
 npm ci           # scripts off, exact versions (see .npmrc)
 npm run check    # TypeScript: chain, ui and extension
+npm run lint     # check, then rustfmt and clippy (warnings are errors): run before a commit
 npm test         # the chain client's tests, the UI's (QR encoder, token filter), then the extension's against the real vault
 npm run dev      # a dev build that rebuilds and reloads itself in Chrome on every change (see extension/README.md)
 ```

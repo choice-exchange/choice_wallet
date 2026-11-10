@@ -62,7 +62,9 @@ pub fn verify(public_key: &[u8; 32], message: &[u8], signature: &[u8; 64]) -> bo
 /// Whether 32 bytes are a point on the curve: a key some keypair holds. Solana's
 /// program-derived addresses are exactly the hashes that aren't.
 pub fn on_curve(bytes: &[u8; 32]) -> bool {
-    curve25519_dalek::edwards::CompressedEdwardsY(*bytes).decompress().is_some()
+    curve25519_dalek::edwards::CompressedEdwardsY(*bytes)
+        .decompress()
+        .is_some()
 }
 
 type HmacSha512 = Hmac<Sha512>;
@@ -187,7 +189,17 @@ mod tests {
     #[test]
     fn paths_must_be_hardened_and_canonical() {
         let seed = [7u8; 64];
-        for bad in ["", "m/", "m/44", "m/44'/501", "44'/501'", "m/44'/x'", "m/2147483648'", "m/01'", "m//0'"] {
+        for bad in [
+            "",
+            "m/",
+            "m/44",
+            "m/44'/501",
+            "44'/501'",
+            "m/44'/x'",
+            "m/2147483648'",
+            "m/01'",
+            "m//0'",
+        ] {
             assert_eq!(derive_from_seed(&seed, bad).unwrap_err(), Error::InvalidPath, "{bad:?}");
         }
         assert!(derive_from_seed(&seed, "m/2147483647'").is_ok());

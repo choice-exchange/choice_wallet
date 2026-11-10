@@ -13,6 +13,7 @@ import type { AccountInfo, Contact, RecipientCheck, Result } from "@choice-walle
 
 import type { Store } from "./service";
 import { isWatch } from "./wallets";
+import { fail, randomId } from "./util";
 
 export const MAX_CONTACTS = 200;
 /** Injective's `max_memo_characters` (256 on mainnet and testnet, 2026-11-09). The chain
@@ -24,7 +25,6 @@ const MEMO_CACHE_MS = 10 * 60_000;
 /** A deposit check the endpoint doesn't answer in this long is left out of the review. */
 const MEMO_CHECK_MS = 4000;
 
-const fail = (code: string, message: string): Result<never> => ({ ok: false, error: { code, message } });
 
 /** What the risk rules take: `Contact` and `memo_addresses` in `choice-wallet-policy`. */
 export type RiskFacts = { address_book: { address: string; name: string; memo?: string; mine?: true; rescue?: true }[]; memo_addresses: string[] };
@@ -95,7 +95,7 @@ export function createContacts(d: ContactDeps) {
     const twin = all.find((c) => c.address === f.inj && c.id !== editing?.id);
     if (twin) return fail("already_saved", `Already saved as ${twin.name}.`);
     if (!editing && all.length >= MAX_CONTACTS) return fail("too_many", `At most ${MAX_CONTACTS} contacts.`);
-    const contact: Contact = { id: editing?.id ?? newId(), name, address: f.inj, evm: f.evm, memo };
+    const contact: Contact = { id: editing?.id ?? randomId(), name, address: f.inj, evm: f.evm, memo };
     const next = editing ? all.map((c) => (c.id === editing.id ? contact : c)) : [...all, contact];
     next.sort((a, b) => a.name.localeCompare(b.name));
     await d.local.set({ address_book: next });
@@ -177,9 +177,4 @@ export function createContacts(d: ContactDeps) {
   }
 
   return { list, save, remove, check, facts };
-}
-
-function newId(): string {
-  const b = crypto.getRandomValues(new Uint8Array(8));
-  return [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
 }

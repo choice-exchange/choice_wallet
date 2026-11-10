@@ -26,7 +26,9 @@
 // each token in NOTIFY_TOKENS (comma-separated: a CW20 inj1… and an ERC20 0x… this account
 // holds), added by contract. With `solana`, the account's Solana side beside testnet (Solana
 // Devnet, its own key): Home and its Receive tab, then `amount` SOL to `recipient` (a Solana
-// address) through the review, checked on devnet. Otherwise it sends `amount` INJ.
+// address) through the review, checked on devnet. `contacts`, `inventory`, `swap`, `bridge`,
+// `speed` and `solsite` are described where each starts below. Otherwise it sends `amount`
+// INJ.
 //
 // The phrase is read from the file and typed into the import screen. It is never printed
 // and that screen is never captured. The browser profile, with the encrypted keystore in

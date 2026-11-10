@@ -16,6 +16,7 @@ import type { AccountInfo, Result, SendReview, SwapQuote, SwapStep, SwapToken } 
 
 import type { createSender, EvmDisplayLike } from "./send";
 import type { Store } from "./service";
+import { fail, randomId } from "./util";
 
 type Sender = ReturnType<typeof createSender>;
 
@@ -26,7 +27,6 @@ const PERMIT2_FOR_S = 30 * 60;
 /** INJ kept back on "max", for this swap's fee and later ones. */
 export const SWAP_RESERVE = 10n ** 16n;
 
-const fail = (code: string, message: string): Result<never> => ({ ok: false, error: { code, message } });
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
 /** What waits between the quote and its steps. */
@@ -111,7 +111,7 @@ export function createSwaps(sender: Sender, session: Store, fetch: Fetch, shown:
       if (e instanceof RouteError) return fail("no_route", e.message);
       return fail("unreachable", "Couldn't reach Choice. Try again.");
     }
-    const id = [...crypto.getRandomValues(new Uint8Array(8))].map((b) => b.toString(16).padStart(2, "0")).join("");
+    const id = randomId();
     const stored: Stored = {
       id,
       network,
