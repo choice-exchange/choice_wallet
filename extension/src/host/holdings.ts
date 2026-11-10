@@ -438,7 +438,8 @@ export function createHoldings(d: HoldingsDeps) {
   }
 
   /** Every balance, sorted: INJ, the wallet's known tokens, then by USD value, then the rest
-   *  by symbol. The UI filters. */
+   *  by symbol. INJ is there even at zero (the bank lists only what's held), as SOL is on
+   *  Solana, so an empty account is priced like any other. The UI filters. */
   async function balances(network: NetworkId, account: AccountInfo, opts: { askChoice?: boolean } = {}): Promise<Result<{ network: NetworkId; balances: Balance[]; evmDown?: true }>> {
     const client = await lcd(network);
     const ask = opts.askChoice ?? true;
@@ -446,7 +447,9 @@ export function createHoldings(d: HoldingsDeps) {
       // Prices and pairs don't depend on the balances: they are asked beside them.
       const prices = choiceFor(network, client, [], ask);
       const [coins] = await Promise.all([client.balances(cosmosAddress(network, account)), pairsFor(network, client)]);
-      const bank: Balance[] = await Promise.all(coins.map(async (c) => ({ ...(await token(network, client, c.denom)), amount: c.amount })));
+      const fee = NETWORKS[network].feeDenom;
+      const held = coins.some((c) => c.denom === fee) ? coins : [{ denom: fee, amount: "0" }, ...coins];
+      const bank: Balance[] = await Promise.all(held.map(async (c) => ({ ...(await token(network, client, c.denom)), amount: c.amount })));
       // EVM-only tokens, beside the CW20s: a failure here leaves the rest standing.
       const evmSide = (async () => {
         try {

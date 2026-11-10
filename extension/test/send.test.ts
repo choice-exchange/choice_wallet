@@ -67,6 +67,15 @@ test("balances: known tokens by name, others by their claimed symbol and marked"
   );
 });
 
+test("an empty account still lists INJ, at zero, so its total is priced like any other", async () => {
+  const { service } = await wallet(chain({ balances: {} }));
+  const { balances } = ok<{ balances: { denom: string; amount: string; usd?: number }[] }>(await service.handle({ type: "balances" }));
+  assert.deepEqual(
+    balances.map((b) => [b.denom, b.amount, b.usd]),
+    [["inj", "0", 0]],
+  );
+});
+
 test("a send: prepare shows the vault's decode, confirm signs exactly that and broadcasts it", async () => {
   const { service, session, net } = await wallet();
   const review = ok<Review>(await service.handle({ type: "prepare_send", denom: "inj", to: THEM_EVM, amount: (2n * INJ).toString() }));

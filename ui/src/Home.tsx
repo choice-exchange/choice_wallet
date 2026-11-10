@@ -91,7 +91,7 @@ export function InjectiveHome({
         </div>
       </section>
       <div className="quick-actions">
-        <QuickAction label="Send" gold disabled={watch || !sorted?.shown.length} onClick={() => onSend()}>
+        <QuickAction label="Send" gold disabled={watch || !sorted?.shown.some((b) => BigInt(b.amount) > 0n)} onClick={() => onSend()}>
           <SendIcon size={20} />
         </QuickAction>
         <QuickAction label="Receive" onClick={onReceive}>
