@@ -32,6 +32,7 @@ function store(area: chrome.storage.StorageArea): Store {
     get: (keys) => area.get(keys),
     set: (items) => area.set(items),
     remove: (keys) => area.remove(keys),
+    keys: async () => Object.keys(await area.get(null)),
   };
 }
 

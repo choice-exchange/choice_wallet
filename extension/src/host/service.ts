@@ -41,6 +41,8 @@ export interface Store {
   get(keys: string[]): Promise<Record<string, unknown>>;
   set(items: Record<string, unknown>): Promise<void>;
   remove(keys: string[]): Promise<void>;
+  /** Every key stored, for a reset to clear what isn't a device setting. */
+  keys?(): Promise<string[]>;
 }
 
 export interface Deps {
@@ -74,6 +76,11 @@ const LOCK_CHOICES = [5, 15, 60, 240];
 /** Local storage that belongs to the wallet, not the device: removing the wallet clears it.
  *  Endpoints, the network and other settings stay. */
 const WALLET_KEYS = ["vault", "wallets", "keystore", "kind", "accounts", "active_account", "connections", "custom_tokens", "custom_nfts", "rescue", "token_filter", "address_book", "watch", "watch_own", "bridge_transfers", "chain_sent", "votes_cast", "solana_rent", "site_chains"];
+
+/** What a reset keeps: the device's settings, and caches of public data (token details,
+ *  pairs, prices). Everything else in local storage goes. */
+const DEVICE_KEYS = new Set(["network", "chain", "endpoints", "evm_endpoints", "evm_index", "solana_endpoints", "chain_endpoints", "chain_history", "added_chains", "auto_lock", "notify", "prices", "dev_reopen", "cache_tokens", "cache_erc20", "cache_pairs", "cache_prices", "choice_seen"]);
+const DEVICE_PREFIXES = ["solana_token:"];
 
 /** The tokens seen for each Solana account, one key per network and owner. */
 const solanaMintKeys = (accounts: AccountInfo[]) =>
@@ -554,7 +561,8 @@ export function createService(d: Deps) {
         return wallets.changePassword(r.password, r.new_password, MIN_PASSWORD);
       case "reset": {
         const per = solanaMintKeys((await wallets.stored()).accounts);
-        const out = await wallets.reset(r.password, [...WALLET_KEYS, ...per, ...(await snapshots.keys())]);
+        const rest = ((await d.local.keys?.()) ?? []).filter((k) => !DEVICE_KEYS.has(k) && !DEVICE_PREFIXES.some((p) => k.startsWith(p)));
+        const out = await wallets.reset(r.password, [...new Set([...WALLET_KEYS, ...per, ...rest, ...(await snapshots.keys())])]);
         if (out.ok) {
           dapps.rejectAll("The wallet was reset.");
           d.badge?.("");

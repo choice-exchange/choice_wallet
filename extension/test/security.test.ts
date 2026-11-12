@@ -108,3 +108,12 @@ test("reset leaves no record of the accounts' Solana tokens, bridge rent or site
   ok(await service.handle({ type: "reset", password: PASSWORD }));
   for (const k of [`solana_mints:mainnet:${owner}`, "solana_rent", "site_chains"]) assert.ok(!local.data.has(k), k);
 });
+
+// F17: Reset keeps only device settings and public caches; every other record goes, whatever
+// its name.
+test("reset keeps the device's settings and nothing else of the wallet's", async () => {
+  const { service, local } = await wallet();
+  await local.set({ some_future_record: { about: "an account" }, cache_unindexed: { x: 1 }, auto_lock: 60, endpoints: { mainnet: ["https://example.org"] }, "solana_token:mainnet:abc": { symbol: "X" } });
+  ok(await service.handle({ type: "reset", password: PASSWORD }));
+  assert.deepEqual([...local.data.keys()].sort(), ["auto_lock", "endpoints", "solana_token:mainnet:abc"]);
+});

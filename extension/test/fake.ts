@@ -60,6 +60,9 @@ export function memory(): Store & { data: Map<string, unknown> } {
     async remove(keys) {
       for (const k of keys) data.delete(k);
     },
+    async keys() {
+      return [...data.keys()];
+    },
   };
 }
 
