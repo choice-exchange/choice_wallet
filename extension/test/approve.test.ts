@@ -226,3 +226,21 @@ test("a token named after an object's built-ins renders as an unlisted denom", a
     assert.ok(text.includes(denom), text);
   }
 });
+
+// Hardening: a site's text kept bidi and zero-width characters, so what the window showed
+// could read differently from what is signed.
+test("a site's message shows its invisible characters as code points", async () => {
+  const evm = await evmConnected();
+  const [rlo, zw, lri] = [0x202e, 0x200b, 0x2066].map((c) => String.fromCodePoint(c));
+  const text = `Sign in to app.example${rlo}elpmaxe.live${zw}`;
+  const r = await evm.review("personal_sign", [`0x${Buffer.from(text).toString("hex")}`, ME_EVM]);
+  const shown = windowText(r);
+  assert.ok(shown.includes("Sign in to app.example⟨U+202E⟩elpmaxe.live⟨U+200B⟩"), shown);
+  assert.ok(!shown.includes(rlo) && !shown.includes(zw));
+
+  const cosmos = await connected();
+  const call = await cosmos.review("choice_signAmino", { chainId: "injective-1", signer: ME, signDoc: amino([execute(THEM, { set_note: { note: `pay${lri} me` } }, [])]) });
+  const callText = windowText(call);
+  assert.ok(callText.includes("pay⟨U+2066⟩ me"), callText);
+  assert.ok(!callText.includes(lri));
+});

@@ -3,8 +3,9 @@
 // - It never asks for a password. A locked wallet says so and waits: unlocking happens in
 //   the toolbar popup, so a page can't train the user to type the password into windows
 //   that appear by themselves.
-// - Its buttons wake only after the window has been in front, visible and focused, for a
-//   moment, so a site can't open it under a click meant for something else.
+// - Its main button wakes only after it has shown, with the window in front, visible and
+//   focused, for a moment, so a site can't open it under a click meant for something else.
+// - A site's text shows its invisible characters (bidi, zero-width) as their code points.
 // - What it shows is the vault's decode of what will be signed, prepared when it asks;
 //   approving names that decode's digest.
 
@@ -17,7 +18,7 @@ import { ArrowDownIcon, CheckIcon, GlobeIcon, LockIcon } from "./icons";
 import { Callout, Phrase, Screen, shortAddress, tokenSub } from "./kit";
 import { DeviceStep } from "./Ledger";
 import type { Coin, CosmosDisplay, DappRequest, DappReview, DeviceRequest, DeviceSignature, ListedChain, NetworkId, NewChain, Status, TokenInfo } from "./protocol";
-import { shown } from "./review";
+import { shown, visible } from "./review";
 import { Figure, formName, realName, SwapCards } from "./Send";
 
 /** How often the window asks for the request and the lock state (it also keeps the
@@ -370,7 +371,7 @@ export function SignBody({ review, network, typed, onTyped, account }: { review:
       {(d["kind"] === "evm_personal_sign" || d["kind"] === "cosmos_arbitrary" || d["kind"] === "solana_message") && (
         <div className="surface-hero">
           <div className="eyebrow">Message</div>
-          <pre className="message-box">{typeof d["text"] === "string" ? d["text"] : String(d["hex"])}</pre>
+          <pre className="message-box">{typeof d["text"] === "string" ? visible(d["text"]) : String(d["hex"])}</pre>
           {typeof d["text"] !== "string" && <p className="meta">Not text: shown as bytes.</p>}
         </div>
       )}
@@ -415,7 +416,7 @@ export function SignBody({ review, network, typed, onTyped, account }: { review:
       )}
       <details className="raw">
         <summary>Everything the wallet decoded</summary>
-        <pre className="message-box">{JSON.stringify(display, null, 2)}</pre>
+        <pre className="message-box">{visible(JSON.stringify(display, null, 2))}</pre>
       </details>
     </>
   );
@@ -517,7 +518,7 @@ function MessageCard({ m }: { m: Record<string, unknown> }) {
           {String(m["contract"])}
         </code>
         {funds.length > 0 && <div className="meta" style={{ marginTop: 6 }}>Attaches {funds.map((c) => `${c.amount} ${shortDenom(c.denom)}`).join(", ")}</div>}
-        <pre className="message-box">{json}</pre>
+        <pre className="message-box">{visible(json)}</pre>
       </div>
     );
   }
@@ -553,7 +554,7 @@ function MessageCard({ m }: { m: Record<string, unknown> }) {
   return (
     <div className="surface">
       <div className="eyebrow">{type.replace(/_/g, " ")}</div>
-      <pre className="message-box">{JSON.stringify(rest, null, 2)}</pre>
+      <pre className="message-box">{visible(JSON.stringify(rest, null, 2))}</pre>
     </div>
   );
 }
@@ -580,7 +581,7 @@ function TypedData({ d }: { d: Record<string, unknown> }) {
       </Rows>
       <div className="surface">
         <div className="eyebrow">Message</div>
-        <pre className="message-box">{JSON.stringify(d["message"], null, 2)}</pre>
+        <pre className="message-box">{visible(JSON.stringify(d["message"], null, 2))}</pre>
       </div>
     </>
   );

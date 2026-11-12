@@ -111,6 +111,13 @@ export function spenderName(network: NetworkId, a: string): string | null {
   return is(c.permit2) ? "Permit2" : is(c.aggregator) ? "Choice's aggregator" : is(c.universalRouter) ? "Choice's router" : is(NETWORKS[network].cctp.tokenMessenger) ? "Circle's bridge (CCTP)" : null;
 }
 
+/** A site's text as it will be signed, with what can't be seen made visible: control,
+ *  bidi, zero-width and line-separator characters show as their code point, as ⟨U+202E⟩.
+ *  Line breaks and tabs stay as they are. */
+export function visible(s: string): string {
+  return s.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, (c) => (c === "\n" || c === "\t" ? c : `⟨U+${c.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}⟩`));
+}
+
 /** `swap`, when given, names the wallet keys of a step's two tokens (a swap's, or a bridge
  *  transfer's USDC on both sides), so amounts show as the tokens the user picked. */
 export function shown(display: SendReview["display"], network: NetworkId, swap?: Pick<SwapStepInfo, "from" | "to">): Shown {
