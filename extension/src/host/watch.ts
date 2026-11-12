@@ -377,8 +377,9 @@ export function createWatcher(d: WatchDeps) {
           n = null;
         }
       }
+      // The chain's failure text never goes in a notice: a site's broadcast chooses it. The
+      // Activity view says why it failed.
       n ??= { id: `${network}|${o.hash}|${o.address}`, title: failed ? "Transaction failed" : "Transaction confirmed", message: account?.name ?? "" };
-      if (failed && r.result.log) n = { ...n, message: `${n.message}${n.message ? " · " : ""}${r.result.log.slice(0, 140)}` };
       out.push(n);
     }
     await d.local.set({ [OWN]: list.filter((o) => !o.done || now() - o.at < OWN_GIVE_UP_MS).slice(-30) });

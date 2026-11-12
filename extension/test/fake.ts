@@ -280,6 +280,8 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
     /** More indexed transactions in which ME received and spent coins (newest first). */
     receivedTxs: [] as unknown[],
     spentTxs: [] as unknown[],
+    /** A broadcast's result as the chain gives it: failed with this code and log. */
+    txFail: null as { code: number; raw_log: string } | null,
     /** Transactions whose CW20 events moved tokens to ME (`wasm.to`). */
     cw20In: [] as unknown[],
     /** Other accounts' bank balances and received transactions, where set. */
@@ -821,7 +823,7 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
       const hash = p.split("/").pop()!;
       const known = state.broadcasts.some((b) => createHash("sha256").update(Buffer.from(b, "base64")).digest("hex").toUpperCase() === hash);
       return known
-        ? json(200, { tx_response: { ...sentTx(190861703, hash), raw_log: "" } })
+        ? json(200, { tx_response: { ...sentTx(190861703, hash), raw_log: "", ...(state.txFail ?? {}) } })
         : json(404, { code: 5, message: `tx not found: ${hash}`, details: [] });
     }
     state.unhandled.push(`${init?.method ?? "GET"} ${url.host}${p}`);

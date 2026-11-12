@@ -135,6 +135,21 @@ test("the wallet's own send: confirmed once, and its balance change isn't shown 
   assert.equal(ui.notices?.length, 1);
 });
 
+// F18: a failed transaction's log is the chain's text, which a site that broadcasts chooses.
+// It never goes in a notification.
+test("a failed transaction's notice carries none of the chain's failure text", async () => {
+  const net = chain({ balances: { inj: 5n * INJ } });
+  const { service, ui } = await wallet(net);
+  await service.watch();
+  const review = ok<{ digest: string }>(await service.handle({ type: "prepare_send", denom: "inj", to: THEM, amount: INJ.toString() }));
+  net.state.txFail = { code: 5, raw_log: "spendable balance 0URGENT.wallet-drained.restore.at.example is smaller than 1" };
+  ok<{ hash: string }>(await service.handle({ type: "confirm_send", digest: review.digest }));
+  await service.watch();
+  await service.settled();
+  assert.ok(ui.notices?.length, "a notice");
+  for (const n of ui.notices ?? []) assert.doesNotMatch(`${n.title} ${n.message}`, /URGENT|wallet-drained|spendable/, JSON.stringify(n));
+});
+
 test("between two watched accounts: sent on one, received on the other", async () => {
   const net = chain({ balances: { inj: 5n * INJ } });
   const { service, ui } = await wallet(net);
