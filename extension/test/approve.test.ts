@@ -8,7 +8,7 @@ import { test } from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { SignBody } from "../../ui/src/Approve";
+import { Origin, SignBody } from "../../ui/src/Approve";
 import type { DappReview, NetworkId } from "../../ui/src/protocol";
 
 import { chain, ME, ME_EVM, ok, THEM, wallet } from "./fake";
@@ -195,4 +195,12 @@ test("an unlisted token in the simulation says it is unlisted, and where it live
   assert.doesNotMatch(items[0]!, /Unlisted/);
   assert.match(items[1]!, /Unlisted/);
   assert.match(items[1]!, /factory\//);
+});
+
+// F20: the window cut a long host from the end, hiding the domain someone registered.
+test("the window shows a long host whole, its registered domain set apart", () => {
+  const origin = "https://app.uniswap.org.secure-session-verification-portal-login.evil.example";
+  const html = renderToStaticMarkup(createElement(Origin, { origin }));
+  assert.equal(html.replace(/<[^>]+>/g, ""), origin.slice("https://".length));
+  assert.match(html, /<span class="origin-head">app\.uniswap\.org\.[^<]*<\/span>evil\.example<\/span>$/, html);
 });

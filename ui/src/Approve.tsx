@@ -133,7 +133,6 @@ export function ApproveView({ id }: { id: string }) {
 
   const net = NETWORKS[req.network];
   const account = signer;
-  const site = req.origin.replace(/^https:\/\//, "");
   const risk = review?.risk;
   const blocked = risk?.level === "blocked";
   const needsWord = risk?.confirm !== undefined && typed.trim() !== risk.confirm;
@@ -145,9 +144,7 @@ export function ApproveView({ id }: { id: string }) {
       top={
         <div className="approve-site">
           <GlobeIcon size={18} />
-          <span className="approve-origin" title={req.origin}>
-            {site}
-          </span>
+          <Origin origin={req.origin} />
           <span className="meta">{WHAT[req.kind]}</span>
         </div>
       }
@@ -185,7 +182,9 @@ export function ApproveView({ id }: { id: string }) {
         </div>
       ) : req.kind === "connect" ? (
         <div className="surface-hero">
-          <div className="eyebrow">{site} will</div>
+          <div className="eyebrow">
+            <Origin origin={req.origin} /> will
+          </div>
           <ul className="grant-list">
             <li>See this account&apos;s addresses</li>
             <li>Ask you to approve transactions and signatures, here, one at a time</li>
@@ -225,6 +224,19 @@ export function ApproveView({ id }: { id: string }) {
         <SignBody review={review} network={req.network} typed={typed} onTyped={setTyped} />
       )}
     </Screen>
+  );
+}
+
+/** A site's host, whole: never cut short, since a phishing host hides its real domain at the
+ *  end of a long name. Its last two labels (the domain someone registered) stand out. */
+export function Origin({ origin }: { origin: string }) {
+  const site = origin.replace(/^https:\/\//, "");
+  const m = /^(.*?)([^.]+\.[^.]+)$/.exec(site);
+  return (
+    <span className="approve-origin" title={origin}>
+      {m?.[1] && <span className="origin-head">{m[1]}</span>}
+      {m ? m[2] : site}
+    </span>
   );
 }
 
