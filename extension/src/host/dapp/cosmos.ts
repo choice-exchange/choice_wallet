@@ -41,7 +41,8 @@ export function createCosmosSite(core: SiteCore) {
       const evmAddr = a.addresses[net.evm] ?? "";
       return {
         result: {
-          name: a.name,
+          // Not the user's label for the account: a site has no need of it.
+          name: "Choice Wallet",
           algo: "ethsecp256k1",
           pubKey: a.public_key,
           address: evmAddr.slice(2).toLowerCase(),

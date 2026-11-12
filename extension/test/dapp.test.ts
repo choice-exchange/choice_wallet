@@ -232,6 +232,10 @@ test("window.choice: enable, getKey, signDirect (simulated first), sendTx", asyn
   assert.deepEqual(await enabled, { result: null });
   const key = (await site("choice_getKey", { chainId: "injective-1" })).result as Record<string, unknown>;
   assert.deepEqual([key["bech32Address"], key["algo"], key["ethereumHexAddress"], key["address"]], [ME, "ethsecp256k1", ME_EVM, ME_EVM.slice(2).toLowerCase()]);
+  // Hardening: the site gets the wallet's name, not the user's label for the account.
+  ok(await service.handle({ type: "rename_account", index: 0, name: "Savings at home" }));
+  const renamed = (await site("choice_getKey", { chainId: "injective-1" })).result as Record<string, unknown>;
+  assert.equal(renamed["name"], "Choice Wallet");
 
   // A bank send built the way a dapp builds it (here by the vault's own builder).
   const built = callVault<{ request: { cosmos_direct: { body_bytes: string; auth_info_bytes: string; account_number: string } } }>(handle, "build_cosmos", {
