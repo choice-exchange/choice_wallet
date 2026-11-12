@@ -8,7 +8,7 @@ import { test } from "node:test";
 import { dappOrigin } from "../src/host/service";
 import { ed25519 } from "@noble/curves/ed25519";
 
-import { base58Decode, bs58, callVault, chain, code, handle, INJ, ME, ME_EVM, ME_SOL, ok, PASSWORD, PHRASE, solTransfer, THEM, THEM_EVM, THEM_SOL, wallet } from "./fake";
+import { base58Decode, bs58, callVault, chain, code, handle, INJ, ME, ME_EVM, ME_SOL, ME_SOL_USDC, ok, PASSWORD, PHRASE, SOL_USDC, solTransfer, THEM, THEM_EVM, THEM_SOL, wallet } from "./fake";
 
 const SITE = "https://app.example";
 const OTHER = "https://other.example";
@@ -243,6 +243,61 @@ test("window.choice: enable, getKey, signDirect (simulated first), sendTx", asyn
   const sent = await site("choice_sendTx", { chainId: "injective-1", tx: expected["tx_raw"], mode: "sync" });
   assert.match(String(sent.result), /^[0-9A-F]{64}$/);
   assert.equal(net.state.broadcasts.length, 1);
+});
+
+// F2: a program the vault can't read can hand a token account, a delegate over it, or the
+// account itself to someone else. The simulation shows it, and the rules grade it as they
+// grade the instruction that does it directly.
+test("a Solana simulation that hands control away is red, whatever program does it", async () => {
+  const net = chain();
+  const { page, window, service } = await setup(net);
+  const site = page(SITE);
+  const asked = site("solana_connect", {});
+  ok(await service.handle({ type: "dapp_answer", id: (await window()).id, approve: true }));
+  await asked;
+  // One instruction of an unread program over the account and its USDC account.
+  const program = bs58(new Uint8Array(32).fill(0x42));
+  const keys = [ME_SOL, ME_SOL_USDC, program].map(base58Decode);
+  const message = Uint8Array.from([1, 0, 1, 3, ...keys.flatMap((k) => [...k]), ...new Uint8Array(32).fill(9), 1, 2, 2, 0, 1, 1, 7]);
+  const wire = Uint8Array.from([1, ...new Uint8Array(64), ...message]);
+  const usdcAfter = (edit: (d: Uint8Array, v: DataView) => void) => (a: string, r: unknown) => {
+    if (a !== ME_SOL_USDC || r === null) return r;
+    const acct = r as { data: [string, string] };
+    const d = new Uint8Array(Buffer.from(acct.data[0], "base64"));
+    edit(d, new DataView(d.buffer, d.byteOffset, d.length));
+    return { ...acct, data: [Buffer.from(d).toString("base64"), "base64"] };
+  };
+  const cases = [
+    { after: usdcAfter((d) => d.set(base58Decode(THEM_SOL), 32)), rule: "solana_token_account_owner", confirm: "GIVE" },
+    {
+      after: usdcAfter((d, v) => {
+        v.setUint32(72, 1, true);
+        d.set(base58Decode(THEM_SOL), 76);
+        v.setBigUint64(121, 5_000_000n, true);
+      }),
+      rule: "solana_unlimited_delegate",
+      confirm: undefined,
+    },
+    { after: (a: string, r: unknown) => (a === ME_SOL && r ? { ...(r as object), owner: program } : r), rule: "solana_assign", confirm: "GIVE" },
+  ];
+  net.state.solana.simulateSpend = 5_000n;
+  for (const c of cases) {
+    net.state.solana.simulateAfter = c.after;
+    const signing = site("solana_signTransaction", { account: ME_SOL, transaction: hexOf(wire) });
+    const w = await window();
+    const review = ok<{ risk: { level: string; confirm?: string; findings: { rule: string }[] }; simulation: { ok: boolean; changes: { denom: string; amount: string }[] } }>(
+      await service.handle({ type: "dapp_review", id: w.id }),
+    );
+    assert.equal(review.risk.level, "red", `${c.rule}: ${JSON.stringify(review.risk)}`);
+    assert.equal(review.risk.confirm, c.confirm, c.rule);
+    assert.ok(review.risk.findings.some((f) => f.rule === c.rule), `${c.rule}: ${JSON.stringify(review.risk)}`);
+    if (c.rule === "solana_token_account_owner") {
+      // Owned before, not after: its whole balance leaves.
+      assert.ok(review.simulation.changes.some((x) => x.denom === `spl:${SOL_USDC}` && x.amount === "-5000000"), JSON.stringify(review.simulation));
+    }
+    ok(await service.handle({ type: "dapp_answer", id: w.id, approve: false }));
+    assert.equal(((await signing) as Reply).error?.code, 4001);
+  }
 });
 
 test("only a tab's top frame, at https (or http on this machine), is a site", () => {

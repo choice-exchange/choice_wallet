@@ -331,6 +331,8 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
       simulateErr: null as unknown,
       /** What a simulation takes from the account's SOL (a site's transaction). */
       simulateSpend: 0n,
+      /** Changes a simulation makes to an account, as base64 `getMultipleAccounts` gives it. */
+      simulateAfter: null as ((address: string, account: unknown) => unknown) | null,
       down: false,
     },
     /** Base: ME's USDC and ETH there, what TokenMessengerV2 may take, what was broadcast. */
@@ -657,7 +659,8 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
           return ok(2039280);
         case "simulateTransaction": {
           const watch = (body.params[1] as { accounts?: { addresses: string[] } }).accounts?.addresses;
-          const after = watch && !sol.simulateErr ? { accounts: watch.map((a) => rawSolana(a, sol.simulateSpend)) } : {};
+          const afterOf = (a: string) => (sol.simulateAfter ? sol.simulateAfter(a, rawSolana(a, sol.simulateSpend)) : rawSolana(a, sol.simulateSpend));
+          const after = watch && !sol.simulateErr ? { accounts: watch.map(afterOf) } : {};
           return ok({ ...ctx, value: { err: sol.simulateErr, logs: sol.simulateErr ? ["Program log: Error: insufficient funds"] : [], unitsConsumed: 30_000, ...after } });
         }
         case "sendTransaction": {

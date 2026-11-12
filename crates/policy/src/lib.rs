@@ -152,6 +152,31 @@ pub struct Context {
     /// it.
     #[serde(default)]
     pub solana_token_accounts: BTreeMap<String, SolanaTokenAccount>,
+    /// What the host's simulation of a Solana transaction shows it hands over, by comparing
+    /// the account and its token accounts before and after. A program the vault can't read
+    /// can do this without an instruction that says so.
+    #[serde(default)]
+    pub solana_handovers: Vec<SolanaHandover>,
+}
+
+/// Control of the account, or of one of its token accounts, passing to someone else.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SolanaHandover {
+    /// `assign` (the account's own program owner), `token_owner`, `delegate` or
+    /// `close_authority`.
+    pub kind: String,
+    /// The token account, base58; none for `assign`.
+    #[serde(default)]
+    pub account: Option<String>,
+    /// Its token (mint), base58.
+    #[serde(default)]
+    pub mint: Option<String>,
+    /// Who gets it: the new program owner, owner, delegate or close authority.
+    pub to: String,
+    /// A delegate's amount covers all the account holds.
+    #[serde(default)]
+    pub all: bool,
 }
 
 /// A Solana token account as the host's RPC describes it.

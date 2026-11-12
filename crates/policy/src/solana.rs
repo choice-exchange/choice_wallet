@@ -375,6 +375,7 @@ pub fn solana_transaction(r: &Read, signer: &Pubkey, c: &Cctp, ctx: &Context) ->
         ));
     }
 
+    handovers(ctx, &mut out);
     if sol_out > 0 {
         outflows.add("native", U256::from_u128(sol_out.into()));
     }
@@ -391,6 +392,69 @@ pub fn solana_transaction(r: &Read, signer: &Pubkey, c: &Cctp, ctx: &Context) ->
         ));
     }
     Assessment::from(out)
+}
+
+/// Findings for what the host's simulation shows the transaction hands over, the same as
+/// for the instructions that would say so, unless one already did.
+fn handovers(ctx: &Context, out: &mut Vec<Finding>) {
+    for h in &ctx.solana_handovers {
+        let account = h.account.as_deref();
+        let said = |out: &[Finding], rules: &[&str]| {
+            out.iter().any(|f| {
+                rules.contains(&f.rule) && account.is_none_or(|a| f.params.get("account").and_then(|v| v.as_str()) == Some(a))
+            })
+        };
+        let to = base58::decode32(&h.to).map_or_else(|| short(&h.to), |p| program_name(&p));
+        let token = h.mint.as_deref().map_or("this token", |m| ctx.token_name(m));
+        let params = json!({ "account": account, "to": h.to, "token": h.mint, "simulated": true });
+        let f = match h.kind.as_str() {
+            "assign" if !said(out, &["solana_assign"]) => {
+                let mut f = finding(
+                    "solana_assign",
+                    Level::Red,
+                    format!("Hands this account to {to}: it could take all its SOL and tokens."),
+                    params,
+                );
+                f.confirm = Some("GIVE");
+                f
+            }
+            "token_owner" if !said(out, &["solana_token_account_owner"]) => {
+                let mut f = finding(
+                    "solana_token_account_owner",
+                    Level::Red,
+                    format!("Gives this token account, and everything in it, to {to}."),
+                    params,
+                );
+                f.confirm = Some("GIVE");
+                f
+            }
+            "delegate" if !said(out, &["solana_unlimited_delegate", "solana_delegate"]) => {
+                if h.all {
+                    finding(
+                        "solana_unlimited_delegate",
+                        Level::Red,
+                        format!("{to} could take ALL of {token} from this account."),
+                        params,
+                    )
+                } else {
+                    finding(
+                        "solana_delegate",
+                        Level::Amber,
+                        format!("Lets {to} move some of {token} from this account."),
+                        params,
+                    )
+                }
+            }
+            "close_authority" if !said(out, &["solana_close_authority"]) => finding(
+                "solana_close_authority",
+                Level::Amber,
+                format!("Lets {to} close this token account and take its SOL."),
+                params,
+            ),
+            _ => continue,
+        };
+        out.push(f);
+    }
 }
 
 fn assign_away(owner: &Pubkey) -> Finding {
@@ -516,6 +580,65 @@ mod tests {
             }],
             ..Default::default()
         }
+    }
+
+    /// F2: what a simulation shows handed over through a program the vault can't read is
+    /// graded as the instruction that does it directly would be.
+    #[test]
+    fn simulated_handovers_are_graded_like_the_instructions() {
+        let program = [0x42; 32];
+        let r = tx(
+            &[ME],
+            vec![Instruction::Other { program }],
+        );
+        let grade = |h: crate::SolanaHandover| {
+            let ctx = Context {
+                solana_handovers: vec![h],
+                ..Default::default()
+            };
+            let a = solana_transaction(&r, &ME, &MAINNET, &ctx);
+            let f = a.findings.iter().find(|f| f.params["simulated"] == true).cloned();
+            (a.level, a.confirm, f.map(|f| f.rule))
+        };
+        let account = Some(b58(&[7; 32]));
+        let them = b58(&THEM);
+        assert_eq!(
+            grade(crate::SolanaHandover {
+                kind: "token_owner".into(),
+                account: account.clone(),
+                to: them.clone(),
+                ..Default::default()
+            }),
+            (Level::Red, Some("GIVE"), Some("solana_token_account_owner"))
+        );
+        assert_eq!(
+            grade(crate::SolanaHandover {
+                kind: "assign".into(),
+                to: b58(&program),
+                ..Default::default()
+            }),
+            (Level::Red, Some("GIVE"), Some("solana_assign"))
+        );
+        assert_eq!(
+            grade(crate::SolanaHandover {
+                kind: "delegate".into(),
+                account: account.clone(),
+                to: them.clone(),
+                all: true,
+                ..Default::default()
+            }),
+            (Level::Red, None, Some("solana_unlimited_delegate"))
+        );
+        assert_eq!(
+            grade(crate::SolanaHandover {
+                kind: "close_authority".into(),
+                account,
+                to: them,
+                ..Default::default()
+            })
+            .2,
+            Some("solana_close_authority")
+        );
     }
 
     #[test]

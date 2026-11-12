@@ -497,6 +497,8 @@ export function createSolana(d: SolanaDeps) {
     const before = await r.rawAccounts(watched);
     const accounts: Record<string, { owner: string; mint: string }> = {};
     const moved = new Map<string, bigint>();
+    /** Control passing to someone else, for the vault's rules (Context.solana_handovers). */
+    const handovers: { kind: string; account?: string; mint?: string; to: string; all?: boolean }[] = [];
     let simulation: SiteTransaction["simulation"];
     try {
       const sim = await r.simulateWith(bytesToBase64(wire), watched);
@@ -508,14 +510,30 @@ export function createSolana(d: SolanaDeps) {
           const post = sim.after[i] ?? null;
           if (a === owner) {
             moved.set(SOL, (post?.lamports ?? 0n) - (pre?.lamports ?? 0n));
+            // A new program owner takes the account itself (System's Assign).
+            if (pre && post && post.owner !== pre.owner) handovers.push({ kind: "assign", to: post.owner });
             return;
           }
           const t0 = pre ? tokenAccountOf(pre) : null;
           const t1 = post ? tokenAccountOf(post) : null;
-          const t = t1 ?? t0;
+          const t = t0 ?? t1;
           if (!t) return;
+          // Named by who owns it now, before the transaction.
           accounts[a] = { owner: t.owner, mint: t.mint };
-          if (t.owner === owner) moved.set(splDenom(t.mint), (moved.get(splDenom(t.mint)) ?? 0n) + (t1?.amount ?? 0n) - (t0?.amount ?? 0n));
+          // What the account holds before and after, by ownership: a token account it owned
+          // before but not after is its whole balance leaving.
+          const had = t0?.owner === owner ? t0.amount : 0n;
+          const has = t1?.owner === owner ? t1.amount : 0n;
+          if (had !== 0n || has !== 0n) moved.set(splDenom(t.mint), (moved.get(splDenom(t.mint)) ?? 0n) + has - had);
+          if (t0?.owner === owner && t1 && t1.owner !== owner) handovers.push({ kind: "token_owner", account: a, mint: t1.mint, to: t1.owner });
+          if (t1?.owner === owner) {
+            if (t1.delegate && t1.delegate !== owner && t1.delegated > 0n && (t1.delegate !== t0?.delegate || t1.delegated > t0.delegated)) {
+              handovers.push({ kind: "delegate", account: a, mint: t1.mint, to: t1.delegate, all: t1.delegated >= t1.amount });
+            }
+            if (t1.closeAuthority && t1.closeAuthority !== owner && t1.closeAuthority !== t0?.closeAuthority) {
+              handovers.push({ kind: "close_authority", account: a, mint: t1.mint, to: t1.closeAuthority });
+            }
+          }
         });
         simulation = { ok: true, changes: [...moved].filter(([, v]) => v !== 0n).map(([denom, v]) => ({ denom, amount: v.toString() })) };
       }
@@ -539,6 +557,7 @@ export function createSolana(d: SolanaDeps) {
         balances: { native: (before[0]?.lamports ?? 0n).toString() },
         symbols: Object.fromEntries(Object.values(tokens).map((t) => [t.denom === SOL ? "native" : (splMint(t.denom) ?? t.denom), t.symbol])),
         solana_token_accounts: accounts,
+        solana_handovers: handovers,
       },
       checkedBy: new URL(r.pool.current).host,
       signatures,

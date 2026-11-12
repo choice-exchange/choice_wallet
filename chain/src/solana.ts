@@ -72,11 +72,21 @@ function raw(a: unknown): RawAccount | null {
   return { lamports: BigInt(a["lamports"]), owner: a["owner"], data: base64ToBytes(a["data"][0]) };
 }
 
-/** A token account's mint, owner and amount, from its bytes (both token programs keep these
- *  first). Null for anything shorter. */
-export function tokenAccountOf(a: RawAccount): { mint: string; owner: string; amount: bigint } | null {
+/** A token account's mint, owner, amount, delegate (and how much it may move) and close
+ *  authority, from its bytes (both token programs keep the base layout first). Null for
+ *  anything shorter. */
+export function tokenAccountOf(a: RawAccount): { mint: string; owner: string; amount: bigint; delegate: string | null; delegated: bigint; closeAuthority: string | null } | null {
   if ((a.owner !== TOKEN_PROGRAM && a.owner !== TOKEN_2022_PROGRAM) || a.data.length < 165) return null;
-  return { mint: bytesToBase58(a.data.slice(0, 32)), owner: bytesToBase58(a.data.slice(32, 64)), amount: new DataView(a.data.buffer, a.data.byteOffset + 64, 8).getBigUint64(0, true) };
+  const view = new DataView(a.data.buffer, a.data.byteOffset, a.data.length);
+  const option = (at: number) => (view.getUint32(at, true) === 1 ? bytesToBase58(a.data.slice(at + 4, at + 36)) : null);
+  return {
+    mint: bytesToBase58(a.data.slice(0, 32)),
+    owner: bytesToBase58(a.data.slice(32, 64)),
+    amount: view.getBigUint64(64, true),
+    delegate: option(72),
+    delegated: view.getBigUint64(121, true),
+    closeAuthority: option(129),
+  };
 }
 
 export class SolanaRpc {

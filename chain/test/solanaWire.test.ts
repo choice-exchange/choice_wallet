@@ -56,6 +56,6 @@ test("a lookup table's addresses, and a token account's mint, owner and amount",
   data.set(b, 0);
   data.set(a, 32);
   new DataView(data.buffer).setBigUint64(64, 1_500_000n, true);
-  assert.deepEqual(tokenAccountOf({ lamports: 2_039_280n, owner: TOKEN_PROGRAM, data }), { mint: bytesToBase58(b), owner: V["owner"], amount: 1_500_000n });
+  assert.deepEqual(tokenAccountOf({ lamports: 2_039_280n, owner: TOKEN_PROGRAM, data }), { mint: bytesToBase58(b), owner: V["owner"], amount: 1_500_000n, delegate: null, delegated: 0n, closeAuthority: null });
   assert.equal(tokenAccountOf({ lamports: 1n, owner: "11111111111111111111111111111111", data }), null);
 });
