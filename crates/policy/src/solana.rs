@@ -401,7 +401,8 @@ fn handovers(ctx: &Context, out: &mut Vec<Finding>) {
         let account = h.account.as_deref();
         let said = |out: &[Finding], rules: &[&str]| {
             out.iter().any(|f| {
-                rules.contains(&f.rule) && account.is_none_or(|a| f.params.get("account").and_then(|v| v.as_str()) == Some(a))
+                rules.contains(&f.rule)
+                    && account.is_none_or(|a| f.params.get("account").and_then(|v| v.as_str()) == Some(a))
             })
         };
         let to = base58::decode32(&h.to).map_or_else(|| short(&h.to), |p| program_name(&p));
@@ -587,10 +588,7 @@ mod tests {
     #[test]
     fn simulated_handovers_are_graded_like_the_instructions() {
         let program = [0x42; 32];
-        let r = tx(
-            &[ME],
-            vec![Instruction::Other { program }],
-        );
+        let r = tx(&[ME], vec![Instruction::Other { program }]);
         let grade = |h: crate::SolanaHandover| {
             let ctx = Context {
                 solana_handovers: vec![h],

@@ -30,7 +30,12 @@ fn injective_typed_data_matches_viem() {
 fn injective_typed_data_is_decoded_on_every_chain_of_its_network() {
     let cases = vectors("eip712_v2");
     let case = |name: &str, chain_id: &str| {
-        let c = cases["cases"].as_array().unwrap().iter().find(|c| c["name"] == name).unwrap();
+        let c = cases["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["name"] == name)
+            .unwrap();
         let mut td: Value = serde_json::from_str(c["typed_data"].as_str().unwrap()).unwrap();
         td["domain"]["chainId"] = chain_id.into();
         td.to_string()
@@ -56,9 +61,15 @@ fn injective_typed_data_is_decoded_on_every_chain_of_its_network() {
     assert!(d["display"]["injective_tx"]["messages"].is_array(), "{d}");
 
     // On a chain the user added, Injective's domain is refused whatever its chain ID.
-    assert_eq!(code("decode", json!({ "request": request("eip155:56", grants) })), "invalid");
+    assert_eq!(
+        code("decode", json!({ "request": request("eip155:56", grants) })),
+        "invalid"
+    );
     let on_56 = case("mainnet_grants_and_admin_changes", "0x38");
-    assert_eq!(code("decode", json!({ "request": request("eip155:56", on_56) })), "invalid");
+    assert_eq!(
+        code("decode", json!({ "request": request("eip155:56", on_56) })),
+        "invalid"
+    );
 
     // Legacy (v1) Injective typed data is refused on Ethereum, as on Injective EVM.
     let legacy = json!({

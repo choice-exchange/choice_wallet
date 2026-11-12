@@ -346,7 +346,10 @@ mod tests {
         };
         let plain = rules(&siwe("Sign in to Victim.", ""));
         assert_eq!(plain, (Level::Red, vec!["sign_in_wrong_site"]));
-        for m in [siwe("Sign in to\u{b}Victim.", ""), siwe("Sign in to Victim.", "\n\u{85}")] {
+        for m in [
+            siwe("Sign in to\u{b}Victim.", ""),
+            siwe("Sign in to Victim.", "\n\u{85}"),
+        ] {
             let (level, found) = rules(&m);
             assert_eq!(level, Level::Red, "{m:?}");
             assert!(found.contains(&"sign_in_wrong_site"), "{found:?}");

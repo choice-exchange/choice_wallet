@@ -672,15 +672,27 @@ mod tests {
         let approve = call(APPROVE, &[addr_word([0x22; 20]), U256::from_u128(1).to_be_bytes()]);
         for data in [transfer.clone(), approve] {
             let a = with_value(data, 2_000_000_000_000_000_000);
-            let f = a.findings.iter().find(|f| f.rule == "value_with_call").expect("value_with_call");
+            let f = a
+                .findings
+                .iter()
+                .find(|f| f.rule == "value_with_call")
+                .expect("value_with_call");
             assert_eq!(f.level, Level::Amber);
             assert_eq!(f.message, "Also sends 2 INJ to 0x1111…1111, besides the token call.");
         }
         // Any other call: named at info. No value, no finding.
         let a = with_value(vec![0x12, 0x34, 0x56, 0x78], 500_000_000_000_000_000);
         let f = a.findings.iter().find(|f| f.rule == "value_with_call").unwrap();
-        assert_eq!((f.level, f.message.as_str()), (Level::Info, "Sends 0.5 INJ to contract 0x1111…1111."));
-        assert!(!with_value(transfer, 0).findings.iter().any(|f| f.rule == "value_with_call"));
+        assert_eq!(
+            (f.level, f.message.as_str()),
+            (Level::Info, "Sends 0.5 INJ to contract 0x1111…1111.")
+        );
+        assert!(
+            !with_value(transfer, 0)
+                .findings
+                .iter()
+                .any(|f| f.rule == "value_with_call")
+        );
     }
 
     #[test]
