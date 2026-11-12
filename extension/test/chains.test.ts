@@ -150,7 +150,14 @@ test("history on Base: what the wallet sent, and what an index finds, each read 
   const ghost = `0x${"a3".repeat(32)}`;
   net.state.base.txs[usdcIn] = { from: them, to: BASE_USDC, value: 0n, input: "0xa9059cbb", logs: [log(BASE_USDC, them, ME_EVM, 7_000_000n)], block: 0x2000n };
   net.state.base.txs[spam] = { from: them, to: "0x3333333333333333333333333333333333333333", value: 0n, input: "0x", logs: [log("0x3333333333333333333333333333333333333333", them, ME_EVM, 1n)], block: 0x2001n };
-  net.state.base.index = { txs: [], transfers: [spam, usdcIn, ghost] };
+  // Hardening: address poisoning, a zero-value "transfer" of real USDC from the account to a
+  // look-alike, and a zero-value call from one: they changed nothing, so they aren't shown.
+  const lookalike = `0x${ME_EVM.slice(2, 6)}${"7".repeat(32)}${ME_EVM.slice(-4)}`;
+  const poison = `0x${"a4".repeat(32)}`;
+  const nothing = `0x${"a5".repeat(32)}`;
+  net.state.base.txs[poison] = { from: them, to: BASE_USDC, value: 0n, input: "0x23b872dd", logs: [log(BASE_USDC, ME_EVM, lookalike, 0n)], block: 0x2002n };
+  net.state.base.txs[nothing] = { from: lookalike, to: ME_EVM, value: 0n, input: "0x", logs: [], block: 0x2003n };
+  net.state.base.index = { txs: [], transfers: [spam, usdcIn, ghost, poison, nothing] };
   page = ok<Page>(await service.handle({ type: "chain_activity", chain: "base" }));
   assert.equal(page.indexed, true);
   assert.deepEqual(

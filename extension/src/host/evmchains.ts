@@ -246,8 +246,9 @@ export function createEvmChains(d: EvmChainsDeps) {
       }),
     );
     // Tokens nobody asked for, sent by someone else and only of unlisted kinds, are spam
-    // more often than not: left out.
-    const items = all.filter((a) => a.signed || a.changes.length === 0 || a.changes.some((x) => tokens[x.denom]?.known));
+    // more often than not: left out. So is what someone else sent that changed nothing for
+    // the account: a zero-value "transfer" from or to a look-alike is address poisoning.
+    const items = all.filter((a) => a.signed || a.changes.some((x) => tokens[x.denom]?.known));
     return { ok: true, result: { items: items as ActivityItem[], tokens, next: done ? null : page + 1, indexed: urls.length > 0, ...(indexDown ? { indexDown: true as const } : {}) } };
   }
 
