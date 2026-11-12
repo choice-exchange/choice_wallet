@@ -10,7 +10,7 @@ import { addedKey, chainByKey, ChainError, chainList, checkAddedChain, erc20Meta
 import type { AccountInfo, NewChain, TokenInfo } from "@choice-wallet/ui/protocol";
 
 import { cleanName } from "../addedchains";
-import { CHAIN_DISCONNECTED, INVALID_PARAMS, no, quantity, UNAUTHORIZED, UNRECOGNIZED_CHAIN, UNSUPPORTED, type DappReply, type SiteCore } from "./shared";
+import { CHAIN_DISCONNECTED, INVALID_PARAMS, no, quantity, UNAUTHORIZED, UNRECOGNIZED_CHAIN, UNSUPPORTED, type DappReply, type Named, type SiteCore } from "./shared";
 
 /** Read-only JSON-RPC methods passed to the user's own EVM endpoints. */
 const READS = new Set([
@@ -251,7 +251,9 @@ export function createEvmSite(core: SiteCore) {
     // compared, so a site can't test a guess at the account while it is locked.
     if (!(await h.unlocked())) return no(UNAUTHORIZED, "Choice Wallet is locked, or this account can't sign. Unlock it, then ask again.");
     const me = async () => (await h.unlocked())?.account.addresses[chain.caip2] ?? "";
-    const mine = async (a: unknown) => typeof a === "string" && (await isConnected(origin)) && a.toLowerCase() === (await evmAccountsAny()).toLowerCase();
+    /** The account the site named: only it signs, whichever account is in use at review. */
+    const named = (a: unknown): Named => ({ address: String(a).toLowerCase(), of: (acc) => (acc.addresses[chain.caip2] ?? acc.addresses[net.evm])?.toLowerCase() });
+    const mine = async (a: unknown) => typeof a === "string" && a !== "" && (await isConnected(origin)) && a.toLowerCase() === (await evmAccountsAny()).toLowerCase();
     // The account in use's address, from storage, for checks made while locked. A
     // watch-only account has nothing to sign with, so it matches nothing.
     async function evmAccountsAny(): Promise<string> {
@@ -287,6 +289,7 @@ export function createEvmSite(core: SiteCore) {
           else await h.sender.chainSent(network, chain.key, await me(), hash);
           return hash;
         },
+        named(tx["from"]),
       );
     }
     if (method === "personal_sign") {
@@ -298,6 +301,7 @@ export function createEvmSite(core: SiteCore) {
         "evm_personal_sign",
         async () => ({ request: { evm_personal_sign: { chain: chain.caip2, signer: await me(), message } } }),
         async (signed) => signed["signature"],
+        named(address),
       );
     }
     // eth_signTypedData_v4
@@ -309,6 +313,7 @@ export function createEvmSite(core: SiteCore) {
       "evm_typed_data",
       async () => ({ request: { evm_typed_data: { chain: chain.caip2, signer: await me(), typed_data: typed } } }),
       async (signed) => signed["signature"],
+      named(address),
     );
   }
 

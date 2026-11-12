@@ -221,7 +221,7 @@ export function ApproveView({ id }: { id: string }) {
       ) : !review ? (
         !problem && [0, 1].map((i) => <div key={i} className="skeleton" style={{ height: 64 }} />)
       ) : (
-        <SignBody review={review} network={req.network} typed={typed} onTyped={setTyped} />
+        <SignBody review={review} network={req.network} typed={typed} onTyped={setTyped} account={signer?.name} />
       )}
     </Screen>
   );
@@ -240,7 +240,8 @@ export function Origin({ origin }: { origin: string }) {
   );
 }
 
-export function SignBody({ review, network, typed, onTyped }: { review: DappReview; network: NetworkId; typed: string; onTyped: (s: string) => void }) {
+/** `account`: the name of the account in use, which signs (the review's own address beside it). */
+export function SignBody({ review, network, typed, onTyped, account }: { review: DappReview; network: NetworkId; typed: string; onTyped: (s: string) => void; account?: string | undefined }) {
   const { risk, tokens, display } = review;
   const d = display as Record<string, unknown>;
   const net = NETWORKS[network];
@@ -376,6 +377,13 @@ export function SignBody({ review, network, typed, onTyped }: { review: DappRevi
             <span className="num">{view.fee.map(amount).join(" + ") || "None"}</span>
           </div>
         )}
+        <div className="row">
+          <span>Signs as</span>
+          <span>
+            {account ? `${account} · ` : ""}
+            <span className="mono">{shortAddress(String(d["signer"] ?? d["from"] ?? ""))}</span>
+          </span>
+        </div>
         <div className="row">
           <span>Network</span>
           <span>{networkName(d, network)}</span>

@@ -65,6 +65,7 @@ export function createSolanaSite(core: SiteCore) {
           const done = await h.solana.siteSigned(network, read, hexToBytes(String(signed["signature"])), send);
           return send ? { signature: bytesToHex(base58ToBytes(done.signature)) } : { transaction: bytesToHex(done.wire) };
         },
+        { address: mine, of: (a) => a.addresses[net.solana.caip2] },
       );
     }
     return no(UNSUPPORTED, `${method} isn't supported.`);

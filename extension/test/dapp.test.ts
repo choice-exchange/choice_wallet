@@ -376,6 +376,24 @@ test("one request, one signature: concurrent approvals sign once; locking reject
   assert.equal((await waiting).error?.code, 4001);
 });
 
+// F15: the account the site named signs, or nobody: a switch before the review is refused.
+test("only the account a site named answers its signature request", async () => {
+  const { page, window, service } = await connected();
+  ok(await service.handle({ type: "add_account" }));
+  ok(await service.handle({ type: "switch_account", index: 0 }));
+  const asked = page(SITE)("personal_sign", ["0x6869", ME_EVM]);
+  const w = await window();
+  ok(await service.handle({ type: "switch_account", index: 1 }));
+  assert.equal(code(await service.handle({ type: "dapp_review", id: w.id })), "wrong_account");
+  ok(await service.handle({ type: "switch_account", index: 0 }));
+  const review = ok<{ digest: string }>(await service.handle({ type: "dapp_review", id: w.id }));
+  ok(await service.handle({ type: "dapp_answer", id: w.id, approve: true, digest: review.digest }));
+  const expected = vaultSigns({ evm_personal_sign: { chain: "eip155:1776", signer: ME_EVM, message: "0x6869" } });
+  assert.deepEqual(await asked, { result: expected["signature"] });
+  // No account named: refused before any window.
+  assert.equal((await page(SITE)("personal_sign", ["0x6869", ""])).error?.code, 4100);
+});
+
 test("only a tab's top frame, at https (or http on this machine), is a site", () => {
   const ext = "abcdefghijklmnopabcdefghijklmnop";
   const s = (o: Record<string, unknown>) => ({ id: ext, tab: {}, frameId: 0, origin: "https://app.example", url: "https://app.example/swap", ...o });

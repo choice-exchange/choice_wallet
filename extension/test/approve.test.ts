@@ -103,6 +103,8 @@ test("a conversion that pays someone else names them", async () => {
   assert.ok(other.risk.findings.some((f) => f.rule === "redeem_to_other" && f.level === "amber"), JSON.stringify(other.risk));
   const text = windowText(other);
   assert.match(text, /You convert/);
+  // F15: every sign screen names the account that signs.
+  assert.match(text, /Signs as inj1npvwll…re90dz/, text);
   assert.ok(text.includes(`Delivered to ${THEM}`), text);
 
   // To the signer: a plain conversion, and the pinned adapter is no new contract.

@@ -77,10 +77,15 @@ export interface Waiting {
   }>;
   /** sign: what to hand the page once signed. */
   finish?: (signed: Record<string, unknown>) => Promise<unknown>;
+  /** sign: the account the site named (normalized), and how to read it off an account. Only
+   *  that account answers: a review for another one is refused. */
+  named?: Named;
   /** sign, on a Ledger: what the device was handed, waiting for its signature. */
   device?: { request: DeviceRequest; publicKey: string };
   prepared?: Prepared;
 }
+
+export type Named = { address: string; of: (account: AccountInfo) => string | undefined };
 
 export type Grants = Record<string, { since: number; approvals?: number }>;
 
@@ -104,6 +109,6 @@ export interface SiteCore {
   /** Connect (asking the user if need be), then answer with `then`. */
   connect(origin: string, then: () => Promise<DappReply>): Promise<DappReply>;
   ask(w: Omit<Waiting, "req" | "resolve">, req: Omit<DappRequest, "id">): Promise<DappReply>;
-  sign(origin: string, method: string, build: NonNullable<Waiting["build"]>, finish: NonNullable<Waiting["finish"]>): Promise<DappReply>;
+  sign(origin: string, method: string, build: NonNullable<Waiting["build"]>, finish: NonNullable<Waiting["finish"]>, named?: Named): Promise<DappReply>;
   disconnect(origin: unknown): Promise<unknown>;
 }

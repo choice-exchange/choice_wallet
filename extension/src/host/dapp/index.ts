@@ -21,7 +21,7 @@ import { displayDenoms } from "../send";
 import { fail, randomId } from "../util";
 import { createCosmosSite } from "./cosmos";
 import { createEvmSite } from "./evm";
-import { INTERNAL, INVALID_PARAMS, no, PENDING, UNAUTHORIZED, UNSUPPORTED, USER_REJECTED, type DappHost, type DappReply, type Grants, type Waiting } from "./shared";
+import { INTERNAL, INVALID_PARAMS, no, PENDING, UNAUTHORIZED, UNSUPPORTED, USER_REJECTED, type DappHost, type DappReply, type Grants, type Named, type Waiting } from "./shared";
 import { createSolanaSite } from "./solana";
 
 export type { DappHost, DappReply } from "./shared";
@@ -105,9 +105,11 @@ export function createDapps(h: DappHost) {
     method: string,
     build: NonNullable<Waiting["build"]>,
     finish: NonNullable<Waiting["finish"]>,
+    named?: Named,
   ): Promise<DappReply> {
     if (!(await isConnected(origin))) return no(UNAUTHORIZED, "Connect to Choice Wallet first.");
-    return ask({ build, finish }, { origin, network: await h.network(), kind: "sign", method });
+    if (named && !named.address) return no(UNAUTHORIZED, "Name the account to sign with.");
+    return ask({ build, finish, ...(named ? { named } : {}) }, { origin, network: await h.network(), kind: "sign", method });
   }
 
   const core = { h, isConnected, connect, ask, sign, disconnect };
@@ -146,6 +148,8 @@ export function createDapps(h: DappHost) {
     const u = await h.unlocked();
     if (!u) return fail("locked", "Unlock the wallet first.");
     await h.touch();
+    // Only the account the site named answers it.
+    if (w.named && w.named.of(u.account) !== w.named.address) return fail("wrong_account", "The account in use isn't the one this site asked to sign with. Switch back, or ask the site again.");
     const network = w.req.network;
     if (network !== (await h.network())) return fail("network", "The wallet changed network. Ask the site again.");
     try {
