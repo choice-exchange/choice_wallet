@@ -154,7 +154,9 @@ pub(crate) fn decode_secret(plaintext: &[u8]) -> Result<Secret, Error> {
 
 /// Seal any plaintext under `password`, returning the key it derived.
 pub(crate) fn seal_bytes(plaintext: &[u8], password: &[u8], params: KdfParams) -> Result<(Vec<u8>, UnlockKey), Error> {
-    if password.len() < MIN_PASSWORD_LEN {
+    // Characters, as the screens count them, not bytes: "éééé" is four, not eight.
+    let chars = std::str::from_utf8(password).map_or(password.len(), |s| s.chars().count());
+    if chars < MIN_PASSWORD_LEN {
         return Err(Error::Keystore("password too short"));
     }
     params.check()?;
@@ -375,6 +377,9 @@ mod tests {
     fn short_password_refused() {
         let secret = Secret::Mnemonic(Mnemonic::parse(ABANDON).unwrap());
         assert!(seal(&secret, b"short", FAST).is_err());
+        // Counted in characters: four two-byte characters are four, though eight bytes.
+        assert!(seal(&secret, "éééé".as_bytes(), FAST).is_err());
+        assert!(seal(&secret, "éééééééé".as_bytes(), FAST).is_ok());
     }
 
     #[test]

@@ -291,7 +291,7 @@ function SetPassword({
 }) {
   const [a, setA] = useState("");
   const [b, setB] = useState("");
-  const ok = a.length >= MIN_PASSWORD && a === b;
+  const ok = [...a].length >= MIN_PASSWORD && a === b;
   const mismatch = b.length > 0 && a !== b && b.length >= a.length;
   return (
     <form
