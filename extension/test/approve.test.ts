@@ -213,3 +213,16 @@ test("the anti-phishing phrase renders on the wallet's screens", () => {
   assert.match(html.replace(/<[^>]+>/g, ""), /^Your phrase: abandon ability able\. Wrong or missing\? Not Choice Wallet\.$/);
   assert.equal(renderToStaticMarkup(createElement(Phrase, { phrase: undefined })), "");
 });
+
+// Hardening: a denom a site picks is looked up in the review's token map, where a name like
+// "constructor" found Object's own and broke the window.
+test("a token named after an object's built-ins renders as an unlisted denom", async () => {
+  const { review } = await connected();
+  for (const denom of ["constructor", "toString", "hasOwnProperty"]) {
+    const send = { type: "cosmos-sdk/MsgSend", value: { amount: [{ amount: "7", denom }], from_address: ME, to_address: THEM } };
+    const r = await review("choice_signAmino", { chainId: "injective-1", signer: ME, signDoc: amino([send]) });
+    const text = windowText(r);
+    assert.match(text, /You send/, text);
+    assert.ok(text.includes(denom), text);
+  }
+});
