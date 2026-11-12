@@ -30,7 +30,7 @@ The toolchain is pinned in `rust-toolchain.toml`; rustup installs it on first us
 ```sh
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
-cargo build --workspace --release --target wasm32-unknown-unknown
+cargo build --locked --workspace --release --target wasm32-unknown-unknown
 ```
 
 The chain client, the UI and the extension are npm workspaces, installed and checked from the repo root. The extension build needs the `wasm-bindgen` CLI at exactly 0.2.130, the crate's version (set `WASM_BINDGEN` if it isn't on PATH):

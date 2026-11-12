@@ -3,9 +3,10 @@
 //
 // - The vault, each wallet's sealed secret, the public account list (names, addresses,
 //   which one is in use) and the settings live in local storage (see ./wallets.ts).
-// - While unlocked, the unlock key (Argon2id output, opens only this keystore) lives in
-//   session storage, which Chrome keeps in memory and clears on browser restart or
-//   extension update. Locking deletes it, and any send waiting for approval.
+// - While unlocked, the unlock key (the vault key: it opens every wallet's sealed secret,
+//   without the password) lives in session storage, which Chrome keeps in memory and
+//   clears on browser restart or extension update. Locking deletes it, and any send waiting
+//   for approval. A password change keeps the same vault key.
 // - The vault is stateless: every call that needs a key gets the keystore and unlock key
 //   from here. UI pages never see either.
 

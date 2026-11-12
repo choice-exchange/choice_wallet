@@ -14,6 +14,10 @@ import { bytesToBase64, explorerTxUrl, isNetworkId, NETWORKS } from "@choice-wal
 import { createService, dappOrigin, fromOwnPage, type Store } from "./host/service";
 import { callVault } from "./host/vault";
 
+// Content scripts never read the wallet's storage (the vault, sealed secrets, grants,
+// endpoints): only the extension's own pages and this worker.
+void chrome.storage.local.setAccessLevel({ accessLevel: chrome.storage.AccessLevel.TRUSTED_CONTEXTS }).catch(() => {});
+
 let ready: Promise<unknown> | null = null;
 const vaultReady = () => (ready ??= init({ module_or_path: chrome.runtime.getURL("vault/choice_wallet_wasm_bg.wasm") }));
 const AUTO_LOCK = "auto-lock";

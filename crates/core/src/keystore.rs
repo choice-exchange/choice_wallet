@@ -187,10 +187,12 @@ pub(crate) fn seal_bytes(plaintext: &[u8], password: &[u8], params: KdfParams) -
     Ok((out, UnlockKey(key)))
 }
 
-/// The key a keystore is encrypted under, derived from its password. Holding it opens the
-/// keystore without running Argon2 again, so a host keeps it while the wallet is unlocked
-/// (the extension in `chrome.storage.session`) and drops it on lock. It opens only the
-/// keystore it was derived from.
+/// A key that opens sealed data without the password: the key a keystore is encrypted under
+/// (derived from its password), or a vault's random vault key, which the vault's password
+/// opens ([`crate::envelope`]). Holding it opens what it seals without running Argon2, so a
+/// host keeps it while the wallet is unlocked (the extension in `chrome.storage.session`) and
+/// drops it on lock. A vault key opens every wallet sealed in that vault, and a password
+/// change keeps it.
 pub struct UnlockKey(Zeroizing<[u8; 32]>);
 
 impl UnlockKey {

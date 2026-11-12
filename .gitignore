@@ -7,3 +7,8 @@ node_modules/
 /extension/dist-test/
 /extension/build/
 /extension/dist-dev/
+# Signing keys, packed builds and local environments never belong in the repo.
+*.pem
+*.crx
+*.zip
+.env.*

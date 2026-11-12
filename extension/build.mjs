@@ -17,6 +17,7 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -33,9 +34,18 @@ const dist = join(here, dev ? "dist-dev" : "dist");
 
 // 1. The vault.
 function buildVault() {
-  execFileSync("cargo", ["build", "--release", "-p", "choice-wallet-wasm", "--target", "wasm32-unknown-unknown"], {
+  // --locked: exactly Cargo.lock's crates. The path remaps keep the builder's home directory
+  // (and so their user name) out of the WASM, and make it the same wherever it is built.
+  const home = homedir();
+  const remap = [
+    [process.env.CARGO_HOME ?? join(home, ".cargo"), "/cargo"],
+    [process.env.RUSTUP_HOME ?? join(home, ".rustup"), "/rustup"],
+    [repo, "/choice_wallet"],
+  ].map(([from, to]) => `--remap-path-prefix=${from}=${to}`);
+  execFileSync("cargo", ["build", "--locked", "--release", "-p", "choice-wallet-wasm", "--target", "wasm32-unknown-unknown"], {
     cwd: repo,
     stdio: "inherit",
+    env: { ...process.env, RUSTFLAGS: [process.env.RUSTFLAGS, ...remap].filter(Boolean).join(" ") },
   });
   const version = execFileSync(wasmBindgen, ["--version"]).toString().trim();
   if (version !== `wasm-bindgen ${WASM_BINDGEN_VERSION}`) {
