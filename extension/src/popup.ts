@@ -33,7 +33,8 @@ const backend: Backend = {
   },
   onRefresh(listener) {
     const on = (message: unknown, sender: chrome.runtime.MessageSender) => {
-      if (sender.id === chrome.runtime.id && (message as { choice?: unknown } | null)?.choice === "refresh") listener();
+      // Content scripts share the extension's ID: only the worker (no tab) may ask.
+      if (sender.id === chrome.runtime.id && !sender.tab && (message as { choice?: unknown } | null)?.choice === "refresh") listener();
     };
     chrome.runtime.onMessage.addListener(on);
     return () => chrome.runtime.onMessage.removeListener(on);

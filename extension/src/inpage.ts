@@ -31,7 +31,7 @@ const TO_PAGE = "choice-wallet:page";
     const id = ++next;
     return new Promise((resolve, reject) => {
       pending.set(id, { resolve, reject });
-      post({ target: TO_RELAY, id, method, params }, "*");
+      post({ target: TO_RELAY, id, method, params }, "/");
     });
   }
 

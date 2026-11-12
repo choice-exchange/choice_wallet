@@ -15,7 +15,7 @@ window.addEventListener("message", (e: MessageEvent) => {
   if (e.source !== window || typeof e.data !== "object" || e.data === null) return;
   const { target, id, method, params } = e.data as { target?: unknown; id?: unknown; method?: unknown; params?: unknown };
   if (target !== TO_RELAY || typeof id !== "number" || typeof method !== "string") return;
-  const answer = (r: Reply) => window.postMessage({ target: TO_PAGE, id, ...("error" in r && r.error ? { error: r.error } : { result: r.result }) }, "*");
+  const answer = (r: Reply) => window.postMessage({ target: TO_PAGE, id, ...("error" in r && r.error ? { error: r.error } : { result: r.result }) }, "/");
   try {
     chrome.runtime.sendMessage({ method, params }).then(
       (r: Reply | undefined) => answer(r ?? { error: gone }),
@@ -29,6 +29,6 @@ window.addEventListener("message", (e: MessageEvent) => {
 
 chrome.runtime.onMessage.addListener((message: unknown, sender) => {
   if (sender.id === chrome.runtime.id && typeof message === "object" && message !== null && (message as { choice?: unknown }).choice === "changed") {
-    window.postMessage({ target: TO_PAGE, event: "changed" }, "*");
+    window.postMessage({ target: TO_PAGE, event: "changed" }, "/");
   }
 });
