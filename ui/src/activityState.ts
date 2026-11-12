@@ -1,7 +1,17 @@
 // The Activity tab's state, apart from its screen so it can be tested: what it shows, and
 // how a page read from the chain joins what's there.
 
+import { shortDenom } from "@choice-wallet/chain";
+
 import type { ActivityItem, ActivityPage, TokenFilter } from "./protocol";
+
+/** A token's name in a row: a listed token's symbol; an unlisted one's symbol (its
+ *  creator's, which proves nothing) with where it lives, or where it lives alone. */
+export function rowSymbol(denom: string, t: { symbol: string; known: boolean } | undefined): string {
+  if (!t) return shortDenom(denom);
+  if (t.known) return t.symbol;
+  return t.symbol ? `${t.symbol} · ${shortDenom(denom)}` : shortDenom(denom);
+}
 
 /** What the Activity tab shows. The wallet keeps it while the popup is open, so coming
  *  back to the tab draws it at once. */

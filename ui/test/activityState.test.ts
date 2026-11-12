@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { merge } from "../src/activityState.ts";
+import { merge, rowSymbol } from "../src/activityState.ts";
 import type { ActivityItem, ActivityPage } from "../src/protocol.ts";
 
 const row = (height: number): ActivityItem => ({ hash: `H${height}`, height: String(height), time: "2026-11-09T08:00:00Z", ok: true, kind: "receive", signed: false, changes: [], fee: [] });
@@ -34,4 +34,15 @@ test("past a gap (more new rows than a page holds), it starts over", () => {
   const two = merge(merge(null, page([100, 90], true, 90), 1, 5), page([80, 70], false, null), 2, 6);
   const again = merge(two, page([300, 250], true, 250), 1, 50);
   assert.deepEqual([heights(again), again.page, again.more], [[300, 250], 1, true]);
+});
+
+// F19: an unlisted token with a listed token's symbol read as the listed one in Activity.
+test("a row names an unlisted token with where it lives", () => {
+  const usdt = "peggy0xdAC17F958D2ee523a2206206994597C13D831ec7";
+  const copy = "factory/inj1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqe2hm49/usdt";
+  assert.equal(rowSymbol(usdt, { symbol: "USDT", known: true }), "USDT");
+  const unlisted = rowSymbol(copy, { symbol: "USDT", known: false });
+  assert.notEqual(unlisted, "USDT");
+  assert.match(unlisted, /^USDT · factory\//);
+  assert.equal(rowSymbol(copy, { symbol: "", known: false }), rowSymbol(copy, undefined));
 });

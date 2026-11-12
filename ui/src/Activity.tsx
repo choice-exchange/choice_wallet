@@ -3,7 +3,7 @@
 // the say). Junk (not signed here, and only tokens the filter hides, in or out) sits behind
 // a row, like on the home screen. A row opens the explorer: Blockscout for an EVM one.
 
-import { chainByCaip2, chainByKey, explorerTxUrl, formatShort, NETWORKS, shortDenom } from "@choice-wallet/chain";
+import { chainByCaip2, chainByKey, explorerTxUrl, formatShort, NETWORKS } from "@choice-wallet/chain";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { useBackend } from "./backend";
@@ -27,7 +27,7 @@ import {
 import { Callout, shortAddress } from "./kit";
 import type { ActivityItem, ActivityKind, ActivityPage, Balance, ChainView, Coin, NetworkId, Replies } from "./protocol";
 import { useRequest } from "./request";
-import { ACTIVITY_FRESH_MS, merge, type ActivityState } from "./activityState";
+import { ACTIVITY_FRESH_MS, merge, rowSymbol, type ActivityState } from "./activityState";
 import { hiddenWhy } from "./tokenFilter";
 
 const TITLE: Record<ActivityKind, string> = {
@@ -277,14 +277,14 @@ function amountLabel(c: Coin, tokens: Tokens): string {
   const t = tokens[c.denom];
   const neg = c.amount.startsWith("-");
   const abs = neg ? c.amount.slice(1) : c.amount;
-  const symbol = t ? (t.known ? t.symbol : t.symbol || shortDenom(c.denom)) : shortDenom(c.denom);
+  const symbol = rowSymbol(c.denom, t);
   return `${neg ? "-" : "+"}${formatShort(abs, t?.decimals ?? 0, 4)} ${symbol}`;
 }
 
 /** An allowance: "Unlimited USDT" at the sizes wallets and routers use for "all of it". */
 function allowanceLabel(ap: NonNullable<ActivityItem["approval"]>, tokens: Tokens): string {
   const t = tokens[ap.denom];
-  const symbol = t ? (t.known ? t.symbol : t.symbol || shortDenom(ap.denom)) : shortDenom(ap.denom);
+  const symbol = rowSymbol(ap.denom, t);
   if (BigInt(ap.amount) >= 2n ** 128n) return `Unlimited ${symbol}`;
   return `${formatShort(ap.amount, t?.decimals ?? 0, 4)} ${symbol}`;
 }
