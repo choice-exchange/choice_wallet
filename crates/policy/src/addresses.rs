@@ -57,9 +57,14 @@ fn body(form: &str) -> &str {
         .unwrap_or(form)
 }
 
+/// Same length, and the same first and last four bytes of the body. Compared as bytes: a
+/// site's string may hold any character, and slicing it by byte offset must never panic.
 fn alike(a: &str, b: &str) -> bool {
-    let (x, y) = (body(a), body(b));
-    a.len() == b.len() && x.len() > 8 && x[..4] == y[..4] && x[x.len() - 4..] == y[y.len() - 4..]
+    if a.len() != b.len() {
+        return false;
+    }
+    let (x, y) = (body(a).as_bytes(), body(b).as_bytes());
+    x.len() > 8 && y.len() > 8 && x[..4] == y[..4] && x[x.len() - 4..] == y[y.len() - 4..]
 }
 
 fn contact<'a>(ctx: &'a Context, addr: &str) -> Option<&'a Contact> {
@@ -243,6 +248,23 @@ mod tests {
         let fake = String::from_utf8(fake).unwrap();
         assert_eq!(rules(&ctx(&[&real]), &real, None)[0].0, "address_book");
         assert_eq!(rules(&ctx(&[&real]), &fake, None)[0].0, "lookalike_address");
+    }
+
+    /// F14: a 42-byte site address with a multibyte character where the body's last four
+    /// bytes start must not panic (the vault aborts on a panic).
+    #[test]
+    fn a_multibyte_site_address_never_panics() {
+        let me = EthAddress::from_bytes([0x33; 20]).to_inj();
+        let body = &me[4..];
+        // Across the body's fourth byte; and, with its first four bytes the contact's, across
+        // its last four.
+        for to in [
+            format!("inj1{}é{}", &body[..3], "q".repeat(33)),
+            format!("inj1{}{}é{}", &body[..4], "q".repeat(29), "qqq"),
+        ] {
+            assert_eq!(to.len(), me.len());
+            assert!(rules(&ctx(&[&me]), &to, None).is_empty(), "{to}");
+        }
     }
 
     fn rules(ctx: &Context, to: &str, memo: Option<&str>) -> Vec<(&'static str, Level, String)> {
