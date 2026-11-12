@@ -65,6 +65,32 @@ test("a new password: the old one stops working, the wallet stays unlocked and c
   ok(await service.handle({ type: "unlock", password: NEW_PASSWORD }));
 });
 
+// Review: a password change (a new vault key) landing between another change's read of the
+// wallets and its write left secrets sealed under a key the vault no longer held, so no
+// password opened them.
+test("a password change racing an import and a rename leaves every wallet openable", async () => {
+  const { service, local, session } = await wallet();
+  const g = callVault<{ phrase: string }>(handle, "generate_mnemonic", { words: 12 });
+  assert.ok(g.ok);
+  const first = (local.data.get("wallets") as { id: string }[])[0]!.id;
+  const results = await Promise.all([
+    service.handle({ type: "add_wallet", secret: { mnemonic: g.result.phrase } }),
+    service.handle({ type: "change_password", password: PASSWORD, new_password: NEW_PASSWORD }),
+    service.handle({ type: "rename_wallet", wallet: first, name: "Renamed" }),
+  ]);
+  for (const r of results) assert.ok(r.ok, JSON.stringify(r));
+  const vault = local.data.get("vault") as string;
+  const wallets = local.data.get("wallets") as { id: string; secret: string; name: string }[];
+  assert.deepEqual([wallets.length, wallets[0]!.name], [2, "Renamed"]);
+  const u = callVault<{ unlock_key: string }>(handle, "unlock", { vault, password: NEW_PASSWORD });
+  assert.ok(u.ok);
+  // The new password's key opens every wallet, and it is the key the session holds.
+  assert.equal(session.data.get("unlock_key"), u.result.unlock_key);
+  for (const w of wallets) {
+    assert.ok(callVault(handle, "accounts", { secret: w.secret, wallet: w.id, unlock_key: u.result.unlock_key, accounts: [{ derivation: "default", index: 0 }] }).ok, w.id);
+  }
+});
+
 test("removing the wallet takes the password; settings stay, the wallet and its sites go", async () => {
   const { service, local, session } = await wallet();
   ok(await service.handle({ type: "save_settings", network: "testnet", lcd: ["https://lcd.example"] }));

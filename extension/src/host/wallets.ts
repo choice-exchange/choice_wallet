@@ -539,7 +539,8 @@ export function createWallets(h: WalletsHost) {
     const wallets = s.wallets.map((w) => (w.secret ? { ...w, secret: r.result.secrets[w.id] ?? "" } : w));
     if (wallets.some((w, i) => s.wallets[i]!.secret && !w.secret)) return err("internal", "A wallet's secret didn't come back. Nothing changed.");
     await h.local.set({ vault: r.result.vault, wallets });
-    await h.session.set({ unlock_key: r.result.unlock_key });
+    // Locked meanwhile: it stays locked, and the new password opens it.
+    if ((await unlockKey()) === s.key) await h.session.set({ unlock_key: r.result.unlock_key });
     return { ok: true, result: await status() };
   }
 
@@ -575,5 +576,38 @@ export function createWallets(h: WalletsHost) {
     return w ? { secret: w.secret, wallet: w.id } : null;
   }
 
-  return { stored, status, chain, unlockKey, create, unlock, addWallet, addAccount, addLedger, addLedgerSolana, addWatch, changeAccount, renameWallet, removeWallet, reveal, changePassword, reset, inUse, signer };
+  /** Every change to the vault, the wallets or the account list runs here, one at a time,
+   *  each reading what it changes in its own turn. A password change makes a new vault key:
+   *  had it landed between another change's read of the wallets and its write, that write
+   *  would put back secrets sealed under a key the vault no longer holds. */
+  let turn: Promise<unknown> = Promise.resolve();
+  function serial<A extends unknown[], T>(f: (...a: A) => Promise<T>): (...a: A) => Promise<T> {
+    return (...a) => {
+      const run = turn.then(() => f(...a));
+      turn = run.catch(() => {});
+      return run;
+    };
+  }
+
+  return {
+    stored,
+    status,
+    chain,
+    unlockKey,
+    create: serial(create),
+    unlock: serial(unlock),
+    addWallet: serial(addWallet),
+    addAccount: serial(addAccount),
+    addLedger: serial(addLedger),
+    addLedgerSolana: serial(addLedgerSolana),
+    addWatch: serial(addWatch),
+    changeAccount: serial(changeAccount),
+    renameWallet: serial(renameWallet),
+    removeWallet: serial(removeWallet),
+    reveal,
+    changePassword: serial(changePassword),
+    reset: serial(reset),
+    inUse,
+    signer,
+  };
 }
