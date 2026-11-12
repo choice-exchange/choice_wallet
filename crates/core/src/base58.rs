@@ -47,8 +47,15 @@ pub fn decode(s: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// Decode exactly 32 bytes: a Solana account or public key.
+/// The longest base58 form of 32 bytes.
+const MAX_32: usize = 44;
+
+/// Decode exactly 32 bytes: a Solana account or public key. A longer string is refused before
+/// decoding: [`decode`] costs the square of its input's length.
 pub fn decode32(s: &str) -> Option<[u8; 32]> {
+    if s.len() > MAX_32 {
+        return None;
+    }
     decode(s)?.try_into().ok()
 }
 

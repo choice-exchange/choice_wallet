@@ -8,9 +8,20 @@ use serde_json::json;
 use crate::text::short;
 use crate::{Contact, Context, Finding, Level, finding};
 
+/// Longer than any form of an address (bech32's limit is 90 characters): such a string is
+/// no address, matches only itself and looks like nothing, and never reaches a decoder.
+const MAX_ADDRESS: usize = 128;
+
+fn too_long(addr: &str) -> bool {
+    addr.trim().len() > MAX_ADDRESS
+}
+
 /// The forms an address is shown in. An Injective account has two (`inj1…` and `0x…`) and
 /// a poisoner can target either.
 fn forms(addr: &str) -> Vec<String> {
+    if too_long(addr) {
+        return vec![addr.trim().to_owned()];
+    }
     match parse_injective(addr) {
         Ok(a) => vec![a.to_inj(), a.to_checksum_hex().to_lowercase()],
         // Base58 is case-sensitive: two Solana addresses that differ only in case differ.
@@ -30,6 +41,9 @@ fn canonical(addr: &str) -> String {
 }
 
 pub(crate) fn same(a: &str, b: &str) -> bool {
+    if too_long(a) || too_long(b) {
+        return a.trim() == b.trim();
+    }
     canonical(a) == canonical(b)
 }
 
@@ -65,6 +79,9 @@ pub(crate) fn own_name(ctx: &Context, addr: &str) -> Option<String> {
 }
 
 fn lookalike<'a>(ctx: &'a Context, addr: &str) -> Option<&'a Contact> {
+    if too_long(addr) {
+        return None;
+    }
     let mine = forms(addr);
     ctx.address_book.iter().find(|c| {
         let theirs = forms(&c.address);
@@ -201,6 +218,31 @@ mod tests {
             &mut out,
         );
         assert!(out.is_empty());
+    }
+
+    /// F5: a site's address field is any string up to the request cap. Grading one far
+    /// longer than any address against a full address book must stay cheap (base58 decoding
+    /// costs the square of the length).
+    #[test]
+    fn a_huge_site_address_is_graded_quickly() {
+        let mut book: Vec<String> = (0..100u8).map(|i| EthAddress::from_bytes([i; 20]).to_inj()).collect();
+        book.extend((0..100u8).map(|i| choice_wallet_core::base58::encode(&[i | 1; 32])));
+        let c = ctx(&book.iter().map(String::as_str).collect::<Vec<_>>());
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let to = "2".repeat(999_000);
+            let mut out = vec![];
+            recipient(&c, &to, Some(""), &mut out);
+            tx.send(out.len()).unwrap();
+        });
+        assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(2)), Ok(0));
+        // A Solana address in the book is still matched, and its lookalike flagged.
+        let real = choice_wallet_core::base58::encode(&[7; 32]);
+        let mut fake = real.clone().into_bytes();
+        fake[10] = if fake[10] == b'2' { b'3' } else { b'2' };
+        let fake = String::from_utf8(fake).unwrap();
+        assert_eq!(rules(&ctx(&[&real]), &real, None)[0].0, "address_book");
+        assert_eq!(rules(&ctx(&[&real]), &fake, None)[0].0, "lookalike_address");
     }
 
     fn rules(ctx: &Context, to: &str, memo: Option<&str>) -> Vec<(&'static str, Level, String)> {
