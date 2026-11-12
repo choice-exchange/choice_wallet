@@ -23,6 +23,70 @@ fn injective_typed_data_matches_viem() {
     }
 }
 
+/// F1: Injective's domain on Ethereum's chain ID (which Injective accepts) is the same Cosmos
+/// tx, so it is decoded and graded on the Ethereum entry too, and refused off Injective's
+/// networks.
+#[test]
+fn injective_typed_data_is_decoded_on_every_chain_of_its_network() {
+    let cases = vectors("eip712_v2");
+    let case = |name: &str, chain_id: &str| {
+        let c = cases["cases"].as_array().unwrap().iter().find(|c| c["name"] == name).unwrap();
+        let mut td: Value = serde_json::from_str(c["typed_data"].as_str().unwrap()).unwrap();
+        td["domain"]["chainId"] = chain_id.into();
+        td.to_string()
+    };
+    let request = |chain: &str, td: String| {
+        json!({ "evm_typed_data": {
+            "chain": chain,
+            "signer": "0x9858EfFD232B4033E47d90003D41EC34EcaEda94",
+            "typed_data": td,
+        }})
+    };
+    let grants = case("mainnet_grants_and_admin_changes", "0x1");
+    let d = ok("decode", json!({ "request": request("eip155:1", grants.clone()) }));
+    assert!(d["display"]["injective_tx"]["messages"].is_array(), "{d}");
+    assert_eq!(
+        (d["risk"]["level"].as_str(), d["risk"]["confirm"].as_str()),
+        (Some("red"), Some("GRANT")),
+        "{}",
+        d["risk"]
+    );
+    let testnet = case("testnet_bank_to_cw20", "0xaa36a7");
+    let d = ok("decode", json!({ "request": request("eip155:11155111", testnet) }));
+    assert!(d["display"]["injective_tx"]["messages"].is_array(), "{d}");
+
+    // On a chain the user added, Injective's domain is refused whatever its chain ID.
+    assert_eq!(code("decode", json!({ "request": request("eip155:56", grants) })), "invalid");
+    let on_56 = case("mainnet_grants_and_admin_changes", "0x38");
+    assert_eq!(code("decode", json!({ "request": request("eip155:56", on_56) })), "invalid");
+
+    // Legacy (v1) Injective typed data is refused on Ethereum, as on Injective EVM.
+    let legacy = json!({
+        "types": {
+            "EIP712Domain": [
+                { "name": "name", "type": "string" }, { "name": "version", "type": "string" },
+                { "name": "chainId", "type": "uint256" }, { "name": "verifyingContract", "type": "string" },
+                { "name": "salt", "type": "string" },
+            ],
+            "Tx": [
+                { "name": "account_number", "type": "string" }, { "name": "chain_id", "type": "string" },
+                { "name": "memo", "type": "string" }, { "name": "sequence", "type": "string" },
+            ],
+        },
+        "primaryType": "Tx",
+        "domain": { "name": "Injective Web3", "version": "1.0.0", "chainId": 1,
+                    "verifyingContract": "cosmos", "salt": "0" },
+        "message": { "account_number": "1", "chain_id": "injective-1", "memo": "", "sequence": "0" },
+    });
+    for chain in ["eip155:1", "eip155:1776"] {
+        assert_eq!(
+            code("decode", json!({ "request": request(chain, legacy.to_string()) })),
+            "invalid",
+            "{chain}"
+        );
+    }
+}
+
 #[test]
 fn generic_typed_data_must_be_for_the_connected_chain() {
     let td = json!({

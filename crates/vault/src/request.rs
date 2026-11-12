@@ -291,10 +291,19 @@ pub(crate) fn decode(req: SignRequest) -> Result<Checked, VaultError> {
             let chain_id = entry.evm()?;
             let signer = evm_address(&signer)?;
             let td = TypedData::parse(&json_text(typed_data)?)?;
-            let injective = match entry.injective {
+            // Injective's domain is a Cosmos tx whichever chain the site is on: the chain
+            // accepts Ethereum's chain ID in it too. Decode it for the network the entry
+            // belongs to, and refuse it on a chain of no Injective network.
+            let injective = match entry.injective.or(entry.bridge.map(|(n, _)| n)) {
                 Some(network) => decode_v2(&td, network, &signer)?,
                 None => None,
             };
+            if injective.is_none() && td.domain().get("name").and_then(Value::as_str) == Some("Injective Web3") {
+                return Err(VaultError::new(
+                    INVALID,
+                    "Injective typed data is signed only on an Injective network's chains",
+                ));
+            }
             // Outside Injective's own domain (which accepts Ethereum's chain ID too), the
             // domain's chain must be the connected one.
             if injective.is_none()
