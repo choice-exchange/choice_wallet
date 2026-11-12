@@ -330,6 +330,24 @@ test("sites and the approval window's poll never restart the auto-lock timer", a
   await asked;
 });
 
+// F16: a page with no grant could flood revokes, each rewriting every site's grants and
+// broadcasting, and so undo the user's disconnect. A revoke of no grant does nothing.
+test("a revoke from a site with no grant writes and tells nothing", async () => {
+  const { page, service, local, ui } = await connected();
+  const before = JSON.stringify(local.data.get("connections"));
+  const notified = ui.notified;
+  for (let i = 0; i < 5; i++) {
+    await page(OTHER)("wallet_revokePermissions", [{ eth_accounts: {} }]);
+    await page(OTHER)("solana_disconnect");
+  }
+  assert.equal(ui.notified, notified);
+  assert.equal(JSON.stringify(local.data.get("connections")), before);
+  // The connected site's own revoke, and the user's disconnect racing it, both hold.
+  await Promise.all([page(SITE)("wallet_revokePermissions", [{ eth_accounts: {} }]), service.handle({ type: "disconnect", origin: SITE }), page(OTHER)("wallet_revokePermissions", [{ eth_accounts: {} }])]);
+  assert.deepEqual(local.data.get("connections"), {});
+  assert.equal(ui.notified, notified + 1);
+});
+
 test("only a tab's top frame, at https (or http on this machine), is a site", () => {
   const ext = "abcdefghijklmnopabcdefghijklmnop";
   const s = (o: Record<string, unknown>) => ({ id: ext, tab: {}, frameId: 0, origin: "https://app.example", url: "https://app.example/swap", ...o });

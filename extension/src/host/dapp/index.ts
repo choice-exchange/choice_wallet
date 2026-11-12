@@ -38,6 +38,21 @@ export function createDapps(h: DappHost) {
     return connections ?? {};
   }
 
+  /** Every change to the grants runs here, one at a time, on the map as it is in its turn,
+   *  so no writer overwrites another's change (a user's disconnect, a site's revoke, a
+   *  connect). `change` edits the map and says whether it changed it; only then is it saved. */
+  let grantTurn: Promise<unknown> = Promise.resolve();
+  function changeGrants(change: (all: Grants) => boolean): Promise<boolean> {
+    const turn = grantTurn.then(async () => {
+      const all = await grants();
+      if (!change(all)) return false;
+      await h.local.set({ connections: all });
+      return true;
+    });
+    grantTurn = turn.catch(() => {});
+    return turn;
+  }
+
   async function isConnected(origin: string): Promise<boolean> {
     return (await grants())[origin] !== undefined;
   }
@@ -72,8 +87,10 @@ export function createDapps(h: DappHost) {
     return ask(
       {
         approve: async () => {
-          const all = await grants();
-          await h.local.set({ connections: { ...all, [origin]: all[origin] ?? { since: Date.now() } } });
+          await changeGrants((all) => {
+            if (!Object.hasOwn(all, origin)) all[origin] = { since: Date.now() };
+            return true;
+          });
           h.notify();
           return then();
         },
@@ -236,9 +253,12 @@ export function createDapps(h: DappHost) {
   async function complete(w: Waiting, signed: Record<string, unknown>): Promise<Result<{ done: true; hash?: string }>> {
     try {
       const result = await w.finish!(signed);
-      const all = await grants();
-      const g = all[w.req.origin];
-      if (g) await h.local.set({ connections: { ...all, [w.req.origin]: { ...g, approvals: (g.approvals ?? 0) + 1 } } });
+      const origin = w.req.origin;
+      await changeGrants((all) => {
+        const g = Object.hasOwn(all, origin) ? all[origin] : undefined;
+        if (g) all[origin] = { ...g, approvals: (g.approvals ?? 0) + 1 };
+        return g !== undefined;
+      });
       w.resolve({ result });
       return { ok: true, result: { done: true, ...(typeof result === "string" && result.startsWith("0x") && result.length === 66 ? { hash: result } : {}) } };
     } catch (e) {
@@ -255,10 +275,13 @@ export function createDapps(h: DappHost) {
 
   async function disconnect(origin: unknown): Promise<Result<Connection[]>> {
     if (typeof origin !== "string") return fail("bad_request", "Which site?");
-    const all = await grants();
-    delete all[origin];
-    await h.local.set({ connections: all });
-    h.notify();
+    // A site without a grant changes nothing, and nobody is told.
+    const changed = await changeGrants((all) => {
+      if (!Object.hasOwn(all, origin)) return false;
+      delete all[origin];
+      return true;
+    });
+    if (changed) h.notify();
     return connections();
   }
 
