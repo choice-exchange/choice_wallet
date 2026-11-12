@@ -6,8 +6,8 @@
 // - While unlocked, the unlock key (the vault key: it opens every wallet's sealed secret,
 //   without the password) lives in session storage, which Chrome keeps in memory and
 //   clears on browser restart or extension update. Locking deletes it and any send waiting
-//   for approval, and rejects every site request still waiting. A password change keeps
-//   the same vault key.
+//   for approval, and rejects every site request still waiting. A password change makes a
+//   new vault key and replaces it.
 // - The vault is stateless: every call that needs a key gets the keystore and unlock key
 //   from here. UI pages never see either.
 

@@ -44,10 +44,14 @@ test("a new password: the old one stops working, the wallet stays unlocked and c
   assert.equal(local.data.get("vault"), before.vault);
 
   assert.equal(ok<Status>(await service.handle({ type: "change_password", password: PASSWORD, new_password: NEW_PASSWORD })).unlocked, true);
-  // The vault is re-wrapped; the wallets' secrets and the session's key stay as they were.
+  // F12: a new vault key. The vault, every sealed secret and the session's key are new, so an
+  // old vault copy with the old password, or the old key, opens nothing sealed from now on.
   assert.notEqual(local.data.get("vault"), before.vault);
-  assert.deepEqual(local.data.get("wallets"), before.wallets);
-  assert.equal(session.data.get("unlock_key"), before.key);
+  assert.notDeepEqual(local.data.get("wallets"), before.wallets);
+  assert.notEqual(session.data.get("unlock_key"), before.key);
+  const [w] = local.data.get("wallets") as { id: string; secret: string }[];
+  assert.equal(callVault(handle, "reveal", { vault: before.vault, password: PASSWORD, secret: w!.secret, wallet: w!.id }).ok, false);
+  assert.equal(callVault(handle, "accounts", { secret: w!.secret, wallet: w!.id, unlock_key: before.key, accounts: [{ derivation: "default", index: 0 }] }).ok, false);
   // Still unlocked, with the new key: a send goes through.
   const review = ok<{ digest: string }>(await service.handle({ type: "prepare_send", denom: "inj", to: THEM, amount: INJ.toString() }));
   ok(await service.handle({ type: "confirm_send", digest: review.digest }));

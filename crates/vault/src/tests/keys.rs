@@ -102,27 +102,55 @@ fn reveal_needs_the_password_and_shows_the_phrase_or_a_key() {
 }
 
 #[test]
-fn change_password_rewraps_the_vault_and_keeps_its_key() {
+fn change_password_rotates_the_vault_key_and_reseals_every_secret() {
     let (vault, sealed, uk) = vault_with(json!({ "private_key": "46".repeat(32) }));
-    let next = ok(
+    let r = ok(
         "change_password",
-        json!({ "vault": vault, "password": PASSWORD, "new_password": "a whole new password" }),
-    )["vault"]
-        .clone();
+        json!({ "vault": vault, "password": PASSWORD, "new_password": "a whole new password", "secrets": { "w1": sealed } }),
+    );
+    let next = r["vault"].clone();
     assert_ne!(next, vault);
     assert_eq!(
         code("unlock", json!({ "vault": next, "password": PASSWORD })),
         "wrong_password"
     );
-    assert_eq!(
-        ok("unlock", json!({ "vault": next, "password": "a whole new password" }))["unlock_key"],
-        uk
-    );
+    let new_key = ok("unlock", json!({ "vault": next, "password": "a whole new password" }))["unlock_key"].clone();
+    assert_eq!(new_key, r["unlock_key"]);
+    assert_ne!(new_key, uk);
+    let resealed = r["secrets"]["w1"].clone();
     let shown = ok(
         "reveal",
-        json!({ "vault": next, "password": "a whole new password", "secret": sealed, "wallet": "w1" }),
+        json!({ "vault": next, "password": "a whole new password", "secret": resealed, "wallet": "w1" }),
     );
     assert_eq!(shown["private_key"], "46".repeat(32));
+    // F12: the old vault with the old password, and the old unlock key, open nothing sealed
+    // from now on: neither the re-sealed secret nor a wallet added after the change.
+    assert!(
+        call(
+            "reveal",
+            json!({ "vault": vault, "password": PASSWORD, "secret": resealed, "wallet": "w1" })
+        )
+        .is_err()
+    );
+    let later = ok(
+        "seal_secret",
+        json!({ "unlock_key": new_key, "wallet": "w2", "secret": { "private_key": "47".repeat(32) } }),
+    )["secret"]
+        .clone();
+    assert!(
+        call(
+            "reveal",
+            json!({ "vault": vault, "password": PASSWORD, "secret": later, "wallet": "w2" })
+        )
+        .is_err()
+    );
+    assert!(
+        call(
+            "accounts",
+            json!({ "secret": later, "wallet": "w2", "unlock_key": uk, "accounts": [account(0)] })
+        )
+        .is_err()
+    );
     assert_eq!(
         code(
             "change_password",

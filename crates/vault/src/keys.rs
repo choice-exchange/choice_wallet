@@ -168,12 +168,25 @@ pub(crate) fn reveal(
 
 /// The vault under a new password. The vault key, and so every sealed secret and the host's
 /// unlock key, stay as they are.
-pub(crate) fn change_password(vault_hex: &str, password: &str, new_password: &str) -> Result<Vec<u8>, VaultError> {
+/// A new password and a new vault key, with `secrets` (wallet ID → sealed secret, hex)
+/// sealed again under it.
+pub(crate) fn change_password(
+    vault_hex: &str,
+    password: &str,
+    new_password: &str,
+    secrets: &std::collections::BTreeMap<String, String>,
+) -> Result<envelope::Rotated, VaultError> {
+    let blobs = secrets
+        .iter()
+        .map(|(wallet, blob)| Ok((wallet.as_str(), hex(blob, "secret")?)))
+        .collect::<Result<Vec<_>, VaultError>>()?;
+    let pairs: Vec<(&str, &[u8])> = blobs.iter().map(|(w, b)| (*w, b.as_slice())).collect();
     Ok(envelope::change_password(
         &hex(vault_hex, "vault")?,
         password.as_bytes(),
         new_password.as_bytes(),
         KdfParams::DEFAULT,
+        &pairs,
     )?)
 }
 

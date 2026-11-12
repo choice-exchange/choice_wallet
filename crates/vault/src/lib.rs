@@ -26,7 +26,7 @@
 //! | `accounts` | `secret`, `wallet`, `unlock_key`, `accounts` | each account's public key and addresses |
 //! | `addresses` | `address` (an account's `inj1…` or `0x…`) | the same account's address on every chain, e.g. to watch it |
 //! | `reveal` | `vault`, `password`, `secret`, `wallet`, `account` (optional) | `phrase`, or `private_key` (the wallet's own, or the account's) |
-//! | `change_password` | `vault`, `password`, `new_password` | the new `vault` (same unlock key) |
+//! | `change_password` | `vault`, `password`, `new_password`, `secrets` (wallet ID → sealed secret) | a new `vault` and `unlock_key` (a new vault key), and every secret sealed again under it |
 //! | `build_cosmos` | chain, signer, messages, fee, … | a sign request, and `simulate_tx` for a gas estimate |
 //! | `build_evm` | chain, from, to, amount, token, fees | a sign request |
 //! | `decode` | `request`, `context` (optional) | `display`, `risk`, `digest` |
@@ -115,6 +115,9 @@ struct ChangePassword {
     vault: String,
     password: Zeroizing<String>,
     new_password: Zeroizing<String>,
+    /// Every wallet's sealed secret, by wallet ID: sealed again under the new vault key.
+    #[serde(default)]
+    secrets: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Deserialize)]
@@ -333,8 +336,17 @@ fn call(request: &str) -> Result<Value, VaultError> {
                 vault,
                 password,
                 new_password,
+                secrets,
             } = params(p)?;
-            Ok(json!({ "vault": hexutil::encode(&keys::change_password(&vault, &password, &new_password)?) }))
+            let r = keys::change_password(&vault, &password, &new_password, &secrets)?;
+            let sealed: serde_json::Map<String, Value> = secrets
+                .keys()
+                .zip(&r.secrets)
+                .map(|(wallet, s)| (wallet.clone(), Value::String(hexutil::encode(s))))
+                .collect();
+            Ok(
+                json!({ "vault": hexutil::encode(&r.vault), "unlock_key": hexutil::encode(r.key.as_bytes()), "secrets": sealed }),
+            )
         }
         "build_cosmos" => build::cosmos(params(p)?),
         "build_evm" => Ok(json!({ "request": build::evm(params(p)?)? })),

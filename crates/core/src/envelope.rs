@@ -19,9 +19,9 @@
 //!   The associated data is the header and the wallet's ID, so a sealed secret opens only
 //!   as the wallet it was sealed for: blobs can't be swapped between wallets undetected.
 //!
-//! Unlocking runs Argon2 once, however many wallets there are. A new password re-wraps the
-//! vault key and leaves every secret as it is. Adding or removing a wallet touches only its
-//! own blob.
+//! Unlocking runs Argon2 once, however many wallets there are. A new password makes a new
+//! vault key and seals every secret again under it, so what was taken before opens nothing
+//! afterwards. Adding or removing a wallet touches only its own blob.
 
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
@@ -70,18 +70,40 @@ pub fn unlock(vault: &[u8], password: &[u8]) -> Result<UnlockKey, Error> {
     }
 }
 
-/// The same vault key, wrapped under a new password (fresh salt and nonce).
+/// A vault after a password change: a new vault key under the new password, and every
+/// secret sealed again under it.
+pub struct Rotated {
+    /// The new vault.
+    pub vault: Vec<u8>,
+    /// Its vault key (the new unlock key).
+    pub key: UnlockKey,
+    /// The secrets, sealed under the new key, in the order given.
+    pub secrets: Vec<Vec<u8>>,
+}
+
+/// A new password and a new vault key: each `(wallet, sealed secret)` is opened with the old
+/// key and sealed again under a fresh random one, wrapped under `new_password`. A copy of the
+/// old vault with the old password, or an unlock key taken before, opens nothing sealed after
+/// this. Nothing is returned unless every secret opened.
 pub fn change_password(
     vault: &[u8],
     password: &[u8],
     new_password: &[u8],
     params: KdfParams,
-) -> Result<Vec<u8>, Error> {
-    let key = unlock(vault, password)?;
-    let mut plaintext = Zeroizing::new([0u8; 33]);
-    plaintext[0] = KIND_VAULT_KEY;
-    plaintext[1..].copy_from_slice(key.as_bytes());
-    Ok(keystore::seal_bytes(&plaintext[..], new_password, params)?.0)
+    secrets: &[(&str, &[u8])],
+) -> Result<Rotated, Error> {
+    let old = unlock(vault, password)?;
+    let opened = secrets
+        .iter()
+        .map(|(wallet, blob)| open_secret(&old, wallet, blob))
+        .collect::<Result<Vec<_>, _>>()?;
+    let (vault, key) = create(new_password, params)?;
+    let secrets = secrets
+        .iter()
+        .zip(&opened)
+        .map(|((wallet, _), secret)| seal_secret(&key, wallet, secret))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Rotated { vault, key, secrets })
 }
 
 /// Seal `secret` for wallet `wallet` under the vault key.
@@ -221,20 +243,36 @@ mod tests {
         assert_eq!(unlock(&old, PASSWORD).unwrap_err(), Error::Keystore("not a vault"));
     }
 
+    /// F12: a new password makes a new vault key and seals every secret again, so the old
+    /// vault (with the old password) and the old key open nothing from then on.
     #[test]
-    fn a_new_password_keeps_the_vault_key() {
+    fn a_new_password_rotates_the_vault_key() {
         let (vault, key) = create(PASSWORD, FAST).unwrap();
         let sealed = seal_secret(&key, "w1", &phrase()).unwrap();
-        let next = change_password(&vault, PASSWORD, b"a whole new password", FAST).unwrap();
-        assert_eq!(unlock(&next, PASSWORD).unwrap_err(), Error::Decrypt);
-        let k = unlock(&next, b"a whole new password").unwrap();
-        assert_eq!(k.as_bytes(), key.as_bytes());
-        assert!(open_secret(&k, "w1", &sealed).is_ok());
+        let r = change_password(&vault, PASSWORD, b"a whole new password", FAST, &[("w1", &sealed)]).unwrap();
+        assert_eq!(unlock(&r.vault, PASSWORD).unwrap_err(), Error::Decrypt);
+        let k = unlock(&r.vault, b"a whole new password").unwrap();
+        assert_eq!(k.as_bytes(), r.key.as_bytes());
+        assert_ne!(k.as_bytes(), key.as_bytes());
+        assert!(open_secret(&k, "w1", &r.secrets[0]).is_ok());
+        // The old key opens neither the re-sealed secret nor one sealed afterwards.
+        assert_eq!(open_secret(&key, "w1", &r.secrets[0]).unwrap_err(), Error::Decrypt);
+        let later = seal_secret(&k, "w2", &phrase()).unwrap();
+        assert_eq!(open_secret(&key, "w2", &later).unwrap_err(), Error::Decrypt);
         assert_eq!(
-            change_password(&vault, b"wrong password", b"a whole new password", FAST).unwrap_err(),
+            change_password(&vault, b"wrong password", b"a whole new password", FAST, &[])
+                .err()
+                .unwrap(),
             Error::Decrypt
         );
-        assert!(change_password(&vault, PASSWORD, b"short", FAST).is_err());
+        assert!(change_password(&vault, PASSWORD, b"short", FAST, &[]).is_err());
+        // A secret that doesn't open with the vault's key stops the change.
+        assert_eq!(
+            change_password(&vault, PASSWORD, b"a whole new password", FAST, &[("w2", &sealed)])
+                .err()
+                .unwrap(),
+            Error::Decrypt
+        );
     }
 
     #[test]

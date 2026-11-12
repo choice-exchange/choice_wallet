@@ -508,9 +508,15 @@ export function createWallets(h: WalletsHost) {
     if (typeof password !== "string" || typeof next !== "string") return err("bad_request", "Enter both passwords.");
     if ([...next].length < minimum) return err("weak_password", `Use at least ${minimum} characters.`);
     if (next === password) return err("same_password", "That's the password it has now.");
-    const r = await h.vault<{ vault: string }>("change_password", { vault: s.vault, password, new_password: next });
+    // A new vault key too: every secret is sealed again under it, so an old copy of the vault
+    // (with the old password) or an unlock key taken before opens nothing from now on.
+    const secrets = Object.fromEntries(s.wallets.filter((w) => w.secret).map((w) => [w.id, w.secret]));
+    const r = await h.vault<{ vault: string; unlock_key: string; secrets: Record<string, string> }>("change_password", { vault: s.vault, password, new_password: next, secrets });
     if (!r.ok) return r.error.code === "wrong_password" ? err("wrong_password", "Wrong password.") : r;
-    await h.local.set({ vault: r.result.vault });
+    const wallets = s.wallets.map((w) => (w.secret ? { ...w, secret: r.result.secrets[w.id] ?? "" } : w));
+    if (wallets.some((w, i) => s.wallets[i]!.secret && !w.secret)) return err("internal", "A wallet's secret didn't come back. Nothing changed.");
+    await h.local.set({ vault: r.result.vault, wallets });
+    await h.session.set({ unlock_key: r.result.unlock_key });
     return { ok: true, result: await status() };
   }
 
