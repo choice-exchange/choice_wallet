@@ -217,19 +217,45 @@ fn sign_in(text: &str, suffix: &str, is_signer: impl Fn(&str) -> bool, ctx: &Con
     }
 }
 
+/// Grade a message the window shows as text when it is UTF-8: the sign-in rules apply to all
+/// of it, and control characters (which the window can't show) get their own note rather
+/// than hiding a sign-in from those rules. Bytes that aren't UTF-8, or a 32-byte message that
+/// isn't plain text, are graded as binary.
+fn text_message(
+    message: &[u8],
+    suffix: &str,
+    is_signer: impl Fn(&str) -> bool,
+    ctx: &Context,
+    out: &mut Vec<crate::Finding>,
+) {
+    let Ok(text) = std::str::from_utf8(message) else {
+        return binary(message, out);
+    };
+    if as_text(message).is_none() {
+        if message.len() == 32 {
+            binary(message, out);
+        } else {
+            out.push(finding(
+                "message_control_characters",
+                Level::Amber,
+                "The message has hidden control characters.".into(),
+                json!({ "bytes": message.len() }),
+            ));
+        }
+    }
+    sign_in(text, suffix, is_signer, ctx, out);
+}
+
 /// Grade a `personal_sign` message.
 pub fn personal_message(message: &[u8], signer: &EthAddress, ctx: &Context) -> Assessment {
     let mut out = site(ctx);
-    match as_text(message) {
-        None => binary(message, &mut out),
-        Some(t) => sign_in(
-            t,
-            SIWE_SUFFIX,
-            |a| EthAddress::parse_hex(a).ok() == Some(*signer),
-            ctx,
-            &mut out,
-        ),
-    }
+    text_message(
+        message,
+        SIWE_SUFFIX,
+        |a| EthAddress::parse_hex(a).ok() == Some(*signer),
+        ctx,
+        &mut out,
+    );
     Assessment::from(out)
 }
 
@@ -237,10 +263,7 @@ pub fn personal_message(message: &[u8], signer: &EthAddress, ctx: &Context) -> A
 /// that are a Solana transaction this key signs before they get here.
 pub fn solana_message(message: &[u8], signer: &str, ctx: &Context) -> Assessment {
     let mut out = site(ctx);
-    match as_text(message) {
-        None => binary(message, &mut out),
-        Some(t) => sign_in(t, SIWS_SUFFIX, |a| a == signer, ctx, &mut out),
-    }
+    text_message(message, SIWS_SUFFIX, |a| a == signer, ctx, &mut out);
     Assessment::from(out)
 }
 
@@ -300,6 +323,51 @@ mod tests {
         // Text that merely mentions a transaction is fine; JSON without tx keys too.
         assert_eq!(rule(br#"{"nonce":"42","domain":"example.org"}"#), None);
         assert_eq!(rule(&[0x02, 0xc3, 0x01]), Some("binary_message"));
+    }
+
+    /// F7: a control character in a sign-in message adds a note; it never takes the sign-in
+    /// rules away.
+    #[test]
+    fn control_characters_never_skip_the_sign_in_rules() {
+        let siwe = |statement: &str, tail: &str| {
+            format!(
+                "victim.example{SIWE_SUFFIX}\n{ME}\n\n{statement}\n\nURI: https://victim.example/login\nVersion: 1\n\
+                 Chain ID: 1\nNonce: abcdef123456\nIssued At: 2026-11-01T00:00:00.000Z{tail}"
+            )
+        };
+        let rules = |m: &str| {
+            let ctx = Context {
+                origin: Some("https://evil.example".into()),
+                origin_known: true,
+                ..Default::default()
+            };
+            let a = personal_message(m.as_bytes(), &me(), &ctx);
+            (a.level, a.findings.iter().map(|f| f.rule).collect::<Vec<_>>())
+        };
+        let plain = rules(&siwe("Sign in to Victim.", ""));
+        assert_eq!(plain, (Level::Red, vec!["sign_in_wrong_site"]));
+        for m in [siwe("Sign in to\u{b}Victim.", ""), siwe("Sign in to Victim.", "\n\u{85}")] {
+            let (level, found) = rules(&m);
+            assert_eq!(level, Level::Red, "{m:?}");
+            assert!(found.contains(&"sign_in_wrong_site"), "{found:?}");
+            assert!(found.contains(&"message_control_characters"), "{found:?}");
+            assert!(!found.contains(&"binary_message"), "{found:?}");
+        }
+        // Solana's sign-in gets the same treatment.
+        let siws = format!(
+            "victim.example{SIWS_SUFFIX}\nHAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk\n\nSign in\u{b}.\n\nURI: https://victim.example"
+        );
+        let ctx = Context {
+            origin: Some("https://evil.example".into()),
+            origin_known: true,
+            ..Default::default()
+        };
+        let a = solana_message(siws.as_bytes(), "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk", &ctx);
+        assert_eq!(a.level, Level::Red);
+        assert!(a.findings.iter().any(|f| f.rule == "sign_in_wrong_site"));
+        // Not UTF-8, or a 32-byte message that isn't plain text: still binary.
+        assert_eq!(rule(&[0xff, 0xfe, 0], None), Some("binary_message"));
+        assert_eq!(rule(&[0x0b; 32], None), Some("hash_signature"));
     }
 
     #[test]
