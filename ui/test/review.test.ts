@@ -153,3 +153,47 @@ test("revokes: grants, fee allowances, the rewards address and allowances taken 
   );
   assert.deepEqual(evm.revokes, [{ kind: "allowance", token: "evm:0xb0d94f200998997cf8175ae7ddf039927a8b3ef4", spender: `0x${spender}` }]);
 });
+
+// F9: the review named the picked token whatever contract the swap's calldata held, so an
+// LCD that lied about a token's ERC20 pair changed what was bought without the review saying.
+test("a swap names the picked token only when the decoded contract is the one it is bound to", () => {
+  const USDT = "peggy0xdAC17F958D2ee523a2206206994597C13D831ec7";
+  const swap = (tokenOut: string) =>
+    shown(
+      {
+        kind: "evm_transaction",
+        chain: "eip155:1776",
+        from: "0x9858EfFD232B4033E47d90003D41EC34EcaEda94",
+        to: "0xa705d0D5f549Af25024038dc575E3074B9Bd37c9",
+        value: "1000000000000000000",
+        nonce: "0",
+        gas_limit: "300000",
+        max_fee_per_gas: "160000000",
+        max_priority_fee_per_gas: "0",
+        max_gas_cost: "48000000000000",
+        data: "0x",
+        call: {
+          type: "swap",
+          executor: "aggregator",
+          token_in: "0x0000000000000000000000000000000000000000",
+          token_out: tokenOut,
+          amount_in: "1000000000000000000",
+          minimum_out: "8145811",
+          recipient: "0x9858EfFD232B4033E47d90003D41EC34EcaEda94",
+          deadline: null,
+          fee_bps: 0,
+          fee_recipient: null,
+          venues: [],
+          permit: null,
+        },
+      },
+      "mainnet",
+      { from: "inj", to: USDT },
+    ).swaps[0]!;
+  // USDT's pinned pair: shown as USDT, the native input as INJ, and no extra send.
+  const real = swap("0x88f7F2b685F9692caf8c478f5BADF09eE9B1Cc13");
+  assert.equal(real.minimum.denom, USDT);
+  assert.equal(real.from.denom, "inj");
+  // Any other contract is shown as itself.
+  assert.equal(swap("0x5555555555555555555555555555555555555555").minimum.denom, "evm:0x5555555555555555555555555555555555555555");
+});

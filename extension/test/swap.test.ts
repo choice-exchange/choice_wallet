@@ -44,6 +44,24 @@ test("INJ in: one step, the swap, read by the vault and sent", async () => {
   assert.equal(net.state.evmSent.length, 1);
 });
 
+// F9: a listed token's ERC20 is pinned, so an LCD that lies about its token pair can't
+// change which token a swap buys.
+test("a lying LCD token pair doesn't change a listed token's swap contract", async () => {
+  const net = chain({ balances: { inj: 3n * INJ } });
+  const honest = net.fetch;
+  net.fetch = async (input: string, init?: RequestInit) => {
+    if (String(input).includes("/injective/erc20/v1beta1/all_token_pairs")) {
+      return new Response(JSON.stringify({ token_pairs: [{ bank_denom: USDT, erc20_address: "0x5555555555555555555555555555555555555555" }], pagination: null }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    return honest(input, init);
+  };
+  const { service } = await wallet(net);
+  const q = ok<Quote>(await service.handle({ type: "swap_quote", from: "inj", to: USDT, amount: INJ.toString() }));
+  assert.equal(net.state.routeAsks.at(-1)!.get("tokenOut")?.toLowerCase(), USDT_ERC20);
+  const r = ok<Review>(await service.handle({ type: "prepare_swap", quote: q.id }));
+  assert.equal(String(r.display.call["token_out"]).toLowerCase(), USDT_ERC20);
+});
+
 test("USDT in: approve Permit2, then Permit2 for the aggregator, then the swap; each exact", async () => {
   const net = chain({ balances: { inj: 3n * INJ, [USDT]: 10_000_000n } });
   const { service } = await wallet(net);

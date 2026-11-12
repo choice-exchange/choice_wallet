@@ -35,7 +35,33 @@ const KNOWN: Readonly<Record<NetworkId, Readonly<Record<string, Entry>>>> = {
   },
 };
 
-/** A token on the wallet's list, or null. */
+// The ERC20 each listed bank denom is on Injective EVM (x/erc20's token pair), checked
+// 2026-11-12 against two LCDs (Injective's sentry and publicnode), which agreed. null: it has
+// none. A swap of a listed token uses this, never an LCD's answer, so a lying LCD can't
+// change which token a swap buys or sells.
+const KNOWN_PAIRS: Readonly<Record<NetworkId, Readonly<Record<string, string | null>>>> = {
+  mainnet: {
+    "ibc/2CBC2EA121AE42563B08028466F37B600F2D7D4282342DE938283CC3FB2BC00E": "0x2a25fbD67b3aE485e461fe55d9DbeF302B7D3989",
+    peggy0xdAC17F958D2ee523a2206206994597C13D831ec7: "0x88f7F2b685F9692caf8c478f5BADF09eE9B1Cc13",
+    peggy0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48: null,
+    peggy0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2: "0xa407A455613dB1f88e8E8eD330F31a4cA531C1eD",
+    "ibc/C4CFF46FD6DE35CA4CF4CE031E643C8FDC9BA4B99AE598E9B0ED98FE3A2319F9": "0x67F24D38c67E047ad0e7824AFdAeE1CA53Ade7E8",
+  },
+  testnet: {},
+};
+
+/** The ERC20 contract a denom is on Injective EVM, when the wallet can say without asking an
+ *  LCD: the zero address for the fee coin, an `evm:` or `erc20:` key's own contract, or a
+ *  listed bank denom's pinned pair (null when it has none). Undefined for any other denom,
+ *  whose pair only an LCD can tell. */
+export function boundErc20(network: NetworkId, denom: string): string | null | undefined {
+  if (denom === NETWORKS[network].feeDenom) return "0x0000000000000000000000000000000000000000";
+  const direct = evmAddress(denom) ?? (/^erc20:0x[0-9a-fA-F]{40}$/.test(denom) ? denom.slice(6) : null);
+  if (direct) return direct;
+  const pinned = KNOWN_PAIRS[network][denom];
+  return pinned === undefined ? undefined : pinned;
+}
+
 /** Every token on the wallet's list for a network. */
 export function knownTokens(network: NetworkId): Token[] {
   return Object.keys(KNOWN[network]).map((d) => knownToken(network, d)!);

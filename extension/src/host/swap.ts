@@ -11,7 +11,7 @@
 //    INJ in needs no approval: it is sent with the swap.
 // After each step lands, the UI asks for the next one.
 
-import { cw20Address, evmAddress, evmDenom, fetchRoute, isContractAddress, knownTokens, NATIVE, NETWORKS, RouteError, type Fetch, type NetworkId, type Route } from "@choice-wallet/chain";
+import { boundErc20, cw20Address, evmDenom, fetchRoute, isContractAddress, knownTokens, NATIVE, NETWORKS, RouteError, type Fetch, type NetworkId, type Route } from "@choice-wallet/chain";
 import type { AccountInfo, Result, SendReview, SwapQuote, SwapStep, SwapToken } from "@choice-wallet/ui/protocol";
 
 import type { createSender, EvmDisplayLike } from "./send";
@@ -49,9 +49,9 @@ export function createSwaps(sender: Sender, session: Store, fetch: Fetch, shown:
   /** The EVM token a wallet key trades as on Choice: native INJ, an ERC20 (an EVM-only
    *  token, a bank-backed `erc20:` denom, or a bank denom's ERC20 pair). */
   async function evmToken(network: NetworkId, denom: string): Promise<string | null> {
-    if (denom === NETWORKS[network].feeDenom) return NATIVE;
-    const direct = evmAddress(denom) ?? (denom.startsWith("erc20:") ? denom.slice(6) : null);
-    if (direct) return direct;
+    // The fee coin, an ERC20's own key, or a listed token's pinned pair: never an LCD's word.
+    const bound = boundErc20(network, denom);
+    if (bound !== undefined) return bound;
     if (cw20Address(denom) || isContractAddress(denom)) return null;
     return (await sender.pairs(network)).get(denom) ?? null;
   }

@@ -1,7 +1,7 @@
 // What a review shows, from the vault's decode of the transaction that will be signed: the
 // sends, the conversions, anything else the transaction does, and the fee.
 
-import { adapterCw20, adapterDenom, chainByCaip2, chainCoin, chainUsdc, cw20Denom, evmDenom, isContractAddress, NETWORKS } from "@choice-wallet/chain";
+import { adapterCw20, adapterDenom, boundErc20, chainByCaip2, chainCoin, chainUsdc, cw20Denom, evmDenom, isContractAddress, NETWORKS } from "@choice-wallet/chain";
 
 import type { Coin, CosmosDisplay, EvmDisplay, EvmSwapCall, NetworkId, SendReview, SolanaDisplay, SwapStepInfo } from "./protocol";
 
@@ -133,7 +133,13 @@ export function shown(display: SendReview["display"], network: NetworkId, swap?:
     // chain, or an EVM token.
     const key = (a: string, side?: "from" | "to") => {
       if (a.toLowerCase() === NATIVE) return away ? chainCoin(away.caip2) : net.feeDenom;
-      if (swap && side) return swap[side];
+      // The token the user picked, when the decoded contract is the one it is bound to. A
+      // listed token's contract is pinned; any other contract is shown as itself.
+      if (swap && side) {
+        const bound = boundErc20(network, swap[side]);
+        if (bound === undefined || (bound !== null && bound.toLowerCase() === a.toLowerCase())) return swap[side];
+        return evmDenom(a);
+      }
       if (away && !away.added && a.toLowerCase() === away.usdc.toLowerCase()) return chainUsdc(away.caip2);
       return evmDenom(a);
     };

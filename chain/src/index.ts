@@ -75,6 +75,7 @@ export { checkRoute, DEFAULT_SLIPPAGE_BPS, fetchRoute, MAX_SLIPPAGE_BPS, NATIVE,
 export {
   adapterCw20,
   adapterDenom,
+  boundErc20,
   cleanText,
   cw20Address,
   cw20Denom,
