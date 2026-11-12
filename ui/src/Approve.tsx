@@ -65,7 +65,7 @@ export function ApproveView({ id }: { id: string }) {
     if (done) return;
     let live = true;
     const tick = async () => {
-      const [r, s] = await Promise.all([backend.send({ type: "dapp_request", id }), backend.send({ type: "status" })]);
+      const [r, s] = await Promise.all([backend.send({ type: "dapp_request", id }), backend.send({ type: "status", poll: true })]);
       if (!live) return;
       if (r.ok) setReq(r.result);
       else setClosed(r.error.message);

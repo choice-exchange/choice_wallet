@@ -291,12 +291,13 @@ export function createService(d: Deps) {
     network,
     setNetwork: (n) => d.local.set({ network: n }),
     async unlocked() {
-      // Sites see the account in use, and none while it is watch-only: it can't sign.
+      // Sites see the account in use, and none while it is watch-only: it can't sign. A
+      // site's reads are not the user's activity, so they don't hold off the auto-lock.
       const u = await wallets.inUse();
       if (!u || !u.signer || isWatch(u.account)) return null;
-      await touch();
       return { account: u.account, key: u.key, ...u.signer };
     },
+    touch,
     openWindow: d.openWindow,
     notify: d.notify,
   });
@@ -493,7 +494,8 @@ export function createService(d: Deps) {
     switch (r?.type) {
       case "status": {
         const s = await status();
-        if (s.unlocked) await touch();
+        // A page's timer (the approval window's poll) is not the user's activity.
+        if (s.unlocked && r.poll !== true) await touch();
         return { ok: true, result: s };
       }
       case "generate":

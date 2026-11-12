@@ -300,6 +300,36 @@ test("a Solana simulation that hands control away is red, whatever program does 
   }
 });
 
+// F8: only the user's own use holds off the auto-lock. A site's reads, its connect
+// window's status poll, and pages re-reading after a broadcast never restart the timer.
+test("sites and the approval window's poll never restart the auto-lock timer", async () => {
+  const { page, window, service, ui } = await connected();
+  const site = page(SITE);
+  // One grant per origin: the other providers see the account without asking again.
+  assert.deepEqual(await site("choice_enable", { chainIds: ["injective-1"] }), { result: null });
+  await site("solana_connect", {});
+  ui.locks = [];
+  for (let i = 0; i < 3; i++) {
+    assert.deepEqual(await site("eth_accounts"), { result: [ME_EVM.toLowerCase()] });
+    await site("wallet_getPermissions");
+    await site("choice_getKey", { chainId: "injective-1" });
+    await site("solana_accounts");
+    await page(OTHER)("wallet_revokePermissions", [{ eth_accounts: {} }]);
+    ok(await service.handle({ type: "status", poll: true }));
+  }
+  assert.deepEqual(ui.locks, [], "no site read or poll restarts the timer");
+  // The user's own use does: the popup's status, and reviewing or answering a request.
+  ok(await service.handle({ type: "status" }));
+  assert.equal(ui.locks.length, 1);
+  const asked = site("personal_sign", ["0x6869", ME_EVM]);
+  const w = await window();
+  const review = ok<{ digest: string }>(await service.handle({ type: "dapp_review", id: w.id }));
+  assert.equal(ui.locks.length, 2);
+  ok(await service.handle({ type: "dapp_answer", id: w.id, approve: true, digest: review.digest }));
+  assert.equal(ui.locks.length, 3);
+  await asked;
+});
+
 test("only a tab's top frame, at https (or http on this machine), is a site", () => {
   const ext = "abcdefghijklmnopabcdefghijklmnop";
   const s = (o: Record<string, unknown>) => ({ id: ext, tab: {}, frameId: 0, origin: "https://app.example", url: "https://app.example/swap", ...o });

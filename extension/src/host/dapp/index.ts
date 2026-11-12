@@ -128,6 +128,7 @@ export function createDapps(h: DappHost) {
     if (!w.build) return fail("bad_request", "Nothing to review.");
     const u = await h.unlocked();
     if (!u) return fail("locked", "Unlock the wallet first.");
+    await h.touch();
     const network = w.req.network;
     if (network !== (await h.network())) return fail("network", "The wallet changed network. Ask the site again.");
     try {
@@ -184,6 +185,7 @@ export function createDapps(h: DappHost) {
     }
     const u = await h.unlocked();
     if (!u) return fail("locked", "Unlock the wallet first.");
+    await h.touch();
     if (w.approve) {
       const checked = w.check ? await w.check() : null;
       if (checked && !checked.ok) return checked;

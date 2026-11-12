@@ -888,7 +888,7 @@ export function sentTx(height: number, hash = height.toString(16).padStart(64, "
 /** What the service asked of the browser: approval windows opened (by request ID),
  *  "something changed" notices to pages, notifications shown (none while `popupOpen`),
  *  the toolbar count, refreshes asked of the wallet's pages, and the watcher's alarm. */
-export type Ui = { opened: string[]; notified: number; notices?: { id: string; title: string; message: string }[]; badge?: string; refreshed?: number; popupOpen?: boolean; watching?: boolean };
+export type Ui = { opened: string[]; notified: number; locks?: number[]; notices?: { id: string; title: string; message: string }[]; badge?: string; refreshed?: number; popupOpen?: boolean; watching?: boolean };
 
 export function serviceOn(net: ReturnType<typeof chain>, local: Store, session: Store, ui: Ui = { opened: [], notified: 0 }) {
   return createService({
@@ -896,7 +896,9 @@ export function serviceOn(net: ReturnType<typeof chain>, local: Store, session: 
     local,
     session,
     fetch: net.fetch,
-    scheduleLock: () => {},
+    scheduleLock: (minutes) => {
+      (ui.locks ??= []).push(minutes);
+    },
     cancelLock: () => {},
     openWindow: async (id) => {
       ui.opened.push(id);

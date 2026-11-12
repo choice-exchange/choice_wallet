@@ -38,6 +38,9 @@ export interface DappHost {
   /** The account in use, its wallet's sealed secret and ID, and the unlock key, while
    *  unlocked and it can sign; else null. */
   unlocked(): Promise<{ account: AccountInfo; secret: string; wallet: string; key: string } | null>;
+  /** The user acted in an approval window: start the auto-lock timer again. A site's own
+   *  requests never do. */
+  touch(): Promise<void>;
   /** Open the approval window for request `id`; its window ID, to notice it closing. */
   openWindow(id: string): Promise<number | undefined>;
   /** Tell every page that its view (accounts, chain) may have changed. */

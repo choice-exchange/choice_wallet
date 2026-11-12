@@ -55,7 +55,7 @@ export type LedgerKey = { path: string; public_key: string };
 export type NetworkId = "mainnet" | "testnet";
 
 export type UiRequest =
-  | { type: "status" }
+  | { type: "status"; poll?: boolean }
   | { type: "generate"; words: 12 | 24 }
   /** The first wallet, and the password for all of them. `imported`: a phrase from before,
    *  so its other accounts with history are found and added. */
