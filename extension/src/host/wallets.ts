@@ -112,10 +112,14 @@ export function createWallets(h: WalletsHost) {
     }));
     const i = got.active_account;
     const active = typeof i === "number" && Number.isInteger(i) && i >= 0 && i < accounts.length ? i : 0;
+    // A move into a vault that stopped between its two writes: the old keystore, sealed
+    // under the password of that day, goes now rather than staying beside the vault.
+    const leftover = Boolean(got.vault && (got.keystore || got.kind));
+    if (leftover) await h.local.remove(["keystore", "kind"]);
     return {
       ...(got.vault ? { vault: got.vault } : {}),
-      ...(got.keystore ? { keystore: got.keystore } : {}),
-      ...(got.kind ? { kind: got.kind } : {}),
+      ...(got.keystore && !leftover ? { keystore: got.keystore } : {}),
+      ...(got.kind && !leftover ? { kind: got.kind } : {}),
       wallets,
       accounts,
       active,
@@ -514,7 +518,10 @@ export function createWallets(h: WalletsHost) {
     if (w.type === "ledger") return err("ledger", "A Ledger's keys never leave it.");
     const r = await h.vault<{ phrase?: string; private_key?: string }>("reveal", { vault: s.vault, password, secret: w.secret, wallet: w.id, ...(account ? { account } : {}) });
     if (!r.ok && r.error.code === "wrong_password") return err("wrong_password", "Wrong password.");
-    return r;
+    if (!r.ok) return r;
+    // Only what the screen shows goes to the page: not the account's Solana key as well.
+    const { phrase, private_key } = r.result;
+    return { ok: true, result: { ...(phrase ? { phrase } : {}), ...(private_key ? { private_key } : {}) } };
   }
 
   /** The vault under a new password. Every wallet, and the unlocked session, stay as they are. */

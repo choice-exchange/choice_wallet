@@ -18,7 +18,10 @@ test("the recovery phrase, or an account's key, only with the password", async (
 
   // The second account's key opens, on its own, the same account.
   const s = ok<Status>(await service.handle({ type: "add_account" }));
-  const { private_key } = ok<{ private_key: string }>(await service.handle({ type: "reveal_secret", password: PASSWORD, index: 1 }));
+  const shown = ok<{ private_key: string }>(await service.handle({ type: "reveal_secret", password: PASSWORD, index: 1 }));
+  // Only what the screen shows: the account's Solana key never reaches the page unasked.
+  assert.deepEqual(Object.keys(shown), ["private_key"]);
+  const { private_key } = shown;
   const other = serviceOn(chain(), memory(), memory());
   const imported = ok<Status>(await other.handle({ type: "create", secret: { private_key }, password: PASSWORD }));
   assert.equal(imported.accounts[0]!.addresses["cosmos:injective-1"], s.accounts[1]!.addresses["cosmos:injective-1"]);
@@ -116,6 +119,15 @@ test("reset keeps the device's settings and nothing else of the wallet's", async
   await local.set({ some_future_record: { about: "an account" }, cache_unindexed: { x: 1 }, auto_lock: 60, endpoints: { mainnet: ["https://example.org"] }, "solana_token:mainnet:abc": { symbol: "X" } });
   ok(await service.handle({ type: "reset", password: PASSWORD }));
   assert.deepEqual([...local.data.keys()].sort(), ["anti_phishing", "auto_lock", "endpoints", "solana_token:mainnet:abc"]);
+});
+
+// A move from the old keystore that stopped after the vault was written left the keystore,
+// sealed under the old password, beside it for good.
+test("an old keystore left beside the vault is removed on the next use", async () => {
+  const { service, local } = await wallet();
+  await local.set({ keystore: "00", kind: "mnemonic" });
+  ok(await service.handle({ type: "status" }));
+  assert.ok(!local.data.has("keystore") && !local.data.has("kind"));
 });
 
 // SECURITY.md promises an anti-phishing phrase: a page drawing a look-alike unlock screen or
