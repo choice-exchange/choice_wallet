@@ -95,3 +95,12 @@ test("lock after: one of the choices, applied from the next use", async () => {
   assert.equal(locks.at(-1), 60);
   assert.equal(code(await service.handle({ type: "save_settings", network: "mainnet", lcd: null, autoLock: 7 })), "bad_request");
 });
+
+// F17: Reset left records naming the user's Solana addresses and connected sites.
+test("reset leaves no record of the accounts' Solana tokens, bridge rent or sites' chains", async () => {
+  const { service, local } = await wallet();
+  const owner = "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk";
+  await local.set({ [`solana_mints:mainnet:${owner}`]: ["Hh8QwFUA6MtVu1qAoq12ucvFHNwCcVTV7hpWjeY1Hztb"], solana_rent: [{ event: "x" }], site_chains: { "https://site.example": { mainnet: "base" } } });
+  ok(await service.handle({ type: "reset", password: PASSWORD }));
+  for (const k of [`solana_mints:mainnet:${owner}`, "solana_rent", "site_chains"]) assert.ok(!local.data.has(k), k);
+});

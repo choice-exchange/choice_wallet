@@ -73,7 +73,11 @@ export const AUTO_LOCK_MINUTES = 15;
 const LOCK_CHOICES = [5, 15, 60, 240];
 /** Local storage that belongs to the wallet, not the device: removing the wallet clears it.
  *  Endpoints, the network and other settings stay. */
-const WALLET_KEYS = ["vault", "wallets", "keystore", "kind", "accounts", "active_account", "connections", "custom_tokens", "custom_nfts", "rescue", "token_filter", "address_book", "watch", "watch_own", "bridge_transfers", "chain_sent", "votes_cast"];
+const WALLET_KEYS = ["vault", "wallets", "keystore", "kind", "accounts", "active_account", "connections", "custom_tokens", "custom_nfts", "rescue", "token_filter", "address_book", "watch", "watch_own", "bridge_transfers", "chain_sent", "votes_cast", "solana_rent", "site_chains"];
+
+/** The tokens seen for each Solana account, one key per network and owner. */
+const solanaMintKeys = (accounts: AccountInfo[]) =>
+  (["mainnet", "testnet"] as const).flatMap((n) => accounts.map((a) => a.addresses[NETWORKS[n].solana.caip2]).filter((x): x is string => !!x).map((owner) => `solana_mints:${n}:${owner}`));
 const NOTIFY_MODES: readonly NotifyMode[] = ["off", "active", "all"];
 /** The shortest password, as the keystore takes it. */
 const MIN_PASSWORD = 8;
@@ -259,8 +263,15 @@ export function createService(d: Deps) {
   });
 
   /** After accounts went away: forget what was kept for them. */
-  async function forgetGone(): Promise<void> {
-    const left = (await wallets.stored()).accounts.flatMap((a) => Object.values(a.addresses));
+  async function forgetGone(before?: AccountInfo[]): Promise<void> {
+    const now = (await wallets.stored()).accounts;
+    const left = now.flatMap((a) => Object.values(a.addresses));
+    // A removed account's Solana records go with it.
+    if (before) {
+      const kept = new Set(solanaMintKeys(now));
+      const gone = solanaMintKeys(before).filter((k) => !kept.has(k));
+      if (gone.length > 0) await d.local.remove(gone);
+    }
     await snapshots.keepOnly(left);
     await watcher.forget(left);
   }
@@ -522,8 +533,9 @@ export function createService(d: Deps) {
       case "rename_wallet":
         return wallets.renameWallet(r.wallet, r.name);
       case "remove_wallet": {
+        const before = (await wallets.stored()).accounts;
         const out = await wallets.removeWallet(r.wallet, r.password);
-        if (out.ok) await forgetGone();
+        if (out.ok) await forgetGone(before);
         return out;
       }
       case "switch_account":
@@ -531,8 +543,9 @@ export function createService(d: Deps) {
       case "rename_account":
         return wallets.changeAccount({ type: "rename", index: r.index, name: r.name });
       case "remove_account": {
+        const before = (await wallets.stored()).accounts;
         const out = await wallets.changeAccount({ type: "remove", index: r.index });
-        if (out.ok) await forgetGone();
+        if (out.ok) await forgetGone(before);
         return out;
       }
       case "reveal_secret":
@@ -540,7 +553,8 @@ export function createService(d: Deps) {
       case "change_password":
         return wallets.changePassword(r.password, r.new_password, MIN_PASSWORD);
       case "reset": {
-        const out = await wallets.reset(r.password, [...WALLET_KEYS, ...(await snapshots.keys())]);
+        const per = solanaMintKeys((await wallets.stored()).accounts);
+        const out = await wallets.reset(r.password, [...WALLET_KEYS, ...per, ...(await snapshots.keys())]);
         if (out.ok) {
           dapps.rejectAll("The wallet was reset.");
           d.badge?.("");
