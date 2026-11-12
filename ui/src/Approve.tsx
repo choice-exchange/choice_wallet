@@ -11,6 +11,7 @@
 import { chainByCaip2, chainByKey, formatUnits, NETWORKS, shortDenom } from "@choice-wallet/chain";
 import { useEffect, useState, type ReactNode } from "react";
 
+import { arm, type ArmEnv } from "./arm";
 import { useBackend } from "./backend";
 import { ArrowDownIcon, CheckIcon, GlobeIcon, LockIcon } from "./icons";
 import { Callout, Phrase, Screen, shortAddress, tokenSub } from "./kit";
@@ -19,29 +20,32 @@ import type { Coin, CosmosDisplay, DappRequest, DappReview, DeviceRequest, Devic
 import { shown } from "./review";
 import { Figure, formName, realName, SwapCards } from "./Send";
 
-/** How long the window must be in front before its buttons work. */
-const ARM_MS = 800;
 /** How often the window asks for the request and the lock state (it also keeps the
  *  service worker, which holds the request, awake). */
 const POLL_MS = 1500;
 
-function useArmed(): boolean {
-  const [armed, setArmed] = useState(false);
-  useEffect(() => {
-    let t: ReturnType<typeof setTimeout> | undefined;
-    const check = () => {
-      clearTimeout(t);
-      if (document.visibilityState === "visible" && document.hasFocus()) t = setTimeout(() => setArmed(true), ARM_MS);
-      else setArmed(false);
-    };
-    check();
-    const events = ["focus", "blur", "visibilitychange"] as const;
-    for (const e of events) (e === "visibilitychange" ? document : window).addEventListener(e, check);
+const browser: ArmEnv = {
+  front: () => document.visibilityState === "visible" && document.hasFocus(),
+  watch(f) {
+    window.addEventListener("focus", f);
+    window.addEventListener("blur", f);
+    document.addEventListener("visibilitychange", f);
     return () => {
-      clearTimeout(t);
-      for (const e of events) (e === "visibilitychange" ? document : window).removeEventListener(e, check);
+      window.removeEventListener("focus", f);
+      window.removeEventListener("blur", f);
+      document.removeEventListener("visibilitychange", f);
     };
-  }, []);
+  },
+  later(f, ms) {
+    const t = setTimeout(f, ms);
+    return () => clearTimeout(t);
+  },
+};
+
+/** Whether the main button works: see ./arm.ts. Counted from when it shows. */
+function useArmed(showing: boolean): boolean {
+  const [armed, setArmed] = useState(false);
+  useEffect(() => arm(showing, browser, setArmed), [showing]);
   return armed;
 }
 
@@ -49,7 +53,6 @@ const WHAT: Record<DappRequest["kind"], string> = { connect: "wants to connect",
 
 export function ApproveView({ id }: { id: string }) {
   const backend = useBackend();
-  const armed = useArmed();
   const [req, setReq] = useState<DappRequest | null>(null);
   const [status, setStatus] = useState<Status | null>(null);
   const [closed, setClosed] = useState<string | null>(null);
@@ -83,6 +86,9 @@ export function ApproveView({ id }: { id: string }) {
   const signer = status?.accounts[status.active];
   const watchOnly = signer?.account.derivation === "watch";
   const unlocked = status?.unlocked === true && !watchOnly;
+  // The main button shows once the request (and a signature's review) is here.
+  const ready = req !== null && unlocked && (req.kind !== "sign" || review !== null) && !closed;
+  const armed = useArmed(ready && !problem && !device && !done);
   useEffect(() => {
     if (req?.kind !== "sign" || !unlocked || review || problem) return;
     void backend.send({ type: "dapp_review", id }).then((r) => (r.ok ? setReview(r.result) : setProblem(r.error.message)));
@@ -136,7 +142,6 @@ export function ApproveView({ id }: { id: string }) {
   const risk = review?.risk;
   const blocked = risk?.level === "blocked";
   const needsWord = risk?.confirm !== undefined && typed.trim() !== risk.confirm;
-  const ready = unlocked && (req.kind !== "sign" || review !== null) && !closed;
   const yes = { connect: "Connect", switch: "Switch", add_chain: "Add and switch", sign: req.method === "evm_transaction" ? "Confirm" : "Sign" }[req.kind];
 
   return (
