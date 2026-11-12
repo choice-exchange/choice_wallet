@@ -209,6 +209,18 @@ test("each site on its own EVM chain: switched freely within the network, the ne
   assert.deepEqual(await page(OTHER)("eth_chainId"), { result: "0x59f" });
 });
 
+// Hardening: two sites switching chains at once each read the map before either saved it,
+// so one site's pick was lost.
+test("two sites switching chains at once both keep their pick", async () => {
+  const { page, window, service } = await connected();
+  const asked = page(OTHER)("eth_requestAccounts");
+  ok(await service.handle({ type: "dapp_answer", id: (await window()).id, approve: true }));
+  await asked;
+  await Promise.all([page(SITE)("wallet_switchEthereumChain", [{ chainId: "0x2105" }]), page(OTHER)("wallet_switchEthereumChain", [{ chainId: "0x2105" }])]);
+  assert.deepEqual(await page(SITE)("eth_chainId"), { result: "0x2105" });
+  assert.deepEqual(await page(OTHER)("eth_chainId"), { result: "0x2105" });
+});
+
 test("window.choice: enable, getKey, signDirect (simulated first), sendTx", async () => {
   const { page, window, service, net, local } = await setup();
   const site = page(SITE);

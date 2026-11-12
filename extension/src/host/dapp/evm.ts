@@ -56,9 +56,16 @@ export function createEvmSite(core: SiteCore) {
     return c && c.kind !== "solana" ? c : chainByKey(network, "injective")!;
   }
 
-  async function setSiteChain(origin: string, network: NetworkId, key: string): Promise<void> {
-    const { site_chains } = (await h.local.get(["site_chains"])) as { site_chains?: Record<string, Partial<Record<NetworkId, string>>> };
-    await h.local.set({ site_chains: { ...(site_chains ?? {}), [origin]: { ...(site_chains?.[origin] ?? {}), [network]: key } } });
+  /** Picks are saved one at a time, each on the map as it is in its turn, so two sites
+   *  switching at once both keep theirs. */
+  let chainTurn: Promise<unknown> = Promise.resolve();
+  function setSiteChain(origin: string, network: NetworkId, key: string): Promise<void> {
+    const turn = chainTurn.then(async () => {
+      const { site_chains } = (await h.local.get(["site_chains"])) as { site_chains?: Record<string, Partial<Record<NetworkId, string>>> };
+      await h.local.set({ site_chains: { ...(site_chains ?? {}), [origin]: { ...(site_chains?.[origin] ?? {}), [network]: key } } });
+    });
+    chainTurn = turn.catch(() => {});
+    return turn;
   }
 
   /** A client for a site's chain, on the user's endpoints. */
