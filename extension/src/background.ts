@@ -13,6 +13,7 @@ import { bytesToBase64, explorerTxUrl, isNetworkId, NETWORKS } from "@choice-wal
 
 import { createService, dappOrigin, fromOwnPage, type Store } from "./host/service";
 import { callVault } from "./host/vault";
+import { MAX_REQUEST } from "./limits";
 
 // Content scripts never read the wallet's storage (the vault, sealed secrets, grants,
 // endpoints): only the extension's own pages and this worker.
@@ -24,8 +25,6 @@ const AUTO_LOCK = "auto-lock";
 const WATCH = "watch";
 /** The approval window: the popup's own size, plus the window's frame. */
 const APPROVAL = { width: 376, height: 668 };
-/** A page's request, as JSON, at most this long. */
-const MAX_REQUEST = 1_000_000;
 
 function store(area: chrome.storage.StorageArea): Store {
   return {

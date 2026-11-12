@@ -3,6 +3,8 @@
 // nothing to a request: the worker learns the page's origin from the browser, and only the
 // top frame of a tab gets this script.
 
+import { MAX_REQUEST } from "./limits";
+
 const TO_RELAY = "choice-wallet:relay";
 const TO_PAGE = "choice-wallet:page";
 
@@ -16,6 +18,14 @@ window.addEventListener("message", (e: MessageEvent) => {
   const { target, id, method, params } = e.data as { target?: unknown; id?: unknown; method?: unknown; params?: unknown };
   if (target !== TO_RELAY || typeof id !== "number" || typeof method !== "string") return;
   const answer = (r: Reply) => window.postMessage({ target: TO_PAGE, id, ...("error" in r && r.error ? { error: r.error } : { result: r.result }) }, "/");
+  // Too large is refused here, before the browser copies it into the worker.
+  let size: number;
+  try {
+    size = JSON.stringify({ method, params }).length;
+  } catch {
+    return answer({ error: { code: -32602, message: "The request can't be read." } });
+  }
+  if (size > MAX_REQUEST) return answer({ error: { code: -32602, message: "Request too large." } });
   try {
     chrome.runtime.sendMessage({ method, params }).then(
       (r: Reply | undefined) => answer(r ?? { error: gone }),
