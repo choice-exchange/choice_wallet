@@ -23,7 +23,11 @@ export function createCosmosSite(core: SiteCore) {
     if (wrongChain(p["chainId"])) return no(CHAIN_DISCONNECTED, chainNote);
     if (!(await isConnected(origin))) return no(UNAUTHORIZED, "Call enable first.");
     const u = await h.unlocked();
-    if (!u && method === "choice_getKey") return no(UNAUTHORIZED, "Choice Wallet is locked.");
+    // Locked: one answer for getKey and every signature request, before the signer is
+    // compared, so a site can't test a guess at the account while it is locked.
+    if (!u && (method === "choice_getKey" || method === "choice_signDirect" || method === "choice_signAmino" || method === "choice_signArbitrary")) {
+      return no(UNAUTHORIZED, "Choice Wallet is locked.");
+    }
 
     if (method === "choice_getKey") {
       const a = u!.account;

@@ -64,9 +64,18 @@ test("a site sees nothing until it connects, and only its own grant", async () =
   assert.deepEqual(await page(OTHER)("eth_accounts"), { result: [] });
   assert.deepEqual(ok<{ origin: string }[]>(await service.handle({ type: "connections" })).map((c) => c.origin), [SITE]);
 
-  // Locked: no accounts for anyone. Disconnected: none again, and it must ask.
+  // Locked: no accounts for anyone, and one answer to any signature request, whichever
+  // address it names (no guessing the account). Disconnected: none again, and it must ask.
   ok(await service.handle({ type: "lock" }));
   assert.deepEqual(await site("eth_accounts"), { result: [] });
+  const opened2 = ui.opened.length;
+  const right = await site("personal_sign", ["0x6869", ME_EVM]);
+  const wrong = await site("personal_sign", ["0x6869", THEM_EVM]);
+  assert.equal(right.error?.code, 4100);
+  assert.deepEqual(right, wrong);
+  const amino = { chain_id: "injective-1", account_number: "1", sequence: "0", fee: { amount: [], gas: "1" }, msgs: [], memo: "" };
+  assert.deepEqual(await site("choice_signAmino", { chainId: "injective-1", signer: ME, signDoc: amino }), await site("choice_signAmino", { chainId: "injective-1", signer: THEM, signDoc: amino }));
+  assert.equal(ui.opened.length, opened2, "no window while locked");
   ok(await service.handle({ type: "unlock", password: PASSWORD }));
   assert.deepEqual(await site("eth_accounts"), { result: [ME_EVM.toLowerCase()] });
   ok(await service.handle({ type: "disconnect", origin: SITE }));

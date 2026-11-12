@@ -247,6 +247,9 @@ export function createEvmSite(core: SiteCore) {
     const net = NETWORKS[network];
     const chain = await siteChain(origin, network);
     const list = Array.isArray(params) ? params : [];
+    // Locked (or watch-only): one answer for every signature request, before any address is
+    // compared, so a site can't test a guess at the account while it is locked.
+    if (!(await h.unlocked())) return no(UNAUTHORIZED, "Choice Wallet is locked, or this account can't sign. Unlock it, then ask again.");
     const me = async () => (await h.unlocked())?.account.addresses[chain.caip2] ?? "";
     const mine = async (a: unknown) => typeof a === "string" && (await isConnected(origin)) && a.toLowerCase() === (await evmAccountsAny()).toLowerCase();
     // The account in use's address, from storage, for checks made while locked. A
