@@ -50,6 +50,14 @@ function useArmed(showing: boolean): boolean {
   return armed;
 }
 
+/** The name of the account the review signs as, by its address: not whichever account is
+ *  in use now, which may have changed since the review. */
+export function nameOf(status: Status | null, review: DappReview): string | undefined {
+  const d = review.display as Record<string, unknown>;
+  const signs = String(d["signer"] ?? d["from"] ?? "").toLowerCase();
+  return signs ? status?.accounts.find((a) => Object.values(a.addresses).some((x) => x.toLowerCase() === signs))?.name : undefined;
+}
+
 const WHAT: Record<DappRequest["kind"], string> = { connect: "wants to connect", switch: "wants to switch network", add_chain: "wants to add a chain", sign: "wants a signature" };
 
 export function ApproveView({ id }: { id: string }) {
@@ -228,7 +236,7 @@ export function ApproveView({ id }: { id: string }) {
       ) : !review ? (
         !problem && [0, 1].map((i) => <div key={i} className="skeleton" style={{ height: 64 }} />)
       ) : (
-        <SignBody review={review} network={req.network} typed={typed} onTyped={setTyped} account={signer?.name} />
+        <SignBody review={review} network={req.network} typed={typed} onTyped={setTyped} account={nameOf(status, review)} />
       )}
     </Screen>
   );
@@ -352,7 +360,8 @@ export function SignBody({ review, network, typed, onTyped, account }: { review:
       ))}
 
       {view && <SwapCards view={view} tokens={tokens} network={network} from={String(d["from"] ?? "")} />}
-      {d["kind"] === "evm_transaction" && view?.sends.length === 0 && view.swaps.length === 0 && view.approvals.length === 0 && <EvmCall d={d} coin={tokens[view.fee[0]?.denom ?? ""]} />}
+      {/* An NFT transfer has no card of its own: the call shows it, beside any coin sent with it. */}
+      {d["kind"] === "evm_transaction" && view && (view.sends.length === 0 || view.nfts.length > 0) && view.swaps.length === 0 && view.approvals.length === 0 && <EvmCall d={d} coin={tokens[view.fee[0]?.denom ?? ""]} />}
       {solana && view && view.others.length > 0 && (
         <div className="surface">
           <div className="eyebrow">It also</div>
@@ -484,9 +493,15 @@ function EvmCall({ d, coin }: { d: Record<string, unknown>; coin: TokenInfo | un
           {formatUnits(value, decimals)} <span className="unit">{symbol}</span>
         </div>
       )}
-      <div className="meta mono" style={{ marginTop: 8 }}>
-        Function {call.selector ?? "none"} · {(String(d["data"]).length - 2) / 2} bytes of data
-      </div>
+      {call.type === "nft_transfer" ? (
+        <div className="meta" style={{ marginTop: 8 }}>
+          Sends NFT #{String((call as Record<string, unknown>)["token_id"])} to <code className="mono">{String((call as Record<string, unknown>)["to"])}</code>
+        </div>
+      ) : (
+        <div className="meta mono" style={{ marginTop: 8 }}>
+          Function {call.selector ?? "none"} · {(String(d["data"]).length - 2) / 2} bytes of data
+        </div>
+      )}
     </div>
   );
 }

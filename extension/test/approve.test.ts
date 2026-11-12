@@ -8,11 +8,11 @@ import { test } from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { Origin, SignBody } from "../../ui/src/Approve";
+import { nameOf, Origin, SignBody } from "../../ui/src/Approve";
 import { Phrase } from "../../ui/src/kit";
 import type { DappReview, NetworkId } from "../../ui/src/protocol";
 
-import { chain, ME, ME_EVM, ok, THEM, wallet } from "./fake";
+import { chain, ME, ME_EVM, ok, THEM, THEM_EVM, wallet } from "./fake";
 
 const SITE = "https://app.example";
 // SHROOM's CW20 and the mainnet CW20 adapter (published contracts).
@@ -159,6 +159,19 @@ test("native coin attached to a token call is shown and named", async () => {
   }
 });
 
+// Review: an NFT transfer that also sent coin showed only the coin; the NFT leaving the
+// wallet was in the findings alone.
+test("an NFT transfer that also sends coin still shows the transfer", async () => {
+  const { review } = await evmConnected();
+  const meWord = "0".repeat(24) + ME_EVM.slice(2).toLowerCase();
+  const collection = "0x5555555555555555555555555555555555555555";
+  const r = await review("eth_sendTransaction", [{ from: ME_EVM, to: collection, value: "0x1bc16d674ec80000", data: `0x42842e0e${meWord}${THEM_WORD}${"0".repeat(62)}2a` }]);
+  const text = windowText(r);
+  assert.match(text, /You send 2 INJ/, text);
+  assert.match(text, /Contract call/, text);
+  assert.ok(text.toLowerCase().includes(`sends nft #42 to 0x${THEM_WORD.slice(24)}`), text);
+});
+
 // F10: the contract-call card named the value INJ on every chain.
 test("a contract call's value is in the signing chain's coin", async () => {
   const { review, site } = await evmConnected();
@@ -243,4 +256,12 @@ test("a site's message shows its invisible characters as code points", async () 
   const callText = windowText(call);
   assert.ok(callText.includes("pay⟨U+2066⟩ me"), callText);
   assert.ok(!callText.includes(lri));
+});
+
+// Review: "Signs as" named the account in use now beside the address the review signs with,
+// so after a switch it read "Account B" next to account A's address.
+test("the signer's name is the account the review signs as, not the one in use", () => {
+  const status = { accounts: [{ name: "Account A", addresses: { "eip155:1776": ME_EVM } }, { name: "Account B", addresses: { "eip155:1776": THEM_EVM } }], active: 1 } as never;
+  assert.equal(nameOf(status, { display: { kind: "evm_personal_sign", signer: ME_EVM.toLowerCase() } } as never), "Account A");
+  assert.equal(nameOf(status, { display: { kind: "evm_personal_sign", signer: "0x0000000000000000000000000000000000000001" } } as never), undefined);
 });
