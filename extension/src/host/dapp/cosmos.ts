@@ -8,6 +8,13 @@ import { b64, bytesHex, CHAIN_DISCONNECTED, fromB64, INVALID_PARAMS, MAX_ARBITRA
 
 export function createCosmosSite(core: SiteCore) {
   const { h, isConnected, connect, sign } = core;
+  /** Signatures this wallet gave sites lately (hex): a site's broadcast carrying one is the
+   *  account's own transaction, followed and named as it; any other is the site's. */
+  const given: string[] = [];
+  const gave = (sig: unknown) => {
+    given.push(String(sig).toLowerCase());
+    if (given.length > 50) given.shift();
+  };
 
   async function cosmos(origin: string, method: string, p: Record<string, unknown>): Promise<DappReply> {
     const network = await h.network();
@@ -52,7 +59,10 @@ export function createCosmosSite(core: SiteCore) {
       const hex = tx.replace(/^0x/, "");
       const hash = await cosmosTxHash(hex);
       await (await h.sender.lcd(network)).broadcast(hex, hash);
-      h.sender.broadcasted(network, hash, (await h.unlocked())?.account.addresses[net.cosmos] ?? "");
+      // Followed (and named in notices) only when the account signed it here.
+      const mine = txRawSignatures(hex).some((s) => given.includes(s));
+      const me = (await h.unlocked())?.account.addresses[net.cosmos];
+      if (mine && me) h.sender.broadcasted(network, hash, me);
       return { result: hash };
     }
     // The account in use, as sites see it (not the list's first: another account, or a
@@ -61,7 +71,10 @@ export function createCosmosSite(core: SiteCore) {
     const account = accounts?.[typeof active_account === "number" ? active_account : 0] ?? accounts?.[0];
     if (!account || account.account.derivation === "watch" || p["signer"] !== account.addresses[net.cosmos]) return no(UNAUTHORIZED, "The signer isn't this wallet's connected account.");
     const pubkey = account.public_key;
-    const signature = (sig: unknown) => ({ pub_key: { type: "tendermint/PubKeySecp256k1", value: b64(pubkey) }, signature: b64(String(sig)) });
+    const signature = (sig: unknown) => {
+      gave(sig);
+      return { pub_key: { type: "tendermint/PubKeySecp256k1", value: b64(pubkey) }, signature: b64(String(sig)) };
+    };
 
     if (method === "choice_signDirect") {
       const doc = p["signDoc"];
@@ -157,4 +170,30 @@ export function createCosmosSite(core: SiteCore) {
   }
 
   return { handle };
+}
+
+/** The signatures (hex) in a TxRaw's protobuf bytes (field 3, repeated bytes); none for
+ *  bytes that don't read as one. */
+export function txRawSignatures(hex: string): string[] {
+  const b = hex.match(/../g)?.map((x) => parseInt(x, 16)) ?? [];
+  const out: string[] = [];
+  let i = 0;
+  const varint = (): number | null => {
+    let n = 0;
+    for (let shift = 0; shift < 35 && i < b.length; shift += 7) {
+      const byte = b[i++]!;
+      n += (byte & 0x7f) * 2 ** shift;
+      if (byte < 0x80) return n;
+    }
+    return null;
+  };
+  while (i < b.length) {
+    const key = varint();
+    if (key === null || (key & 7) !== 2) return [];
+    const len = varint();
+    if (len === null || i + len > b.length) return [];
+    if (key >> 3 === 3) out.push(b.slice(i, i + len).map((x) => x.toString(16).padStart(2, "0")).join(""));
+    i += len;
+  }
+  return out;
 }

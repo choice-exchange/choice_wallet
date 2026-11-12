@@ -210,7 +210,7 @@ test("each site on its own EVM chain: switched freely within the network, the ne
 });
 
 test("window.choice: enable, getKey, signDirect (simulated first), sendTx", async () => {
-  const { page, window, service, net } = await setup();
+  const { page, window, service, net, local } = await setup();
   const site = page(SITE);
   assert.equal((await site("choice_enable", { chainIds: ["cosmoshub-4"] })).error?.code, 4901);
   assert.equal((await site("choice_getKey", { chainId: "injective-1" })).error?.code, 4100);
@@ -248,10 +248,21 @@ test("window.choice: enable, getKey, signDirect (simulated first), sendTx", asyn
   assert.equal(Buffer.from(sig.signature, "base64").toString("hex"), expected["signature"]);
   assert.equal(Buffer.from(sig.pub_key.value, "base64").toString("hex"), key["pubKey"]);
 
-  // The dapp broadcasts the signed tx through the wallet.
+  // The dapp broadcasts the signed tx through the wallet: the account's own, so followed.
   const sent = await site("choice_sendTx", { chainId: "injective-1", tx: expected["tx_raw"], mode: "sync" });
   assert.match(String(sent.result), /^[0-9A-F]{64}$/);
   assert.equal(net.state.broadcasts.length, 1);
+  await new Promise((r) => setTimeout(r, 20));
+  const followed = () => ((local.data.get("watch_own") ?? []) as { hash: string }[]).map((o) => o.hash);
+  assert.ok(followed().includes(String(sent.result)), "the account's own broadcast is followed");
+
+  // F18: a transaction the site signed itself (here, with another signature) is the site's:
+  // broadcast, but never followed or named as this account's.
+  const theirs = expected["tx_raw"]!.replace(expected["signature"]!, "11".repeat(64));
+  const other = await site("choice_sendTx", { chainId: "injective-1", tx: theirs, mode: "sync" });
+  assert.match(String(other.result), /^[0-9A-F]{64}$/);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.ok(!followed().includes(String(other.result)), "a site's own broadcast isn't followed");
 });
 
 // F2: a program the vault can't read can hand a token account, a delegate over it, or the
