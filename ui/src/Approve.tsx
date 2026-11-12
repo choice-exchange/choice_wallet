@@ -13,7 +13,7 @@ import { useEffect, useState, type ReactNode } from "react";
 
 import { useBackend } from "./backend";
 import { ArrowDownIcon, CheckIcon, GlobeIcon, LockIcon } from "./icons";
-import { Callout, Screen, shortAddress } from "./kit";
+import { Callout, Screen, shortAddress, tokenSub } from "./kit";
 import { DeviceStep } from "./Ledger";
 import type { Coin, CosmosDisplay, DappRequest, DappReview, DeviceRequest, DeviceSignature, ListedChain, NetworkId, NewChain, Status, TokenInfo } from "./protocol";
 import { shown } from "./review";
@@ -272,12 +272,22 @@ export function SignBody({ review, network, typed, onTyped }: { review: DappRevi
             <p className="meta" style={{ marginTop: 6 }}>No balance changes, besides the fee.</p>
           ) : (
             <ul className="changes">
-              {review.simulation.changes.map((c) => (
-                <li key={c.denom} className={c.amount.startsWith("-") ? "out" : "in"}>
-                  {c.amount.startsWith("-") ? "−" : "+"}
-                  {amount(c)}
-                </li>
-              ))}
+              {review.simulation.changes.map((c) => {
+                // An unlisted token's symbol proves nothing: say where it lives.
+                const t = tokens[c.denom];
+                return (
+                  <li key={c.denom} className={c.amount.startsWith("-") ? "out" : "in"}>
+                    {c.amount.startsWith("-") ? "−" : "+"}
+                    {amount(c)}
+                    {t && !t.known && (
+                      <>
+                        {" "}
+                        <span className="meta mono">{tokenSub(t)}</span> <span className="flag">Unlisted</span>
+                      </>
+                    )}
+                  </li>
+                );
+              })}
             </ul>
           )}
         </div>

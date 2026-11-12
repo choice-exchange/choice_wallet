@@ -168,3 +168,31 @@ test("a contract call's value is in the signing chain's coin", async () => {
   assert.match(text, /0\.004 ETH/, text);
   assert.doesNotMatch(text, /INJ/, text);
 });
+
+// F11: the simulation list named an unlisted token by its creator's symbol alone.
+test("an unlisted token in the simulation says it is unlisted, and where it lives", () => {
+  const usdt = "peggy0xdAC17F958D2ee523a2206206994597C13D831ec7";
+  const copy = "factory/inj1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqe2hm49/usdt";
+  const review = {
+    digest: "00",
+    risk: { level: "info", findings: [] },
+    display: { kind: "cosmos_direct", chain: "cosmos:injective-1", signer: ME, memo: "", fee: { amount: [], gas_limit: "0", granter: null, payer: null }, messages: [] },
+    tokens: {
+      [usdt]: { denom: usdt, symbol: "USDT", name: "Tether", decimals: 6, known: true },
+      [copy]: { denom: copy, symbol: "USDT", name: "USDT", decimals: 6, known: false },
+    },
+    checkedBy: "",
+    simulation: {
+      ok: true,
+      changes: [
+        { denom: usdt, amount: "-100000000" },
+        { denom: copy, amount: "100000000" },
+      ],
+    },
+  } as unknown as DappReview;
+  const items = windowText(review).match(/[−+]100 USDT[^−+]*/g) ?? [];
+  assert.equal(items.length, 2, windowText(review));
+  assert.doesNotMatch(items[0]!, /Unlisted/);
+  assert.match(items[1]!, /Unlisted/);
+  assert.match(items[1]!, /factory\//);
+});
