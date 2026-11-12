@@ -8,6 +8,7 @@
 import { abiString, type EvmRpc } from "./evm.ts";
 import { erc20Event, type EvmLog } from "./evmtx.ts";
 import { ChainError, isObject } from "./pool.ts";
+import { cleanText } from "./tokens.ts";
 import type { Activity } from "./activity.ts";
 
 /** One transaction as the chain describes it. */
@@ -151,7 +152,8 @@ export async function erc20Meta(rpc: EvmRpc, address: string): Promise<{ symbol:
     { method: "eth_call", params: [{ to: address, data: "0x95d89b41" }, "latest"] },
     { method: "eth_call", params: [{ to: address, data: "0x313ce567" }, "latest"] },
   ]);
-  const symbol = abiString(s);
+  // A token's creator picks its symbol: no characters that disguise text, and short.
+  const symbol = cleanText(abiString(s), 12);
   const decimals = typeof d === "string" && /^0x[0-9a-fA-F]+$/.test(d) ? Number(BigInt(d)) : NaN;
   return symbol && Number.isInteger(decimals) && decimals >= 0 && decimals <= 36 ? { symbol, decimals } : null;
 }

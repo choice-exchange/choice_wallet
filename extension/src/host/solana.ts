@@ -17,6 +17,7 @@ import {
   bytesToBase58,
   bytesToBase64,
   bytesToHex,
+  cleanText,
   hexToBytes,
   isSolanaAddress,
   joinSolanaTransaction,
@@ -637,8 +638,9 @@ function accountBytes(a: unknown): Uint8Array | null {
 }
 
 /** Metaplex metadata: key (1), update authority (32), mint (32), then name and symbol, each a
- *  u32 length and that many bytes (padded with NULs). Cleaned like other on-chain names. */
-function metadataName(b: Uint8Array | null): { name: string; symbol: string } | null {
+ *  u32 length and that many bytes (padded with NULs). Cleaned like other on-chain names:
+ *  no control, bidi or zero-width characters. */
+export function metadataName(b: Uint8Array | null): { name: string; symbol: string } | null {
   if (!b || b.length < 69 + 4) return null;
   const view = new DataView(b.buffer, b.byteOffset, b.byteLength);
   const str = (at: number): [string, number] | null => {
@@ -651,6 +653,5 @@ function metadataName(b: Uint8Array | null): { name: string; symbol: string } | 
   const name = str(65);
   const symbol = name && str(name[1]);
   if (!name || !symbol) return null;
-  const clean = (s: string, max: number) => [...s].filter((c) => c >= " " && c !== "‮" && c !== "‭").join("").trim().slice(0, max);
-  return { name: clean(name[0], 40), symbol: clean(symbol[0], 12) };
+  return { name: cleanText(name[0], 40), symbol: cleanText(symbol[0], 12) };
 }

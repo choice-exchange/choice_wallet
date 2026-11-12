@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { metadataName } from "../src/host/solana";
 import { chain, code, INJ, ME_SOL, ME_SOL_USDC, ok, PASSWORD, SOLANA_MAINNET, SOL_USDC, THEM_SOL, THEM_SOL_USDC, wallet } from "./fake";
 
 type Review = {
@@ -156,4 +157,17 @@ test("an account saved before Solana keys gets its Solana addresses at the next 
   const s = ok<{ accounts: Acc[] }>(await service.handle({ type: "unlock", password: PASSWORD }));
   assert.equal(s.accounts[0]!.addresses[SOLANA_MAINNET], ME_SOL);
   assert.deepEqual(s.accounts[0]!.addresses, before);
+});
+
+// Hardening: Metaplex names dropped only two bidi overrides, keeping zero-width and the
+// other bidi characters a look-alike can hide behind.
+test("a Solana token's Metaplex name and symbol are cleaned like the wallet's own", () => {
+  const field = (text: string) => {
+    const b = Buffer.from(text, "utf8");
+    const n = Buffer.alloc(4);
+    n.writeUInt32LE(b.length + 4);
+    return Buffer.concat([n, b, Buffer.alloc(4)]);
+  };
+  const account = Buffer.concat([Buffer.alloc(65, 4), field("USD\u2066 Coin\u2069"), field("U\u200bSD\u200fC")]);
+  assert.deepEqual(metadataName(new Uint8Array(account)), { name: "USD Coin", symbol: "USDC" });
 });

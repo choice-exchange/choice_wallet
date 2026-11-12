@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { abiString, EvmRpc, word } from "../src/evm.ts";
+import { erc20Meta } from "../src/evmhistory.ts";
 import { NETWORKS } from "../src/networks.ts";
 import { ChainError, Unreachable } from "../src/pool.ts";
 
@@ -75,4 +76,16 @@ test("ABI strings: dynamic, bytes32, and junk", () => {
   assert.equal(abiString(42), "");
   assert.equal(word(HOLDER), `000000000000000000000000${HOLDER.slice(2).toLowerCase()}`);
   assert.throws(() => word("0x123"), RangeError);
+});
+
+// Hardening: history's metadata for tokens nobody listed kept a creator's symbol raw, so
+// bidi and zero-width characters could make it read as another token's.
+test("history's ERC20 metadata is cleaned like the wallet's own", async () => {
+  const abi = (text: string) => {
+    const hex = Buffer.from(text, "utf8").toString("hex");
+    return `0x${(32).toString(16).padStart(64, "0")}${(hex.length / 2).toString(16).padStart(64, "0")}${hex.padEnd(Math.ceil(hex.length / 64) * 64, "0")}`;
+  };
+  const rpc = (symbol: string) => ({ batch: async () => [abi(symbol), "0x12"] }) as unknown as EvmRpc;
+  assert.deepEqual(await erc20Meta(rpc("U\u200bSD\u202eC"), TOKEN), { symbol: "USDC", decimals: 18 });
+  assert.equal((await erc20Meta(rpc("A".repeat(40)), TOKEN))?.symbol.length, 12);
 });
