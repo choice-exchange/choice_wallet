@@ -709,8 +709,27 @@ export function createSender(d: SendDeps) {
     return prepareSourceCall(network, account, source, { to, amount, token: c.usdc, burns: amount, usdcHeld: held });
   }
 
+  /** Digests of sends being confirmed now. */
+  const confirming = new Set<string>();
+
   /** Sign the send the review showed, with the wallet that prepared it, then broadcast. */
   async function confirm(
+    unlockKey: string,
+    signerOf: (wallet: string) => Promise<{ secret: string; wallet: string } | null>,
+    req: { digest: string; confirm?: string },
+  ): Promise<Result<Sent | { device: DeviceRequest }>> {
+    // One confirm at a time per review: claimed before anything is awaited, so two can't
+    // both read the waiting send and both sign it.
+    if (confirming.has(req.digest)) return fail("not_approved", "This send is already being confirmed.");
+    confirming.add(req.digest);
+    try {
+      return await confirmOnce(unlockKey, signerOf, req);
+    } finally {
+      confirming.delete(req.digest);
+    }
+  }
+
+  async function confirmOnce(
     unlockKey: string,
     signerOf: (wallet: string) => Promise<{ secret: string; wallet: string } | null>,
     req: { digest: string; confirm?: string },

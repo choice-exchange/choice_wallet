@@ -193,9 +193,24 @@ export function createDapps(h: DappHost) {
     return { origin, origin_known: known, balances, known_contracts: [net.cw20Adapter], symbols: { native: "INJ", inj: "INJ" }, ...(await h.sender.riskFacts(network, null)) };
   }
 
-  async function answer(id: unknown, approve: unknown, digest: unknown, confirm: unknown): Promise<Result<{ done: true; hash?: string } | { device: DeviceRequest }>> {
+  /** One answer at a time per request: claimed at once, before anything is awaited. */
+  async function claimed<T>(id: unknown, run: (w: Waiting) => Promise<Result<T>>): Promise<Result<T>> {
     const w = typeof id === "string" ? waiting.get(id) : undefined;
     if (!w) return fail("not_found", "This request is no longer open.");
+    if (w.busy) return fail("busy", "This request is already being answered.");
+    w.busy = true;
+    try {
+      return await run(w);
+    } finally {
+      w.busy = false;
+    }
+  }
+
+  function answer(id: unknown, approve: unknown, digest: unknown, confirm: unknown): Promise<Result<{ done: true; hash?: string } | { device: DeviceRequest }>> {
+    return claimed(id, (w) => answerOnce(w, approve, digest, confirm));
+  }
+
+  async function answerOnce(w: Waiting, approve: unknown, digest: unknown, confirm: unknown): Promise<Result<{ done: true; hash?: string } | { device: DeviceRequest }>> {
     if (approve !== true) {
       settle(w.req.id, no(USER_REJECTED, "The user rejected the request."));
       return { ok: true, result: { done: true } };
@@ -237,9 +252,11 @@ export function createDapps(h: DappHost) {
 
   /** A Ledger's signature for request `id`: the vault checks it against the account's key
    *  and the exact bytes before the page gets anything. A bad one leaves the request open. */
-  async function deviceSigned(id: unknown, digest: unknown, signature: unknown, format: unknown): Promise<Result<{ done: true; hash?: string }>> {
-    const w = typeof id === "string" ? waiting.get(id) : undefined;
-    if (!w) return fail("not_found", "This request is no longer open.");
+  function deviceSigned(id: unknown, digest: unknown, signature: unknown, format: unknown): Promise<Result<{ done: true; hash?: string }>> {
+    return claimed(id, (w) => deviceSignedOnce(w, digest, signature, format));
+  }
+
+  async function deviceSignedOnce(w: Waiting, digest: unknown, signature: unknown, format: unknown): Promise<Result<{ done: true; hash?: string }>> {
     const p = w.prepared;
     if (!p || !w.device || p.digest !== digest) return fail("not_approved", "This request changed. Review it again.");
     if (typeof signature !== "string" || (format !== "der" && format !== "rs")) return fail("bad_request", "Not a signature.");
@@ -281,7 +298,11 @@ export function createDapps(h: DappHost) {
       delete all[origin];
       return true;
     });
-    if (changed) h.notify();
+    if (changed) {
+      // Its requests still waiting end with it.
+      for (const w of [...waiting.values()]) if (w.req.origin === origin) settle(w.req.id, no(USER_REJECTED, "The site was disconnected."));
+      h.notify();
+    }
     return connections();
   }
 
@@ -290,7 +311,13 @@ export function createDapps(h: DappHost) {
     for (const w of [...waiting.values()]) if (w.windowId === windowId) settle(w.req.id, no(USER_REJECTED, "The user closed the request."));
   }
 
-  return { handle, request, review, answer, deviceSigned, connections, disconnect, windowClosed };
+  /** The wallet locked or was reset: every request still waiting is rejected, so none is
+   *  answered later by an account the user didn't review it for. */
+  function rejectAll(message: string) {
+    for (const w of [...waiting.values()]) settle(w.req.id, no(USER_REJECTED, message));
+  }
+
+  return { handle, request, review, answer, deviceSigned, connections, disconnect, windowClosed, rejectAll };
 }
 
 /** The tokens an approval screen names: what a Cosmos tx moves, what simulation says moves,

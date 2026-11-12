@@ -58,6 +58,9 @@ export interface Waiting {
   req: DappRequest;
   resolve: (r: DappReply) => void;
   windowId?: number;
+  /** An answer is being worked on: claimed before anything is awaited, so two answers to
+   *  one request can't both sign. */
+  busy?: boolean;
   /** connect, switch and add_chain: what approving does, and the page's answer. */
   approve?: () => Promise<DappReply>;
   /** Run before `approve`: a failure goes to the approval window, and the request stays

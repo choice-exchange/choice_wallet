@@ -348,6 +348,25 @@ test("a revoke from a site with no grant writes and tells nothing", async () => 
   assert.equal(ui.notified, notified + 1);
 });
 
+// Hardening: two answers to one request can't both sign, and locking rejects what waits.
+test("one request, one signature: concurrent approvals sign once; locking rejects what waits", async () => {
+  const { page, window, service, net } = await connected();
+  const site = page(SITE);
+  const asked = site("eth_sendTransaction", [{ from: ME_EVM, to: THEM_EVM, value: "0x1" }]);
+  const w = await window();
+  const review = ok<{ digest: string }>(await service.handle({ type: "dapp_review", id: w.id }));
+  const answers = await Promise.all([1, 2].map(() => service.handle({ type: "dapp_answer", id: w.id, approve: true, digest: review.digest })));
+  assert.equal(answers.filter((a) => (a as { ok: boolean }).ok).length, 1, JSON.stringify(answers));
+  assert.match(String((await asked).result), /^0x[0-9a-f]{64}$/);
+  assert.equal(net.state.evmSent.length, 1);
+
+  // A request still waiting when the wallet locks is rejected, not answered later.
+  const waiting = site("personal_sign", ["0x6869", ME_EVM]);
+  await window();
+  ok(await service.handle({ type: "lock" }));
+  assert.equal((await waiting).error?.code, 4001);
+});
+
 test("only a tab's top frame, at https (or http on this machine), is a site", () => {
   const ext = "abcdefghijklmnopabcdefghijklmnop";
   const s = (o: Record<string, unknown>) => ({ id: ext, tab: {}, frameId: 0, origin: "https://app.example", url: "https://app.example/swap", ...o });

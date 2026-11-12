@@ -76,6 +76,15 @@ test("an empty account still lists INJ, at zero, so its total is priced like any
   );
 });
 
+// Hardening: two confirms of one review can't both read the waiting send and both sign it.
+test("two confirms of one send broadcast it once", async () => {
+  const { service, net } = await wallet();
+  const review = ok<Review>(await service.handle({ type: "prepare_send", denom: "inj", to: THEM_EVM, amount: INJ.toString() }));
+  const out = await Promise.all([1, 2].map(() => service.handle({ type: "confirm_send", digest: review.digest })));
+  assert.equal(out.filter((r) => (r as { ok: boolean }).ok).length, 1, JSON.stringify(out));
+  assert.equal(net.state.broadcasts.length, 1);
+});
+
 test("a send: prepare shows the vault's decode, confirm signs exactly that and broadcasts it", async () => {
   const { service, session, net } = await wallet();
   const review = ok<Review>(await service.handle({ type: "prepare_send", denom: "inj", to: THEM_EVM, amount: (2n * INJ).toString() }));

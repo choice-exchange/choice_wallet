@@ -5,8 +5,9 @@
 //   which one is in use) and the settings live in local storage (see ./wallets.ts).
 // - While unlocked, the unlock key (the vault key: it opens every wallet's sealed secret,
 //   without the password) lives in session storage, which Chrome keeps in memory and
-//   clears on browser restart or extension update. Locking deletes it, and any send waiting
-//   for approval. A password change keeps the same vault key.
+//   clears on browser restart or extension update. Locking deletes it and any send waiting
+//   for approval, and rejects every site request still waiting. A password change keeps
+//   the same vault key.
 // - The vault is stateless: every call that needs a key gets the keystore and unlock key
 //   from here. UI pages never see either.
 
@@ -342,6 +343,7 @@ export function createService(d: Deps) {
   }
 
   async function lock(): Promise<UiResponse<Status>> {
+    dapps.rejectAll("The wallet locked.");
     await d.session.remove(["unlock_key", "pending_send", "pending_device"]);
     d.cancelLock();
     d.notify();
@@ -539,7 +541,10 @@ export function createService(d: Deps) {
         return wallets.changePassword(r.password, r.new_password, MIN_PASSWORD);
       case "reset": {
         const out = await wallets.reset(r.password, [...WALLET_KEYS, ...(await snapshots.keys())]);
-        if (out.ok) d.badge?.("");
+        if (out.ok) {
+          dapps.rejectAll("The wallet was reset.");
+          d.badge?.("");
+        }
         return out;
       }
       case "settings":
