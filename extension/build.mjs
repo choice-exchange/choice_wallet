@@ -121,7 +121,9 @@ if (!dev) {
     const entryPoints = readdirSync(join(here, "test"))
       .filter((f) => f.endsWith(".test.ts"))
       .map((f) => join("test", f));
-    await build({ ...common, platform: "node", target: "node22", entryPoints, outdir: out });
+    // react-dom/server (the approval window's render tests) requires Node's built-ins.
+    const banner = { js: 'import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' };
+    await build({ ...common, platform: "node", target: "node22", entryPoints, outdir: out, banner });
     cpSync(join(glue, "choice_wallet_wasm_bg.wasm"), join(out, "choice_wallet_wasm_bg.wasm"));
   }
 } else {

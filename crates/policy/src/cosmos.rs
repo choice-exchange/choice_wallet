@@ -71,6 +71,15 @@ fn grant_finding(rule: &'static str, message: String, params: serde_json::Value)
     }
 }
 
+fn new_contract(contract: &str) -> Finding {
+    finding(
+        "new_contract",
+        Level::Info,
+        format!("First interaction with contract {}.", short(contract)),
+        json!({ "contract": contract }),
+    )
+}
+
 /// `outflows` is `None` inside `MsgExec`, where messages move the granters' funds.
 fn message(
     m: &Msg,
@@ -203,15 +212,26 @@ fn message(
                     },
                     json!({ "collection": contract, "spender": spender, "token_id": token_id }),
                 )),
-                ContractCall::AdapterRedeem { .. } => {}
+                ContractCall::AdapterRedeem { recipient: to } => {
+                    // Redeem-shaped is a shape any contract can take: only the adapter the
+                    // host knows is the wallet's conversion.
+                    if !known_contract(ctx, contract) {
+                        out.push(new_contract(contract));
+                    }
+                    // The CW20 goes to `to`: a send, when that isn't the signer.
+                    if let Some(to) = to.as_deref().filter(|to| !same(to, signer)) {
+                        recipient(ctx, to, Some(memo), out);
+                        out.push(finding(
+                            "redeem_to_other",
+                            Level::Amber,
+                            format!("The CW20 goes to {}, not to this account.", short(to)),
+                            json!({ "contract": contract, "recipient": to }),
+                        ));
+                    }
+                }
                 ContractCall::Other => {
                     if !known_contract(ctx, contract) {
-                        out.push(finding(
-                            "new_contract",
-                            Level::Info,
-                            format!("First interaction with contract {}.", short(contract)),
-                            json!({ "contract": contract }),
-                        ));
+                        out.push(new_contract(contract));
                     }
                 }
             }
@@ -578,6 +598,33 @@ mod tests {
             json: String::new(),
             call,
         }
+    }
+
+    /// F3, F6: a redeem is graded by its effects. Paying someone else is a send to them; a
+    /// redeem-shaped call at a contract the host doesn't know is a new contract.
+    #[test]
+    fn adapter_redeems_are_graded_by_their_effects() {
+        let redeem = |contract: &str, to: Option<&str>| {
+            let m = exec(
+                contract,
+                ContractCall::AdapterRedeem {
+                    recipient: to.map(Into::into),
+                },
+            );
+            let ctx = Context {
+                known_contracts: vec![ADAPTER.into()],
+                ..Default::default()
+            };
+            let a = cosmos(&[m], ME, "", CosmosFee::default(), &ctx);
+            (a.level, a.findings.iter().map(|f| f.rule).collect::<Vec<_>>())
+        };
+        // The wallet's own conversion: nothing to say.
+        assert_eq!(redeem(ADAPTER, None), (Level::Info, vec![]));
+        assert_eq!(redeem(ADAPTER, Some(ME)), (Level::Info, vec![]));
+        // To someone else, through the real adapter.
+        assert_eq!(redeem(ADAPTER, Some(OTHER)), (Level::Amber, vec!["redeem_to_other"]));
+        // The same shape at another contract.
+        assert_eq!(redeem(OTHER, None), (Level::Info, vec!["new_contract"]));
     }
 
     #[test]

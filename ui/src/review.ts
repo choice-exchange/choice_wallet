@@ -92,6 +92,9 @@ export type Shown = {
   fee: Coin[];
   memo: string;
   evm: boolean;
+  /** For Cosmos: the messages a send or conversion card above stands for, by index. Any
+   *  other message is shown in full. */
+  carded?: Set<number>;
 };
 
 const obj = (v: unknown): Record<string, unknown> | null => (typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : null);
@@ -184,8 +187,9 @@ export function shown(display: SendReview["display"], network: NetworkId, swap?:
     return { ...base, sends: [], others: [`Contract call to ${d.to}`] };
   }
   const c = display as CosmosDisplay;
-  const out: Shown = { sends: [], nfts: [], moves: [], swaps: [], bridges: [], mints: [], approvals: [], converts: [], stakes: [], revokes: [], votes: [], others: [], fee: c.fee.amount, memo: c.memo, evm: false };
-  for (const msg of c.messages) {
+  const carded = new Set<number>();
+  const out: Shown = { sends: [], nfts: [], moves: [], swaps: [], bridges: [], mints: [], approvals: [], converts: [], stakes: [], revokes: [], votes: [], others: [], fee: c.fee.amount, memo: c.memo, evm: false, carded };
+  for (const [i, msg] of c.messages.entries()) {
     const m = msg as Record<string, unknown>;
     const kind = STAKE_KINDS[String(m["type"])];
     const validator = text(m["validator"]) ?? text(m["from_validator"]);
@@ -233,6 +237,7 @@ export function shown(display: SendReview["display"], network: NetworkId, swap?:
     }
     if (m["type"] === "bank_send" && text(m["to"])) {
       out.sends.push({ coins: coins(m["amount"]), to: text(m["to"])! });
+      carded.add(i);
       continue;
     }
     const contract = text(m["contract"]);
@@ -248,11 +253,13 @@ export function shown(display: SendReview["display"], network: NetworkId, swap?:
       // A CW20 transfer moves the token held in `contract`.
       if (call["type"] === "cw20_transfer" && amount && text(call["recipient"]) && funds.length === 0) {
         out.sends.push({ coins: [{ denom: cw20Denom(contract), amount }], to: text(call["recipient"])! });
+        carded.add(i);
         continue;
       }
       // Sending a CW20 to the adapter (with an empty message) mints its bank form to the sender.
       if (call["type"] === "cw20_send" && amount && call["contract"] === net.cw20Adapter && call["msg"] === "" && funds.length === 0) {
         out.converts.push({ from: { denom: cw20Denom(contract), amount }, to: { denom: adapterDenom(network, contract), amount }, recipient: c.signer });
+        carded.add(i);
         continue;
       }
       // Redeeming at the adapter burns the attached bank form and returns the CW20.
@@ -260,6 +267,7 @@ export function shown(display: SendReview["display"], network: NetworkId, swap?:
         const inner = adapterCw20(network, funds[0]!.denom);
         if (inner) {
           out.converts.push({ from: funds[0]!, to: { denom: cw20Denom(inner), amount: funds[0]!.amount }, recipient: text(call["recipient"]) ?? c.signer });
+          carded.add(i);
           continue;
         }
       }

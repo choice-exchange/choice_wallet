@@ -171,7 +171,8 @@ export function createDapps(h: DappHost) {
     } catch (e) {
       if (!(e instanceof Unreachable || e instanceof ChainError)) throw e;
     }
-    return { origin, origin_known: known, balances, ...(await h.sender.riskFacts(network, null)) };
+    // The pinned CW20 adapter is the wallet's conversion; any other redeem-shaped contract is new.
+    return { origin, origin_known: known, balances, known_contracts: [net.cw20Adapter], ...(await h.sender.riskFacts(network, null)) };
   }
 
   async function answer(id: unknown, approve: unknown, digest: unknown, confirm: unknown): Promise<Result<{ done: true; hash?: string } | { device: DeviceRequest }>> {

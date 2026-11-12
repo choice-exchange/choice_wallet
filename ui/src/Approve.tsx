@@ -228,7 +228,7 @@ export function ApproveView({ id }: { id: string }) {
   );
 }
 
-function SignBody({ review, network, typed, onTyped }: { review: DappReview; network: NetworkId; typed: string; onTyped: (s: string) => void }) {
+export function SignBody({ review, network, typed, onTyped }: { review: DappReview; network: NetworkId; typed: string; onTyped: (s: string) => void }) {
   const { risk, tokens, display } = review;
   const d = display as Record<string, unknown>;
   const net = NETWORKS[network];
@@ -252,6 +252,10 @@ function SignBody({ review, network, typed, onTyped }: { review: DappReview; net
   const isTx = d["kind"] === "evm_transaction" || d["kind"] === "cosmos_direct" || d["kind"] === "cosmos_amino" || solana || txLike !== null;
   const view = isTx ? shown((txLike ?? display) as CosmosDisplay, network) : null;
   const messages = (txLike ?? (display as CosmosDisplay)).messages ?? [];
+  // The signer's bech32 address. Typed data names it in 0x form; its messages' senders are
+  // the signer (the vault checks).
+  const sender = messages.map((m) => (m as { sender?: unknown }).sender).find((x): x is string => typeof x === "string");
+  const me = (txLike ? sender : undefined) ?? String(d["signer"] ?? "");
 
   return (
     <>
@@ -309,6 +313,11 @@ function SignBody({ review, network, typed, onTyped }: { review: DappReview; net
           </div>
           <div className="eyebrow">You get · {formName(cv.to.denom)}</div>
           <Figure coin={cv.to} t={tokens[cv.to.denom]} />
+          {cv.recipient.toLowerCase() !== me.toLowerCase() && (
+            <div className="meta" style={{ marginTop: 8, wordBreak: "break-all" }}>
+              Delivered to {cv.recipient}
+            </div>
+          )}
         </div>
       ))}
 
@@ -324,15 +333,10 @@ function SignBody({ review, network, typed, onTyped }: { review: DappReview; net
           </ul>
         </div>
       )}
+      {/* Every message no card above stands for, in full. */}
       {isTx &&
         d["kind"] !== "evm_transaction" &&
-        messages
-          .filter((m) => {
-            // Anything the cards above didn't show, in full.
-            const call = (m as { call?: { type?: string } }).call?.type;
-            return !(m.type === "bank_send" || (m.type === "execute_contract" && (call === "cw20_transfer" || call === "cw20_send" || call === "adapter_redeem") && view && (view.sends.length || view.converts.length)));
-          })
-          .map((m, i) => <MessageCard key={`m${i}`} m={m as Record<string, unknown>} />)}
+        messages.map((m, i) => (view?.carded?.has(i) ? null : <MessageCard key={`m${i}`} m={m as Record<string, unknown>} />))}
 
       {(d["kind"] === "evm_personal_sign" || d["kind"] === "cosmos_arbitrary" || d["kind"] === "solana_message") && (
         <div className="surface-hero">
