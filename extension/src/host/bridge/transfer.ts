@@ -564,7 +564,10 @@ export function createTransfers(c: BridgeContext) {
     const at = { ...base, to: to.key };
     if (m.forwardState === "CONFIRMED" && m.forwardTxHash) {
       await forget(hash);
-      return { ok: true, result: { ...at, phase: "delivered", mintTx: m.forwardTxHash, mintUrl: to.explorerTx.replace("{hash}", m.forwardTxHash) } };
+      // Circle's word for the mint goes into a link only if it has the form of a hash there.
+      const form = to.kind === "solana" ? /^[1-9A-HJ-NP-Za-km-z]{64,88}$/ : /^0x[0-9a-fA-F]{64}$/;
+      const tx = typeof m.forwardTxHash === "string" && form.test(m.forwardTxHash) ? m.forwardTxHash : null;
+      return { ok: true, result: { ...at, phase: "delivered", ...(tx ? { mintTx: tx, mintUrl: to.explorerTx.replace("{hash}", tx) } : {}) } };
     }
     // Solana's mint is Circle's to make here; on an EVM chain the nonce says if anyone did.
     if (to.kind === "solana") return { ok: true, result: { ...at, phase: m.forwardState === "FAILED" ? "stuck" : "delivering" } };

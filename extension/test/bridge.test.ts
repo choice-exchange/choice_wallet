@@ -111,6 +111,10 @@ test("Injective to its own address on Base: approve exactly, then the burn Circl
   let s = ok<Status>(await service.handle({ type: "bridge_status", from: "injective", hash: sent.hash }));
   assert.deepEqual([s.phase, s.track], ["pending", `https://bridge.choice.exchange/tx/29/${sent.hash}`]);
   const mint = `0x${"6b".repeat(32)}`;
+  // Hardening: Circle's mint hash goes into the explorer link only in a hash's form.
+  net.state.iris[sent.hash] = [{ ...attestedMessage(ME_EVM, 25_000_000n, `0x${"5c".repeat(32)}`, { source: 29, destination: 6, token: USDC_ERC20 }), forwardState: "CONFIRMED", forwardTxHash: `${mint}/../../address/x?y` }];
+  s = ok<Status>(await service.handle({ type: "bridge_status", from: "injective", hash: sent.hash }));
+  assert.deepEqual([s.phase, s.mintTx, s.mintUrl], ["delivered", undefined, undefined]);
   net.state.iris[sent.hash] = [{ ...attestedMessage(ME_EVM, 25_000_000n, `0x${"5c".repeat(32)}`, { source: 29, destination: 6, token: USDC_ERC20 }), forwardState: "CONFIRMED", forwardTxHash: mint }];
   s = ok<Status>(await service.handle({ type: "bridge_status", from: "injective", hash: sent.hash }));
   assert.deepEqual([s.phase, s.to, s.mintTx, s.mintUrl], ["delivered", "base", mint, `https://basescan.org/tx/${mint}`]);
