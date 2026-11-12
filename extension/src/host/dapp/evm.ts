@@ -10,7 +10,7 @@ import { addedKey, chainByKey, ChainError, chainList, checkAddedChain, erc20Meta
 import type { AccountInfo, NewChain, TokenInfo } from "@choice-wallet/ui/protocol";
 
 import { cleanName } from "../addedchains";
-import { CHAIN_DISCONNECTED, INVALID_PARAMS, no, quantity, UNAUTHORIZED, UNRECOGNIZED_CHAIN, UNSUPPORTED, type DappReply, type Named, type SiteCore } from "./shared";
+import { CHAIN_DISCONNECTED, INVALID_PARAMS, MAX_ARBITRARY, MAX_TYPED, no, quantity, UNAUTHORIZED, UNRECOGNIZED_CHAIN, UNSUPPORTED, type DappReply, type Named, type SiteCore } from "./shared";
 
 /** Read-only JSON-RPC methods passed to the user's own EVM endpoints. */
 const READS = new Set([
@@ -295,6 +295,7 @@ export function createEvmSite(core: SiteCore) {
     if (method === "personal_sign") {
       const [message, address] = list;
       if (typeof message !== "string") return no(INVALID_PARAMS, "personal_sign takes [message, address].");
+      if (message.length > 2 * MAX_ARBITRARY + 2) return no(INVALID_PARAMS, `personal_sign takes at most ${MAX_ARBITRARY} bytes.`);
       if (!(await mine(address))) return no(UNAUTHORIZED, "personal_sign: that address isn't this wallet's connected account.");
       return sign(
         origin,
@@ -308,6 +309,7 @@ export function createEvmSite(core: SiteCore) {
     const [address, typed] = list;
     if (!(await mine(address))) return no(UNAUTHORIZED, "eth_signTypedData_v4: that address isn't this wallet's connected account.");
     if (typeof typed !== "string" && !isObject(typed)) return no(INVALID_PARAMS, "eth_signTypedData_v4 takes [address, typed data].");
+    if ((typeof typed === "string" ? typed : JSON.stringify(typed)).length > MAX_TYPED) return no(INVALID_PARAMS, `Typed data is limited to ${MAX_TYPED / 1024} KiB.`);
     return sign(
       origin,
       "evm_typed_data",

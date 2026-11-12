@@ -56,6 +56,9 @@ pub struct TypedData {
     primary_type: String,
     domain: Map<String, Value>,
     message: Value,
+    /// Each struct type's `typeHash`, computed once: a struct value costs only its own
+    /// fields to hash, however many types its type references.
+    type_hashes: BTreeMap<String, [u8; 32]>,
 }
 
 const DOMAIN_FIELDS: [(&str, &str); 5] = [
@@ -128,11 +131,12 @@ impl TypedData {
                 .collect();
             types.insert("EIP712Domain".into(), derived);
         }
-        let td = Self {
+        let mut td = Self {
             types,
             primary_type,
             domain,
             message,
+            type_hashes: BTreeMap::new(),
         };
         // Validate every type reference up front, and the whole message by hashing it.
         for fields in td.types.values() {
@@ -141,6 +145,12 @@ impl TypedData {
             }
         }
         td.check_type(&td.primary_type)?;
+        let hashes = td
+            .types
+            .keys()
+            .map(|name| Ok((name.clone(), keccak256(td.encode_type(name)?.as_bytes()))))
+            .collect::<Result<BTreeMap<_, _>>>()?;
+        td.type_hashes = hashes;
         td.hash()?;
         Ok(td)
     }
@@ -247,7 +257,12 @@ impl TypedData {
         if let Some(k) = obj.keys().find(|k| !fields.iter().any(|f| &f.name == *k)) {
             return Err(bad(path, &format!("field {k:?} is not in type {ty}")));
         }
-        let mut enc = keccak256(self.encode_type(ty)?.as_bytes()).to_vec();
+        let type_hash = self
+            .type_hashes
+            .get(ty)
+            .ok_or_else(|| TypedDataError::Type(ty.into()))?;
+        let mut enc = Vec::with_capacity(32 * (fields.len() + 1));
+        enc.extend_from_slice(type_hash);
         for f in fields {
             let p = format!("{path}.{}", f.name);
             let v = obj.get(&f.name).ok_or_else(|| bad(&p, "missing"))?;
@@ -475,6 +490,50 @@ mod tests {
         "contents": "Hello, Bob!"
       }
     }"#;
+
+    /// F13: a struct's typeHash is computed once per type, not once per value, so many small
+    /// values of a type with large dependencies cost what the same values cost with small ones.
+    #[test]
+    fn many_values_of_a_type_with_large_dependencies_hash_quickly() {
+        let typed = |fields_per_dep: usize| {
+            let mut types = serde_json::Map::new();
+            let mut x = vec![];
+            for t in 0..20 {
+                let fields: Vec<Value> = (0..fields_per_dep)
+                    .map(|f| serde_json::json!({ "name": format!("f{f}"), "type": "uint256" }))
+                    .collect();
+                types.insert(format!("T{t}"), Value::Array(fields));
+                x.push(serde_json::json!({ "name": format!("x{t}"), "type": format!("T{t}[]") }));
+            }
+            types.insert("X".into(), Value::Array(x));
+            types.insert("Main".into(), serde_json::json!([{ "name": "items", "type": "X[]" }]));
+            types.insert(
+                "EIP712Domain".into(),
+                serde_json::json!([{ "name": "name", "type": "string" }]),
+            );
+            let item: serde_json::Map<String, Value> =
+                (0..20).map(|t| (format!("x{t}"), Value::Array(vec![]))).collect();
+            serde_json::json!({
+                "types": types,
+                "primaryType": "Main",
+                "domain": { "name": "Load" },
+                "message": { "items": vec![Value::Object(item); 500] },
+            })
+            .to_string()
+        };
+        let time = |td: &str| {
+            let t0 = std::time::Instant::now();
+            TypedData::parse(td).unwrap().hash().unwrap();
+            t0.elapsed()
+        };
+        let (small, large) = (typed(1), typed(100));
+        let base = time(&small);
+        let heavy = time(&large);
+        assert!(
+            heavy < base * 3,
+            "{heavy:?} with large dependencies vs {base:?} with small"
+        );
+    }
 
     #[test]
     fn eip712_spec_example() {

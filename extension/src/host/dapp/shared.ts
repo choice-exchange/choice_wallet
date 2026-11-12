@@ -27,6 +27,8 @@ export const no = (code: number, message: string): DappReply => ({ error: { code
 
 /** The most data `signArbitrary` signs (the vault's own limit). */
 export const MAX_ARBITRARY = 64 * 1024;
+/** The most typed data a site may ask to sign, as JSON: decoding it holds the worker. */
+export const MAX_TYPED = 128 * 1024;
 
 export interface DappHost {
   vault<T>(method: string, params?: unknown): Promise<Result<T>>;

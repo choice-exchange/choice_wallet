@@ -394,6 +394,17 @@ test("only the account a site named answers its signature request", async () => 
   assert.equal((await page(SITE)("personal_sign", ["0x6869", ""])).error?.code, 4100);
 });
 
+// F13: oversized typed data (and personal_sign messages) are refused before they reach
+// the vault, so a site can't hold the worker with one.
+test("oversized typed data and messages are refused before any window", async () => {
+  const { page, ui } = await connected();
+  const opened = ui.opened.length;
+  const td = { types: { EIP712Domain: [], M: [{ name: "s", type: "string" }] }, primaryType: "M", domain: {}, message: { s: "a".repeat(200_000) } };
+  assert.equal((await page(SITE)("eth_signTypedData_v4", [ME_EVM, JSON.stringify(td)])).error?.code, -32602);
+  assert.equal((await page(SITE)("personal_sign", [`0x${"61".repeat(70_000)}`, ME_EVM])).error?.code, -32602);
+  assert.equal(ui.opened.length, opened);
+});
+
 test("only a tab's top frame, at https (or http on this machine), is a site", () => {
   const ext = "abcdefghijklmnopabcdefghijklmnop";
   const s = (o: Record<string, unknown>) => ({ id: ext, tab: {}, frameId: 0, origin: "https://app.example", url: "https://app.example/swap", ...o });
