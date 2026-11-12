@@ -50,7 +50,7 @@ export function ApprovalsView({ canSign, onReview, onBack }: { canSign: boolean;
     ...(s.rewardsTo ? [{ type: "rewards" as const }] : []),
     ...s.grants.filter((g) => g.msgTypeUrl).map((g) => ({ type: "authz" as const, grantee: g.grantee, msg_type_url: g.msgTypeUrl! })),
     ...s.feeGrants.map((g) => ({ type: "fee" as const, grantee: g.grantee })),
-    ...s.cw20.map((a) => ({ type: "cw20" as const, contract: a.token.slice(5), spender: a.spender, amount: a.amount })),
+    ...s.cw20.map((a) => ({ type: "cw20" as const, contract: a.token.slice(5), spender: a.spender })),
   ].slice(0, 30);
   const nothing = !s.rewardsTo && s.grants.length === 0 && s.feeGrants.length === 0 && s.cw20.length === 0 && s.erc20.length === 0;
   const pill = (label: string, onClick: () => void) =>
@@ -143,7 +143,7 @@ export function ApprovalsView({ canSign, onReview, onBack }: { canSign: boolean;
                     {shortAddress(a.spender)} may take {amount(a.token, a.amount)}
                   </span>
                 </span>
-                {pill(`Revoke ${symbol(a.token)} allowance for ${a.spender}`, () => void revoke([{ type: "cw20", contract: a.token.slice(5), spender: a.spender, amount: a.amount }]))}
+                {pill(`Revoke ${symbol(a.token)} allowance for ${a.spender}`, () => void revoke([{ type: "cw20", contract: a.token.slice(5), spender: a.spender }]))}
               </div>
             ))}
             {s.erc20.map((a, i) => (

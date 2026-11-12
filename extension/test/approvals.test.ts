@@ -81,7 +81,7 @@ test("revoke: the Cosmos side in one transaction, graded Info, signed as reviewe
         { type: "authz", grantee: THEM, msg_type_url: "/cosmos.bank.v1beta1.MsgSend" },
         { type: "fee", grantee: THEM },
         { type: "rewards" },
-        { type: "cw20", contract: CW, spender: THEM, amount: "500" },
+        { type: "cw20", contract: CW, spender: THEM },
       ],
     }),
   );
@@ -99,8 +99,11 @@ test("revoke: the Cosmos side in one transaction, graded Info, signed as reviewe
   for (const t of ["/cosmos.authz.v1beta1.MsgRevoke", "/cosmos.feegrant.v1beta1.MsgRevokeAllowance", "/cosmos.distribution.v1beta1.MsgSetWithdrawAddress", "decrease_allowance"]) {
     assert.ok(tx.includes(Buffer.from(t)), t);
   }
+  // Hardening: down by the most there can be, so an LCD that under-reports the allowance
+  // can't leave some of it in place.
+  assert.ok(tx.includes(Buffer.from('"amount":"340282366920938463463374607431768211455"')), "decreased by the maximum");
 
-  for (const bad of [[], [{ type: "authz", grantee: THEM, msg_type_url: "MsgSend" }], [{ type: "cw20", contract: CW, spender: THEM, amount: "0" }], [{ type: "grant_all" }]]) {
+  for (const bad of [[], [{ type: "authz", grantee: THEM, msg_type_url: "MsgSend" }], [{ type: "cw20", contract: CW, spender: "" }], [{ type: "grant_all" }]]) {
     assert.equal(code(await service.handle({ type: "prepare_revoke", items: bad as never })), "bad_request", JSON.stringify(bad));
   }
 });

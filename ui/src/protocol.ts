@@ -688,7 +688,7 @@ export type RevokeItem =
   | { type: "authz"; grantee: string; msg_type_url: string }
   | { type: "fee"; grantee: string }
   | { type: "rewards" }
-  | { type: "cw20"; contract: string; spender: string; amount: string };
+  | { type: "cw20"; contract: string; spender: string };
 
 export type ValidatorInfo = {
   address: string;

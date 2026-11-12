@@ -21,6 +21,8 @@ type Sender = ReturnType<typeof createSender>;
 export const MAX_REVOKES = 30;
 /** CW20 contracts asked at once. */
 const CW20_PARALLEL = 6;
+/** The largest CW20 amount (Uint128). */
+const CW20_MAX = "340282366920938463463374607431768211455";
 
 const TYPE_URL = /^\/[A-Za-z0-9._]{1,127}$/;
 
@@ -115,8 +117,10 @@ export function createApprovals(sender: Sender) {
           messages.push({ type: "reset_withdraw_address" });
           break;
         case "cw20":
-          if (!str(raw.contract) || !str(raw.spender) || !/^[1-9][0-9]{0,77}$/.test(String(raw.amount))) return fail("bad_request", "Not an allowance.");
-          messages.push({ type: "cw20_decrease_allowance", contract: raw.contract, spender: raw.spender, amount: raw.amount });
+          // Down by the most a CW20 amount can be, not by what the LCD said is left: the
+          // contract clears the allowance whatever it really is.
+          if (!str(raw.contract) || !str(raw.spender)) return fail("bad_request", "Not an allowance.");
+          messages.push({ type: "cw20_decrease_allowance", contract: raw.contract, spender: raw.spender, amount: CW20_MAX });
           break;
         default:
           return fail("bad_request", "Unknown revoke.");
