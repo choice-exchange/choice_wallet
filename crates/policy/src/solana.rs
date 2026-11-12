@@ -394,22 +394,38 @@ pub fn solana_transaction(r: &Read, signer: &Pubkey, c: &Cctp, ctx: &Context) ->
     Assessment::from(out)
 }
 
+/// Who a handover finding hands to, as its params name them.
+fn handed_to(f: &Finding) -> Option<&str> {
+    ["delegate", "new_authority", "owner", "to"]
+        .iter()
+        .find_map(|k| f.params.get(*k).and_then(|v| v.as_str()))
+}
+
+/// Whether `said`, from the instructions, already tells what `f` would: the same handover
+/// (an unlimited delegate covers a limited one) of the same account to the same party, at
+/// least as loud. A weaker or different one never hides the simulation's.
+fn covers(said: &Finding, f: &Finding) -> bool {
+    let rule = said.rule == f.rule || (f.rule == "solana_delegate" && said.rule == "solana_unlimited_delegate");
+    rule && said.level >= f.level
+        && handed_to(said).is_some()
+        && handed_to(said) == handed_to(f)
+        && account_of(said).is_none_or(|a| account_of(f) == Some(a))
+}
+
+fn account_of(f: &Finding) -> Option<&str> {
+    f.params.get("account").and_then(|v| v.as_str())
+}
+
 /// Findings for what the host's simulation shows the transaction hands over, the same as
-/// for the instructions that would say so, unless one already did.
+/// for the instructions that would say so, unless one already says it.
 fn handovers(ctx: &Context, out: &mut Vec<Finding>) {
     for h in &ctx.solana_handovers {
         let account = h.account.as_deref();
-        let said = |out: &[Finding], rules: &[&str]| {
-            out.iter().any(|f| {
-                rules.contains(&f.rule)
-                    && account.is_none_or(|a| f.params.get("account").and_then(|v| v.as_str()) == Some(a))
-            })
-        };
         let to = base58::decode32(&h.to).map_or_else(|| short(&h.to), |p| program_name(&p));
         let token = h.mint.as_deref().map_or("this token", |m| ctx.token_name(m));
         let params = json!({ "account": account, "to": h.to, "token": h.mint, "simulated": true });
         let f = match h.kind.as_str() {
-            "assign" if !said(out, &["solana_assign"]) => {
+            "assign" => {
                 let mut f = finding(
                     "solana_assign",
                     Level::Red,
@@ -419,7 +435,7 @@ fn handovers(ctx: &Context, out: &mut Vec<Finding>) {
                 f.confirm = Some("GIVE");
                 f
             }
-            "token_owner" if !said(out, &["solana_token_account_owner"]) => {
+            "token_owner" => {
                 let mut f = finding(
                     "solana_token_account_owner",
                     Level::Red,
@@ -429,7 +445,7 @@ fn handovers(ctx: &Context, out: &mut Vec<Finding>) {
                 f.confirm = Some("GIVE");
                 f
             }
-            "delegate" if !said(out, &["solana_unlimited_delegate", "solana_delegate"]) => {
+            "delegate" => {
                 if h.all {
                     finding(
                         "solana_unlimited_delegate",
@@ -446,7 +462,7 @@ fn handovers(ctx: &Context, out: &mut Vec<Finding>) {
                     )
                 }
             }
-            "close_authority" if !said(out, &["solana_close_authority"]) => finding(
+            "close_authority" => finding(
                 "solana_close_authority",
                 Level::Amber,
                 format!("Lets {to} close this token account and take its SOL."),
@@ -454,7 +470,9 @@ fn handovers(ctx: &Context, out: &mut Vec<Finding>) {
             ),
             _ => continue,
         };
-        out.push(f);
+        if !out.iter().any(|said| covers(said, &f)) {
+            out.push(f);
+        }
     }
 }
 
@@ -637,6 +655,45 @@ mod tests {
             .2,
             Some("solana_close_authority")
         );
+    }
+
+    /// Review: a readable small Approve hid the simulation's unlimited delegate, to another
+    /// party or the same one, because any delegate finding on the account counted as said.
+    #[test]
+    fn a_weaker_instruction_never_hides_what_the_simulation_hands_over() {
+        let source = [3; 32];
+        let approve = |amount| Instruction::TokenApprove {
+            program: TOKEN.key(),
+            source,
+            delegate: THEM,
+            owner: ME,
+            amount,
+            mint: None,
+            decimals: None,
+        };
+        let grade = |amount: u64, to: [u8; 32]| {
+            let r = tx(&[ME], vec![approve(amount), Instruction::Other { program: [0x42; 32] }]);
+            let ctx = Context {
+                solana_handovers: vec![crate::SolanaHandover {
+                    kind: "delegate".into(),
+                    account: Some(b58(&source)),
+                    to: b58(&to),
+                    all: true,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            let a = solana_transaction(&r, &ME, &MAINNET, &ctx);
+            let simulated = a.findings.iter().filter(|f| f.params["simulated"] == true).count();
+            (a.level, simulated)
+        };
+        let other = [0x55; 32];
+        // A small Approve to THEM, while the simulation shows another party may take it all.
+        assert_eq!(grade(1, other), (Level::Red, 1));
+        // A small Approve to THEM that the simulation shows is all of it.
+        assert_eq!(grade(1, THEM), (Level::Red, 1));
+        // An unlimited Approve already says it: the simulation adds nothing.
+        assert_eq!(grade(u64::MAX, THEM), (Level::Red, 0));
     }
 
     #[test]
