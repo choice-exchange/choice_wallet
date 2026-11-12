@@ -13,7 +13,7 @@ import { useEffect, useState, type ReactNode } from "react";
 
 import { useBackend } from "./backend";
 import { ArrowDownIcon, CheckIcon, GlobeIcon, LockIcon } from "./icons";
-import { Callout, Screen, shortAddress, tokenSub } from "./kit";
+import { Callout, Phrase, Screen, shortAddress, tokenSub } from "./kit";
 import { DeviceStep } from "./Ledger";
 import type { Coin, CosmosDisplay, DappRequest, DappReview, DeviceRequest, DeviceSignature, ListedChain, NetworkId, NewChain, Status, TokenInfo } from "./protocol";
 import { shown } from "./review";
@@ -166,6 +166,7 @@ export function ApproveView({ id }: { id: string }) {
           <button className="btn btn-quiet" disabled={busy} onClick={() => void answer(false)}>
             Reject
           </button>
+          <Phrase phrase={status?.phrase} />
         </>
         )
       }

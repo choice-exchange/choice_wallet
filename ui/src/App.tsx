@@ -5,7 +5,7 @@ import { useEffect, useState, type FormEvent } from "react";
 
 import mark from "./assets/choice-mark.svg";
 import { useBackend } from "./backend";
-import { BackBar, Callout, Screen } from "./kit";
+import { BackBar, Callout, Phrase, Screen } from "./kit";
 import type { NewSecret, Reply, Result, Status, UiRequest } from "./protocol";
 import { Wallet } from "./Wallet";
 
@@ -19,7 +19,7 @@ type View =
   | { name: "confirm"; phrase: string }
   | { name: "import"; what: "mnemonic" | "private_key" }
   | { name: "password"; secret: NewSecret; created: boolean }
-  | { name: "unlock" }
+  | { name: "unlock"; phrase: string }
   | { name: "home"; status: Status };
 
 const MIN_PASSWORD = 8;
@@ -32,7 +32,7 @@ export function App() {
 
   function show(s: Status) {
     setError(null);
-    setView(s.unlocked ? { name: "home", status: s } : s.hasWallet ? { name: "unlock" } : { name: "welcome" });
+    setView(s.unlocked ? { name: "home", status: s } : s.hasWallet ? { name: "unlock", phrase: s.phrase } : { name: "welcome" });
   }
   function go(v: View) {
     setError(null);
@@ -119,7 +119,7 @@ export function App() {
         />
       );
     case "unlock":
-      return <Unlock busy={busy} error={error} onSubmit={(password) => void run({ type: "unlock", password }, show)} />;
+      return <Unlock busy={busy} error={error} phrase={view.phrase} onSubmit={(password) => void run({ type: "unlock", password }, show)} />;
     case "home":
       return (
         <Wallet
@@ -323,7 +323,7 @@ function SetPassword({
   );
 }
 
-function Unlock({ busy, error, onSubmit }: { busy: boolean; error: string | null; onSubmit: (password: string) => void }) {
+function Unlock({ busy, error, phrase, onSubmit }: { busy: boolean; error: string | null; phrase: string; onSubmit: (password: string) => void }) {
   const [p, setP] = useState("");
   return (
     <form
@@ -349,6 +349,7 @@ function Unlock({ busy, error, onSubmit }: { busy: boolean; error: string | null
               <img className="logo" src={mark} alt="" />
             </span>
           <h1 className="page-title">Welcome back</h1>
+          <Phrase phrase={phrase} />
           <input
             className="input"
             type="password"

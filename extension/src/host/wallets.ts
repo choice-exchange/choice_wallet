@@ -133,10 +133,26 @@ export function createWallets(h: WalletsHost) {
     return chainByKey(await h.network(), chain) ? (chain as string) : "injective";
   }
 
+  /** This install's anti-phishing phrase, made once: three random words. Only the wallet's
+   *  pages read it (sites never get a status; content scripts can't read local storage). */
+  let making: Promise<string> | null = null;
+  async function phrase(): Promise<string> {
+    const { anti_phishing } = await h.local.get(["anti_phishing"]);
+    if (typeof anti_phishing === "string" && anti_phishing) return anti_phishing;
+    making ??= (async () => {
+      const g = await h.vault<{ phrase: string }>("generate_mnemonic", { words: 12 });
+      const words = g.ok ? g.result.phrase.split(" ").slice(0, 3).join(" ") : "";
+      if (words) await h.local.set({ anti_phishing: words });
+      return words;
+    })().finally(() => (making = null));
+    return making;
+  }
+
   async function status(): Promise<Status> {
     const s = await stored();
     const unlocked = Boolean(s.vault) && (await unlockKey()) !== undefined;
     return {
+      phrase: await phrase(),
       hasWallet: Boolean(s.vault || s.keystore),
       unlocked,
       network: await h.network(),

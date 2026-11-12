@@ -9,6 +9,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import { Origin, SignBody } from "../../ui/src/Approve";
+import { Phrase } from "../../ui/src/kit";
 import type { DappReview, NetworkId } from "../../ui/src/protocol";
 
 import { chain, ME, ME_EVM, ok, THEM, wallet } from "./fake";
@@ -205,4 +206,10 @@ test("the window shows a long host whole, its registered domain set apart", () =
   const html = renderToStaticMarkup(createElement(Origin, { origin }));
   assert.equal(html.replace(/<[^>]+>/g, ""), origin.slice("https://".length));
   assert.match(html, /<span class="origin-head">app\.uniswap\.org\.[^<]*<\/span>evil\.example<\/span>$/, html);
+});
+
+test("the anti-phishing phrase renders on the wallet's screens", () => {
+  const html = renderToStaticMarkup(createElement(Phrase, { phrase: "abandon ability able" }));
+  assert.match(html.replace(/<[^>]+>/g, ""), /^Your phrase: abandon ability able\. Wrong or missing\? Not Choice Wallet\.$/);
+  assert.equal(renderToStaticMarkup(createElement(Phrase, { phrase: undefined })), "");
 });

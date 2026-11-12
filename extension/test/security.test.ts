@@ -115,5 +115,20 @@ test("reset keeps the device's settings and nothing else of the wallet's", async
   const { service, local } = await wallet();
   await local.set({ some_future_record: { about: "an account" }, cache_unindexed: { x: 1 }, auto_lock: 60, endpoints: { mainnet: ["https://example.org"] }, "solana_token:mainnet:abc": { symbol: "X" } });
   ok(await service.handle({ type: "reset", password: PASSWORD }));
-  assert.deepEqual([...local.data.keys()].sort(), ["auto_lock", "endpoints", "solana_token:mainnet:abc"]);
+  assert.deepEqual([...local.data.keys()].sort(), ["anti_phishing", "auto_lock", "endpoints", "solana_token:mainnet:abc"]);
+});
+
+// SECURITY.md promises an anti-phishing phrase: a page drawing a look-alike unlock screen or
+// approval window can't know it. One per install, the same every time, kept by reset.
+test("each install has an anti-phishing phrase, kept across lock and reset", async () => {
+  const { service } = await wallet();
+  const phrase = ok<Status>(await service.handle({ type: "status" })).phrase;
+  assert.match(phrase, /^[a-z]+ [a-z]+ [a-z]+$/);
+  ok(await service.handle({ type: "lock" }));
+  assert.equal(ok<Status>(await service.handle({ type: "status" })).phrase, phrase);
+  ok(await service.handle({ type: "reset", password: PASSWORD }));
+  assert.equal(ok<Status>(await service.handle({ type: "status" })).phrase, phrase);
+  // Another install has its own.
+  const other = await wallet();
+  assert.notEqual(ok<Status>(await other.service.handle({ type: "status" })).phrase, phrase);
 });

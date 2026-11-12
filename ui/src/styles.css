@@ -641,3 +641,12 @@ details.raw summary {
 .quick-actions.three { grid-template-columns: repeat(3, 1fr); }
 .quick-actions.two { grid-template-columns: repeat(2, 1fr); }
 .chain-mark.add { background: var(--inner); border: 1px dashed var(--dim); color: var(--muted); }
+
+/* The anti-phishing phrase on the wallet's own screens. */
+.phrase-line {
+  text-align: center;
+  margin: 8px 0 0;
+}
+.phrase-line strong {
+  color: var(--text);
+}

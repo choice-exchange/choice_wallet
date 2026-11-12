@@ -79,7 +79,7 @@ const WALLET_KEYS = ["vault", "wallets", "keystore", "kind", "accounts", "active
 
 /** What a reset keeps: the device's settings, and caches of public data (token details,
  *  pairs, prices). Everything else in local storage goes. */
-const DEVICE_KEYS = new Set(["network", "chain", "endpoints", "evm_endpoints", "evm_index", "solana_endpoints", "chain_endpoints", "chain_history", "added_chains", "auto_lock", "notify", "prices", "dev_reopen", "cache_tokens", "cache_erc20", "cache_pairs", "cache_prices", "choice_seen"]);
+const DEVICE_KEYS = new Set(["network", "chain", "endpoints", "evm_endpoints", "evm_index", "solana_endpoints", "chain_endpoints", "chain_history", "added_chains", "auto_lock", "notify", "prices", "dev_reopen", "cache_tokens", "cache_erc20", "cache_pairs", "cache_prices", "choice_seen", "anti_phishing"]);
 const DEVICE_PREFIXES = ["solana_token:"];
 
 /** The tokens seen for each Solana account, one key per network and owner. */

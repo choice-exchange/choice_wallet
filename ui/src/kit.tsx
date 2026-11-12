@@ -107,6 +107,17 @@ export function tokenSub(t: { denom: string; name: string; known: boolean }): st
   return shortDenom(t.denom);
 }
 
+/** The install's anti-phishing phrase, on the wallet's own screens: a page drawing a
+ *  look-alike can't know it. */
+export function Phrase({ phrase }: { phrase: string | undefined }) {
+  if (!phrase) return null;
+  return (
+    <p className="meta phrase-line">
+      Your phrase: <strong>{phrase}</strong>. Wrong or missing? Not Choice Wallet.
+    </p>
+  );
+}
+
 /** `inj1npvwllfr…re90dz`: enough of both ends to check by eye. */
 export function shortAddress(a: string): string {
   return a.length > 20 ? `${a.slice(0, 10)}…${a.slice(-6)}` : a;

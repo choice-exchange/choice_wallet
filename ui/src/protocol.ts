@@ -233,6 +233,9 @@ export type Status = {
   active: number;
   /** The chains the user added, on both networks' lists. */
   added: AddedChain[];
+  /** This install's anti-phishing phrase: three random words the wallet's own screens show
+   *  (unlock, approvals), so a page drawing a look-alike can't. Never given to sites. */
+  phrase: string;
 };
 
 /** How a token is shown. Symbols of tokens not on the wallet's list (`known: false`) are
