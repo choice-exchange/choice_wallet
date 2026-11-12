@@ -6,4 +6,6 @@ declare module "choice-wallet-vault-glue" {
   export default function init(input: { module_or_path: string | URL | BufferSource }): Promise<unknown>;
   /** Load the module synchronously, from bytes (tests). */
   export function initSync(input: { module: BufferSource }): unknown;
+  /** Drop the instance after a trap; the next init makes a fresh one (added by build.mjs). */
+  export function resetVault(): void;
 }

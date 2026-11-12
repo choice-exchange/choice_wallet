@@ -8,7 +8,7 @@
 // notifications are on. Most wakes need no key, so the vault's WASM is compiled only when
 // a request first calls it.
 
-import init, { handle } from "choice-wallet-vault-glue";
+import init, { handle, resetVault } from "choice-wallet-vault-glue";
 import { bytesToBase64, explorerTxUrl, isNetworkId, NETWORKS } from "@choice-wallet/chain";
 
 import { createService, dappOrigin, fromOwnPage, type Store } from "./host/service";
@@ -52,7 +52,16 @@ function scheduleWatch(on: boolean) {
 const service = createService({
   async vault(method, params) {
     await vaultReady();
-    return callVault(handle, method, params);
+    try {
+      return callVault(handle, method, params);
+    } catch (e) {
+      // A trap: that instance may be broken for good. The next call gets a fresh one.
+      if (e instanceof WebAssembly.RuntimeError) {
+        resetVault();
+        ready = null;
+      }
+      throw e;
+    }
   },
   local: store(chrome.storage.local),
   session: store(chrome.storage.session),

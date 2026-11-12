@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
-import { handle, initSync } from "choice-wallet-vault-glue";
+import { handle, initSync, resetVault } from "choice-wallet-vault-glue";
 
 import { createService, fromOwnPage, type Store } from "../src/host/service";
 import { callVault } from "../src/host/vault";
@@ -120,4 +120,15 @@ test("only the extension's own pages are answered", () => {
   assert.equal(fromOwnPage({ id: "other", origin: own, url: `${own}/popup.html` }, id), false);
   assert.equal(fromOwnPage({ id, origin: "https://evil.example", url: `${own}/popup.html` }, id), false);
   assert.equal(fromOwnPage({}, id), false);
+});
+
+// F14: a trap leaves the WASM instance's memory as it was, and the glue kept that instance
+// for good. resetVault drops it, so the worker starts the next call on a fresh one.
+test("after a trap the vault can start again on a fresh instance", () => {
+  const before = callVault(handle, "chains");
+  assert.ok(before.ok);
+  resetVault();
+  assert.throws(() => handle("{}"), "no instance until it is loaded again");
+  initSync({ module: readFileSync(new URL("./choice_wallet_wasm_bg.wasm", import.meta.url)) });
+  assert.deepEqual(callVault(handle, "chains"), before);
 });

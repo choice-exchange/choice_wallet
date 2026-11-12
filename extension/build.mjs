@@ -57,6 +57,18 @@ function buildVault() {
     ["--target", "web", "--out-dir", glue, join(repo, "target/wasm32-unknown-unknown/release/choice_wallet_wasm.wasm")],
     { stdio: "inherit" },
   );
+  // A trap (a Rust panic aborts) leaves the instance's memory and stack as they were, and the
+  // glue keeps that instance for good. `resetVault` drops it, so the next init makes a fresh
+  // one. It names the glue's own variables, so check they are still what this expects.
+  const js = join(glue, "choice_wallet_wasm.js");
+  const code = readFileSync(js, "utf8");
+  for (const needed of ["let wasmModule, wasmInstance, wasm;", "let __wbg_init_promise;", "let cachedUint8ArrayMemory0 = null;"]) {
+    if (!code.includes(needed)) throw new Error(`the vault glue changed: no "${needed}"`);
+  }
+  writeFileSync(
+    js,
+    `${code}\n/** Drop the instance (after a trap): the next init or initSync makes a fresh one. */\nexport function resetVault() {\n    wasm = undefined;\n    wasmInstance = undefined;\n    wasmModule = undefined;\n    __wbg_init_promise = undefined;\n    cachedUint8ArrayMemory0 = null;\n}\n`,
+  );
 }
 
 /** The static files, and the vault's WASM. A dev build names itself and loads dev.js. */
