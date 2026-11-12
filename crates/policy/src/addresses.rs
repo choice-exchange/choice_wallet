@@ -57,12 +57,10 @@ fn body(form: &str) -> &str {
         .unwrap_or(form)
 }
 
-/// Same length, and the same first and last four bytes of the body. Compared as bytes: a
+/// The same first and last four bytes of the body, whatever the lengths: a Solana address
+/// can be a character shorter or longer and still look the same. Compared as bytes: a
 /// site's string may hold any character, and slicing it by byte offset must never panic.
 fn alike(a: &str, b: &str) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
     let (x, y) = (body(a).as_bytes(), body(b).as_bytes());
     x.len() > 8 && y.len() > 8 && x[..4] == y[..4] && x[x.len() - 4..] == y[y.len() - 4..]
 }
@@ -248,6 +246,16 @@ mod tests {
         let fake = String::from_utf8(fake).unwrap();
         assert_eq!(rules(&ctx(&[&real]), &real, None)[0].0, "address_book");
         assert_eq!(rules(&ctx(&[&real]), &fake, None)[0].0, "lookalike_address");
+        // Hardening: a Solana address one character shorter, the same at both ends, is
+        // still a lookalike (both are 32 bytes: 44 and 43 characters).
+        let long = format!("9AAA{}WXYZ", "2".repeat(36));
+        let short = format!("9AAA{}WXYZ", "2".repeat(35));
+        assert!(
+            choice_wallet_core::base58::decode32(&long).is_some()
+                && choice_wallet_core::base58::decode32(&short).is_some()
+        );
+        assert_eq!(rules(&ctx(&[&long]), &short, None)[0].0, "lookalike_address");
+        assert_eq!(rules(&ctx(&[&short]), &long, None)[0].0, "lookalike_address");
     }
 
     /// F14: a 42-byte site address with a multibyte character where the body's last four
