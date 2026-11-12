@@ -124,6 +124,11 @@ export function shown(display: SendReview["display"], network: NetworkId, swap?:
     // On another EVM chain than Injective's: its coin and its USDC have their own keys.
     const here = chainByCaip2(network, d.chain);
     const away = here?.kind === "evm" ? here : undefined;
+    const coin = away ? chainCoin(away.caip2) : net.feeDenom;
+    // Native coin the transaction carries besides a token call, a swap's own input or a
+    // bridge: a send of its own. (A plain call shows it on its contract-call card.)
+    const nativeIn = d.call.type === "swap" && (d.call as EvmSwapCall).token_in.toLowerCase() === NATIVE && (d.call as EvmSwapCall).amount_in === d.value;
+    const attached = d.value !== "0" && !nativeIn ? [{ coins: [{ denom: coin, amount: d.value }], to: d.to }] : [];
     // An address as a wallet key: the chain's coin, the swap's own tokens, USDC on another
     // chain, or an EVM token.
     const key = (a: string, side?: "from" | "to") => {
@@ -137,7 +142,7 @@ export function shown(display: SendReview["display"], network: NetworkId, swap?:
       const venues = [...new Set(c.venues.map((v) => v.venue))];
       return {
         ...base,
-        sends: [],
+        sends: attached,
         others: [],
         swaps: [
           {
@@ -158,7 +163,7 @@ export function shown(display: SendReview["display"], network: NetworkId, swap?:
       const delivery = c.delivery === "claim" ? "anyone" : c.delivery;
       return {
         ...base,
-        sends: [],
+        sends: attached,
         others: [],
         bridges: [{ coin: at(c.amount), maxFee: at(c.max_fee), from: d.network.name, chain: c.chain, recipient: c.recipient, owner: c.account_owner, delivery, caller: delivery === "gas_drop" ? null : c.destination_caller, dropFee: c.max_drop_fee === null ? null : at(c.max_drop_fee), least: at(c.least) }],
       };
@@ -166,21 +171,21 @@ export function shown(display: SendReview["display"], network: NetworkId, swap?:
     if (d.call.type === "bridge_receive") {
       const c = d.call;
       const usdc = key(c.token, "to");
-      return { ...base, sends: [], others: [], mints: [{ coin: { denom: usdc, amount: c.minted }, fee: { denom: usdc, amount: c.fee }, chain: c.chain, recipient: c.recipient }] };
+      return { ...base, sends: attached, others: [], mints: [{ coin: { denom: usdc, amount: c.minted }, fee: { denom: usdc, amount: c.fee }, chain: c.chain, recipient: c.recipient }] };
     }
     if (d.call.type === "approve" && d.call.amount !== "0") {
-      return { ...base, sends: [], others: [], approvals: [{ token: key(d.to, "from"), spender: d.call.spender, amount: d.call.amount, via: "token" }] };
+      return { ...base, sends: attached, others: [], approvals: [{ token: key(d.to, "from"), spender: d.call.spender, amount: d.call.amount, via: "token" }] };
     }
     if (d.call.type === "permit2_approve") {
       const c = d.call;
-      return { ...base, sends: [], others: [], approvals: [{ token: key(c.token, "from"), spender: c.spender, amount: c.amount, via: "permit2", until: c.expiration }] };
+      return { ...base, sends: attached, others: [], approvals: [{ token: key(c.token, "from"), spender: c.spender, amount: c.amount, via: "permit2", until: c.expiration }] };
     }
     const call = d.call as Record<string, unknown>;
     if (call["type"] === "nft_transfer" && text(call["from"])?.toLowerCase() === d.from.toLowerCase() && text(call["to"]) && text(call["token_id"])) {
-      return { ...base, sends: [], others: [], nfts: [{ collection: d.to, tokenId: text(call["token_id"])!, to: text(call["to"])! }] };
+      return { ...base, sends: attached, others: [], nfts: [{ collection: d.to, tokenId: text(call["token_id"])!, to: text(call["to"])! }] };
     }
-    if (d.call.type === "erc20_transfer") return { ...base, sends: [{ coins: [{ denom: key(d.to), amount: d.call.amount }], to: d.call.to }], others: [] };
-    if (d.call.type === "transfer") return { ...base, sends: [{ coins: [{ denom: away ? chainCoin(away.caip2) : net.feeDenom, amount: d.value }], to: d.to }], others: [] };
+    if (d.call.type === "erc20_transfer") return { ...base, sends: [{ coins: [{ denom: key(d.to), amount: d.call.amount }], to: d.call.to }, ...attached], others: [] };
+    if (d.call.type === "transfer") return { ...base, sends: [{ coins: [{ denom: coin, amount: d.value }], to: d.to }], others: [] };
     // approve(spender, 0): an allowance taken back.
     const revoke = /^0x095ea7b3(0{24}[0-9a-fA-F]{40})(0{64})$/.exec(String((d as { data?: unknown }).data ?? ""));
     if (revoke) return { ...base, sends: [], revokes: [{ kind: "allowance", token: evmDenom(d.to), spender: `0x${revoke[1]!.slice(24)}` }], others: [] };

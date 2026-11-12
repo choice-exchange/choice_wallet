@@ -11,7 +11,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { SignBody } from "../../ui/src/Approve";
 import type { DappReview, NetworkId } from "../../ui/src/protocol";
 
-import { chain, ME, ok, THEM, wallet } from "./fake";
+import { chain, ME, ME_EVM, ok, THEM, wallet } from "./fake";
 
 const SITE = "https://app.example";
 // SHROOM's CW20 and the mainnet CW20 adapter (published contracts).
@@ -110,4 +110,61 @@ test("a conversion that pays someone else names them", async () => {
   const rules = own.risk.findings.map((f) => f.rule);
   assert.ok(!rules.includes("redeem_to_other") && !rules.includes("new_contract"), rules.join());
   assert.doesNotMatch(windowText(own), /Delivered to/);
+});
+
+/** A wallet with `SITE` connected through EIP-1193, and a review helper as above. */
+async function evmConnected(net = chain()) {
+  const w = await wallet(net);
+  const site = (method: string, params?: unknown) => w.service.dapp(SITE, { method, params }) as Promise<Reply>;
+  let seen = 0;
+  const window = async () => {
+    for (let i = 0; i < 200 && w.ui.opened.length <= seen; i++) await new Promise((r) => setTimeout(r, 5));
+    assert.ok(w.ui.opened.length > seen, "no approval window opened");
+    seen = w.ui.opened.length;
+    return w.ui.opened.at(-1)!;
+  };
+  const asked = site("eth_requestAccounts");
+  ok(await w.service.handle({ type: "dapp_answer", id: await window(), approve: true }));
+  await asked;
+  const review = async (method: string, params: unknown) => {
+    const pending = site(method, params);
+    const id = await window();
+    const r = ok<DappReview>(await w.service.handle({ type: "dapp_review", id }));
+    ok(await w.service.handle({ type: "dapp_answer", id, approve: false }));
+    await pending;
+    return r;
+  };
+  return { ...w, site, window, review };
+}
+
+const THEM_WORD = "0000000000000000000000009d8a62f656a8d1615c1294fd71e9cfb3e4855a4f";
+const ONE = "0".repeat(63) + "1";
+
+// F4: native coin attached to a token transfer or approve was dropped from the window.
+test("native coin attached to a token call is shown and named", async () => {
+  const { review } = await evmConnected();
+  for (const selector of ["0xa9059cbb", "0x095ea7b3"]) {
+    const r = await review("eth_sendTransaction", [
+      { from: ME_EVM, to: "0x1111111111111111111111111111111111111111", value: "0x1bc16d674ec80000", data: `${selector}${THEM_WORD}${ONE}` },
+    ]);
+    const f = r.risk.findings.find((x) => x.rule === "value_with_call");
+    assert.ok(f && f.level === "amber", JSON.stringify(r.risk));
+    assert.match(f.message, /Also sends 2 INJ to/);
+    const text = windowText(r);
+    assert.match(text, /You send 2 INJ/, text);
+    assert.match(text, /0x1111111111111111111111111111111111111111/);
+  }
+});
+
+// F10: the contract-call card named the value INJ on every chain.
+test("a contract call's value is in the signing chain's coin", async () => {
+  const { review, site } = await evmConnected();
+  assert.deepEqual(await site("wallet_switchEthereumChain", [{ chainId: "0x2105" }]), { result: null });
+  const r = await review("eth_sendTransaction", [
+    { from: ME_EVM, to: "0x4444444444444444444444444444444444444444", value: "0xe35fa931a0000", data: `0x095ea7b3${THEM_WORD}${"0".repeat(64)}` },
+  ]);
+  const text = windowText(r);
+  assert.match(text, /Contract call/);
+  assert.match(text, /0\.004 ETH/, text);
+  assert.doesNotMatch(text, /INJ/, text);
 });

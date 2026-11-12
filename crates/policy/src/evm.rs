@@ -275,6 +275,34 @@ pub fn evm_transaction(req: &TxRequest, chain: &EvmSide<'_>, ctx: &Context) -> A
             Call::Contract { selector } => contract_call(req, selector, chain, ctx, &mut out),
         },
     }
+    // Native coin a call carries besides what its calldata reads as. A token call never
+    // needs it, so there it is a warning; Choice's swaps and CCTP have their own rules.
+    if !tx.value.is_zero() && !tx.data.is_empty() && swapped.is_none() && bridged.is_none() && minted.is_none() {
+        let token_call = matches!(tx.call_kind(), Call::Erc20Transfer { .. })
+            || tx.data.first_chunk::<4>().is_some_and(|s| {
+                [
+                    APPROVE,
+                    INCREASE_ALLOWANCE,
+                    SET_APPROVAL_FOR_ALL,
+                    SAFE_TRANSFER_FROM,
+                    SAFE_TRANSFER_FROM_DATA,
+                    TRANSFER_FROM,
+                    PERMIT2_APPROVE,
+                ]
+                .contains(s)
+            });
+        let amount = format!("{} {}", coin_units(&tx.value), ctx.token_name("native"));
+        out.push(finding(
+            "value_with_call",
+            if token_call { Level::Amber } else { Level::Info },
+            if token_call {
+                format!("Also sends {amount} to {}, besides the token call.", short(&to))
+            } else {
+                format!("Sends {amount} to contract {}.", short(&to))
+            },
+            json!({ "value": tx.value.to_string(), "to": to }),
+        ));
+    }
     outflows.check(ctx, &mut out);
     // The amount plus the most gas could cost, against the native balance.
     if let Some(bal) = balance(ctx, "native") {
@@ -289,6 +317,16 @@ pub fn evm_transaction(req: &TxRequest, chain: &EvmSide<'_>, ctx: &Context) -> A
         }
     }
     Assessment::from(out)
+}
+
+/// An amount of an EVM chain's coin (18 decimals on every chain the wallet signs on).
+fn coin_units(v: &U256) -> String {
+    let s = format!("{:0>19}", v.to_string());
+    let (whole, frac) = s.split_at(s.len() - 18);
+    match frac.trim_end_matches('0') {
+        "" => whole.to_owned(),
+        f => format!("{whole}.{f}"),
+    }
 }
 
 fn contract_call(
@@ -614,6 +652,35 @@ mod tests {
         let mut b = [0u8; 20];
         b[19] = n;
         EthAddress::from_bytes(b)
+    }
+
+    /// F4: native coin attached to a token call is named, with its amount.
+    #[test]
+    fn value_attached_to_a_call_is_named() {
+        let token = EthAddress::from_bytes([0x11; 20]);
+        let them = EthAddress::from_bytes([0x22; 20]);
+        let ctx = Context {
+            symbols: [("native".to_owned(), "INJ".to_owned())].into(),
+            ..Default::default()
+        };
+        let with_value = |data: Vec<u8>, value: u128| {
+            let mut r = req(token, data);
+            r.tx.value = U256::from_u128(value);
+            evm_transaction(&r, &EvmSide::injective(&MAINNET), &ctx)
+        };
+        let transfer = erc20::transfer_calldata(&them, &U256::from_u128(1));
+        let approve = call(APPROVE, &[addr_word([0x22; 20]), U256::from_u128(1).to_be_bytes()]);
+        for data in [transfer.clone(), approve] {
+            let a = with_value(data, 2_000_000_000_000_000_000);
+            let f = a.findings.iter().find(|f| f.rule == "value_with_call").expect("value_with_call");
+            assert_eq!(f.level, Level::Amber);
+            assert_eq!(f.message, "Also sends 2 INJ to 0x1111…1111, besides the token call.");
+        }
+        // Any other call: named at info. No value, no finding.
+        let a = with_value(vec![0x12, 0x34, 0x56, 0x78], 500_000_000_000_000_000);
+        let f = a.findings.iter().find(|f| f.rule == "value_with_call").unwrap();
+        assert_eq!((f.level, f.message.as_str()), (Level::Info, "Sends 0.5 INJ to contract 0x1111…1111."));
+        assert!(!with_value(transfer, 0).findings.iter().any(|f| f.rule == "value_with_call"));
     }
 
     #[test]

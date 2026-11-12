@@ -15,7 +15,7 @@ import { useBackend } from "./backend";
 import { ArrowDownIcon, CheckIcon, GlobeIcon, LockIcon } from "./icons";
 import { Callout, Screen, shortAddress } from "./kit";
 import { DeviceStep } from "./Ledger";
-import type { Coin, CosmosDisplay, DappRequest, DappReview, DeviceRequest, DeviceSignature, ListedChain, NetworkId, NewChain, Status } from "./protocol";
+import type { Coin, CosmosDisplay, DappRequest, DappReview, DeviceRequest, DeviceSignature, ListedChain, NetworkId, NewChain, Status, TokenInfo } from "./protocol";
 import { shown } from "./review";
 import { Figure, formName, realName, SwapCards } from "./Send";
 
@@ -322,7 +322,7 @@ export function SignBody({ review, network, typed, onTyped }: { review: DappRevi
       ))}
 
       {view && <SwapCards view={view} tokens={tokens} network={network} from={String(d["from"] ?? "")} />}
-      {d["kind"] === "evm_transaction" && view?.sends.length === 0 && view.swaps.length === 0 && view.approvals.length === 0 && <EvmCall d={d} />}
+      {d["kind"] === "evm_transaction" && view?.sends.length === 0 && view.swaps.length === 0 && view.approvals.length === 0 && <EvmCall d={d} coin={tokens[view.fee[0]?.denom ?? ""]} />}
       {solana && view && view.others.length > 0 && (
         <div className="surface">
           <div className="eyebrow">It also</div>
@@ -429,9 +429,13 @@ function Rows({ children }: { children: ReactNode }) {
   return <div className="well rows">{children}</div>;
 }
 
-function EvmCall({ d }: { d: Record<string, unknown> }) {
+/** `coin`: the signing chain's coin, as the fee row names it. */
+function EvmCall({ d, coin }: { d: Record<string, unknown>; coin: TokenInfo | undefined }) {
   const call = d["call"] as { type: string; selector?: string | null };
   const value = String(d["value"] ?? "0");
+  const network = (d["network"] ?? {}) as { symbol?: unknown; decimals?: unknown };
+  const decimals = coin?.decimals ?? (typeof network.decimals === "number" ? network.decimals : 18);
+  const symbol = coin?.symbol ?? (typeof network.symbol === "string" && network.symbol ? network.symbol : "coin");
   return (
     <div className="surface-hero">
       <div className="eyebrow">Contract call</div>
@@ -440,7 +444,7 @@ function EvmCall({ d }: { d: Record<string, unknown> }) {
       </code>
       {value !== "0" && (
         <div className="hero" style={{ fontSize: 20, marginTop: 8 }}>
-          {formatUnits(value, 18)} <span className="unit">INJ</span>
+          {formatUnits(value, decimals)} <span className="unit">{symbol}</span>
         </div>
       )}
       <div className="meta mono" style={{ marginTop: 8 }}>
