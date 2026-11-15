@@ -68,7 +68,13 @@ pub const MESSAGE_TRANSMITTER: Program = Program {
     name: "Circle's bridge (CCTP)",
 };
 
-const READ: [Program; 9] = [
+/// Native staking: who may manage and withdraw a stake account, and withdrawals from it.
+pub const STAKE: Program = Program {
+    id: "Stake11111111111111111111111111111111111111",
+    name: "Stake",
+};
+
+const READ: [Program; 10] = [
     SYSTEM,
     COMPUTE_BUDGET,
     TOKEN,
@@ -78,10 +84,11 @@ const READ: [Program; 9] = [
     MEMO_V1,
     TOKEN_MESSENGER_MINTER,
     MESSAGE_TRANSMITTER,
+    STAKE,
 ];
 
 /// Programs the wallet names but doesn't read: their instructions show as unreadable, by name.
-const NAMED: [Program; 8] = [
+const NAMED: [Program; 7] = [
     Program {
         id: "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4",
         name: "Jupiter",
@@ -105,10 +112,6 @@ const NAMED: [Program; 8] = [
     Program {
         id: "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s",
         name: "Metaplex Token Metadata",
-    },
-    Program {
-        id: "Stake11111111111111111111111111111111111111",
-        name: "Stake",
     },
     Program {
         id: "AddressLookupTab1e1111111111111111111111111",
@@ -333,6 +336,29 @@ pub enum Instruction {
         /// The record.
         event_account: Pubkey,
     },
+    /// Changes who manages (`kind` 0, the staker) or withdraws from (`kind` 1, the
+    /// withdrawer) a stake account: Stake's `Authorize` and `AuthorizeChecked`.
+    StakeAuthorize {
+        /// The stake account.
+        stake: Pubkey,
+        /// Its current staker or withdrawer; signs.
+        authority: Pubkey,
+        /// Who it becomes.
+        new_authority: Pubkey,
+        /// 0 staker, 1 withdrawer.
+        kind: u32,
+    },
+    /// Takes SOL out of a stake account (Stake's `Withdraw`).
+    StakeWithdraw {
+        /// The stake account.
+        stake: Pubkey,
+        /// Who gets the SOL.
+        to: Pubkey,
+        /// Its withdrawer; signs.
+        authority: Pubkey,
+        /// Lamports.
+        lamports: u64,
+    },
     /// A known program's instruction whose data or accounts aren't what its layout says.
     Unreadable {
         /// The program.
@@ -423,8 +449,56 @@ pub fn read(program: &Pubkey, accounts: &[Account], data: &[u8]) -> Instruction 
         } else {
             Instruction::Other { program: p }
         }
+    } else if p == STAKE.key() {
+        stake(accounts, data)
     } else {
         Instruction::Other { program: p }
+    }
+}
+
+/// Stake's instructions that move control of a stake account or its SOL. The program reads
+/// its data with trailing bytes allowed, so anything but the exact layout of these is
+/// unreadable rather than guessed at; its other instructions are `Other`.
+fn stake(accounts: &[Account], data: &[u8]) -> Instruction {
+    let acct = |i: usize| accounts.get(i).map(|a| a.key);
+    let unreadable = |reason| Instruction::Unreadable {
+        program: STAKE.key(),
+        reason,
+    };
+    match u32_at(data, 0) {
+        // Authorize(new authority, kind): [stake, clock, authority, (custodian)].
+        Some(1) => match (data.len(), acct(0), acct(2), key_at(data, 4), u32_at(data, 36)) {
+            (40, Some(stake), Some(authority), Some(new_authority), Some(kind @ 0..=1)) => {
+                Instruction::StakeAuthorize {
+                    stake,
+                    authority,
+                    new_authority,
+                    kind,
+                }
+            }
+            _ => unreadable("a Stake Authorize that isn't laid out as one"),
+        },
+        // AuthorizeChecked(kind): [stake, clock, authority, new authority (signs), (custodian)].
+        Some(10) => match (data.len(), acct(0), acct(2), acct(3), u32_at(data, 4)) {
+            (8, Some(stake), Some(authority), Some(new_authority), Some(kind @ 0..=1)) => Instruction::StakeAuthorize {
+                stake,
+                authority,
+                new_authority,
+                kind,
+            },
+            _ => unreadable("a Stake AuthorizeChecked that isn't laid out as one"),
+        },
+        // Withdraw(lamports): [stake, to, clock, stake history, withdrawer, (custodian)].
+        Some(4) => match (data.len(), acct(0), acct(1), acct(4), u64_at(data, 4)) {
+            (12, Some(stake), Some(to), Some(authority), Some(lamports)) => Instruction::StakeWithdraw {
+                stake,
+                to,
+                authority,
+                lamports,
+            },
+            _ => unreadable("a Stake Withdraw that isn't laid out as one"),
+        },
+        _ => Instruction::Other { program: STAKE.key() },
     }
 }
 
@@ -655,6 +729,73 @@ mod tests {
             anchor_discriminator("deposit_for_burn"),
             [215, 60, 61, 46, 114, 55, 128, 176]
         );
+    }
+
+    /// Run-2 C3: Stake's instructions that move a stake account's control or SOL are read;
+    /// a form the program would still run but the wallet can't place is unreadable.
+    #[test]
+    fn stake_layouts() {
+        let (stake, clock, me, them, history) = ([1u8; 32], [2u8; 32], [3u8; 32], [4u8; 32], [5u8; 32]);
+        let mut authorize = 1u32.to_le_bytes().to_vec();
+        authorize.extend_from_slice(&them);
+        authorize.extend_from_slice(&1u32.to_le_bytes());
+        let accts = [acct(stake), acct(clock), acct(me)];
+        assert_eq!(
+            read(&STAKE.key(), &accts, &authorize),
+            Instruction::StakeAuthorize {
+                stake,
+                authority: me,
+                new_authority: them,
+                kind: 1
+            }
+        );
+        let mut checked = 10u32.to_le_bytes().to_vec();
+        checked.extend_from_slice(&0u32.to_le_bytes());
+        assert_eq!(
+            read(
+                &STAKE.key(),
+                &[acct(stake), acct(clock), acct(me), acct(them)],
+                &checked
+            ),
+            Instruction::StakeAuthorize {
+                stake,
+                authority: me,
+                new_authority: them,
+                kind: 0
+            }
+        );
+        let mut withdraw = 4u32.to_le_bytes().to_vec();
+        withdraw.extend_from_slice(&100_000_000_000u64.to_le_bytes());
+        assert_eq!(
+            read(
+                &STAKE.key(),
+                &[acct(stake), acct(them), acct(clock), acct(history), acct(me)],
+                &withdraw
+            ),
+            Instruction::StakeWithdraw {
+                stake,
+                to: them,
+                authority: me,
+                lamports: 100_000_000_000
+            }
+        );
+        // A trailing byte, a third kind, or a missing account: unreadable, never guessed.
+        let mut longer = authorize.clone();
+        longer.push(0);
+        let mut third = authorize[..36].to_vec();
+        third.extend_from_slice(&2u32.to_le_bytes());
+        for (a, d) in [(&accts[..], &longer), (&accts[..], &third), (&accts[..2], &authorize)] {
+            assert!(
+                matches!(read(&STAKE.key(), a, d), Instruction::Unreadable { .. }),
+                "{d:?}"
+            );
+        }
+        // Delegating, deactivating and the rest are named but not read.
+        assert_eq!(
+            read(&STAKE.key(), &accts, &5u32.to_le_bytes()),
+            Instruction::Other { program: STAKE.key() }
+        );
+        assert_eq!(name(&STAKE.key()), Some("Stake"));
     }
 
     #[test]

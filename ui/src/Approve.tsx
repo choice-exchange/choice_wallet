@@ -278,7 +278,7 @@ export function SignBody({ review, network, typed, onTyped, account }: { review:
     : null;
   const solana = d["kind"] === "solana_transaction";
   const isTx = d["kind"] === "evm_transaction" || d["kind"] === "cosmos_direct" || d["kind"] === "cosmos_amino" || solana || txLike !== null;
-  const view = isTx ? shown((txLike ?? display) as CosmosDisplay, network) : null;
+  const view = isTx ? shown((txLike ?? display) as CosmosDisplay, network, undefined, risk.findings) : null;
   const messages = (txLike ?? (display as CosmosDisplay)).messages ?? [];
   // The signer's bech32 address. Typed data names it in 0x form; its messages' senders are
   // the signer (the vault checks).

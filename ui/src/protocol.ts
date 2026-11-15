@@ -326,6 +326,8 @@ export type SolanaStep = { program: string; program_name: string | null } & (
   | { type: "memo"; text: string | null; hex: string }
   | SolanaBridgeStep
   | { type: "bridge_reclaim"; payee: string; event_account: string }
+  | { type: "stake_authorize"; stake: string; authority: string; new_authority: string; authority_kind: "staker" | "withdrawer" }
+  | { type: "stake_withdraw"; stake: string; to: string; authority: string; lamports: string }
   | { type: "unreadable"; reason: string }
   | { type: "program"; accounts: { address: string; signer: boolean; writable: boolean; table: { address: string; index: number } | null }[]; data: string }
 );

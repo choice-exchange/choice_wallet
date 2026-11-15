@@ -38,6 +38,8 @@ export {
   solanaBurn,
   splDenom,
   splMint,
+  STAKE_PROGRAM,
+  stakeAccountOf,
   summarizeSolana,
   SYSTEM_PROGRAM,
   TOKEN_2022_PROGRAM,

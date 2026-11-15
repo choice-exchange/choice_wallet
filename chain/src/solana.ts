@@ -89,6 +89,18 @@ export function tokenAccountOf(a: RawAccount): { mint: string; owner: string; am
   };
 }
 
+export const STAKE_PROGRAM = "Stake11111111111111111111111111111111111111";
+
+/** A native stake account's staker and withdrawer (StakeStateV2 `Initialized` or `Stake`:
+ *  its Meta's authorities follow the 4-byte state and 8-byte rent reserve). Null for any
+ *  other account or state. */
+export function stakeAccountOf(a: RawAccount): { staker: string; withdrawer: string } | null {
+  if (a.owner !== STAKE_PROGRAM || a.data.length < 76) return null;
+  const state = new DataView(a.data.buffer, a.data.byteOffset, a.data.length).getUint32(0, true);
+  if (state !== 1 && state !== 2) return null;
+  return { staker: bytesToBase58(a.data.slice(12, 44)), withdrawer: bytesToBase58(a.data.slice(44, 76)) };
+}
+
 export class SolanaRpc {
   readonly pool: Pool;
   #id = 1;

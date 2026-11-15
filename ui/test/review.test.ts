@@ -197,3 +197,44 @@ test("a swap names the picked token only when the decoded contract is the one it
   // Any other contract is shown as itself.
   assert.equal(swap("0x5555555555555555555555555555555555555555").minimum.denom, "evm:0x5555555555555555555555555555555555555555");
 });
+
+// Run-2 C4: an unlisted bank denom has no pinned pair, so its ERC20 comes from an LCD. The
+// review never names the picked denom for it: it shows the contract the calldata trades.
+test("a swap of an unlisted denom shows the contract traded, never the picked denom", () => {
+  const SHROOM = "factory/inj14ejqjyq8um4p3xfqj74yld5waqljf88f9eneuk/inj1300xcg9naqy00fujsr9r8alwk7dh65uqu87xm8";
+  const out = (tokenOut: string) =>
+    shown(
+      {
+        kind: "evm_transaction",
+        chain: "eip155:1776",
+        from: "0x9858EfFD232B4033E47d90003D41EC34EcaEda94",
+        to: "0xa705d0D5f549Af25024038dc575E3074B9Bd37c9",
+        value: "1000000000000000000",
+        nonce: "0",
+        gas_limit: "300000",
+        max_fee_per_gas: "160000000",
+        max_priority_fee_per_gas: "0",
+        max_gas_cost: "48000000000000",
+        data: "0x",
+        call: {
+          type: "swap",
+          executor: "aggregator",
+          token_in: "0x0000000000000000000000000000000000000000",
+          token_out: tokenOut,
+          amount_in: "1000000000000000000",
+          minimum_out: "1",
+          recipient: "0x9858EfFD232B4033E47d90003D41EC34EcaEda94",
+          deadline: null,
+          fee_bps: 0,
+          fee_recipient: null,
+          venues: [],
+          permit: null,
+        },
+      },
+      "mainnet",
+      { from: "inj", to: SHROOM },
+    ).swaps[0]!.minimum.denom;
+  for (const c of ["0x3333333333333333333333333333333333333333", "0x5555555555555555555555555555555555555555"]) {
+    assert.equal(out(c), `evm:${c}`);
+  }
+});

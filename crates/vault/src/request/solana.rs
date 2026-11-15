@@ -191,6 +191,24 @@ fn solana_step(cluster: &SolanaChain, r: &choice_wallet_solana::Read, s: &choice
         I::CctpReclaim { payee, event_account } => {
             json!({ "type": "bridge_reclaim", "payee": b58(payee), "event_account": b58(event_account) })
         }
+        I::StakeAuthorize {
+            stake,
+            authority,
+            new_authority,
+            kind,
+        } => json!({
+            "type": "stake_authorize", "stake": b58(stake), "authority": b58(authority),
+            "new_authority": b58(new_authority), "authority_kind": if *kind == 1 { "withdrawer" } else { "staker" },
+        }),
+        I::StakeWithdraw {
+            stake,
+            to,
+            authority,
+            lamports,
+        } => json!({
+            "type": "stake_withdraw", "stake": b58(stake), "to": b58(to), "authority": b58(authority),
+            "lamports": lamports.to_string(),
+        }),
         I::Unreadable { reason, .. } => json!({ "type": "unreadable", "reason": reason }),
         I::Other { .. } => json!({
             "type": "program",

@@ -177,6 +177,9 @@ pub struct SolanaHandover {
     /// A delegate's amount covers all the account holds.
     #[serde(default)]
     pub all: bool,
+    /// A delegate's allowance after the transaction, in base units.
+    #[serde(default)]
+    pub amount: Option<String>,
 }
 
 /// A Solana token account as the host's RPC describes it.

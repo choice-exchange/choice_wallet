@@ -4,7 +4,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { ADDED, AGGREGATOR, chain, code, INJ, ME_EVM, ok, PERMIT2, USDT, USDT_ERC20, wallet } from "./fake";
+import { shown } from "../../ui/src/review";
+import { ADDED, AGGREGATOR, chain, code, CW_BANK, CW_PAIR, ERC20, INJ, ME_EVM, ok, PERMIT2, USDT, USDT_ERC20, wallet } from "./fake";
 
 type Quote = { id: string; amountIn: string; amountOut: string; minimumOut: string; steps: string[]; legs: { venue: string }[]; fee: unknown; executor: string; tokens: Record<string, { symbol: string }> };
 type Review = {
@@ -60,6 +61,29 @@ test("a lying LCD token pair doesn't change a listed token's swap contract", asy
   assert.equal(net.state.routeAsks.at(-1)!.get("tokenOut")?.toLowerCase(), USDT_ERC20);
   const r = ok<Review>(await service.handle({ type: "prepare_swap", quote: q.id }));
   assert.equal(String(r.display.call["token_out"]).toLowerCase(), USDT_ERC20);
+});
+
+// Run-2 C4: an unlisted bank denom's ERC20 comes from the LCD, which may lie. The review
+// describes the contract the swap actually buys and names it as itself, never as the denom
+// the user picked, so an LCD's word never decides what the review says is bought.
+test("a swap of an unlisted denom is reviewed as the contract it buys", async () => {
+  const net = chain({ balances: { inj: 3n * INJ } });
+  const usdt = USDT_ERC20.slice(2).toLowerCase();
+  const real = net.state.routes[`0x0000000000000000000000000000000000000000 ${USDT_ERC20} ${INJ}`]!;
+  // Choice's INJ to USDT answer, bought as CW_BANK's pair instead.
+  const pair = CW_PAIR.slice(2).toLowerCase();
+  net.state.routes[`0x0000000000000000000000000000000000000000 ${CW_PAIR.toLowerCase()} ${INJ}`] = JSON.parse(JSON.stringify(real).replace(new RegExp(usdt, "gi"), pair));
+  // The pair is an ERC20 on the fake chain for this test (read from its contract).
+  ERC20[CW_PAIR.toLowerCase()] = { symbol: "SHROOM", name: "Shroom", decimals: 18 };
+  const { service } = await wallet(net);
+  const q = ok<Quote>(await service.handle({ type: "swap_quote", from: "inj", to: CW_BANK, amount: INJ.toString() }));
+  const r = ok<Review & { tokens: Record<string, { known: boolean }> }>(await service.handle({ type: "prepare_swap", quote: q.id }));
+  delete ERC20[CW_PAIR.toLowerCase()];
+  assert.equal(String(r.display.call["token_out"]).toLowerCase(), CW_PAIR.toLowerCase());
+  // The contract traded is described, so the review can name it.
+  assert.equal(r.tokens[`evm:${CW_PAIR.toLowerCase()}`]?.known, false, JSON.stringify(Object.keys(r.tokens)));
+  const view = shown(r.display as unknown as Parameters<typeof shown>[0], "mainnet", r.swap as Parameters<typeof shown>[2]);
+  assert.equal(view.swaps[0]!.minimum.denom, `evm:${CW_PAIR.toLowerCase()}`);
 });
 
 test("USDT in: approve Permit2, then Permit2 for the aggregator, then the swap; each exact", async () => {

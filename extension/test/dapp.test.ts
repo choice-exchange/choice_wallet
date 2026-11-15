@@ -7,6 +7,8 @@ import { test } from "node:test";
 
 import { dappOrigin } from "../src/host/service";
 import { ed25519 } from "@noble/curves/ed25519";
+import type { DappReview } from "../../ui/src/protocol";
+import { shown } from "../../ui/src/review";
 
 import { base58Decode, bs58, callVault, chain, code, handle, INJ, ME, ME_EVM, ME_SOL, ME_SOL_USDC, ok, PASSWORD, PHRASE, SOL_USDC, solTransfer, THEM, THEM_EVM, THEM_SOL, wallet } from "./fake";
 
@@ -334,6 +336,129 @@ test("a Solana simulation that hands control away is red, whatever program does 
     ok(await service.handle({ type: "dapp_answer", id: w.id, approve: false }));
     assert.equal(((await signing) as Reply).error?.code, 4001);
   }
+});
+
+// Run-2 C2: a readable Approve of one unit, then a program that raises the same delegate's
+// allowance to almost the whole balance. The instruction's small figure must not hide what
+// the transaction leaves: the simulated allowance is graded and is the one the window shows.
+test("a small Solana approve doesn't hide a larger simulated allowance", async () => {
+  const net = chain();
+  const { page, window, service } = await setup(net);
+  const site = page(SITE);
+  const asked = site("solana_connect", {});
+  ok(await service.handle({ type: "dapp_answer", id: (await window()).id, approve: true }));
+  await asked;
+  const program = bs58(new Uint8Array(32).fill(0x42));
+  const token = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+  const keys = [ME_SOL, ME_SOL_USDC, SOL_USDC, THEM_SOL, token, program].map(base58Decode);
+  // ApproveChecked(1 unit, 6 decimals) over [account, mint, delegate, owner], then the program.
+  const approveChecked = [13, 1, 0, 0, 0, 0, 0, 0, 0, 6];
+  const message = Uint8Array.from([
+    ...[1, 0, 4, 6],
+    ...keys.flatMap((k) => [...k]),
+    ...new Uint8Array(32).fill(9),
+    ...[2, 4, 4, 1, 2, 3, 0, approveChecked.length, ...approveChecked],
+    ...[5, 3, 1, 0, 4, 1, 7],
+  ]);
+  const wire = Uint8Array.from([1, ...new Uint8Array(64), ...message]);
+  net.state.solana.simulateSpend = 5_000n;
+  net.state.solana.simulateAfter = (a: string, r: unknown) => {
+    if (a !== ME_SOL_USDC || r === null) return r;
+    const acct = r as { data: [string, string] };
+    const d = new Uint8Array(Buffer.from(acct.data[0], "base64"));
+    const v = new DataView(d.buffer, d.byteOffset, d.length);
+    v.setUint32(72, 1, true);
+    d.set(base58Decode(THEM_SOL), 76);
+    v.setBigUint64(121, 4_999_999n, true);
+    return { ...acct, data: [Buffer.from(d).toString("base64"), "base64"] };
+  };
+  const signing = site("solana_signTransaction", { account: ME_SOL, transaction: hexOf(wire) });
+  const w = await window();
+  const review = ok<DappReview>(await service.handle({ type: "dapp_review", id: w.id }));
+  const simulated = review.risk.findings.filter((f) => (f.params as { simulated?: boolean }).simulated === true);
+  assert.deepEqual(
+    simulated.map((f) => [f.rule, (f.params as { amount?: string }).amount]),
+    [["solana_delegate", "4999999"]],
+    JSON.stringify(review.risk),
+  );
+  // The approval card is the allowance the transaction leaves, not the instruction's 1 unit.
+  const view = shown(review.display as Parameters<typeof shown>[0], "mainnet", undefined, review.risk.findings);
+  assert.deepEqual(view.approvals, [{ token: `spl:${SOL_USDC}`, spender: THEM_SOL, amount: "4999999", via: "token" }]);
+  ok(await service.handle({ type: "dapp_answer", id: w.id, approve: false }));
+  assert.equal(((await signing) as Reply).error?.code, 4001);
+});
+
+// Run-2 C3: a native stake account the account controls is as much its own as a token
+// account. Handing its withdrawer away is red with GIVE, read from the Stake instruction or
+// from the simulation of a program the wallet can't read; its SOL leaving is shown leaving.
+test("a Solana transaction that hands away a stake account, or takes its SOL, says so", async () => {
+  const net = chain();
+  const { page, window, service } = await setup(net);
+  const site = page(SITE);
+  const asked = site("solana_connect", {});
+  ok(await service.handle({ type: "dapp_answer", id: (await window()).id, approve: true }));
+  await asked;
+  const STAKE = bs58(new Uint8Array(32).fill(0x53));
+  const STAKE_PROGRAM = "Stake11111111111111111111111111111111111111";
+  const CLOCK = "SysvarC1ock11111111111111111111111111111111";
+  const HISTORY = "SysvarStakeHistory1111111111111111111111111";
+  const unread = bs58(new Uint8Array(32).fill(0x42));
+  const stakeAccount = (withdrawer: string) => {
+    const d = new Uint8Array(200);
+    new DataView(d.buffer).setUint32(0, 2, true);
+    d.set(base58Decode(ME_SOL), 12);
+    d.set(base58Decode(withdrawer), 44);
+    return { lamports: 100_000_000_000, owner: STAKE_PROGRAM, data: [Buffer.from(d).toString("base64"), "base64"], executable: false, rentEpoch: 0, space: 200 };
+  };
+  net.state.solana.accounts[STAKE] = stakeAccount(ME_SOL);
+  net.state.solana.simulateSpend = 5_000n;
+  /** A legacy message: ME_SOL signs, `writable` more are writable, `readonly` follow; one instruction. */
+  const tx = (writable: string[], readonly: string[], program: number, accounts: number[], data: number[]) => {
+    const keys = [ME_SOL, ...writable, ...readonly].map(base58Decode);
+    const message = Uint8Array.from([1, 0, readonly.length, keys.length, ...keys.flatMap((k) => [...k]), ...new Uint8Array(32).fill(9), 1, program, accounts.length, ...accounts, data.length, ...data]);
+    return hexOf(Uint8Array.from([1, ...new Uint8Array(64), ...message]));
+  };
+  const u32 = (n: number) => {
+    const b = new Uint8Array(4);
+    new DataView(b.buffer).setUint32(0, n, true);
+    return [...b];
+  };
+  const u64 = (n: bigint) => {
+    const b = new Uint8Array(8);
+    new DataView(b.buffer).setBigUint64(0, n, true);
+    return [...b];
+  };
+  const review = async (transaction: string) => {
+    const signing = site("solana_signTransaction", { account: ME_SOL, transaction });
+    const w = await window();
+    const r = ok<DappReview>(await service.handle({ type: "dapp_review", id: w.id }));
+    ok(await service.handle({ type: "dapp_answer", id: w.id, approve: false }));
+    assert.equal(((await signing) as Reply).error?.code, 4001);
+    return r;
+  };
+  const rules = (r: DappReview) => r.risk.findings.map((f) => f.rule);
+
+  // The simulation hands the withdrawer to THEM.
+  net.state.solana.simulateAfter = (a: string, r: unknown) => (a === STAKE ? stakeAccount(THEM_SOL) : r);
+  // Through a program the wallet can't read.
+  let r = await review(tx([STAKE], [unread], 2, [0, 1], [7]));
+  assert.deepEqual([r.risk.level, r.risk.confirm], ["red", "GIVE"], JSON.stringify(r.risk));
+  assert.ok(rules(r).includes("solana_stake_withdrawer"), JSON.stringify(r.risk));
+  // Directly: Stake's Authorize(THEM, withdrawer), read by the vault and said once.
+  r = await review(tx([STAKE], [CLOCK, STAKE_PROGRAM], 3, [1, 2, 0], [...u32(1), ...base58Decode(THEM_SOL), ...u32(1)]));
+  assert.deepEqual([r.risk.level, r.risk.confirm], ["red", "GIVE"], JSON.stringify(r.risk));
+  assert.equal(rules(r).filter((x) => x === "solana_stake_withdrawer").length, 1, JSON.stringify(r.risk));
+  const shownAuthorize = shown(r.display as Parameters<typeof shown>[0], "mainnet", undefined, r.risk.findings);
+  assert.ok(shownAuthorize.others.some((o) => o.startsWith("Gives stake account")), JSON.stringify(shownAuthorize.others));
+
+  // Withdraw all 100 SOL to THEM: the simulation shows it leaving, and it reads as a send.
+  net.state.solana.simulateAfter = (a: string, r: unknown) => (a === STAKE ? null : r);
+  r = await review(tx([STAKE, THEM_SOL], [CLOCK, HISTORY, STAKE_PROGRAM], 5, [1, 2, 3, 4, 0], [...u32(4), ...u64(100_000_000_000n)]));
+  assert.ok(rules(r).includes("solana_stake_withdraw"), JSON.stringify(r.risk));
+  const sim = r.simulation as { ok: boolean; changes: { denom: string; amount: string }[] };
+  assert.deepEqual(sim.changes, [{ denom: "sol", amount: (-(100_000_000_000n + 5_000n)).toString() }], JSON.stringify(sim));
+  const shownWithdraw = shown(r.display as Parameters<typeof shown>[0], "mainnet", undefined, r.risk.findings);
+  assert.deepEqual(shownWithdraw.sends, [{ coins: [{ denom: "sol", amount: "100000000000" }], to: THEM_SOL }]);
 });
 
 // F8: only the user's own use holds off the auto-lock. A site's reads, its connect

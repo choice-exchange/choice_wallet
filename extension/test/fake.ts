@@ -338,6 +338,8 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
       simulateSpend: 0n,
       /** Changes a simulation makes to an account, as base64 `getMultipleAccounts` gives it. */
       simulateAfter: null as ((address: string, account: unknown) => unknown) | null,
+      /** Other accounts on the cluster (a stake account), as base64 `getMultipleAccounts` gives them. */
+      accounts: {} as Record<string, unknown>,
       down: false,
     },
     /** Base: ME's USDC and ETH there, what TokenMessengerV2 may take, what was broadcast. */
@@ -632,6 +634,7 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
        *  and its USDC account. */
       const rawSolana = (a: string, spent: bigint) => {
         if (a === ME_SOL) return { lamports: Number(sol.lamports - spent), owner: "11111111111111111111111111111111", data: ["", "base64"], executable: false, rentEpoch: 0, space: 0 };
+        if (sol.accounts[a] !== undefined) return sol.accounts[a];
         if (a !== ME_SOL_USDC || sol.usdc === 0n) return null;
         const data = new Uint8Array(165);
         data.set(base58Decode(SOL_USDC), 0);

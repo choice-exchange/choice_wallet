@@ -3,7 +3,7 @@
 
 import { adapterCw20, adapterDenom, boundErc20, chainByCaip2, chainCoin, chainUsdc, cw20Denom, evmDenom, isContractAddress, NETWORKS } from "@choice-wallet/chain";
 
-import type { Coin, CosmosDisplay, EvmDisplay, EvmSwapCall, NetworkId, SendReview, SolanaDisplay, SwapStepInfo } from "./protocol";
+import type { Coin, CosmosDisplay, EvmDisplay, EvmSwapCall, Finding, NetworkId, SendReview, SolanaDisplay, SwapStepInfo } from "./protocol";
 
 /** A token turned into its other form by the CW20 adapter, one for one. */
 export type Conversion = { from: Coin; to: Coin; recipient: string };
@@ -120,9 +120,9 @@ export function visible(s: string): string {
 
 /** `swap`, when given, names the wallet keys of a step's two tokens (a swap's, or a bridge
  *  transfer's USDC on both sides), so amounts show as the tokens the user picked. */
-export function shown(display: SendReview["display"], network: NetworkId, swap?: Pick<SwapStepInfo, "from" | "to">): Shown {
+export function shown(display: SendReview["display"], network: NetworkId, swap?: Pick<SwapStepInfo, "from" | "to">, findings?: Finding[]): Shown {
   const net = NETWORKS[network];
-  if (display.kind === "solana_transaction") return solanaShown(display as SolanaDisplay, net.solana.name);
+  if (display.kind === "solana_transaction") return solanaShown(display as SolanaDisplay, net.solana.name, findings ?? []);
   if (display.kind === "evm_transaction") {
     const d = display as EvmDisplay;
     // Signed on another EVM chain than Injective's: its fee is in that chain's coin.
@@ -140,11 +140,12 @@ export function shown(display: SendReview["display"], network: NetworkId, swap?:
     // chain, or an EVM token.
     const key = (a: string, side?: "from" | "to") => {
       if (a.toLowerCase() === NATIVE) return away ? chainCoin(away.caip2) : net.feeDenom;
-      // The token the user picked, when the decoded contract is the one it is bound to. A
-      // listed token's contract is pinned; any other contract is shown as itself.
+      // The token the user picked, only when the decoded contract is the one the wallet binds
+      // it to without asking an LCD (a listed token's pinned pair, an ERC20's own key). Any
+      // other contract, an unlisted denom's LCD pair included, is shown as itself (run-2 C4).
       if (swap && side) {
         const bound = boundErc20(network, swap[side]);
-        if (bound === undefined || (bound !== null && bound.toLowerCase() === a.toLowerCase())) return swap[side];
+        if (typeof bound === "string" && bound.toLowerCase() === a.toLowerCase()) return swap[side];
         return evmDenom(a);
       }
       if (away && !away.added && a.toLowerCase() === away.usdc.toLowerCase()) return chainUsdc(away.caip2);
@@ -301,8 +302,11 @@ const short = (a: string) => (a.length > 12 ? `${a.slice(0, 4)}…${a.slice(-4)}
 
 /** A Solana transaction, in the review's terms: SOL and tokens the signer sends (a token to
  *  the wallet whose account it is, when the vault could tell), approvals, a CCTP burn to
- *  Injective, and one line for anything else. Compute budget instructions are its fee. */
-function solanaShown(d: SolanaDisplay, cluster: string): Shown {
+ *  Injective, and one line for anything else. Compute budget instructions are its fee.
+ *  `findings`: the review's risk findings. A delegate the simulation shows, that no
+ *  instruction already says, is the allowance the transaction leaves: its card replaces
+ *  the instruction's for that delegate and token (run-2 C2). */
+function solanaShown(d: SolanaDisplay, cluster: string, findings: Finding[]): Shown {
   const out: Shown = { sends: [], nfts: [], moves: [], swaps: [], bridges: [], mints: [], approvals: [], converts: [], stakes: [], revokes: [], votes: [], others: [], fee: [{ denom: "sol", amount: d.fee.total }], memo: "", evm: false };
   for (const s of d.instructions) {
     const name = s.program_name ?? short(s.program);
@@ -355,6 +359,18 @@ function solanaShown(d: SolanaDisplay, cluster: string): Shown {
       case "token_close":
         out.others.push(`Closes token account ${short(s.account)}; its SOL goes to ${short(s.destination)}`);
         break;
+      case "stake_authorize":
+        out.others.push(
+          s.authority_kind === "withdrawer"
+            ? `Gives stake account ${short(s.stake)}, and its SOL, to ${short(s.new_authority)}`
+            : `Lets ${short(s.new_authority)} manage stake account ${short(s.stake)}`,
+        );
+        break;
+      case "stake_withdraw":
+        // Staked SOL to someone else is a send; to this account, unstaking.
+        if (s.authority === d.signer && s.to !== d.signer) out.sends.push({ coins: [{ denom: "sol", amount: s.lamports }], to: s.to });
+        else out.others.push(`Takes SOL out of stake account ${short(s.stake)} to ${s.to === d.signer ? "this account" : short(s.to)}`);
+        break;
       case "unreadable":
         out.others.push(`${name}: an instruction the wallet can't read`);
         break;
@@ -364,6 +380,15 @@ function solanaShown(d: SolanaDisplay, cluster: string): Shown {
       default:
         out.others.push(`${name}: ${s.type.replaceAll("_", " ")}`);
     }
+  }
+  for (const f of findings) {
+    const p = (f.params ?? {}) as { simulated?: unknown; to?: unknown; token?: unknown; amount?: unknown };
+    if ((f.rule !== "solana_delegate" && f.rule !== "solana_unlimited_delegate") || p.simulated !== true) continue;
+    if (typeof p.to !== "string" || typeof p.token !== "string" || typeof p.amount !== "string") continue;
+    const token = `spl:${p.token}`;
+    const spender = p.to;
+    out.approvals = out.approvals.filter((a) => !(a.spender === spender && a.token === token));
+    out.approvals.push({ token, spender, amount: p.amount, via: "token" });
   }
   return out;
 }

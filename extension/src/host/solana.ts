@@ -31,6 +31,7 @@ import {
   splitSolanaTransaction,
   splMint,
   summarizeSolana,
+  stakeAccountOf,
   tokenAccountOf,
   TOKEN_2022_PROGRAM,
   TOKEN_PROGRAM,
@@ -499,7 +500,7 @@ export function createSolana(d: SolanaDeps) {
     const accounts: Record<string, { owner: string; mint: string }> = {};
     const moved = new Map<string, bigint>();
     /** Control passing to someone else, for the vault's rules (Context.solana_handovers). */
-    const handovers: { kind: string; account?: string; mint?: string; to: string; all?: boolean }[] = [];
+    const handovers: { kind: string; account?: string; mint?: string; to: string; all?: boolean; amount?: string }[] = [];
     let simulation: SiteTransaction["simulation"];
     try {
       const sim = await r.simulateWith(bytesToBase64(wire), watched);
@@ -513,6 +514,20 @@ export function createSolana(d: SolanaDeps) {
             moved.set(SOL, (post?.lamports ?? 0n) - (pre?.lamports ?? 0n));
             // A new program owner takes the account itself (System's Assign).
             if (pre && post && post.owner !== pre.owner) handovers.push({ kind: "assign", to: post.owner });
+            return;
+          }
+          // A native stake account the account controls (run-2 C3): its SOL is the account's
+          // to withdraw, so what leaves it leaves the account, and its withdrawer or staker
+          // passing to someone else is a handover.
+          const s0 = pre ? stakeAccountOf(pre) : null;
+          if (s0 && (s0.staker === owner || s0.withdrawer === owner)) {
+            const s1 = post ? stakeAccountOf(post) : null;
+            if (s0.withdrawer === owner) {
+              const out = pre!.lamports - (post?.lamports ?? 0n);
+              if (out > 0n) moved.set(SOL, (moved.get(SOL) ?? 0n) - out);
+              if (s1 && s1.withdrawer !== owner) handovers.push({ kind: "stake_withdrawer", account: a, to: s1.withdrawer });
+            }
+            if (s0.staker === owner && s1 && s1.staker !== owner) handovers.push({ kind: "stake_staker", account: a, to: s1.staker });
             return;
           }
           const t0 = pre ? tokenAccountOf(pre) : null;
@@ -529,7 +544,8 @@ export function createSolana(d: SolanaDeps) {
           if (t0?.owner === owner && t1 && t1.owner !== owner) handovers.push({ kind: "token_owner", account: a, mint: t1.mint, to: t1.owner });
           if (t1?.owner === owner) {
             if (t1.delegate && t1.delegate !== owner && t1.delegated > 0n && (t1.delegate !== t0?.delegate || t1.delegated > t0.delegated)) {
-              handovers.push({ kind: "delegate", account: a, mint: t1.mint, to: t1.delegate, all: t1.delegated >= t1.amount });
+              // Its allowance after the transaction: an instruction that allows less doesn't say it.
+              handovers.push({ kind: "delegate", account: a, mint: t1.mint, to: t1.delegate, all: t1.delegated >= t1.amount, amount: t1.delegated.toString() });
             }
             if (t1.closeAuthority && t1.closeAuthority !== owner && t1.closeAuthority !== t0?.closeAuthority) {
               handovers.push({ kind: "close_authority", account: a, mint: t1.mint, to: t1.closeAuthority });

@@ -306,6 +306,44 @@ pub fn solana_transaction(r: &Read, signer: &Pubkey, c: &Cctp, ctx: &Context) ->
                     ));
                 }
             }
+            Instruction::StakeAuthorize {
+                stake,
+                authority,
+                new_authority,
+                kind,
+            } => {
+                if authority != signer || new_authority == signer {
+                    continue;
+                }
+                out.push(stake_handover(
+                    *kind == 1,
+                    &b58(stake),
+                    &b58(new_authority),
+                    "new_authority",
+                ));
+            }
+            Instruction::StakeWithdraw {
+                stake,
+                to,
+                authority,
+                lamports,
+            } => {
+                // To this account it is unstaking; to anyone else, a send of staked SOL.
+                if authority != signer || to == signer {
+                    continue;
+                }
+                recipient(ctx, &b58(to), None, &mut out);
+                out.push(finding(
+                    "solana_stake_withdraw",
+                    Level::Amber,
+                    format!(
+                        "Takes SOL out of stake account {} and sends it to {}.",
+                        short(&b58(stake)),
+                        short(&b58(to))
+                    ),
+                    json!({ "account": b58(stake), "to": b58(to), "lamports": lamports.to_string() }),
+                ));
+            }
             Instruction::Unreadable { program, reason } => out.push(finding(
                 "solana_unreadable",
                 Level::Red,
@@ -403,17 +441,26 @@ fn handed_to(f: &Finding) -> Option<&str> {
 
 /// Whether `said`, from the instructions, already tells what `f` would: the same handover
 /// (an unlimited delegate covers a limited one) of the same account to the same party, at
-/// least as loud. A weaker or different one never hides the simulation's.
+/// least as loud. A weaker or different one never hides the simulation's: a limited delegate
+/// is said only by an instruction that allows at least as much (run-2 C2).
 fn covers(said: &Finding, f: &Finding) -> bool {
     let rule = said.rule == f.rule || (f.rule == "solana_delegate" && said.rule == "solana_unlimited_delegate");
     rule && said.level >= f.level
         && handed_to(said).is_some()
         && handed_to(said) == handed_to(f)
         && account_of(said).is_none_or(|a| account_of(f) == Some(a))
+        && (f.rule != "solana_delegate"
+            || said.rule == "solana_unlimited_delegate"
+            || matches!((amount_of(said), amount_of(f)), (Some(a), Some(b)) if a >= b))
 }
 
 fn account_of(f: &Finding) -> Option<&str> {
     f.params.get("account").and_then(|v| v.as_str())
+}
+
+/// A finding's amount in base units; none when it has none or can't be read.
+fn amount_of(f: &Finding) -> Option<u128> {
+    f.params.get("amount")?.as_str()?.parse().ok()
 }
 
 /// Findings for what the host's simulation shows the transaction hands over, the same as
@@ -423,7 +470,7 @@ fn handovers(ctx: &Context, out: &mut Vec<Finding>) {
         let account = h.account.as_deref();
         let to = base58::decode32(&h.to).map_or_else(|| short(&h.to), |p| program_name(&p));
         let token = h.mint.as_deref().map_or("this token", |m| ctx.token_name(m));
-        let params = json!({ "account": account, "to": h.to, "token": h.mint, "simulated": true });
+        let params = json!({ "account": account, "to": h.to, "token": h.mint, "amount": h.amount, "simulated": true });
         let f = match h.kind.as_str() {
             "assign" => {
                 let mut f = finding(
@@ -468,11 +515,43 @@ fn handovers(ctx: &Context, out: &mut Vec<Finding>) {
                 format!("Lets {to} close this token account and take its SOL."),
                 params,
             ),
+            "stake_withdrawer" | "stake_staker" => {
+                let mut f = stake_handover(h.kind == "stake_withdrawer", account.unwrap_or("?"), &h.to, "to");
+                if let Some(p) = f.params.as_object_mut() {
+                    p.insert("simulated".into(), json!(true));
+                }
+                f
+            }
             _ => continue,
         };
         if !out.iter().any(|said| covers(said, &f)) {
             out.push(f);
         }
+    }
+}
+
+/// A stake account's withdrawer (red: its SOL goes with it) or staker passing to `to`.
+/// `key` names the party in params as the instruction or the simulation does.
+fn stake_handover(withdrawer: bool, stake: &str, to: &str, key: &str) -> Finding {
+    let who = short(to);
+    let mut params = json!({ "account": stake, "kind": if withdrawer { "withdrawer" } else { "staker" } });
+    params[key] = json!(to);
+    if withdrawer {
+        let mut f = finding(
+            "solana_stake_withdrawer",
+            Level::Red,
+            format!("Gives stake account {} and all its SOL to {who}.", short(stake)),
+            params,
+        );
+        f.confirm = Some("GIVE");
+        f
+    } else {
+        finding(
+            "solana_stake_staker",
+            Level::Amber,
+            format!("Lets {who} manage stake account {}.", short(stake)),
+            params,
+        )
     }
 }
 
@@ -694,6 +773,117 @@ mod tests {
         assert_eq!(grade(1, THEM), (Level::Red, 1));
         // An unlimited Approve already says it: the simulation adds nothing.
         assert_eq!(grade(u64::MAX, THEM), (Level::Red, 0));
+    }
+
+    /// Run-2 C3: handing a stake account's withdrawer away is red with GIVE, read from the
+    /// Stake instruction or from the simulation alike; its staker is amber; taking its SOL to
+    /// someone else is graded as a send.
+    #[test]
+    fn handing_a_stake_account_away() {
+        let stake = [7; 32];
+        let grade = |i: Instruction, sim: Option<&str>| {
+            let ctx = Context {
+                solana_handovers: sim
+                    .map(|kind| crate::SolanaHandover {
+                        kind: kind.into(),
+                        account: Some(b58(&stake)),
+                        to: b58(&THEM),
+                        ..Default::default()
+                    })
+                    .into_iter()
+                    .collect(),
+                ..Default::default()
+            };
+            solana_transaction(&tx(&[ME], vec![i]), &ME, &MAINNET, &ctx)
+        };
+        let authorize = |kind, to| Instruction::StakeAuthorize {
+            stake,
+            authority: ME,
+            new_authority: to,
+            kind,
+        };
+        let a = grade(authorize(1, THEM), None);
+        assert_eq!(
+            (a.level, a.confirm, rules_of(&a)),
+            (Level::Red, Some("GIVE"), vec!["solana_stake_withdrawer"])
+        );
+        assert_eq!(rules_of(&grade(authorize(0, THEM), None)), ["solana_stake_staker"]);
+        // To itself: nothing changes hands.
+        assert!(rules_of(&grade(authorize(1, ME), None)).is_empty());
+        // The instruction already says what the simulation shows: said once.
+        assert_eq!(
+            rules_of(&grade(authorize(1, THEM), Some("stake_withdrawer"))),
+            ["solana_stake_withdrawer"]
+        );
+        // Through a program the wallet can't read: the simulation's handover is graded alone.
+        let a = grade(Instruction::Other { program: [0x42; 32] }, Some("stake_withdrawer"));
+        assert_eq!((a.level, a.confirm), (Level::Red, Some("GIVE")));
+        assert!(rules_of(&a).contains(&"solana_stake_withdrawer"));
+        let a = grade(Instruction::Other { program: [0x42; 32] }, Some("stake_staker"));
+        assert!(rules_of(&a).contains(&"solana_stake_staker"));
+        // Withdrawing to someone else is a send of staked SOL; to itself, unstaking.
+        let withdraw = |to| Instruction::StakeWithdraw {
+            stake,
+            to,
+            authority: ME,
+            lamports: 100_000_000_000,
+        };
+        assert_eq!(rules_of(&grade(withdraw(THEM), None)), ["solana_stake_withdraw"]);
+        assert!(rules_of(&grade(withdraw(ME), None)).is_empty());
+    }
+
+    fn rules_of(a: &Assessment) -> Vec<&'static str> {
+        a.findings.iter().map(|f| f.rule).collect()
+    }
+
+    /// Run-2 C2: a readable Approve of one unit doesn't hide a simulated allowance of almost
+    /// the whole balance to the same delegate; one of at least as much does.
+    #[test]
+    fn a_small_approve_never_hides_a_larger_simulated_allowance() {
+        let source = [3; 32];
+        let grade = |approved: u64, simulated: Option<&str>| {
+            let r = tx(
+                &[ME],
+                vec![
+                    Instruction::TokenApprove {
+                        program: TOKEN.key(),
+                        source,
+                        delegate: THEM,
+                        owner: ME,
+                        amount: approved,
+                        mint: None,
+                        decimals: None,
+                    },
+                    Instruction::Other { program: [0x42; 32] },
+                ],
+            );
+            let ctx = Context {
+                solana_handovers: vec![crate::SolanaHandover {
+                    kind: "delegate".into(),
+                    account: Some(b58(&source)),
+                    to: b58(&THEM),
+                    amount: simulated.map(str::to_owned),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            let a = solana_transaction(&r, &ME, &MAINNET, &ctx);
+            a.findings
+                .iter()
+                .find(|f| f.params["simulated"] == true)
+                .map(|f| (f.rule, f.params["amount"].as_str().map(str::to_owned)))
+        };
+        // Approve(1) beside a simulated allowance of 4,999,999: the simulation's is kept, with
+        // its amount for the window.
+        assert_eq!(
+            grade(1, Some("4999999")),
+            Some(("solana_delegate", Some("4999999".to_owned())))
+        );
+        // An Approve of at least that much already says it.
+        assert_eq!(grade(4_999_999, Some("4999999")), None);
+        assert_eq!(grade(5_000_000, Some("4999999")), None);
+        // With no amount from the simulation, a limited Approve never covers it.
+        assert_eq!(grade(5_000_000, None).map(|(r, _)| r), Some("solana_delegate"));
     }
 
     #[test]

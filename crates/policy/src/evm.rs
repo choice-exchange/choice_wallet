@@ -198,6 +198,27 @@ const SAFE_TRANSFER_FROM_DATA: [u8; 4] = 0xb88d4fdeu32.to_be_bytes();
 const TRANSFER_FROM: [u8; 4] = 0x23b872ddu32.to_be_bytes();
 /// Permit2 `approve(address token, address spender, uint160 amount, uint48 expiration)`.
 const PERMIT2_APPROVE: [u8; 4] = 0x87517c45u32.to_be_bytes();
+/// ERC20 `transfer(address,uint256)`. Its exact form is `Call::Erc20Transfer`; any other form
+/// reaches `contract_call`.
+const TRANSFER: [u8; 4] = 0xa9059cbbu32.to_be_bytes();
+
+/// Token calls a contract runs whatever their exact byte form: Solidity's decoder ignores
+/// bytes after the arguments, and ABI coder v1 masks an address's padding. The rules read
+/// each one only in its exact form, so any other form of these is graded as unreadable.
+const TOKEN_CALLS: [([u8; 4], &str); 8] = [
+    (APPROVE, "approve"),
+    (INCREASE_ALLOWANCE, "increaseAllowance"),
+    (SET_APPROVAL_FOR_ALL, "setApprovalForAll"),
+    (SAFE_TRANSFER_FROM, "safeTransferFrom"),
+    (SAFE_TRANSFER_FROM_DATA, "safeTransferFrom"),
+    (TRANSFER_FROM, "transferFrom"),
+    (PERMIT2_APPROVE, "Permit2 approve"),
+    (TRANSFER, "transfer"),
+];
+
+fn token_call_name(sel: &[u8; 4]) -> Option<&'static str> {
+    TOKEN_CALLS.iter().find(|(s, _)| s == sel).map(|(_, name)| *name)
+}
 
 /// 32-byte argument `i` after the selector.
 fn word(data: &[u8], i: usize) -> Option<&[u8]> {
@@ -279,18 +300,7 @@ pub fn evm_transaction(req: &TxRequest, chain: &EvmSide<'_>, ctx: &Context) -> A
     // needs it, so there it is a warning; Choice's swaps and CCTP have their own rules.
     if !tx.value.is_zero() && !tx.data.is_empty() && swapped.is_none() && bridged.is_none() && minted.is_none() {
         let token_call = matches!(tx.call_kind(), Call::Erc20Transfer { .. })
-            || tx.data.first_chunk::<4>().is_some_and(|s| {
-                [
-                    APPROVE,
-                    INCREASE_ALLOWANCE,
-                    SET_APPROVAL_FOR_ALL,
-                    SAFE_TRANSFER_FROM,
-                    SAFE_TRANSFER_FROM_DATA,
-                    TRANSFER_FROM,
-                    PERMIT2_APPROVE,
-                ]
-                .contains(s)
-            });
+            || tx.data.first_chunk::<4>().is_some_and(|s| token_call_name(s).is_some());
         let amount = format!("{} {}", coin_units(&tx.value), ctx.token_name("native"));
         out.push(finding(
             "value_with_call",
@@ -441,6 +451,17 @@ fn contract_call(
             }
         }
         _ => {}
+    }
+    // Every arm that read its call has returned. A token call left here has a trailing byte,
+    // a dirty address word or the wrong length, and the token may still run it.
+    if let Some(name) = token_call_name(&sel) {
+        out.push(finding(
+            "token_call_unreadable",
+            Level::Red,
+            format!("Calls {name} in a form the wallet can't read. The token may still run it."),
+            json!({ "contract": to, "bytes": data.len() }),
+        ));
+        return;
     }
     if !known_contract(ctx, &to) {
         out.push(finding(
@@ -607,6 +628,13 @@ mod tests {
             (INCREASE_ALLOWANCE, "increaseAllowance(address,uint256)"),
             (SET_APPROVAL_FOR_ALL, "setApprovalForAll(address,bool)"),
             (PERMIT2_APPROVE, "approve(address,address,uint160,uint48)"),
+            (TRANSFER, "transfer(address,uint256)"),
+            (TRANSFER_FROM, "transferFrom(address,address,uint256)"),
+            (SAFE_TRANSFER_FROM, "safeTransferFrom(address,address,uint256)"),
+            (
+                SAFE_TRANSFER_FROM_DATA,
+                "safeTransferFrom(address,address,uint256,bytes)",
+            ),
         ] {
             assert_eq!(keccak256(sig.as_bytes())[..4], sel, "{sig}");
         }
@@ -715,6 +743,75 @@ mod tests {
             erc20::transfer_calldata(&EthAddress::from_bytes([0x22; 20]), &U256::from_u128(5)),
         );
         assert_eq!(grade(&t).findings.len(), 0);
+    }
+
+    /// Run-2 C1: a token call the rules can't read in its exact form (a trailing byte, a dirty
+    /// address word) still runs on a Solidity token, so it is red, never an ungraded call.
+    #[test]
+    fn token_calls_the_wallet_cant_read_are_red() {
+        let token = EthAddress::from_bytes([0x11; 20]);
+        let them = addr_word([0x22; 20]);
+        let me = addr_word(FROM);
+        let mut yes = [0u8; 32];
+        yes[31] = 1;
+        let plus = |mut d: Vec<u8>| {
+            d.push(0);
+            d
+        };
+        let mut dirty = them;
+        dirty[..12].fill(0xff);
+        let max = U256::MAX.to_be_bytes();
+        let unreadable = [
+            plus(call(APPROVE, &[them, max])),
+            call(APPROVE, &[dirty, max]),
+            plus(call(INCREASE_ALLOWANCE, &[them, max])),
+            plus(call(SET_APPROVAL_FOR_ALL, &[them, yes])),
+            call(SET_APPROVAL_FOR_ALL, &[dirty, yes]),
+            plus(erc20::transfer_calldata(
+                &EthAddress::from_bytes([0x22; 20]),
+                &U256::from_u128(5),
+            )),
+            plus(call(TRANSFER_FROM, &[me, them, yes])),
+            plus(call(SAFE_TRANSFER_FROM, &[me, them, yes])),
+        ];
+        let base = MAINNET.cctp.evm_chain(8453).unwrap();
+        let sides = [
+            EvmSide::injective(&MAINNET),
+            EvmSide {
+                injective: None,
+                cctp: Some((&MAINNET.cctp, base)),
+            },
+        ];
+        // Known site and contract: nothing else is said about them.
+        let ctx = Context {
+            origin_known: true,
+            known_contracts: vec![token.to_checksum_hex()],
+            ..Default::default()
+        };
+        for side in &sides {
+            for data in &unreadable {
+                let a = evm_transaction(&req(token, data.clone()), side, &ctx);
+                assert_eq!(a.level, Level::Red, "{}", hex::encode(data));
+                assert_eq!(rules_of(&a), ["token_call_unreadable"], "{}", hex::encode(data));
+            }
+        }
+        let a = grade(&req(token, unreadable[0].clone()));
+        assert_eq!(
+            a.findings[0].message,
+            "Calls approve in a form the wallet can't read. The token may still run it."
+        );
+        // The exact forms keep their own rules.
+        assert_eq!(
+            rules_of(&grade(&req(token, call(APPROVE, &[them, max])))),
+            ["unlimited_allowance"]
+        );
+        assert_eq!(
+            rules_of(&grade(&req(token, call(SET_APPROVAL_FOR_ALL, &[them, yes])))),
+            ["nft_approval_all"]
+        );
+        // Any other function of the same shape is still a plain contract call.
+        let other = plus(call(0x12345678u32.to_be_bytes(), &[them, max]));
+        assert_eq!(evm_transaction(&req(token, other), &sides[0], &ctx).level, Level::Info);
     }
 
     #[test]
@@ -866,8 +963,8 @@ mod tests {
         max160[12..].fill(0xff);
         assert_eq!(grade(&p2(max160, soon)).level, Level::Red);
         assert_eq!(grade(&p2([0; 32], soon)).findings[0].rule, "allowance_revoke");
-        // Out of range for uint160: not read as an approval at all.
-        assert!(rules_of(&grade(&p2([0xff; 32], soon))).contains(&"new_contract"));
+        // Out of range for uint160: not read as an approval, so red as unreadable.
+        assert_eq!(rules_of(&grade(&p2([0xff; 32], soon))), ["token_call_unreadable"]);
         // An ERC20 approval to Permit2 names it.
         let a = grade(&req(
             EthAddress::from_bytes([0x11; 20]),

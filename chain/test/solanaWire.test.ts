@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 import { base58ToBytes, bytesToBase58 } from "../src/encoding.ts";
-import { TOKEN_PROGRAM, tokenAccountOf } from "../src/solana.ts";
+import { STAKE_PROGRAM, stakeAccountOf, TOKEN_PROGRAM, tokenAccountOf } from "../src/solana.ts";
 import { joinSolanaTransaction, lookupTableAddresses, readSolanaMessage, splitSolanaTransaction } from "../src/solanaWire.ts";
 
 // Messages compiled by @solana/web3.js (the vault's vectors), signed by the "abandon …
@@ -58,4 +58,24 @@ test("a lookup table's addresses, and a token account's mint, owner and amount",
   new DataView(data.buffer).setBigUint64(64, 1_500_000n, true);
   assert.deepEqual(tokenAccountOf({ lamports: 2_039_280n, owner: TOKEN_PROGRAM, data }), { mint: bytesToBase58(b), owner: V["owner"], amount: 1_500_000n, delegate: null, delegated: 0n, closeAuthority: null });
   assert.equal(tokenAccountOf({ lamports: 1n, owner: "11111111111111111111111111111111", data }), null);
+});
+
+// Run-2 C3: a stake account's staker and withdrawer, so a review can tell when they change.
+test("a stake account's staker and withdrawer", () => {
+  const a = base58ToBytes(V["owner"]!);
+  const b = base58ToBytes(V["other"]!);
+  const data = new Uint8Array(200);
+  const view = new DataView(data.buffer);
+  data.set(a, 12);
+  data.set(b, 44);
+  for (const state of [1, 2]) {
+    view.setUint32(0, state, true);
+    assert.deepEqual(stakeAccountOf({ lamports: 1n, owner: STAKE_PROGRAM, data }), { staker: V["owner"], withdrawer: V["other"] });
+  }
+  // Uninitialized, a rewards pool, another program's account, or too short: none.
+  view.setUint32(0, 0, true);
+  assert.equal(stakeAccountOf({ lamports: 1n, owner: STAKE_PROGRAM, data }), null);
+  view.setUint32(0, 2, true);
+  assert.equal(stakeAccountOf({ lamports: 1n, owner: TOKEN_PROGRAM, data }), null);
+  assert.equal(stakeAccountOf({ lamports: 1n, owner: STAKE_PROGRAM, data: data.slice(0, 75) }), null);
 });
