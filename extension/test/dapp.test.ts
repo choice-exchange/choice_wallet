@@ -515,15 +515,18 @@ test("a Solana transaction that writes more accounts than the wallet can check i
   const TABLE = bs58(new Uint8Array(32).fill(0x61));
   const filler = (i: number) => bs58(Uint8Array.from({ length: 32 }, (_, k) => (k === 0 ? 0x70 : k === 1 ? i : 7)));
   /** A v0 transaction: ME_SOL signs, the program reads, and every entry of the site's table
-   *  (`fillers` accounts, then the account's USDC account) is loaded writable. */
-  const tx = (fillers: number) => {
+   *  (`fillers` accounts, then the account's USDC account) is loaded writable. With a `payer`,
+   *  the site pays the fee and ME_SOL signs read-only. */
+  const tx = (fillers: number, payer?: string) => {
     const entries = [...Array.from({ length: fillers }, (_, i) => filler(i)), ME_SOL_USDC];
     const table = new Uint8Array(56 + 32 * entries.length);
     entries.forEach((a, i) => table.set(base58Decode(a), 56 + 32 * i));
     net.state.solana.accounts[TABLE] = { lamports: 1_000_000, owner: "AddressLookupTab1e1111111111111111111111111", data: [Buffer.from(table).toString("base64"), "base64"], executable: false, rentEpoch: 0, space: table.length };
-    const keys = [ME_SOL, program].map(base58Decode);
-    const message = Uint8Array.from([0x80, 1, 0, 1, keys.length, ...keys.flatMap((k) => [...k]), ...new Uint8Array(32).fill(9), 1, 1, 2, 0, 2, 1, 7, 1, ...base58Decode(TABLE), entries.length, ...entries.map((_, i) => i), 0]);
-    return Buffer.from(Uint8Array.from([1, ...new Uint8Array(64), ...message])).toString("hex");
+    const signers = payer ? [payer, ME_SOL] : [ME_SOL];
+    const keys = [...signers, program].map(base58Decode);
+    const me = signers.length - 1;
+    const message = Uint8Array.from([0x80, signers.length, me, 1, keys.length, ...keys.flatMap((k) => [...k]), ...new Uint8Array(32).fill(9), 1, keys.length - 1, 2, me, keys.length, 1, 7, 1, ...base58Decode(TABLE), entries.length, ...entries.map((_, i) => i), 0]);
+    return Buffer.from(Uint8Array.from([signers.length, ...new Uint8Array(64 * signers.length), ...message])).toString("hex");
   };
   const review = async (transaction: string) => {
     const signing = site("solana_signTransaction", { account: ME_SOL, transaction });
@@ -548,6 +551,14 @@ test("a Solana transaction that writes more accounts than the wallet can check i
   const whole = ok<DappReview>(await review(tx(98)));
   assert.deepEqual([whole.risk.level, whole.risk.confirm], ["red", "GIVE"], JSON.stringify(whole.risk));
   assert.ok(whole.risk.findings.some((f) => f.rule === "solana_token_account_owner"), JSON.stringify(whole.risk));
+  // The site pays the fee and the account signs read-only: its own address can't change, so
+  // it isn't counted. The payer, 98 fillers and the USDC account are 100, all checked.
+  const PAYER = bs58(new Uint8Array(32).fill(0x62));
+  const paid = ok<DappReview>(await review(tx(98, PAYER)));
+  assert.deepEqual([paid.risk.level, paid.risk.confirm], ["red", "GIVE"], JSON.stringify(paid.risk));
+  assert.ok(paid.risk.findings.some((f) => f.rule === "solana_token_account_owner"), JSON.stringify(paid.risk));
+  const paidOver = await review(tx(99, PAYER));
+  assert.match((paidOver as { error: { message: string } }).error.message, /changes 101 accounts\./);
 });
 
 // Run-2 C3 follow-up: SOL moving between the account's own stake accounts (a merge, a split

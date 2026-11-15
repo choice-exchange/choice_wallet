@@ -20,6 +20,7 @@ import {
   isObject,
   MAX_ADDED_CHAINS,
   MAX_CHAIN_ID,
+  MAX_IMAGE_SIDE,
   Pool,
   setAddedChains,
   type AddedChain,
@@ -48,15 +49,13 @@ const MAX_RPC = 6;
 /** A logo's image as fetched, and as kept. */
 const MAX_IMAGE = 256 * 1024;
 const MAX_LOGO = 64 * 1024;
-/** The most pixels a side of a fetched logo may declare: it is decoded only below this. */
-const MAX_SIDE = 2048;
 
 export interface AddedChainsDeps {
   fetch: Fetch;
   local: Store;
   /** An image made 64 pixels square, as a PNG data URL (null if it can't be read). Absent:
    *  a small PNG is kept as it came. */
-  resize?(bytes: Uint8Array, type: string): Promise<string | null>;
+  resize?(bytes: Uint8Array): Promise<string | null>;
   now?: () => number;
   /** The queue every writer of sites' chain picks and the account records shares. */
   turn?: Turn;
@@ -144,7 +143,10 @@ export function listedChain(e: unknown): ListedChain | null {
  *  length header says. */
 async function capped(res: Response, max: number): Promise<Uint8Array | null> {
   const said = Number(res.headers.get("content-length") ?? "0");
-  if (said > max) return null;
+  if (said > max) {
+    void res.body?.cancel().catch(() => {});
+    return null;
+  }
   const reader = res.body?.getReader();
   if (!reader) return null;
   const parts: Uint8Array[] = [];
@@ -245,23 +247,27 @@ export function createAddedChains(d: AddedChainsDeps) {
 
   /** An image at `url`, as the small PNG the wallet keeps of it, or undefined. Only a PNG,
    *  JPEG or WebP, known by its own bytes rather than the server's word, and only one that
-   *  declares at most `MAX_SIDE` pixels a side, is decoded at all: an SVG, or a small file
-   *  that declares a huge picture, could take any amount of memory to draw (run-2 NV1). */
+   *  declares at most `MAX_IMAGE_SIDE` pixels a side, is decoded at all: an SVG, or a small
+   *  file that declares a huge picture, could take any amount of memory to draw (run-2 NV1). */
   async function image(url: string): Promise<string | undefined> {
     try {
       const res = await d.fetch(url, { signal: AbortSignal.timeout(10_000) });
-      if (!res.ok) return undefined;
+      if (!res.ok) {
+        void res.body?.cancel().catch(() => {});
+        return undefined;
+      }
       const bytes = await capped(res, MAX_IMAGE);
       const head = bytes ? imageSize(bytes) : null;
-      if (!bytes || !head || head.width > MAX_SIDE || head.height > MAX_SIDE) return undefined;
-      const kept = d.resize ? await d.resize(bytes, head.type) : head.type === "image/png" && bytes.length <= MAX_LOGO ? `data:image/png;base64,${bytesToBase64(bytes)}` : null;
+      if (!bytes || !head || head.width > MAX_IMAGE_SIDE || head.height > MAX_IMAGE_SIDE) return undefined;
+      const kept = d.resize ? await d.resize(bytes) : head.type === "image/png" && bytes.length <= MAX_LOGO ? `data:image/png;base64,${bytesToBase64(bytes)}` : null;
       return isChainLogo(kept) ? kept : undefined;
     } catch {
       return undefined;
     }
   }
 
-  /** The chain's logo: DefiLlama's, else ethereum-lists' icon (from IPFS). */
+  /** The chain's logo: DefiLlama's, else ethereum-lists' icon (from IPFS), the first of its
+   *  formats the wallet draws (an SVG isn't). */
   async function logo(c: ListedChain | undefined): Promise<string | undefined> {
     if (!c) return undefined;
     if (c.llama) {
@@ -272,8 +278,9 @@ export function createAddedChains(d: AddedChainsDeps) {
     try {
       const res = await d.fetch(`${ICON_RECORDS}${c.icon}.json`, { signal: AbortSignal.timeout(10_000) });
       const body: unknown = res.ok ? await res.json() : null;
-      const first = Array.isArray(body) && isObject(body[0]) ? body[0] : null;
-      const cid = typeof first?.["url"] === "string" ? /^ipfs:\/\/([A-Za-z0-9]{46,64})$/.exec(first["url"])?.[1] : undefined;
+      const raster = (Array.isArray(body) ? body : []).find((e) => isObject(e) && typeof e["format"] === "string" && /^(png|jpe?g|webp)$/i.test(e["format"]));
+      const url = isObject(raster) ? raster["url"] : undefined;
+      const cid = typeof url === "string" ? /^ipfs:\/\/([A-Za-z0-9]{46,64})$/.exec(url)?.[1] : undefined;
       return cid ? await image(`${IPFS_GATEWAY}${cid}`) : undefined;
     } catch {
       return undefined;

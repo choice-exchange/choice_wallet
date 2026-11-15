@@ -36,8 +36,8 @@ test("an image's format and size come from its header", () => {
 test("a chain logo is drawn only as a small PNG", () => {
   assert.ok(isChainLogo(url(PNG)));
   assert.ok(isChainLogo(url(pngOf(64, 64))));
-  // A PNG declaring a huge picture, an SVG, a JPEG, or anything that isn't a data URL.
-  for (const s of [url(pngOf(4096, 4096)), url(Buffer.from("<svg/>"), "image/svg+xml"), url(PNG, "image/jpeg"), "https://example.org/logo.png", `${url(PNG)}"`, 5]) {
+  // A PNG bigger than the wallet makes one, an SVG, a JPEG, or anything that isn't a data URL.
+  for (const s of [url(pngOf(65, 64)), url(pngOf(4096, 4096)), url(Buffer.from("<svg/>"), "image/svg+xml"), url(PNG, "image/jpeg"), "https://example.org/logo.png", `${url(PNG)}"`, 5]) {
     assert.ok(!isChainLogo(s), String(s).slice(0, 40));
   }
 });

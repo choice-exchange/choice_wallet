@@ -67,7 +67,7 @@ export interface Deps {
   /** Start or stop the background watcher's alarm. */
   scheduleWatch?(on: boolean): void;
   /** An image made 64 pixels square, as a PNG data URL: an added chain's logo. */
-  resizeImage?(bytes: Uint8Array, type: string): Promise<string | null>;
+  resizeImage?(bytes: Uint8Array): Promise<string | null>;
 }
 
 /** Minutes without activity before the wallet locks itself, unless the user picks another

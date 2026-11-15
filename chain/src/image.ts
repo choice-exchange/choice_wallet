@@ -54,10 +54,13 @@ function sized(type: RasterType, width: number, height: number) {
   return width > 0 && height > 0 ? { type, width, height } : null;
 }
 
+/** The most pixels a side of a fetched image may declare: it is decoded only at or below this. */
+export const MAX_IMAGE_SIDE = 2048;
+
 /** The side of the logo the wallet keeps for an added chain (a PNG it draws itself). */
 export const LOGO_SIDE = 64;
 
-/** A logo the wallet kept: a PNG data URL, no bigger than the wallet draws one. Anything else,
+/** A logo the wallet kept: a PNG data URL, no bigger than the wallet makes one. Anything else,
  *  whatever an older version or a stored record holds, is dropped rather than drawn. */
 export function isChainLogo(s: unknown): s is string {
   if (typeof s !== "string" || s.length > 128 * 1024) return false;
@@ -65,7 +68,7 @@ export function isChainLogo(s: unknown): s is string {
   if (!m) return false;
   try {
     const head = imageSize(base64ToBytes(m[1]!.slice(0, 44)));
-    return head !== null && head.type === "image/png" && head.width <= LOGO_SIDE * 4 && head.height <= LOGO_SIDE * 4;
+    return head !== null && head.type === "image/png" && head.width <= LOGO_SIDE && head.height <= LOGO_SIDE;
   } catch {
     return false;
   }

@@ -173,6 +173,65 @@ test("a chain's logo that isn't a sane raster image is never kept", async () => 
   }
 });
 
+// Run-2 NV1, as the extension runs: the browser draws the logo small. A JPEG or WebP reaches
+// it, one whose header declares too much never does, and only the 64 px PNG it makes is kept.
+test("a chain's JPEG logo is drawn small by the browser; one declaring too much never reaches it", async () => {
+  const jpeg = (w: number, h: number) => Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x04, 0x00, 0x00, 0xff, 0xc0, 0x00, 0x11, 0x08, h >> 8, h & 0xff, w >> 8, w & 0xff, 0x03, 0, 0, 0, 0]);
+  const png = (side: number) => {
+    const b = Buffer.from(TINY_PNG);
+    b.writeUInt32BE(side, 16);
+    b.writeUInt32BE(side, 20);
+    return `data:image/png;base64,${b.toString("base64")}`;
+  };
+  for (const [name, body, made, kept] of [
+    ["a 640 by 480 JPEG", jpeg(640, 480), png(64), true],
+    ["a JPEG declaring 5000 by 5000", jpeg(5000, 5000), png(64), false],
+    ["a PNG bigger than the wallet makes, from the browser", jpeg(640, 480), png(128), false],
+    ["nothing from the browser", jpeg(640, 480), null, false],
+  ] as const) {
+    const net = chain({ balances: { inj: INJ } });
+    const honest = net.fetch;
+    net.fetch = async (input: string, init?: RequestInit) => (String(input).includes("/icons/chains/") ? new Response(body, { status: 200, headers: { "content-type": "image/jpeg" } }) : honest(input, init));
+    const asked: Buffer[] = [];
+    const { service } = await wallet(net, {
+      opened: [],
+      notified: 0,
+      resize: async (bytes) => {
+        asked.push(Buffer.from(bytes));
+        return made;
+      },
+    });
+    const s = ok<Status>(await service.handle({ type: "add_chain", chain: BNB }));
+    assert.equal(s.added[0]?.chainId, 56, name);
+    assert.equal(s.added[0]?.logo, kept ? made : undefined, name);
+    assert.equal(asked.length, body.readUInt16BE(13) > 2048 ? 0 : 1, name);
+  }
+});
+
+// ethereum-lists' icon record can list a chain's logo in several formats: an SVG first is
+// passed over for its PNG.
+test("ethereum-lists' PNG is used when its record lists an SVG first", async () => {
+  const net = chain({ balances: { inj: INJ } });
+  const honest = net.fetch;
+  const SVG_CID = `Qm${"s".repeat(44)}`;
+  const PNG_CID = `Qm${"p".repeat(44)}`;
+  const asked: string[] = [];
+  net.fetch = async (input: string, init?: RequestInit) => {
+    const u = String(input);
+    if (u.includes("/icons/chains/")) return new Response("no", { status: 404 });
+    if (u.endsWith("/_data/icons/bnbchain.json")) return Response.json([{ url: `ipfs://${SVG_CID}`, format: "svg" }, { url: `ipfs://${PNG_CID}`, format: "png" }]);
+    if (u.includes("/ipfs/")) {
+      asked.push(u);
+      return new Response(u.endsWith(PNG_CID) ? TINY_PNG : "<svg/>", { status: 200 });
+    }
+    return honest(input, init);
+  };
+  const { service } = await wallet(net);
+  const s = ok<Status>(await service.handle({ type: "add_chain", chain: BNB }));
+  assert.equal(s.added[0]?.logo, `data:image/png;base64,${TINY_PNG.toString("base64")}`);
+  assert.deepEqual(asked, [`https://ipfs.io/ipfs/${PNG_CID}`]);
+});
+
 // Run-2 NV1: an older version kept SVG logos as they came. One read back is dropped, and the
 // chain is kept with its letters.
 test("a stored SVG logo is dropped and its chain kept", async () => {

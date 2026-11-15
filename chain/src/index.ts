@@ -41,6 +41,7 @@ export {
   STAKE_PROGRAM,
   stakeAccountOf,
   summarizeSolana,
+  SIMULATE_MAX_ACCOUNTS,
   SYSTEM_PROGRAM,
   TOKEN_2022_PROGRAM,
   TOKEN_PROGRAM,
@@ -92,5 +93,5 @@ export {
   shortDenom,
   type Token,
 } from "./tokens.ts";
-export { imageSize, isChainLogo, LOGO_SIDE, type RasterType } from "./image.ts";
+export { imageSize, isChainLogo, LOGO_SIDE, MAX_IMAGE_SIDE, type RasterType } from "./image.ts";
 export { ceilDecimal, formatShort, formatUnits, parseUnits, toBigInt } from "./units.ts";

@@ -9,7 +9,7 @@
 // a request first calls it.
 
 import init, { handle, resetVault } from "choice-wallet-vault-glue";
-import { bytesToBase64, explorerTxUrl, imageSize, isNetworkId, LOGO_SIDE, NETWORKS } from "@choice-wallet/chain";
+import { bytesToBase64, explorerTxUrl, imageSize, isNetworkId, LOGO_SIDE, MAX_IMAGE_SIDE, NETWORKS } from "@choice-wallet/chain";
 
 import { createService, dappOrigin, fromOwnPage, type Store } from "./host/service";
 import { callVault } from "./host/vault";
@@ -115,7 +115,7 @@ const service = createService({
 async function resizeImage(bytes: Uint8Array): Promise<string | null> {
   try {
     const head = imageSize(bytes);
-    if (!head || head.width > 2048 || head.height > 2048) return null;
+    if (!head || head.width > MAX_IMAGE_SIDE || head.height > MAX_IMAGE_SIDE) return null;
     const size = LOGO_SIDE;
     const bitmap = await createImageBitmap(new Blob([new Uint8Array(bytes)], { type: head.type }), { resizeWidth: size, resizeHeight: size, resizeQuality: "high" });
     const canvas = new OffscreenCanvas(size, size);

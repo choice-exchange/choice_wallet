@@ -115,6 +115,9 @@ export function stakeAccountOf(a: RawAccount): { staker: string; withdrawer: str
   };
 }
 
+/** The most accounts a simulation reports on (`simulateTransaction`'s limit). */
+export const SIMULATE_MAX_ACCOUNTS = 100;
+
 export class SolanaRpc {
   readonly pool: Pool;
   #id = 1;
@@ -184,10 +187,10 @@ export class SolanaRpc {
   }
 
   /** Simulate a transaction (base64, unsigned or partly signed), with what `addresses` hold
-   *  after it (at most 100: more is refused, never cut short, so no caller reads a partial
-   *  answer as whole). */
+   *  after it (at most `SIMULATE_MAX_ACCOUNTS`: more is refused, never cut short, so no
+   *  caller reads a partial answer as whole). */
   async simulateWith(tx: string, addresses: readonly string[]): Promise<{ err: unknown; logs: string[]; after: (RawAccount | null)[] }> {
-    if (addresses.length > 100) throw new RangeError("A simulation reports on at most 100 accounts.");
+    if (addresses.length > SIMULATE_MAX_ACCOUNTS) throw new RangeError(`A simulation reports on at most ${SIMULATE_MAX_ACCOUNTS} accounts.`);
     const r = await this.call("simulateTransaction", [
       tx,
       { encoding: "base64", sigVerify: false, replaceRecentBlockhash: true, commitment: "confirmed", accounts: { encoding: "base64", addresses } },

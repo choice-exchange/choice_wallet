@@ -25,6 +25,7 @@ import {
   lookupTableAddresses,
   NETWORKS,
   readSolanaMessage,
+  SIMULATE_MAX_ACCOUNTS,
   SOL,
   SolanaRpc,
   splDenom,
@@ -120,9 +121,6 @@ export function wire(message: Uint8Array, signers: readonly string[], sigs: Read
  *  failed write costs only a lookup later (run-2 C12: one item per mint, unbounded, could
  *  fill the storage the vault and the account records share). */
 const TOKENS_KEPT = 500;
-/** The accounts a simulation reports on, at most: a site's transaction that writes more
- *  isn't signed. */
-const MAX_WATCHED = 100;
 
 export function createSolana(d: SolanaDeps) {
   const tokensDisk = diskCache<TokenInfo>(d.local, "cache_solana_tokens", { fresh: Infinity, stale: Infinity, max: TOKENS_KEPT });
@@ -513,10 +511,14 @@ export function createSolana(d: SolanaDeps) {
     // transaction writes (one it opens too), before and after a simulation.
     const writable = [...keys.keys.filter((_, i) => keys.writable[i]), ...keys.lookups.flatMap((l, i) => l.writable.map((j) => tables[i]!.addresses[j] ?? ""))].filter(Boolean);
     // Every account it writes is compared before and after, or it isn't signed: one the
-    // simulation can't report on (past its 100) would hide what is handed over there, in
-    // whatever order the site's lookup table put it (run-2 NV2).
-    const watched = [...new Set([owner, ...writable])];
-    if (watched.length > MAX_WATCHED) throw new RangeError(`This transaction changes ${watched.length} accounts. The wallet can check at most ${MAX_WATCHED} before you sign, so it won't sign it.`);
+    // simulation can't report on (past its limit) would hide what is handed over there, in
+    // whatever order the site's lookup table put it (run-2 NV2). The account's own address is
+    // read first either way; signing read-only, it can't change, so it isn't simulated and
+    // doesn't count.
+    const written = [...new Set(writable)];
+    if (written.length > SIMULATE_MAX_ACCOUNTS) throw new RangeError(`This transaction changes ${written.length} accounts. The wallet can check at most ${SIMULATE_MAX_ACCOUNTS} before you sign, so it won't sign it.`);
+    const ownWritten = written.includes(owner);
+    const watched = [owner, ...written.filter((a) => a !== owner)];
     const before = await r.rawAccounts(watched);
     const accounts: Record<string, { owner: string; mint: string }> = {};
     const moved = new Map<string, bigint>();
@@ -524,7 +526,8 @@ export function createSolana(d: SolanaDeps) {
     const handovers: { kind: string; account?: string; mint?: string; to: string; all?: boolean; amount?: string }[] = [];
     let simulation: SiteTransaction["simulation"];
     try {
-      const sim = await r.simulateWith(bytesToBase64(wire), watched);
+      const sim = await r.simulateWith(bytesToBase64(wire), ownWritten ? watched : watched.slice(1));
+      const after = ownWritten ? sim.after : [before[0] ?? null, ...sim.after];
       if (sim.err !== null) {
         simulation = { ok: false, error: siteFailure(sim.err, sim.logs) };
       } else {
@@ -541,7 +544,7 @@ export function createSolana(d: SolanaDeps) {
         const lockedAway = (l: StakeLockup) => l.custodian !== owner && (l.unixTimestamp > 0n || l.epoch > 0n) && !lockups.has(lockKey(l));
         watched.forEach((a, i) => {
           const pre = before[i] ?? null;
-          const post = sim.after[i] ?? null;
+          const post = after[i] ?? null;
           if (a === owner) {
             moved.set(SOL, (post?.lamports ?? 0n) - (pre?.lamports ?? 0n));
             // A new program owner takes the account itself (System's Assign).
