@@ -55,6 +55,8 @@ export type LedgerKey = { path: string; public_key: string };
 export type NetworkId = "mainnet" | "testnet";
 
 export type UiRequest =
+  // `poll`: sent by a page's own timer, or its reload when the host says something landed:
+  // not the user's use, so it doesn't restart the auto-lock timer.
   | { type: "status"; poll?: boolean }
   | { type: "generate"; words: 12 | 24 }
   /** The first wallet, and the password for all of them. `imported`: a phrase from before,
@@ -111,7 +113,7 @@ export type UiRequest =
       autoLock?: number;
       notify?: NotifyMode;
     }
-  | { type: "balances" }
+  | { type: "balances"; poll?: boolean }
   /** What the account in use showed last (balances, staking, the first page of activity),
    *  from disk: drawn at once while the chain is asked again. */
   | { type: "snapshot" }
@@ -123,11 +125,11 @@ export type UiRequest =
    *  (inj1…), joins the list; one a bank denom covers is just shown. */
   | { type: "add_token"; address: string }
   /** One page (from 1) of the account's activity, from the node's tx index. */
-  | { type: "activity"; page: number }
+  | { type: "activity"; page: number; poll?: boolean }
   /** The account's Solana history, newest first; `before` continues after a page. */
-  | { type: "solana_activity"; before?: string }
+  | { type: "solana_activity"; before?: string; poll?: boolean }
   /** A page of the account's history on an EVM chain beside Injective (by its key). */
-  | { type: "chain_activity"; chain: string; page?: number }
+  | { type: "chain_activity"; chain: string; page?: number; poll?: boolean }
   /** Burns on Solana whose record's rent comes back (5 days on), and taking one back. */
   | { type: "bridge_reclaims" }
   | { type: "prepare_bridge_reclaim"; hash: string }
@@ -159,15 +161,15 @@ export type UiRequest =
    *  approval, or the burn. */
   | { type: "prepare_bridge"; quote: string }
   /** Transfers this account sent that haven't landed. */
-  | { type: "bridge_pending" }
+  | { type: "bridge_pending"; poll?: boolean }
   /** Where a transfer is, by its burn's hash on `from`. */
-  | { type: "bridge_status"; from: string; hash: string }
+  | { type: "bridge_status"; from: string; hash: string; poll?: boolean }
   /** Mint an attested transfer on its destination from this account (when nobody has). */
   | { type: "prepare_bridge_receive"; from: string; hash: string }
   /** Convert `amount` (base units, or "max") of a token into its other form (`convertsTo`):
    *  a CW20 into its bank denom through the CW20 adapter, or back. Confirmed like a send. */
   | { type: "prepare_convert"; denom: string; amount: string }
-  | { type: "staking" }
+  | { type: "staking"; poll?: boolean }
   /** Proposals in voting and the newest finished ones, and this account's votes. */
   | { type: "governance" }
   | { type: "prepare_vote"; proposal: string; option: VoteOptionName }
@@ -194,7 +196,7 @@ export type UiRequest =
   /** The Ledger's signature for the prepared send `confirm_send` handed to it. */
   | ({ type: "ledger_signed"; digest: string } & DeviceSignature)
   /** A transaction's state; `chain` when it was signed on a chain USDC comes from. */
-  | { type: "tx_status"; hash: string; chain?: string }
+  | { type: "tx_status"; hash: string; chain?: string; poll?: boolean }
   /** A site's request waiting in an approval window (see `DappRequest`). */
   | { type: "dapp_request"; id: string }
   /** Prepare and decode a waiting signature request, for its approval screen. */

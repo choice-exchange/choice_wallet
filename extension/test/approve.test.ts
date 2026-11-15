@@ -8,7 +8,7 @@ import { test } from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { nameOf, Origin, SignBody } from "../../ui/src/Approve";
+import { nameOf, networkName, Origin, SignBody } from "../../ui/src/Approve";
 import { Phrase } from "../../ui/src/kit";
 import type { DappReview, NetworkId } from "../../ui/src/protocol";
 
@@ -264,4 +264,15 @@ test("the signer's name is the account the review signs as, not the one in use",
   const status = { accounts: [{ name: "Account A", addresses: { "eip155:1776": ME_EVM } }, { name: "Account B", addresses: { "eip155:1776": THEM_EVM } }], active: 1 } as never;
   assert.equal(nameOf(status, { display: { kind: "evm_personal_sign", signer: ME_EVM.toLowerCase() } } as never), "Account A");
   assert.equal(nameOf(status, { display: { kind: "evm_personal_sign", signer: "0x0000000000000000000000000000000000000001" } } as never), undefined);
+});
+
+// Run-2 C16: Injective typed data asked on Ethereum (F1's bridged entries) takes effect on
+// Injective, so the Network row says Injective, and where the site asked.
+test("the network row names Injective for Injective typed data asked on another chain", () => {
+  const typed = (chain: string, injective: boolean) => ({ kind: "evm_typed_data", chain, ...(injective ? { injective_tx: { chain_id: "injective-1" } } : {}) });
+  assert.equal(networkName(typed("eip155:1", true), "mainnet"), "Injective (asked on Ethereum)");
+  // Asked on Injective's own EVM side: just Injective.
+  assert.equal(networkName(typed("eip155:1776", true), "mainnet"), "Injective");
+  // Other typed data on Ethereum is Ethereum's.
+  assert.equal(networkName(typed("eip155:1", false), "mainnet"), "Ethereum");
 });

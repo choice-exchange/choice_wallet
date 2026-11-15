@@ -138,13 +138,86 @@ test("reset leaves no record of the accounts' Solana tokens, bridge rent or site
   for (const k of [`solana_mints:mainnet:${owner}`, "solana_rent", "site_chains"]) assert.ok(!local.data.has(k), k);
 });
 
+// Run-2 C11: removing an account leaves no record naming it, in any per-account store; the
+// accounts still here keep theirs.
+test("removing an account leaves no record naming it", async () => {
+  const { service, local } = await wallet();
+  const two = ok<Status>(await service.handle({ type: "add_account" })).accounts;
+  const [a, b] = [two[0]!.addresses, two[1]!.addresses];
+  const inj = (x: Record<string, string>) => x["cosmos:injective-1"]!;
+  const evm = (x: Record<string, string>) => x["eip155:1776"]!;
+  const sol = (x: Record<string, string>) => Object.entries(x).find(([k]) => k.startsWith("solana:"))![1];
+  for (const x of [a, b]) {
+    const v = (await local.get(["votes_cast", "chain_sent", "bridge_transfers", "solana_rent", "rescue", "watch", "watch_own"])) as Record<string, Record<string, unknown> | unknown[] | undefined>;
+    await local.set({
+      votes_cast: { mainnet: { ...((v["votes_cast"] as Record<string, unknown>)?.["mainnet"] as object), [inj(x)]: { "1": "yes" } } },
+      chain_sent: { ...(v["chain_sent"] as object), [`mainnet base ${evm(x).toLowerCase()}`]: ["0x01"] },
+      bridge_transfers: [...((v["bridge_transfers"] as unknown[]) ?? []), { hash: `0x${inj(x)}`, account: evm(x) }],
+      solana_rent: [...((v["solana_rent"] as unknown[]) ?? []), { event: inj(x), owner: sol(x) }],
+      rescue: { ...(v["rescue"] as object), [inj(x)]: "inj1rescue" },
+      watch: { accounts: { ...((v["watch"] as { accounts?: object })?.accounts ?? {}), [`mainnet ${inj(x)}`]: { coins: {}, at: 1, from: 1 } }, seen: [...((v["watch"] as { seen?: string[] })?.seen ?? []), `${inj(x)} AB`], badge: 0 },
+      watch_own: [...((v["watch_own"] as unknown[]) ?? []), { network: "mainnet", hash: "AB", address: inj(x), at: 1 }],
+    });
+  }
+  ok(await service.handle({ type: "remove_account", index: 1 }));
+  await service.settled();
+  const stored = JSON.stringify([...local.data.entries()]).toLowerCase();
+  for (const gone of Object.values(b)) assert.ok(!stored.includes(gone.toLowerCase()), gone);
+  // The first account's records stay, all seven of them.
+  for (const k of ["votes_cast", "chain_sent", "bridge_transfers", "solana_rent", "rescue", "watch", "watch_own"]) {
+    assert.ok(JSON.stringify(local.data.get(k)).toLowerCase().includes(k === "chain_sent" || k === "bridge_transfers" ? evm(a).toLowerCase() : k === "solana_rent" ? sol(a).toLowerCase() : inj(a)), k);
+  }
+});
+
+// Run-2 C14: a check that was waiting on the network when the wallet was reset writes
+// nothing afterwards; nor does one waiting when its account was removed.
+test("a background check waiting on the network writes nothing after a reset", async () => {
+  const net = chain({ balances: { inj: 5n * INJ } });
+  const honest = net.fetch;
+  let gate: Promise<void> | null = null;
+  let waiting = false;
+  net.fetch = async (input: string, init?: RequestInit) => {
+    if (gate && String(input).includes("/bank/v1beta1/")) {
+      waiting = true;
+      await gate;
+    }
+    return honest(input, init);
+  };
+  const { service, local } = await wallet(net);
+  await service.watch();
+  assert.ok(local.data.has("watch"));
+  let open!: () => void;
+  gate = new Promise((r) => (open = r));
+  const tick = service.watch();
+  for (let i = 0; i < 200 && !waiting; i++) await new Promise((r) => setTimeout(r, 5));
+  assert.ok(waiting, "the check is waiting on the network");
+  ok(await service.handle({ type: "reset", password: PASSWORD }));
+  open();
+  await tick;
+  await service.settled();
+  for (const k of ["watch", "watch_own", "snapshots"]) assert.ok(!local.data.has(k), k);
+});
+
 // F17: Reset keeps only device settings and public caches; every other record goes, whatever
 // its name.
 test("reset keeps the device's settings and nothing else of the wallet's", async () => {
   const { service, local } = await wallet();
-  await local.set({ some_future_record: { about: "an account" }, cache_unindexed: { x: 1 }, auto_lock: 60, endpoints: { mainnet: ["https://example.org"] }, "solana_token:mainnet:abc": { symbol: "X" } });
+  await local.set({ some_future_record: { about: "an account" }, cache_unindexed: { x: 1 }, auto_lock: 60, endpoints: { mainnet: ["https://example.org"] }, cache_solana_tokens: {}, "solana_token:mainnet:abc": { symbol: "X" } });
   ok(await service.handle({ type: "reset", password: PASSWORD }));
-  assert.deepEqual([...local.data.keys()].sort(), ["anti_phishing", "auto_lock", "endpoints", "solana_token:mainnet:abc"]);
+  // Run-2 C12: Solana token descriptions live in one bounded cache, kept; the old
+  // one-item-per-mint records go.
+  assert.deepEqual([...local.data.keys()].sort(), ["anti_phishing", "auto_lock", "cache_solana_tokens", "endpoints"]);
+});
+
+// Run-2 C12: Solana token descriptions are one bounded item now; an older version's
+// one-item-per-mint records are removed on the next start.
+test("an older version's per-mint Solana token records are removed on the next start", async () => {
+  const net = chain();
+  const local = memory();
+  await local.set({ "solana_token:mainnet:old": { symbol: "OLD" } });
+  const service = serviceOn(net, local, memory(), { opened: [], notified: 0 });
+  await service.handle({ type: "status" });
+  assert.ok(!local.data.has("solana_token:mainnet:old"));
 });
 
 // A move from the old keystore that stopped after the vault was written left the keystore,

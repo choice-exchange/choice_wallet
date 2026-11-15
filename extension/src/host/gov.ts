@@ -25,7 +25,11 @@ const CASTS: readonly string[] = [...VOTE_OPTIONS, "weighted"];
 /** Votes, less those on `ids`. */
 const without = (votes: Record<string, VoteCast>, ids: readonly string[]) => Object.fromEntries(Object.entries(votes).filter(([id]) => !ids.includes(id)));
 
-export function createGov(d: { sender: Sender; local: Store }) {
+/** `owned`: whether an account on the list still holds an address; votes for one that went
+ *  away while the chain was asked aren't kept (run-2 C14). */
+export function createGov(d: { sender: Sender; local: Store; owned?: (address: string) => Promise<boolean> }) {
+  const still = async (voter: string) => !d.owned || (await d.owned(voter));
+
   async function kept(network: NetworkId, voter: string): Promise<Record<string, VoteCast>> {
     const { votes_cast } = (await d.local.get(["votes_cast"])) as { votes_cast?: Kept };
     const mine = votes_cast?.[network]?.[voter] ?? {};
@@ -38,11 +42,13 @@ export function createGov(d: { sender: Sender; local: Store }) {
     // The newest proposals' votes, when there are too many.
     const ids = Object.keys(merged).sort((a, b) => (BigInt(b) > BigInt(a) ? 1 : -1)).slice(0, MAX_KEPT);
     const mine = Object.fromEntries(ids.map((id) => [id, merged[id]!]));
+    if (!(await still(voter))) return;
     await d.local.set({ votes_cast: { ...(votes_cast ?? {}), [network]: { ...(votes_cast?.[network] ?? {}), [voter]: mine } } });
   }
 
   /** Replace an account's kept votes. */
   async function replace(network: NetworkId, voter: string, votes: Record<string, VoteCast>): Promise<void> {
+    if (!(await still(voter))) return;
     const { votes_cast } = (await d.local.get(["votes_cast"])) as { votes_cast?: Kept };
     await d.local.set({ votes_cast: { ...(votes_cast ?? {}), [network]: { ...(votes_cast?.[network] ?? {}), [voter]: votes } } });
     await keep(network, voter, {});

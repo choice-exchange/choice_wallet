@@ -42,15 +42,33 @@ export function createDapps(h: DappHost) {
    *  so no writer overwrites another's change (a user's disconnect, a site's revoke, a
    *  connect). `change` edits the map and says whether it changed it; only then is it saved. */
   let grantTurn: Promise<unknown> = Promise.resolve();
+  /** Run `work` in the grants' turn. A site's chain pick is saved and removed there too, so
+   *  none is saved for a site without a grant, nor outlives one (run-2 C9). */
+  function inGrantTurn<T>(work: () => Promise<T>): Promise<T> {
+    const turn = grantTurn.then(work);
+    grantTurn = turn.catch(() => {});
+    return turn;
+  }
   function changeGrants(change: (all: Grants) => boolean): Promise<boolean> {
-    const turn = grantTurn.then(async () => {
+    return inGrantTurn(async () => {
       const all = await grants();
       if (!change(all)) return false;
       await h.local.set({ connections: all });
       return true;
     });
-    grantTurn = turn.catch(() => {});
-    return turn;
+  }
+
+  /** Drop a site's chain picks, in the grants' turn: when its grant goes, and when a new
+   *  one starts (so a reconnect starts on Injective's EVM side). Writes nothing when it
+   *  has none. */
+  function forgetSiteChains(origin: string): Promise<void> {
+    return inGrantTurn(async () => {
+      const { site_chains } = (await h.local.get(["site_chains"])) as { site_chains?: Record<string, unknown> };
+      if (!site_chains || !Object.hasOwn(site_chains, origin)) return;
+      const rest = { ...site_chains };
+      delete rest[origin];
+      await h.local.set({ site_chains: rest });
+    });
   }
 
   async function isConnected(origin: string): Promise<boolean> {
@@ -87,10 +105,14 @@ export function createDapps(h: DappHost) {
     return ask(
       {
         approve: async () => {
+          let fresh = false;
           await changeGrants((all) => {
-            if (!Object.hasOwn(all, origin)) all[origin] = { since: Date.now() };
+            if (Object.hasOwn(all, origin)) return false;
+            all[origin] = { since: Date.now() };
+            fresh = true;
             return true;
           });
+          if (fresh) await forgetSiteChains(origin);
           h.notify();
           return then();
         },
@@ -112,7 +134,7 @@ export function createDapps(h: DappHost) {
     return ask({ build, finish, ...(named ? { named } : {}) }, { origin, network: await h.network(), kind: "sign", method });
   }
 
-  const core = { h, isConnected, connect, ask, sign, disconnect };
+  const core = { h, isConnected, connect, ask, sign, disconnect, inGrantTurn };
   const sites = [createEvmSite(core), createCosmosSite(core), createSolanaSite(core)];
 
   /** Handle one message from a page, at `origin`. */
@@ -303,6 +325,8 @@ export function createDapps(h: DappHost) {
       return true;
     });
     if (changed) {
+      // Its chain picks go with the grant they belong to.
+      await forgetSiteChains(origin);
       // Its requests still waiting end with it.
       for (const w of [...waiting.values()]) if (w.req.origin === origin) settle(w.req.id, no(USER_REJECTED, "The site was disconnected."));
       h.notify();

@@ -157,6 +157,9 @@ pub struct Context {
     /// can do this without an instruction that says so.
     #[serde(default)]
     pub solana_handovers: Vec<SolanaHandover>,
+    /// The addresses above in their forms, worked out once when the rules first need them.
+    #[serde(skip)]
+    pub(crate) address_forms: addresses::AddressForms,
 }
 
 /// Control of the account, or of one of its token accounts, passing to someone else.

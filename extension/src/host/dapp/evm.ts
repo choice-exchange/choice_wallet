@@ -46,26 +46,28 @@ const REFUSED: Record<string, string> = {
 const EVM_MAX_GAS = 10_000_000n;
 
 export function createEvmSite(core: SiteCore) {
-  const { h, isConnected, connect, ask, sign, disconnect } = core;
+  const { h, isConnected, connect, ask, sign, disconnect, inGrantTurn } = core;
 
-  /** The EVM chain a site is on, on this network: its own pick, Injective's EVM side until
-   *  then. */
+  /** The EVM chain a site is on, on this network: a connected site's own pick, Injective's
+   *  EVM side otherwise. The pick is part of the grant: a site without one is served as one
+   *  that never connected (run-2 C9). */
   async function siteChain(origin: string, network: NetworkId): Promise<AnyChain> {
+    const injective = chainByKey(network, "injective")!;
+    if (!(await isConnected(origin))) return injective;
     const { site_chains } = (await h.local.get(["site_chains"])) as { site_chains?: Record<string, Partial<Record<NetworkId, string>>> };
     const c = chainByKey(network, site_chains?.[origin]?.[network]);
-    return c && c.kind !== "solana" ? c : chainByKey(network, "injective")!;
+    return c && c.kind !== "solana" ? c : injective;
   }
 
-  /** Picks are saved one at a time, each on the map as it is in its turn, so two sites
-   *  switching at once both keep theirs. */
-  let chainTurn: Promise<unknown> = Promise.resolve();
+  /** Picks are saved in the grants' turn, one at a time, each on the map as it is then (two
+   *  sites switching at once both keep theirs), and only while the site still has its
+   *  grant: a switch that passed the check before a disconnect saves nothing after it. */
   function setSiteChain(origin: string, network: NetworkId, key: string): Promise<void> {
-    const turn = chainTurn.then(async () => {
+    return inGrantTurn(async () => {
+      if (!(await isConnected(origin))) return;
       const { site_chains } = (await h.local.get(["site_chains"])) as { site_chains?: Record<string, Partial<Record<NetworkId, string>>> };
       await h.local.set({ site_chains: { ...(site_chains ?? {}), [origin]: { ...(site_chains?.[origin] ?? {}), [network]: key } } });
     });
-    chainTurn = turn.catch(() => {});
-    return turn;
   }
 
   /** A client for a site's chain, on the user's endpoints. */

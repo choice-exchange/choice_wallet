@@ -2,6 +2,8 @@
 //! an attacker sends dust from an address whose start and end match one the user uses, so
 //! it shows up in history and gets copied by mistake).
 
+use std::cell::OnceCell;
+
 use choice_wallet_core::address::parse_injective;
 use serde_json::json;
 
@@ -13,7 +15,62 @@ use crate::{Contact, Context, Finding, Level, finding};
 const MAX_ADDRESS: usize = 128;
 
 fn too_long(addr: &str) -> bool {
-    addr.trim().len() > MAX_ADDRESS
+    // Untrimmed: padding is length too, and every helper trims it again.
+    addr.len() > MAX_ADDRESS
+}
+
+/// The address book's entries, the known contracts and the memo addresses in their forms,
+/// made once per assessment (run-2 C7): grading a request then costs a form of each
+/// address it names, not one per address per entry. Kept on the `Context`, which is made
+/// for one assessment.
+#[derive(Default)]
+pub struct AddressForms(OnceCell<Forms>);
+
+struct Forms {
+    /// Each book entry's forms, canonical first, with their bodies.
+    book: Vec<Vec<(String, String)>>,
+    contracts: Vec<String>,
+    memos: Vec<String>,
+}
+
+// Derived data: a copy works it out again, and it never makes two contexts differ.
+impl Clone for AddressForms {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+impl PartialEq for AddressForms {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+impl Eq for AddressForms {}
+impl std::fmt::Debug for AddressForms {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("AddressForms")
+    }
+}
+
+fn forms_of(ctx: &Context) -> &Forms {
+    ctx.address_forms.0.get_or_init(|| Forms {
+        book: ctx
+            .address_book
+            .iter()
+            .map(|c| with_bodies(forms(&c.address)))
+            .collect(),
+        contracts: ctx.known_contracts.iter().map(|c| canonical(c)).collect(),
+        memos: ctx.memo_addresses.iter().map(|a| canonical(a)).collect(),
+    })
+}
+
+fn with_bodies(forms: Vec<String>) -> Vec<(String, String)> {
+    forms
+        .into_iter()
+        .map(|f| {
+            let b = body(&f).to_owned();
+            (f, b)
+        })
+        .collect()
 }
 
 /// The forms an address is shown in. An Injective account has two (`inj1…` and `0x…`) and
@@ -57,16 +114,19 @@ fn body(form: &str) -> &str {
         .unwrap_or(form)
 }
 
-/// The same first and last four bytes of the body, whatever the lengths: a Solana address
-/// can be a character shorter or longer and still look the same. Compared as bytes: a
-/// site's string may hold any character, and slicing it by byte offset must never panic.
-fn alike(a: &str, b: &str) -> bool {
-    let (x, y) = (body(a).as_bytes(), body(b).as_bytes());
+/// Two bodies with the same first and last four bytes, whatever the lengths: a Solana
+/// address can be a character shorter or longer and still look the same. Compared as
+/// bytes: a site's string may hold any character, and slicing it by byte offset must never
+/// panic.
+fn alike(x: &str, y: &str) -> bool {
+    let (x, y) = (x.as_bytes(), y.as_bytes());
     x.len() > 8 && y.len() > 8 && x[..4] == y[..4] && x[x.len() - 4..] == y[y.len() - 4..]
 }
 
 fn contact<'a>(ctx: &'a Context, addr: &str) -> Option<&'a Contact> {
-    ctx.address_book.iter().find(|c| same(&c.address, addr))
+    let want = canonical(addr);
+    let i = forms_of(ctx).book.iter().position(|f| f[0].0 == want)?;
+    ctx.address_book.get(i)
 }
 
 /// How the user knows `addr` if it is theirs: one of their accounts, or their rescue
@@ -85,11 +145,12 @@ fn lookalike<'a>(ctx: &'a Context, addr: &str) -> Option<&'a Contact> {
     if too_long(addr) {
         return None;
     }
-    let mine = forms(addr);
-    ctx.address_book.iter().find(|c| {
-        let theirs = forms(&c.address);
-        mine.iter().any(|m| theirs.iter().any(|t| alike(m, t)))
-    })
+    let mine = with_bodies(forms(addr));
+    let i = forms_of(ctx)
+        .book
+        .iter()
+        .position(|theirs| mine.iter().any(|(_, m)| theirs.iter().any(|(_, t)| alike(m, t))))?;
+    ctx.address_book.get(i)
 }
 
 /// Findings about sending to `to`. `memo` is the transaction's memo, or `None` where the
@@ -132,7 +193,7 @@ pub(crate) fn recipient(ctx: &Context, to: &str, memo: Option<&str>, out: &mut V
 
 fn memo_rules(ctx: &Context, to: &str, found: Option<&Contact>, memo: Option<&str>, out: &mut Vec<Finding>) {
     let saved = found.map(|c| c.memo.trim()).filter(|m| !m.is_empty());
-    let seen = ctx.memo_addresses.iter().any(|a| same(a, to));
+    let seen = forms_of(ctx).memos.contains(&canonical(to));
     if saved.is_none() && !seen {
         return;
     }
@@ -174,7 +235,7 @@ fn memo_rules(ctx: &Context, to: &str, found: Option<&Contact>, memo: Option<&st
 }
 
 pub(crate) fn known_contract(ctx: &Context, addr: &str) -> bool {
-    ctx.known_contracts.iter().any(|c| same(c, addr))
+    forms_of(ctx).contracts.contains(&canonical(addr))
 }
 
 #[cfg(test)]
@@ -256,6 +317,40 @@ mod tests {
         );
         assert_eq!(rules(&ctx(&[&long]), &short, None)[0].0, "lookalike_address");
         assert_eq!(rules(&ctx(&[&short]), &long, None)[0].0, "lookalike_address");
+    }
+
+    /// Run-2 C7: a request naming thousands of addresses, against a full address book, costs
+    /// one form per address it names: the book's forms are worked out once per assessment.
+    #[test]
+    fn many_addresses_against_a_full_book_are_graded_quickly() {
+        let mut book: Vec<String> = (0..150u8).map(|i| EthAddress::from_bytes([i; 20]).to_inj()).collect();
+        book.extend((0..150u8).map(|i| EthAddress::from_bytes([i; 20]).to_checksum_hex()));
+        book.push(choice_wallet_core::base58::encode(&[7; 32]));
+        let c = ctx(&book.iter().map(String::as_str).collect::<Vec<_>>());
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut found = 0;
+            for i in 0..2_000u32 {
+                let mut bytes = [0xee; 20];
+                bytes[..4].copy_from_slice(&i.to_be_bytes());
+                let mut out = vec![];
+                recipient(&c, &EthAddress::from_bytes(bytes).to_inj(), Some(""), &mut out);
+                found += out.len();
+            }
+            // Still matched in either form.
+            let mut out = vec![];
+            recipient(
+                &c,
+                &EthAddress::from_bytes([9; 20]).to_checksum_hex(),
+                Some(""),
+                &mut out,
+            );
+            tx.send((found, out.first().map(|f| f.rule))).unwrap();
+        });
+        assert_eq!(
+            rx.recv_timeout(std::time::Duration::from_secs(5)),
+            Ok((0, Some("address_book")))
+        );
     }
 
     /// F14: a 42-byte site address with a multibyte character where the body's last four

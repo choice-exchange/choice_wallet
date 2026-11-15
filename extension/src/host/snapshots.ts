@@ -50,8 +50,13 @@ export function createSnapshots(local: Store, now: () => number = Date.now) {
     return typeof v === "object" && v !== null ? (v as Snapshot) : null;
   }
 
-  function save(network: NetworkId, address: string, part: Part, value: unknown): Promise<void> {
-    return inTurn(() => write(network, address, part, value));
+  /** `still`: checked in the turn, right before the write; false drops it (the account went
+   *  away while its answer was on the way). */
+  function save(network: NetworkId, address: string, part: Part, value: unknown, still?: () => Promise<boolean>): Promise<void> {
+    return inTurn(async () => {
+      if (still && !(await still())) return;
+      await write(network, address, part, value);
+    });
   }
 
   async function write(network: NetworkId, address: string, part: Part, value: unknown): Promise<void> {

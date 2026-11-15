@@ -53,6 +53,7 @@ import {
   type SolanaInstruction,
 } from "injective-usdc-bridge";
 
+import { diskCache } from "./cache";
 import type { RiskFacts } from "./contacts";
 import type { Store } from "./service";
 import { fail } from "./util";
@@ -65,6 +66,9 @@ export interface SolanaDeps {
   /** The Solana endpoints the user chose for a network's cluster (or the defaults). */
   endpoints(network: NetworkId): Promise<readonly string[]>;
   riskFacts(network: NetworkId, recipient: string | null): Promise<RiskFacts>;
+  /** Whether an account on the list still holds an address: tokens seen for one that went
+   *  away while the cluster was asked aren't kept (run-2 C14). */
+  owned?(address: string): Promise<boolean>;
 }
 
 /** A Solana transaction between its review and its broadcast (in `pending_send`). */
@@ -112,7 +116,13 @@ export function wire(message: Uint8Array, signers: readonly string[], sigs: Read
   return out;
 }
 
+/** Unlisted tokens' descriptions kept on disk: one bounded item, oldest out first, whose
+ *  failed write costs only a lookup later (run-2 C12: one item per mint, unbounded, could
+ *  fill the storage the vault and the account records share). */
+const TOKENS_KEPT = 500;
+
 export function createSolana(d: SolanaDeps) {
+  const tokensDisk = diskCache<TokenInfo>(d.local, "cache_solana_tokens", { fresh: Infinity, stale: Infinity, max: TOKENS_KEPT });
   async function rpc(network: NetworkId): Promise<SolanaRpc> {
     return new SolanaRpc(NETWORKS[network].solana, await d.endpoints(network), d.fetch);
   }
@@ -139,7 +149,8 @@ export function createSolana(d: SolanaDeps) {
     const have = await seen(network, owner);
     const known = KNOWN[network];
     const fresh = [...new Set(mints)].filter((m) => !have.includes(m) && !known[m] && isSolanaAddress(m));
-    if (fresh.length > 0) await d.local.set({ [seenKey(network, owner)]: [...have, ...fresh].slice(-50) });
+    if (fresh.length === 0 || (d.owned && !(await d.owned(owner)))) return;
+    await d.local.set({ [seenKey(network, owner)]: [...have, ...fresh].slice(-50) });
   }
 
   /** How the wallet names a token: its own list, else the token's Metaplex metadata (which
@@ -148,9 +159,11 @@ export function createSolana(d: SolanaDeps) {
     const chain = NETWORKS[network].solana.caip2;
     const k = KNOWN[network][mint];
     if (k) return { denom: splDenom(mint), symbol: k[0], name: k[1], decimals: k[2], known: true, chain };
-    const cacheKey = `solana_token:${network}:${mint}`;
-    const cached = (await d.local.get([cacheKey]))[cacheKey];
-    if (cached && typeof cached === "object") return cached as TokenInfo;
+    // Only a mint is kept: an endpoint's longer string never reaches the disk.
+    const mintLike = isSolanaAddress(mint);
+    const cacheKey = `${network}:${mint}`;
+    const cached = mintLike ? await tokensDisk.peek(cacheKey) : null;
+    if (cached) return cached.v;
     const short = `${mint.slice(0, 4)}…${mint.slice(-4)}`;
     let out: TokenInfo = { denom: splDenom(mint), symbol: short, name: "", decimals: decimals ?? 0, known: false, chain };
     try {
@@ -164,7 +177,7 @@ export function createSolana(d: SolanaDeps) {
       const dec = mintData && mintData.length >= 45 ? mintData[44]! : decimals;
       const named = metadataName(accountBytes(metaAcct));
       out = { ...out, decimals: dec ?? 0, ...(named ? { symbol: named.symbol || short, name: named.name } : {}) };
-      if (dec !== undefined) await d.local.set({ [cacheKey]: out });
+      if (dec !== undefined && mintLike) await tokensDisk.put(cacheKey, out);
     } catch (e) {
       if (!(e instanceof Unreachable || e instanceof ChainError)) throw e;
     }

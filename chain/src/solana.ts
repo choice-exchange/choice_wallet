@@ -10,7 +10,7 @@
 
 import type { Activity, ActivityKind } from "./activity.ts";
 import type { Coin } from "./lcd.ts";
-import { base58ToBytes, base64ToBytes, bytesToBase58, bytesToHex } from "./encoding.ts";
+import { base58ToBytes, base64ToBytes, bytesToBase58, bytesToHex, isSolanaAddress } from "./encoding.ts";
 import { ChainError, Down, isObject, Pool, type Fetch } from "./pool.ts";
 
 export const SYSTEM_PROGRAM = "11111111111111111111111111111111";
@@ -304,6 +304,9 @@ function tokenAccount(address: string, account: unknown): SolanaTokenAccount[] {
   const amt = isObject(info["tokenAmount"]) ? info["tokenAmount"] : null;
   if (typeof info["mint"] !== "string" || typeof info["owner"] !== "string" || !amt || typeof amt["amount"] !== "string" || typeof amt["decimals"] !== "number") return [];
   if (!/^\d+$/.test(amt["amount"])) return [];
+  // An endpoint's answer: a mint and an owner are 32-byte addresses, or it isn't kept (run-2
+  // C12: a mint of any length went into storage keys).
+  if (!isSolanaAddress(info["mint"]) || !isSolanaAddress(info["owner"])) return [];
   return [{ address, mint: info["mint"], owner: info["owner"], amount: BigInt(amt["amount"]), decimals: amt["decimals"], program }];
 }
 

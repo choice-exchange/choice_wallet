@@ -374,7 +374,8 @@ function PendingTransfer({ item, network, onFinish, onArrived }: { item: BridgeP
     let live = true;
     async function tick() {
       if (!live) return;
-      const r = await backend.send({ type: "bridge_status", from: item.from, hash: item.hash }).catch(() => null);
+      // A poll: it doesn't restart the auto-lock timer (run-2 C10).
+      const r = await backend.send({ type: "bridge_status", from: item.from, hash: item.hash, poll: true }).catch(() => null);
       if (!live) return;
       if (r?.ok) {
         setSt(r.result);

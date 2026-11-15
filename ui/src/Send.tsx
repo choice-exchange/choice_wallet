@@ -786,7 +786,8 @@ export function SentView({
     async function tick() {
       if (!live) return;
       try {
-        const r = await backend.send({ type: "tx_status", hash: sent.hash, ...(sent.chain ? { chain: sent.chain } : {}) });
+        // A poll: it doesn't restart the auto-lock timer (run-2 C10).
+        const r = await backend.send({ type: "tx_status", hash: sent.hash, ...(sent.chain ? { chain: sent.chain } : {}), poll: true });
         if (!live) return;
         if (r.ok && r.result.state !== "pending") {
           setState(r.result);
@@ -813,7 +814,7 @@ export function SentView({
     async function tick() {
       if (!live) return;
       try {
-        const r = await backend.send({ type: "bridge_status", from: bridge!.from, hash: sent.hash });
+        const r = await backend.send({ type: "bridge_status", from: bridge!.from, hash: sent.hash, poll: true });
         if (!live) return;
         if (r.ok) {
           setCrossing(r.result);

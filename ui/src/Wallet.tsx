@@ -106,6 +106,8 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
   const [readAt, setReadAt] = useState<number | null>(null);
   /** The chain answered for this account: what's on disk is older. */
   const answered = useRef(false);
+  /** The next reload is a timer's or a broadcast's, not the user's. */
+  const polled = useRef(false);
   const [savedActivity, setSavedActivity] = useState<ActivityPage | null>(null);
   /** What the Activity tab showed, for the next visit while the popup is open. */
   const activity = useRef<ActivityState | null>(null);
@@ -174,8 +176,13 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
   // Read again every few seconds while the wallet is on screen, and whenever the host says
   // something landed.
   useEffect(() => {
+    // A timer's or a broadcast's reload is a poll, not the user's use (run-2 C10); one that
+    // follows the user's own input (a tab, back home) isn't.
     const again = () => {
-      if (document.visibilityState === "visible") setRefresh((n) => n + 1);
+      if (document.visibilityState === "visible") {
+        polled.current = true;
+        setRefresh((n) => n + 1);
+      }
     };
     const timer = setInterval(again, REFRESH_MS);
     const off = backend.onRefresh?.(() => {
@@ -191,10 +198,12 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
   useEffect(() => {
     if (view.name !== "home" || tab !== "wallet") return;
     let live = true;
+    const poll = polled.current;
+    polled.current = false;
     // Staking loads beside the balances; if it fails the wallet still shows.
     // A failure keeps what's on screen (the saved summary, or the last answer).
-    void backend.send({ type: "staking" }).then((r) => live && r.ok && setStaking(r.result));
-    void saving.current.then(() => run({ type: "balances" })).then((r) => {
+    void backend.send({ type: "staking", poll }).then((r) => live && r.ok && setStaking(r.result));
+    void saving.current.then(() => run({ type: "balances", poll })).then((r) => {
       if (live && r) {
         setBalances(r.balances);
         setSolana(r.solana ?? null);

@@ -61,6 +61,12 @@ pub struct TypedData {
     type_hashes: BTreeMap<String, [u8; 32]>,
 }
 
+/// Struct types, and fields across them, typed data may declare: far past real requests
+/// (Injective's EIP-712 v2 declares 2 types, Seaport a handful), small enough that encodeType
+/// over every dependency of every type stays in milliseconds (run-2 C6).
+const MAX_TYPES: usize = 64;
+const MAX_FIELDS: usize = 1024;
+
 const DOMAIN_FIELDS: [(&str, &str); 5] = [
     ("name", "string"),
     ("version", "string"),
@@ -94,6 +100,15 @@ impl TypedData {
         };
         let message = obj.remove("message").ok_or_else(|| malformed("missing message"))?;
 
+        // Bounded here, whatever the host lets through: every type's encodeType walks its
+        // dependencies, so many types over many fields would hold the worker for seconds.
+        if raw_types.len() > MAX_TYPES {
+            return Err(malformed(&format!("more than {MAX_TYPES} struct types")));
+        }
+        let declared: usize = raw_types.values().map(|f| f.as_array().map_or(0, Vec::len)).sum();
+        if declared > MAX_FIELDS {
+            return Err(malformed(&format!("more than {MAX_FIELDS} fields in all")));
+        }
         let mut types = BTreeMap::new();
         for (name, fields) in raw_types {
             // A struct named like an atomic type would be ambiguous.
@@ -526,13 +541,54 @@ mod tests {
             TypedData::parse(td).unwrap().hash().unwrap();
             t0.elapsed()
         };
-        let (small, large) = (typed(1), typed(100));
+        // 20 types of 45 fields: large dependencies, within MAX_FIELDS.
+        let (small, large) = (typed(1), typed(45));
         let base = time(&small);
         let heavy = time(&large);
         assert!(
             heavy < base * 3,
             "{heavy:?} with large dependencies vs {base:?} with small"
         );
+    }
+
+    /// Run-2 C6: struct types and fields are bounded in the parser itself, so a long chain
+    /// of types (each reachable, even through an empty array) can't make every encodeType
+    /// walk it.
+    #[test]
+    fn too_many_types_or_fields_are_refused() {
+        let chain = |n: usize, fields: usize| {
+            let mut types = serde_json::Map::new();
+            for t in 0..n {
+                let mut f: Vec<Value> = (0..fields)
+                    .map(|i| serde_json::json!({ "name": format!("f{i}"), "type": "uint256" }))
+                    .collect();
+                if t + 1 < n {
+                    f.push(serde_json::json!({ "name": "next", "type": format!("T{}[]", t + 1) }));
+                }
+                types.insert(format!("T{t}"), Value::Array(f));
+            }
+            types.insert(
+                "EIP712Domain".into(),
+                serde_json::json!([{ "name": "name", "type": "string" }]),
+            );
+            let message: serde_json::Map<String, Value> = (0..fields)
+                .map(|i| (format!("f{i}"), Value::from(1)))
+                .chain((n > 1).then(|| ("next".to_owned(), Value::Array(vec![]))))
+                .collect();
+            serde_json::json!({
+                "types": types,
+                "primaryType": "T0",
+                "domain": { "name": "Load" },
+                "message": message,
+            })
+            .to_string()
+        };
+        // 63 struct types plus the domain, with fields to spare: fine.
+        assert!(TypedData::parse(&chain(63, 1)).is_ok());
+        // One type more, a 3,700-type chain, or more fields than the cap: refused.
+        for td in [chain(64, 1), chain(3_700, 0), chain(2, 1_024)] {
+            assert!(matches!(TypedData::parse(&td), Err(TypedDataError::Malformed(_))));
+        }
     }
 
     #[test]

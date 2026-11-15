@@ -113,4 +113,6 @@ export interface SiteCore {
   ask(w: Omit<Waiting, "req" | "resolve">, req: Omit<DappRequest, "id">): Promise<DappReply>;
   sign(origin: string, method: string, build: NonNullable<Waiting["build"]>, finish: NonNullable<Waiting["finish"]>, named?: Named): Promise<DappReply>;
   disconnect(origin: unknown): Promise<unknown>;
+  /** Run `work` in the grants' turn, after any grant change already queued. */
+  inGrantTurn<T>(work: () => Promise<T>): Promise<T>;
 }

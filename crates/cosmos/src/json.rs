@@ -117,6 +117,11 @@ fn fields<T: DeserializeOwned>(f: &Map<String, Value>) -> Option<T> {
 /// RFC 3339 UTC timestamp (`2030-01-01T00:00:00Z`, optional fraction) to Unix seconds.
 pub(crate) fn timestamp(s: &str) -> Result<i64, Error> {
     let bad = || Error::Json(format!("not an RFC 3339 UTC timestamp: {s:?}"));
+    // Every offset below is a byte offset: only ASCII makes each one a character boundary
+    // (a site's multibyte character across one would otherwise panic, a trap in the vault).
+    if !s.is_ascii() {
+        return Err(bad());
+    }
     let b = s.as_bytes();
     if b.len() < 20
         || b[4] != b'-'
@@ -645,6 +650,27 @@ mod tests {
             "+030-01-01T00:00:00Z",
         ] {
             assert!(timestamp(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    /// Run-2 C5: a multibyte character anywhere in a site's timestamp is an error, never a
+    /// slice across a character boundary (a panic, so a trap in the vault).
+    #[test]
+    fn multibyte_timestamps_are_errors() {
+        // Byte 19 inside a 2-byte character: the shape that panicked.
+        assert!(timestamp("2030-01-01T00:00:0\u{e9}Z").is_err());
+        for base in ["2030-01-01T00:00:00Z", "2030-01-01T00:00:00.123456Z"] {
+            for c in ['\u{e9}', '\u{20ac}', '\u{1f600}'] {
+                for i in 0..=base.len() {
+                    let mut inserted = base.to_owned();
+                    inserted.insert(i, c);
+                    assert!(timestamp(&inserted).is_err(), "{inserted:?}");
+                    if i < base.len() {
+                        let replaced = format!("{}{c}{}", &base[..i], &base[i + 1..]);
+                        assert!(timestamp(&replaced).is_err(), "{replaced:?}");
+                    }
+                }
+            }
         }
     }
 

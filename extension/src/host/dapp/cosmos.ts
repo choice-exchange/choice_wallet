@@ -30,11 +30,10 @@ export function createCosmosSite(core: SiteCore) {
     if (wrongChain(p["chainId"])) return no(CHAIN_DISCONNECTED, chainNote);
     if (!(await isConnected(origin))) return no(UNAUTHORIZED, "Call enable first.");
     const u = await h.unlocked();
-    // Locked: one answer for getKey and every signature request, before the signer is
-    // compared, so a site can't test a guess at the account while it is locked.
-    if (!u && (method === "choice_getKey" || method === "choice_signDirect" || method === "choice_signAmino" || method === "choice_signArbitrary")) {
-      return no(UNAUTHORIZED, "Choice Wallet is locked.");
-    }
+    // Locked (or watch-only): one answer for everything that reads or compares the account
+    // (sendTx needs none), before the signer or a key is compared, so a site can't test a
+    // guess at the account while it is locked (run-2 C8: verifyArbitrary did).
+    if (!u && method !== "choice_sendTx") return no(UNAUTHORIZED, "Choice Wallet is locked, or this account can't sign. Unlock it, then ask again.");
 
     if (method === "choice_getKey") {
       const a = u!.account;
@@ -66,11 +65,10 @@ export function createCosmosSite(core: SiteCore) {
       if (mine && me) h.sender.broadcasted(network, hash, me);
       return { result: hash };
     }
-    // The account in use, as sites see it (not the list's first: another account, or a
+    // The account in use, as unlocked (not the list's first: another account, or a
     // Ledger's, signs for itself).
-    const { accounts, active_account } = (await h.local.get(["accounts", "active_account"])) as { accounts?: AccountInfo[]; active_account?: number };
-    const account = accounts?.[typeof active_account === "number" ? active_account : 0] ?? accounts?.[0];
-    if (!account || account.account.derivation === "watch" || p["signer"] !== account.addresses[net.cosmos]) return no(UNAUTHORIZED, "The signer isn't this wallet's connected account.");
+    const account = u!.account;
+    if (account.account.derivation === "watch" || p["signer"] !== account.addresses[net.cosmos]) return no(UNAUTHORIZED, "The signer isn't this wallet's connected account.");
     const pubkey = account.public_key;
     const signature = (sig: unknown) => {
       gave(sig);

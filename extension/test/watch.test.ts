@@ -77,8 +77,9 @@ test("CW20s and EVM-only tokens: read like the list reads them, explained by the
   net.state.blockscout = [{ hash: evmHashAt(141), blockNumber: 141 }];
   net.state.byEvmHash[evmHashAt(141)] = now(evmIndexed(141, { from: THEM_EVM, fromInj: THEM, to: LUMA, logs: [transferLog(LUMA, THEM_EVM, ME_EVM, 2n * INJ)] }));
   await service.watch();
-  assert.deepEqual(ui.notices?.map((n) => n.title).sort(), ["Received 2 LUMA", "Received 3 SHROOM"]);
-  assert.deepEqual(ui.notices?.find((n) => n.title === "Received 3 SHROOM")?.message, "Account 1 · from inj1nk9x…l55v");
+  // Neither is on the wallet's list: each is named with its contract (run-2 C13).
+  assert.deepEqual(ui.notices?.map((n) => n.title).sort(), ["Received 2 LUMA · 0xb0d9…3ef4", "Received 3 SHROOM · inj1300x…7xm8"]);
+  assert.deepEqual(ui.notices?.find((n) => n.title === "Received 3 SHROOM · inj1300x…7xm8")?.message, "Account 1 · from inj1nk9x…l55v");
   // In the background, Choice is never asked.
   assert.equal(net.state.priceCalls, prices);
 
@@ -98,6 +99,20 @@ test("junk stays quiet: a token the filter hides, sent by someone else", async (
   await service.watch();
   await service.watch(); // explained by a transaction: not shown later as a bare change either
   assert.equal(ui.notices, undefined);
+});
+
+// Run-2 C13: with every token shown, an unlisted token named like a listed one is said with
+// its denom, as Activity does, so it can't read as the real USDT.
+test("a notification names an unlisted token by its denom too", async () => {
+  const net = chain({ balances: { inj: 5n * INJ } });
+  const { service, ui } = await wallet(net);
+  ok(await service.handle({ type: "save_token_filter", filter: { all: true, hideSmall: false, shown: [], hidden: [] } }));
+  await service.watch();
+  net.state.balances[USDT] = 2_500_000n;
+  net.state.balances[SCAM] = 7_000_000n;
+  net.state.receivedTxs.unshift(now(indexed(131, THEM, ME, `7000000${SCAM}`)), now(indexed(132, THEM, ME, `2500000${USDT}`)));
+  await service.watch();
+  assert.deepEqual((ui.notices ?? []).map((n) => n.title).sort(), ["Received 2.5 USDT", "Received 7 USDT · factory/inj1…9/usdt"]);
 });
 
 test("a change no transaction explains is asked about once more, then shown as it is", async () => {

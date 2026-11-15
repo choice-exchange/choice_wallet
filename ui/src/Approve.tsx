@@ -604,11 +604,17 @@ function TypedData({ d }: { d: Record<string, unknown> }) {
 
 /** The chain a request is signed for: an EVM chain by its name (Injective's EVM side marked
  *  so), Solana's cluster, or Injective. */
-function networkName(d: Record<string, unknown>, network: NetworkId): string {
+export function networkName(d: Record<string, unknown>, network: NetworkId): string {
   const net = NETWORKS[network];
   const kind = d["kind"];
   if (kind === "solana_transaction" || kind === "solana_message") return net.solana.name;
   const chain = typeof d["chain"] === "string" ? d["chain"] : "";
+  // Injective's EIP-712 domain is an Injective transaction, whichever EVM chain the site
+  // asked on: it takes effect on Injective (run-2 C16).
+  if (kind === "evm_typed_data" && typeof d["injective_tx"] === "object" && d["injective_tx"] !== null) {
+    const via = chainByCaip2(network, chain);
+    return via?.kind === "evm" ? `${net.name} (asked on ${via.name})` : net.name;
+  }
   if (chain.startsWith("eip155:")) {
     const c = chainByCaip2(network, chain);
     // An added chain is named by the user (or a site), so its ID goes with the name.

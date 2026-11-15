@@ -77,6 +77,11 @@ test("a site sees nothing until it connects, and only its own grant", async () =
   assert.deepEqual(right, wrong);
   const amino = { chain_id: "injective-1", account_number: "1", sequence: "0", fee: { amount: [], gas: "1" }, msgs: [], memo: "" };
   assert.deepEqual(await site("choice_signAmino", { chainId: "injective-1", signer: ME, signDoc: amino }), await site("choice_signAmino", { chainId: "injective-1", signer: THEM, signDoc: amino }));
+  // Run-2 C8: verifyArbitrary too, whichever signer and key it names.
+  const verify = (signer: string, key: string) => site("choice_verifyArbitrary", { chainId: "injective-1", signer, data: "00", signature: { pub_key: { type: "tendermint/PubKeySecp256k1", value: key }, signature: Buffer.alloc(64).toString("base64") } });
+  const lockedVerify = await verify(ME, Buffer.alloc(33, 2).toString("base64"));
+  assert.equal(lockedVerify.error?.code, 4100);
+  for (const other of [await verify(THEM, Buffer.alloc(33, 2).toString("base64")), await verify(ME, Buffer.alloc(33, 3).toString("base64"))]) assert.deepEqual(other, lockedVerify);
   assert.equal(ui.opened.length, opened2, "no window while locked");
   ok(await service.handle({ type: "unlock", password: PASSWORD }));
   assert.deepEqual(await site("eth_accounts"), { result: [ME_EVM.toLowerCase()] });
@@ -221,6 +226,41 @@ test("two sites switching chains at once both keep their pick", async () => {
   await Promise.all([page(SITE)("wallet_switchEthereumChain", [{ chainId: "0x2105" }]), page(OTHER)("wallet_switchEthereumChain", [{ chainId: "0x2105" }])]);
   assert.deepEqual(await page(SITE)("eth_chainId"), { result: "0x2105" });
   assert.deepEqual(await page(OTHER)("eth_chainId"), { result: "0x2105" });
+});
+
+// Run-2 C9: a site's chain pick is part of its grant. However the grant goes, the site is
+// served as one that never connected, its pick is gone, and a reconnect starts on Injective.
+test("a site's chain pick goes with its grant", async () => {
+  const { page, window, service, net, local } = await connected();
+  const site = page(SITE);
+  net.state.base.eth = 7n * 10n ** 15n;
+  const onBase = `0x${(7n * 10n ** 15n).toString(16)}`;
+  const picks = () => (local.data.get("site_chains") ?? {}) as Record<string, unknown>;
+  const reconnect = async () => {
+    const asked = site("eth_requestAccounts");
+    ok(await service.handle({ type: "dapp_answer", id: (await window()).id, approve: true }));
+    await asked;
+  };
+  const ways: [string, () => Promise<unknown>][] = [
+    ["the user's disconnect", () => service.handle({ type: "disconnect", origin: SITE })],
+    ["wallet_revokePermissions", () => site("wallet_revokePermissions", [{ eth_accounts: {} }])],
+    ["solana_disconnect", () => site("solana_disconnect")],
+  ];
+  for (const [i, [how, revoke]] of ways.entries()) {
+    if (i > 0) await reconnect();
+    assert.deepEqual(await site("eth_chainId"), { result: "0x6f0" }, `${how}: a new grant starts on Injective`);
+    assert.deepEqual(await site("wallet_switchEthereumChain", [{ chainId: "0x2105" }]), { result: null });
+    assert.deepEqual(await site("eth_getBalance", [ME_EVM, "latest"]), { result: onBase });
+    await revoke();
+    assert.deepEqual([await site("eth_chainId"), await site("net_version")], [{ result: "0x6f0" }, { result: "1776" }], how);
+    assert.notDeepEqual(await site("eth_getBalance", [ME_EVM, "latest"]), { result: onBase }, `${how}: reads go to Injective`);
+    assert.ok(!Object.hasOwn(picks(), SITE), `${how}: ${JSON.stringify(picks())}`);
+  }
+  // A switch racing a disconnect leaves no pick behind.
+  await reconnect();
+  await Promise.all([site("wallet_switchEthereumChain", [{ chainId: "0x2105" }]), service.handle({ type: "disconnect", origin: SITE })]);
+  assert.ok(!Object.hasOwn(picks(), SITE), JSON.stringify(picks()));
+  assert.deepEqual(await site("eth_chainId"), { result: "0x6f0" });
 });
 
 test("window.choice: enable, getKey, signDirect (simulated first), sendTx", async () => {
@@ -535,6 +575,21 @@ test("a Solana merge or split of the account's own stake moves nothing; a new lo
 
 // F8: only the user's own use holds off the auto-lock. A site's reads, its connect
 // window's status poll, and pages re-reading after a broadcast never restart the timer.
+// Run-2 C10: a wallet page's own timer (Home's refresh, a transfer's status) or its reload
+// after a broadcast is a poll; only the user's own requests restart the auto-lock timer.
+test("a wallet page's polls never restart the auto-lock timer", async () => {
+  const { service, ui } = await connected();
+  ui.locks = [];
+  for (let i = 0; i < 3; i++) {
+    for (const r of [{ type: "balances" }, { type: "staking" }, { type: "activity", page: 1 }, { type: "bridge_pending" }]) {
+      ok(await service.handle({ ...r, poll: true }));
+    }
+  }
+  assert.deepEqual(ui.locks, [], "no poll restarts the timer");
+  ok(await service.handle({ type: "balances" }));
+  assert.equal(ui.locks.length, 1, "the user's own request does");
+});
+
 test("sites and the approval window's poll never restart the auto-lock timer", async () => {
   const { page, window, service, ui } = await connected();
   const site = page(SITE);

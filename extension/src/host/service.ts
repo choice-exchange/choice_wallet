@@ -11,7 +11,7 @@
 // - The vault is stateless: every call that needs a key gets the keystore and unlock key
 //   from here. UI pages never see either.
 
-import { chainByCaip2, chainByKey, chainDenom, cw20Address, evmAddress, isNetworkId, isSolanaDenom, NETWORKS, Pool, usdValue, type Fetch, type NetworkId } from "@choice-wallet/chain";
+import { chainByCaip2, chainByKey, chainDenom, cw20Address, evmAddress, isNetworkId, isObject, isSolanaDenom, NETWORKS, Pool, usdValue, type Fetch, type NetworkId } from "@choice-wallet/chain";
 import type { AccountInfo, Balance, NotifyMode, Result, Settings, SnapshotView, Status, TokenFilter, UiRequest } from "@choice-wallet/ui/protocol";
 import { DEFAULT_FILTER } from "@choice-wallet/ui/token-filter";
 
@@ -79,8 +79,10 @@ const WALLET_KEYS = ["vault", "wallets", "keystore", "kind", "accounts", "active
 
 /** What a reset keeps: the device's settings, and caches of public data (token details,
  *  pairs, prices). Everything else in local storage goes. */
-const DEVICE_KEYS = new Set(["network", "chain", "endpoints", "evm_endpoints", "evm_index", "solana_endpoints", "chain_endpoints", "chain_history", "added_chains", "auto_lock", "notify", "prices", "dev_reopen", "cache_tokens", "cache_erc20", "cache_pairs", "cache_prices", "choice_seen", "anti_phishing"]);
-const DEVICE_PREFIXES = ["solana_token:"];
+const DEVICE_KEYS = new Set(["network", "chain", "endpoints", "evm_endpoints", "evm_index", "solana_endpoints", "chain_endpoints", "chain_history", "added_chains", "auto_lock", "notify", "prices", "dev_reopen", "cache_tokens", "cache_erc20", "cache_pairs", "cache_prices", "cache_solana_tokens", "choice_seen", "anti_phishing"]);
+/** Solana token descriptions, one item per mint, before they moved into a bounded cache:
+ *  removed on the next start (run-2 C12). */
+const OLD_SOLANA_TOKENS = "solana_token:";
 
 /** The tokens seen for each Solana account, one key per network and owner. */
 const solanaMintKeys = (accounts: AccountInfo[]) =>
@@ -168,6 +170,15 @@ export function createService(d: Deps) {
     return NOTIFY_MODES.includes(notify as NotifyMode) ? (notify as NotifyMode) : DEFAULT_MODE;
   }
 
+  /** Whether an account on the list holds `address` now. A record for one written after it
+   *  waited on the network is dropped when its account went away meanwhile (removed, or the
+   *  wallet reset), so nothing naming it comes back (run-2 C14). */
+  async function owned(address: string): Promise<boolean> {
+    const norm = (x: string) => (x.startsWith("0x") ? x.toLowerCase() : x);
+    const want = norm(address);
+    return (await wallets.stored()).accounts.some((a) => Object.values(a.addresses).some((x) => norm(x) === want));
+  }
+
   const solana = createSolana({
     vault: d.vault,
     fetch: d.fetch,
@@ -175,6 +186,7 @@ export function createService(d: Deps) {
     session: d.session,
     endpoints: solanaEndpoints,
     riskFacts: (n, recipient) => contacts.facts(n, recipient),
+    owned,
   });
   const evmChains = createEvmChains({ fetch: d.fetch, local: d.local, prices: showPrices });
   const added = createAddedChains({ fetch: d.fetch, local: d.local, ...(d.resizeImage ? { resize: d.resizeImage } : {}) });
@@ -189,14 +201,20 @@ export function createService(d: Deps) {
     prices: showPrices,
     riskFacts: (n, recipient) => contacts.facts(n, recipient),
     onBroadcast: (n, hash, from) => void watcher.track(n, hash, from).catch(() => {}),
-    onDeposit: (n, deposit) => bridge.track(n, deposit),
+    onDeposit: async (n, deposit) => {
+      if (await owned(deposit.account)) await bridge.track(n, deposit);
+    },
     solanaBroadcast: (n, p, signed) => solana.broadcast(n, p, signed),
     chainRpc: (n, key) => evmChains.rpc(n, key),
-    onChainSent: (n, key, from, hash) => evmChains.recordSent(n, key, from, hash),
-    onVoted: (n, voter, vote) => gov.voted(n, voter, vote),
+    onChainSent: async (n, key, from, hash) => {
+      if (await owned(from)) await evmChains.recordSent(n, key, from, hash);
+    },
+    onVoted: async (n, voter, vote) => {
+      if (await owned(voter)) await gov.voted(n, voter, vote);
+    },
   });
   const staking = createStaking(sender);
-  const gov = createGov({ sender, local: d.local });
+  const gov = createGov({ sender, local: d.local, owned });
   const swaps = createSwaps(sender, d.session, d.fetch, async (net) => (await tokenFilter(net)).shown);
   const bridge = createBridge(sender, d.session, d.local, d.fetch, Date.now, solana);
   const approvals = createApprovals(sender);
@@ -269,16 +287,31 @@ export function createService(d: Deps) {
     changed: () => d.refresh?.(),
   });
 
-  /** After accounts went away: forget what was kept for them. */
+  /** After accounts went away: forget what was kept for them, in every per-account record,
+   *  unless an account still here holds the same address (run-2 C11). */
   async function forgetGone(before?: AccountInfo[]): Promise<void> {
     const now = (await wallets.stored()).accounts;
     const left = now.flatMap((a) => Object.values(a.addresses));
+    // 0x addresses compare in any case; base58 and bech32 exactly.
+    const norm = (x: string) => (x.startsWith("0x") ? x.toLowerCase() : x);
+    const held = new Set(left.map(norm));
+    const has = (x: unknown) => typeof x === "string" && held.has(norm(x));
     // A removed account's Solana records go with it.
     if (before) {
       const kept = new Set(solanaMintKeys(now));
       const gone = solanaMintKeys(before).filter((k) => !kept.has(k));
       if (gone.length > 0) await d.local.remove(gone);
     }
+    const got = (await d.local.get(["votes_cast", "chain_sent", "bridge_transfers", "solana_rent", "rescue"])) as Record<string, unknown>;
+    const only = (o: unknown, keep: (k: string) => boolean) => Object.fromEntries(Object.entries(isObject(o) ? o : {}).filter(([k]) => keep(k)));
+    const next: Record<string, unknown> = {};
+    // votes_cast[network][inj1]; chain_sent["<network> <chain> <0x>"]; rescue[inj1].
+    if (isObject(got["votes_cast"])) next["votes_cast"] = Object.fromEntries(Object.entries(got["votes_cast"]).map(([n, v]) => [n, only(v, has)]));
+    if (isObject(got["chain_sent"])) next["chain_sent"] = only(got["chain_sent"], (k) => has(k.split(" ")[2]));
+    if (isObject(got["rescue"])) next["rescue"] = only(got["rescue"], has);
+    if (Array.isArray(got["bridge_transfers"])) next["bridge_transfers"] = got["bridge_transfers"].filter((t: unknown) => isObject(t) && has(t["account"]));
+    if (Array.isArray(got["solana_rent"])) next["solana_rent"] = got["solana_rent"].filter((t: unknown) => isObject(t) && has(t["owner"]));
+    if (Object.keys(next).length > 0) await d.local.set(next);
     await snapshots.keepOnly(left);
     await watcher.forget(left);
   }
@@ -286,7 +319,10 @@ export function createService(d: Deps) {
   /** Keep the account's latest answer for the next time the popup opens. Never in the way
    *  of the answer itself. */
   function keep(net: NetworkId, account: AccountInfo, part: "balances" | "staking" | "activity", value: unknown) {
-    void snapshots.save(net, account.addresses[NETWORKS[net].cosmos] ?? "", part, value).catch(() => {});
+    const address = account.addresses[NETWORKS[net].cosmos] ?? "";
+    // Checked in the snapshots' turn: an account removed while its answer was on the way
+    // keeps no saved view.
+    void snapshots.save(net, address, part, value, () => owned(address)).catch(() => {});
   }
 
   async function snapshot(net: NetworkId, account: AccountInfo): Promise<SnapshotView | null> {
@@ -499,16 +535,29 @@ export function createService(d: Deps) {
     return settings();
   }
 
-  /** The account in use and the network, for requests that need an unlocked wallet. */
-  async function active(): Promise<{ account: AccountInfo; net: NetworkId; key: string } | UiResponse<never>> {
+  /** The account in use and the network, for requests that need an unlocked wallet. A
+   *  `poll` (a page's own timer, or its reload when the host says something landed) is not
+   *  the user's use, so it doesn't restart the auto-lock timer (run-2 C10). */
+  async function active(poll = false): Promise<{ account: AccountInfo; net: NetworkId; key: string } | UiResponse<never>> {
     const u = await wallets.inUse();
     if (!u) return err("locked", "Unlock the wallet first.");
-    await touch();
+    if (!poll) await touch();
     return { account: u.account, net: await network(), key: u.key };
+  }
+
+  /** Storage an older version kept that this one doesn't: removed once per start. */
+  let tidied: Promise<void> | null = null;
+  function tidy(): Promise<void> {
+    tidied ??= (async () => {
+      const old = ((await d.local.keys?.()) ?? []).filter((k) => k.startsWith(OLD_SOLANA_TOKENS));
+      if (old.length > 0) await d.local.remove(old);
+    })().catch(() => {});
+    return tidied;
   }
 
   /** Handle one request from an extension page. */
   async function handle(req: unknown): Promise<UiResponse> {
+    await tidy();
     // The chains the user added join the list before anything reads it.
     await added.load();
     const r = req as UiRequest;
@@ -561,10 +610,14 @@ export function createService(d: Deps) {
         return wallets.changePassword(r.password, r.new_password, MIN_PASSWORD);
       case "reset": {
         const per = solanaMintKeys((await wallets.stored()).accounts);
-        const rest = ((await d.local.keys?.()) ?? []).filter((k) => !DEVICE_KEYS.has(k) && !DEVICE_PREFIXES.some((p) => k.startsWith(p)));
+        const rest = ((await d.local.keys?.()) ?? []).filter((k) => !DEVICE_KEYS.has(k));
         const out = await wallets.reset(r.password, [...new Set([...WALLET_KEYS, ...per, ...rest, ...(await snapshots.keys())])]);
         if (out.ok) {
           dapps.rejectAll("The wallet was reset.");
+          // In their own turns too, after anything they had under way (run-2 C14). Not
+          // awaited: a check waiting on a slow endpoint doesn't hold up the reset.
+          void watcher.clear().catch(() => {});
+          void snapshots.keepOnly([]).catch(() => {});
           d.badge?.("");
         }
         return out;
@@ -654,7 +707,7 @@ export function createService(d: Deps) {
       case "confirm_send":
       case "ledger_signed":
       case "tx_status": {
-        const a = await active();
+        const a = await active((r as { poll?: unknown }).poll === true);
         if ("ok" in a) return a;
         if ((r.type === "prepare_send" || r.type === "prepare_convert" || r.type === "prepare_stake" || r.type === "prepare_vote" || r.type === "prepare_revoke" || r.type === "prepare_revoke_erc20" || r.type === "prepare_swap" || r.type === "prepare_bridge" || r.type === "prepare_bridge_receive" || r.type === "prepare_bridge_reclaim" || r.type === "prepare_nft_send" || r.type === "prepare_rescue" || r.type === "prepare_rescue_grant" || r.type === "prepare_subaccount_withdraw") && isWatch(a.account)) {
           return err("watch_only", "This account is watch-only. Switch to one that can sign.");

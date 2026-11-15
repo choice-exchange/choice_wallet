@@ -27,7 +27,7 @@ test("base58 round-trips and knows a Solana address", () => {
 type Req = { id: number; method: string; params: unknown[] };
 
 /** A fake Solana node: the genesis hash per host, and the methods the wallet asks. */
-function node(genesis: Record<string, string>, opts: { listTokens: boolean }, log: string[] = []) {
+function node(genesis: Record<string, string>, opts: { listTokens: boolean; odd?: boolean }, log: string[] = []) {
   const account = (owner: string, mint: string, amount: string) => ({
     owner: TOKEN_PROGRAM,
     data: { parsed: { type: "account", info: { mint, owner, tokenAmount: { amount, decimals: 6 } } } },
@@ -44,7 +44,15 @@ function node(genesis: Record<string, string>, opts: { listTokens: boolean }, lo
         return ok({ context: { slot: 1 }, value: 2_500_000_000 });
       case "getTokenAccountsByOwner":
         if (!opts.listTokens) return new Response(JSON.stringify({ jsonrpc: "2.0", id: r.id, error: { code: -32602, message: "Request blocked" } }));
-        return ok({ context: { slot: 1 }, value: (r.params[1] as { programId: string }).programId === TOKEN_PROGRAM ? [{ pubkey: MY_USDC, account: account(ME, USDC, "1500000") }] : [] });
+        if ((r.params[1] as { programId: string }).programId !== TOKEN_PROGRAM) return ok({ context: { slot: 1 }, value: [] });
+        return ok({
+          context: { slot: 1 },
+          value: [
+            { pubkey: MY_USDC, account: account(ME, USDC, "1500000") },
+            // An endpoint's odd answers: a mint, or an owner, that isn't an address.
+            ...(opts.odd ? [{ pubkey: THEIR_USDC, account: account(ME, "A".repeat(5_000), "1") }, { pubkey: THEIR_USDC, account: account("not an address", USDC, "1") }] : []),
+          ],
+        });
       case "getMultipleAccounts":
         return ok({ context: { slot: 1 }, value: (r.params[0] as string[]).map((a) => (a === MY_USDC ? account(ME, USDC, "1500000") : a === THEIR_USDC ? account(THEM, USDC, "9") : null)) });
       default:
@@ -63,6 +71,15 @@ test("an endpoint serving another cluster is skipped; SOL and tokens are read", 
   assert.equal(rpc.pool.current, "https://main.example");
   const tokens = await rpc.tokenAccounts(ME, () => assert.fail("listed, so no candidates"));
   assert.deepEqual(tokens, [{ address: MY_USDC, mint: USDC, owner: ME, amount: 1_500_000n, decimals: 6, program: TOKEN_PROGRAM }]);
+});
+
+// Run-2 C12: an endpoint's mint went into storage keys as given. A token account whose mint
+// or owner isn't a 32-byte address is dropped.
+test("an endpoint's token account with a mint or owner that isn't an address is dropped", async () => {
+  const rpc = new SolanaRpc(MAINNET, ["https://main.example"], node({ "main.example": MAINNET.genesis }, { listTokens: true, odd: true }));
+  const tokens = await rpc.tokenAccounts(ME, () => assert.fail("listed, so no candidates"));
+  assert.deepEqual(tokens.map((t) => t.mint), [USDC]);
+  assert.ok(!isSolanaAddress("1".repeat(45)) && !isSolanaAddress("1".repeat(31)) && isSolanaAddress("1".repeat(32)));
 });
 
 test("an endpoint that won't list tokens gets the accounts they would be at", async () => {

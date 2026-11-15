@@ -95,21 +95,22 @@ export function ActivityPane({
   const [evm, setEvm] = useState<Replies["chain_activity"] | null>(null);
   const live = useRef(true);
 
-  async function load(p: number) {
-    if (onSolana) return loadSolana();
-    if (evmChain) return loadChain(1);
-    const r = await run({ type: "activity", page: p });
+  /** `poll`: the host said something landed, not the user's use (run-2 C10). */
+  async function load(p: number, poll = false) {
+    if (onSolana) return loadSolana(undefined, poll);
+    if (evmChain) return loadChain(1, poll);
+    const r = await run({ type: "activity", page: p, poll });
     if (r && live.current) setSt((prev) => merge(prev, r, p, Date.now()));
   }
 
-  async function loadSolana(before?: string) {
-    const r = await run({ type: "solana_activity", ...(before ? { before } : {}) });
+  async function loadSolana(before?: string, poll = false) {
+    const r = await run({ type: "solana_activity", ...(before ? { before } : {}), poll });
     if (!r || !live.current) return;
     setSol((prev) => (before && prev ? { items: [...prev.items, ...r.items], tokens: { ...prev.tokens, ...r.tokens }, next: r.next } : r));
   }
 
-  async function loadChain(p: number) {
-    const r = await run({ type: "chain_activity", chain, page: p });
+  async function loadChain(p: number, poll = false) {
+    const r = await run({ type: "chain_activity", chain, page: p, poll });
     if (!r || !live.current) return;
     setEvm((prev) => (p > 1 && prev ? { ...r, items: [...prev.items, ...r.items.filter((i) => !prev.items.some((x) => x.hash === i.hash))], tokens: { ...prev.tokens, ...r.tokens } } : r));
   }
@@ -122,7 +123,7 @@ export function ActivityPane({
   useEffect(() => {
     live.current = true;
     if (onSolana || evmChain || !kept || Date.now() - kept.at > ACTIVITY_FRESH_MS) void load(1);
-    const off = backend.onRefresh?.(() => void load(1));
+    const off = backend.onRefresh?.(() => void load(1, true));
     return () => {
       live.current = false;
       off?.();

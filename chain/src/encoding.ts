@@ -84,6 +84,9 @@ export function bytesToBase58(bytes: Uint8Array): string {
 
 /** A 32-byte Solana address in base58. */
 export function isSolanaAddress(s: string): boolean {
+  // 32 bytes are 32 (all zero) to 44 base58 characters; nothing longer is decoded (base58
+  // costs the square of the length).
+  if (s.length < 32 || s.length > 44) return false;
   try {
     return base58ToBytes(s).length === 32;
   } catch {

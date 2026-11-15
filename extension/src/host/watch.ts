@@ -96,6 +96,13 @@ type Own = { network: NetworkId; hash: string; address: string; at: number; done
 type State = { accounts: Record<string, Seen>; seen: string[]; badge: number };
 
 const STATE = "watch";
+const norm = (x: string) => (x.startsWith("0x") ? x.toLowerCase() : x);
+/** `s` less what names an address outside `held` (normalized): its balances and its
+ *  notified transactions. */
+function within(s: State, held: ReadonlySet<string>): State {
+  const accounts = Object.fromEntries(Object.entries(s.accounts).filter(([k]) => held.has(norm(k.split(" ")[1] ?? ""))));
+  return { ...s, accounts, seen: s.seen.filter((x) => held.has(norm(x.split(" ")[0] ?? ""))) };
+}
 const OWN = "watch_own";
 
 const DONE: Record<ActivityKind, string> = {
@@ -127,6 +134,12 @@ export function createWatcher(d: WatchDeps) {
     const p = queue.then(fn);
     queue = p.catch(() => {});
     return p;
+  }
+
+  /** The addresses accounts on the list hold now (normalized). A write made after the
+   *  network answered keeps nothing for an account that went away meanwhile (run-2 C14). */
+  async function held(): Promise<Set<string>> {
+    return new Set((await d.accounts()).accounts.flatMap((a) => Object.values(a.addresses)).map(norm));
   }
 
   async function state(): Promise<State> {
@@ -212,7 +225,7 @@ export function createWatcher(d: WatchDeps) {
       s.accounts[key] = { coins, at: now(), from, v: VERSION };
     }
     await deliver(s, notices);
-    await d.local.set({ [STATE]: s });
+    await d.local.set({ [STATE]: within(s, await held()) });
     if (moved || notices.length > 0) d.changed();
   }
 
@@ -325,7 +338,11 @@ export function createWatcher(d: WatchDeps) {
     const text = coins.slice(0, 2).map((c) => {
       const t = info[c.denom];
       const abs = c.amount.replace(/^-/, "");
-      return t ? `${formatShort(abs, t.decimals, 4)} ${t.symbol}` : `${abs} ${shortDenom(c.denom)}`;
+      if (!t) return `${abs} ${shortDenom(c.denom)}`;
+      // An unlisted token's symbol is its creator's: say where it lives, as Activity does,
+      // so a copy with a listed token's symbol reads as what it is (run-2 C13).
+      const name = t.known ? t.symbol : t.symbol ? `${t.symbol} · ${shortDenom(c.denom)}` : shortDenom(c.denom);
+      return `${formatShort(abs, t.decimals, 4)} ${name}`;
     });
     return coins.length > 2 ? `${text.join(", ")} +${coins.length - 2} more` : text.join(", ");
   }
@@ -382,7 +399,8 @@ export function createWatcher(d: WatchDeps) {
       n ??= { id: `${network}|${o.hash}|${o.address}`, title: failed ? "Transaction failed" : "Transaction confirmed", message: account?.name ?? "" };
       out.push(n);
     }
-    await d.local.set({ [OWN]: list.filter((o) => !o.done || now() - o.at < OWN_GIVE_UP_MS).slice(-30) });
+    const mine = await held();
+    await d.local.set({ [OWN]: list.filter((o) => mine.has(norm(o.address)) && (!o.done || now() - o.at < OWN_GIVE_UP_MS)).slice(-30) });
     return out;
   }
 
@@ -394,7 +412,9 @@ export function createWatcher(d: WatchDeps) {
   /** A transaction the wallet just broadcast for `address`: followed until it lands. */
   async function track(network: NetworkId, hash: string, address: string): Promise<void> {
     await exclusive(async () => {
-      const list = await own();
+      const mine = await held();
+      if (!mine.has(norm(address))) return;
+      const list = (await own()).filter((o) => mine.has(norm(o.address)));
       if (!list.some((o) => o.hash === hash)) list.push({ network, hash, address, at: now() });
       await d.local.set({ [OWN]: list.slice(-30) });
     });
@@ -415,7 +435,7 @@ export function createWatcher(d: WatchDeps) {
         for (const o of open) notices.push(...(await ownResults(network, s, o.hash)));
         if (notices.length > 0) {
           await deliver(s, notices);
-          await d.local.set({ [STATE]: s });
+          await d.local.set({ [STATE]: within(s, await held()) });
           d.changed();
         }
         return true;
@@ -435,17 +455,27 @@ export function createWatcher(d: WatchDeps) {
   }
 
   /** Forget accounts that are gone, and every account when notifications go off (so
-   *  turning them on again starts from what is there then). */
+   *  turning them on again starts from what is there then). For gone accounts, what was
+   *  notified for them and the broadcasts followed for them go too (run-2 C11). */
   function forget(keep: readonly string[] | null): Promise<void> {
     return exclusive(async () => {
       const s = await state();
-      const set = new Set(keep ?? []);
-      for (const k of Object.keys(s.accounts)) if (!set.has(k.split(" ")[1] ?? "")) delete s.accounts[k];
+      const set = new Set((keep ?? []).map(norm));
+      for (const k of Object.keys(s.accounts)) if (!set.has(norm(k.split(" ")[1] ?? ""))) delete s.accounts[k];
+      if (keep) {
+        s.seen = s.seen.filter((x) => set.has(norm(x.split(" ")[0] ?? "")));
+        await d.local.set({ [OWN]: (await own()).filter((o) => set.has(norm(o.address))) });
+      }
       await d.local.set({ [STATE]: s });
     });
   }
 
-  return { tick, track, seen, forget, settled: async () => void (await Promise.all([running, following, queue])) };
+  /** Reset: drop the stored state, in turn, after any check or follow-up under way. */
+  function clear(): Promise<void> {
+    return exclusive(() => d.local.remove([STATE, OWN]));
+  }
+
+  return { tick, track, seen, forget, clear, settled: async () => void (await Promise.all([running, following, queue])) };
 }
 
 function sameCoins(a: Record<string, string>, b: Record<string, string>): boolean {
