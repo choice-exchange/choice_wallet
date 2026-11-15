@@ -12,7 +12,7 @@ import { createTransfers } from "./transfer";
 
 export { bridgeLabel } from "./shared";
 
-export function createBridge(sender: Sender, session: Store, local: Store, fetch: Fetch, now: () => number = Date.now, solana?: Solana) {
-  const c = createContext(sender, session, local, fetch, now, solana);
+export function createBridge(sender: Sender, session: Store, local: Store, fetch: Fetch, now: () => number = Date.now, solana?: Solana, records?: Parameters<typeof createContext>[6]) {
+  const c = createContext(sender, session, local, fetch, now, solana, records);
   return { ...createTransfers(c), ...createRentReclaims(c) };
 }

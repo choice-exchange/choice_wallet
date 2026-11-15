@@ -27,7 +27,7 @@ import {
 import type { ListedChain, Result } from "@choice-wallet/ui/protocol";
 
 import type { Store } from "./service";
-import { fail } from "./util";
+import { fail, ownTurn, type Turn } from "./util";
 
 /** chainlist.org's list: every EVM chain it knows, with its endpoints' tracking. */
 export const DIRECTORY = "https://chainlist.org/rpcs.json";
@@ -55,6 +55,8 @@ export interface AddedChainsDeps {
    *  small images are kept as they came. */
   resize?(bytes: Uint8Array, type: string): Promise<string | null>;
   now?: () => number;
+  /** The queue every writer of sites' chain picks and the account records shares. */
+  turn?: Turn;
 }
 
 /** What may be stored, read back: anything else is dropped. */
@@ -312,6 +314,8 @@ export function createAddedChains(d: AddedChainsDeps) {
     if (!gone) return fail("bad_request", "Not an added chain.");
     const key = addedKey(gone.chainId);
     const net: NetworkId = gone.testnet ? "testnet" : "mainnet";
+    // Sites' picks and the sends kept are shared records: changed in their turn.
+    await (d.turn ?? ownTurn)(async () => {
     const s = (await d.local.get(["chain_endpoints", "chain_history", "chain_sent", "site_chains", "chain"])) as {
       chain_endpoints?: Partial<Record<NetworkId, Record<string, string[]>>>;
       chain_history?: Partial<Record<NetworkId, Record<string, string[]>>>;
@@ -338,6 +342,7 @@ export function createAddedChains(d: AddedChainsDeps) {
       chain_sent: sent,
       site_chains: sites,
       ...(s.chain === key ? { chain: "injective" } : {}),
+    });
     });
     await save(current.filter((a) => a !== gone));
     return { ok: true, result: null };

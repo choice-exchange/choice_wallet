@@ -108,6 +108,8 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
   const answered = useRef(false);
   /** The next reload is a timer's or a broadcast's, not the user's. */
   const polled = useRef(false);
+  /** The screen, tab, network and account the last reload was for. */
+  const shownFor = useRef("");
   const [savedActivity, setSavedActivity] = useState<ActivityPage | null>(null);
   /** What the Activity tab showed, for the next visit while the popup is open. */
   const activity = useRef<ActivityState | null>(null);
@@ -196,10 +198,15 @@ export function Wallet({ status, onLock, onStatus }: { status: Status; onLock: (
   }, []);
 
   useEffect(() => {
+    // A poll only when the timer or a broadcast alone asked: a tick on another screen, or
+    // one that lands with the user's own move (home, a tab, the network, the account), is
+    // not, so the user's return home still counts as use.
+    const key = `${view.name} ${tab} ${status.network} ${address}`;
+    const poll = polled.current && key === shownFor.current;
+    polled.current = false;
+    shownFor.current = key;
     if (view.name !== "home" || tab !== "wallet") return;
     let live = true;
-    const poll = polled.current;
-    polled.current = false;
     // Staking loads beside the balances; if it fails the wallet still shows.
     // A failure keeps what's on screen (the saved summary, or the last answer).
     void backend.send({ type: "staking", poll }).then((r) => live && r.ok && setStaking(r.result));

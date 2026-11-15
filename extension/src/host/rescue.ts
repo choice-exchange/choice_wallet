@@ -23,7 +23,7 @@ import type { AccountInfo, Coin, RescueSummary, Result, SendReview } from "@choi
 
 import type { createSender } from "./send";
 import type { Store } from "./service";
-import { fail } from "./util";
+import { fail, ownTurn, type Turn } from "./util";
 
 type Sender = ReturnType<typeof createSender>;
 
@@ -50,6 +50,8 @@ export interface RescueDeps {
   vault<T>(method: string, params?: unknown): Promise<Result<T>>;
   /** Every account here, for the rescue account's name and whether it can sign. */
   accounts(): Promise<AccountInfo[]>;
+  /** The queue every writer of the account records shares. */
+  turn?: Turn;
 }
 
 export function createRescue(d: RescueDeps) {
@@ -94,10 +96,14 @@ export function createRescue(d: RescueDeps) {
   /** Set (or clear, with null) where this account is rescued to. */
   async function set(account: AccountInfo, address: unknown): Promise<Result<RescueSummary>> {
     const key = account.addresses[NETWORKS.mainnet.cosmos] ?? "";
-    const now = await stored();
+    // Read and written in the records' turn, so removing another account's never undoes it.
+    const turn = d.turn ?? ownTurn;
     if (address === null) {
-      delete now[key];
-      await d.local.set({ rescue: now });
+      await turn(async () => {
+        const now = await stored();
+        delete now[key];
+        await d.local.set({ rescue: now });
+      });
       return { ok: true, result: { address: null } };
     }
     if (typeof address !== "string") return fail("bad_request", "Enter an inj1… or 0x… address.");
@@ -105,7 +111,7 @@ export function createRescue(d: RescueDeps) {
     if (!r.ok) return fail("invalid_address", "That isn't an Injective account address.");
     const inj = r.result.addresses[NETWORKS.mainnet.cosmos]!;
     if (inj === key) return fail("same_account", "The rescue address must be another account.");
-    await d.local.set({ rescue: { ...now, [key]: inj } });
+    await turn(async () => d.local.set({ rescue: { ...(await stored()), [key]: inj } }));
     return { ok: true, result: { address: inj } };
   }
 

@@ -477,14 +477,18 @@ export function createTransfers(c: BridgeContext) {
   /** A burn was broadcast: follow it until it lands. A burn on Solana also leaves a record
    *  whose rent the account takes back later. */
   async function track(network: NetworkId, t: { chain: string; to?: string; hash: string; amount: string; account: string; recipient?: string; event?: string; owner?: string }): Promise<void> {
-    const list = (await tracked()).filter((x) => x.hash !== t.hash && now() - x.at < TRACK_MS);
-    list.unshift({ network, from: t.chain, to: t.to ?? "injective", hash: t.hash, amount: t.amount, account: t.account, recipient: t.recipient ?? t.account, at: now() });
-    await local.set({ bridge_transfers: list.slice(0, MAX_TRACKED) });
-    if (t.chain === "solana" && t.event && t.owner) {
-      const records = (await c.rentRecords()).filter((r) => r.event !== t.event);
-      records.unshift({ network, hash: t.hash, event: t.event, owner: t.owner, at: now() });
-      await local.set({ solana_rent: records.slice(0, 50) });
-    }
+    // In the records' turn, and only for an account still on the list (run-2 C14).
+    await c.turn(async () => {
+      if (!(await c.owned(t.account))) return;
+      const list = (await tracked()).filter((x) => x.hash !== t.hash && now() - x.at < TRACK_MS);
+      list.unshift({ network, from: t.chain, to: t.to ?? "injective", hash: t.hash, amount: t.amount, account: t.account, recipient: t.recipient ?? t.account, at: now() });
+      await local.set({ bridge_transfers: list.slice(0, MAX_TRACKED) });
+      if (t.chain === "solana" && t.event && t.owner) {
+        const records = (await c.rentRecords()).filter((r) => r.event !== t.event);
+        records.unshift({ network, hash: t.hash, event: t.event, owner: t.owner, at: now() });
+        await local.set({ solana_rent: records.slice(0, 50) });
+      }
+    });
   }
 
   async function tracked(): Promise<Transfer[]> {
@@ -492,9 +496,11 @@ export function createTransfers(c: BridgeContext) {
     return Array.isArray(bridge_transfers) ? (bridge_transfers as Transfer[]) : [];
   }
 
-  async function forget(hash: string): Promise<void> {
-    const list = await tracked();
-    if (list.some((t) => t.hash === hash)) await local.set({ bridge_transfers: list.filter((t) => t.hash !== hash) });
+  function forget(hash: string): Promise<void> {
+    return c.turn(async () => {
+      const list = await tracked();
+      if (list.some((t) => t.hash === hash)) await local.set({ bridge_transfers: list.filter((t) => t.hash !== hash) });
+    });
   }
 
   /** Transfers this account sent that haven't landed, newest first. */

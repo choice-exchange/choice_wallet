@@ -29,7 +29,7 @@ export function createRentReclaims(c: BridgeContext) {
       return fail("unreachable", `Couldn't reach ${NETWORKS[network].solana.name}.`);
     }
     const closed = new Set(mine.filter((_, i) => open[i] === null && now() - mine[i]!.at > 120_000).map((r) => r.event));
-    if (closed.size > 0) await local.set({ solana_rent: (await rentRecords()).filter((r) => !closed.has(r.event)) });
+    if (closed.size > 0) await c.turn(async () => local.set({ solana_rent: (await rentRecords()).filter((r) => !closed.has(r.event)) }));
     return {
       ok: true,
       result: mine.filter((r) => !closed.has(r.event)).map((r) => ({ hash: r.hash, event: r.event, at: r.at, ready: now() - r.at > EVENT_ACCOUNT_REFUND_DELAY_SEC * 1000 + 60_000 })),

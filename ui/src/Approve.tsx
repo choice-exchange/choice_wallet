@@ -613,7 +613,9 @@ export function networkName(d: Record<string, unknown>, network: NetworkId): str
   // asked on: it takes effect on Injective (run-2 C16).
   if (kind === "evm_typed_data" && typeof d["injective_tx"] === "object" && d["injective_tx"] !== null) {
     const via = chainByCaip2(network, chain);
-    return via?.kind === "evm" ? `${net.name} (asked on ${via.name})` : net.name;
+    if (via?.kind !== "evm") return net.name;
+    // An added chain is named by the user or a site: its ID goes with the name.
+    return `${net.name} (asked on ${via.added ? `${via.name}, chain ${via.chainId}` : via.name})`;
   }
   if (chain.startsWith("eip155:")) {
     const c = chainByCaip2(network, chain);

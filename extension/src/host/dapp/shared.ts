@@ -7,6 +7,7 @@ import type { AccountInfo, DappRequest, DappReview, DeviceRequest, ListedChain, 
 import type { createSender } from "../send";
 import type { Store } from "../service";
 import type { createSolana } from "../solana";
+import type { Turn } from "../util";
 
 export type Sender = ReturnType<typeof createSender>;
 
@@ -33,6 +34,9 @@ export const MAX_TYPED = 128 * 1024;
 export interface DappHost {
   vault<T>(method: string, params?: unknown): Promise<Result<T>>;
   local: Store;
+  /** The queue the grants, sites' chain picks and the account records share (absent: the
+   *  dapps keep their own). */
+  turn?: Turn;
   sender: Sender;
   solana: ReturnType<typeof createSolana>;
   network(): Promise<NetworkId>;

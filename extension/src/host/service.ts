@@ -33,6 +33,7 @@ import { createWallets, isWatch } from "./wallets";
 import { settled as cachesSettled } from "./cache";
 import { createSnapshots } from "./snapshots";
 import { createWatcher, DEFAULT_MODE, type Notice } from "./watch";
+import { addressKey, turns } from "./util";
 
 type UiResponse<T = unknown> = Result<T>;
 
@@ -174,10 +175,15 @@ export function createService(d: Deps) {
    *  waited on the network is dropped when its account went away meanwhile (removed, or the
    *  wallet reset), so nothing naming it comes back (run-2 C14). */
   async function owned(address: string): Promise<boolean> {
-    const norm = (x: string) => (x.startsWith("0x") ? x.toLowerCase() : x);
-    const want = norm(address);
-    return (await wallets.stored()).accounts.some((a) => Object.values(a.addresses).some((x) => norm(x) === want));
+    const want = addressKey(address);
+    return (await wallets.stored()).accounts.some((a) => Object.values(a.addresses).some((x) => addressKey(x) === want));
   }
+
+  /** The one queue for the records that name accounts and sites (grants and sites' chain
+   *  picks, votes, sends on other chains, bridge transfers and their rent, rescue
+   *  addresses): every writer and every pruning takes its turn, so none undoes another's
+   *  change (run-2 C9, C11, C14). */
+  const records = turns();
 
   const solana = createSolana({
     vault: d.vault,
@@ -188,8 +194,8 @@ export function createService(d: Deps) {
     riskFacts: (n, recipient) => contacts.facts(n, recipient),
     owned,
   });
-  const evmChains = createEvmChains({ fetch: d.fetch, local: d.local, prices: showPrices });
-  const added = createAddedChains({ fetch: d.fetch, local: d.local, ...(d.resizeImage ? { resize: d.resizeImage } : {}) });
+  const evmChains = createEvmChains({ fetch: d.fetch, local: d.local, prices: showPrices, owned, turn: records });
+  const added = createAddedChains({ fetch: d.fetch, local: d.local, turn: records, ...(d.resizeImage ? { resize: d.resizeImage } : {}) });
   const sender = createSender({
     vault: d.vault,
     fetch: d.fetch,
@@ -201,22 +207,16 @@ export function createService(d: Deps) {
     prices: showPrices,
     riskFacts: (n, recipient) => contacts.facts(n, recipient),
     onBroadcast: (n, hash, from) => void watcher.track(n, hash, from).catch(() => {}),
-    onDeposit: async (n, deposit) => {
-      if (await owned(deposit.account)) await bridge.track(n, deposit);
-    },
+    onDeposit: (n, deposit) => bridge.track(n, deposit),
     solanaBroadcast: (n, p, signed) => solana.broadcast(n, p, signed),
     chainRpc: (n, key) => evmChains.rpc(n, key),
-    onChainSent: async (n, key, from, hash) => {
-      if (await owned(from)) await evmChains.recordSent(n, key, from, hash);
-    },
-    onVoted: async (n, voter, vote) => {
-      if (await owned(voter)) await gov.voted(n, voter, vote);
-    },
+    onChainSent: (n, key, from, hash) => evmChains.recordSent(n, key, from, hash),
+    onVoted: (n, voter, vote) => gov.voted(n, voter, vote),
   });
   const staking = createStaking(sender);
-  const gov = createGov({ sender, local: d.local, owned });
+  const gov = createGov({ sender, local: d.local, owned, turn: records });
   const swaps = createSwaps(sender, d.session, d.fetch, async (net) => (await tokenFilter(net)).shown);
-  const bridge = createBridge(sender, d.session, d.local, d.fetch, Date.now, solana);
+  const bridge = createBridge(sender, d.session, d.local, d.fetch, Date.now, solana, { turn: records, owned });
   const approvals = createApprovals(sender);
 
   const wallets = createWallets({
@@ -245,7 +245,7 @@ export function createService(d: Deps) {
   };
   const nfts = createNfts({ sender, local: d.local, vault: d.vault });
   const inventory = createInventory({ sender });
-  const rescue = createRescue({ sender, local: d.local, vault: d.vault, accounts: async () => (await wallets.stored()).accounts });
+  const rescue = createRescue({ sender, local: d.local, vault: d.vault, accounts: async () => (await wallets.stored()).accounts, turn: records });
   const contacts = createContacts({
     vault: d.vault,
     local: d.local,
@@ -292,16 +292,16 @@ export function createService(d: Deps) {
   async function forgetGone(before?: AccountInfo[]): Promise<void> {
     const now = (await wallets.stored()).accounts;
     const left = now.flatMap((a) => Object.values(a.addresses));
-    // 0x addresses compare in any case; base58 and bech32 exactly.
-    const norm = (x: string) => (x.startsWith("0x") ? x.toLowerCase() : x);
-    const held = new Set(left.map(norm));
-    const has = (x: unknown) => typeof x === "string" && held.has(norm(x));
+    const held = new Set(left.map(addressKey));
+    const has = (x: unknown) => typeof x === "string" && held.has(addressKey(x));
     // A removed account's Solana records go with it.
     if (before) {
       const kept = new Set(solanaMintKeys(now));
       const gone = solanaMintKeys(before).filter((k) => !kept.has(k));
       if (gone.length > 0) await d.local.remove(gone);
     }
+    // In the records' turn: a writer's read and write never straddle the pruning.
+    await records(async () => {
     const got = (await d.local.get(["votes_cast", "chain_sent", "bridge_transfers", "solana_rent", "rescue"])) as Record<string, unknown>;
     const only = (o: unknown, keep: (k: string) => boolean) => Object.fromEntries(Object.entries(isObject(o) ? o : {}).filter(([k]) => keep(k)));
     const next: Record<string, unknown> = {};
@@ -312,6 +312,7 @@ export function createService(d: Deps) {
     if (Array.isArray(got["bridge_transfers"])) next["bridge_transfers"] = got["bridge_transfers"].filter((t: unknown) => isObject(t) && has(t["account"]));
     if (Array.isArray(got["solana_rent"])) next["solana_rent"] = got["solana_rent"].filter((t: unknown) => isObject(t) && has(t["owner"]));
     if (Object.keys(next).length > 0) await d.local.set(next);
+    });
     await snapshots.keepOnly(left);
     await watcher.forget(left);
   }
@@ -341,6 +342,7 @@ export function createService(d: Deps) {
   const dapps = createDapps({
     vault: d.vault,
     local: d.local,
+    turn: records,
     sender,
     chains: added,
     solana,

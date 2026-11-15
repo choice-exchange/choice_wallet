@@ -53,8 +53,9 @@ export function createEvmSite(core: SiteCore) {
    *  that never connected (run-2 C9). */
   async function siteChain(origin: string, network: NetworkId): Promise<AnyChain> {
     const injective = chainByKey(network, "injective")!;
-    if (!(await isConnected(origin))) return injective;
-    const { site_chains } = (await h.local.get(["site_chains"])) as { site_chains?: Record<string, Partial<Record<NetworkId, string>>> };
+    // One read for both: the grant and the pick.
+    const { connections, site_chains } = (await h.local.get(["connections", "site_chains"])) as { connections?: Record<string, unknown>; site_chains?: Record<string, Partial<Record<NetworkId, string>>> };
+    if (!connections || !Object.hasOwn(connections, origin)) return injective;
     const c = chainByKey(network, site_chains?.[origin]?.[network]);
     return c && c.kind !== "solana" ? c : injective;
   }

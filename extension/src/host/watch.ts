@@ -37,6 +37,7 @@ import { hiddenWhy } from "@choice-wallet/ui/token-filter";
 import { bridgeLabel } from "./bridge";
 import type { createSender } from "./send";
 import type { Store } from "./service";
+import { addressKey } from "./util";
 
 type Sender = ReturnType<typeof createSender>;
 
@@ -96,7 +97,7 @@ type Own = { network: NetworkId; hash: string; address: string; at: number; done
 type State = { accounts: Record<string, Seen>; seen: string[]; badge: number };
 
 const STATE = "watch";
-const norm = (x: string) => (x.startsWith("0x") ? x.toLowerCase() : x);
+const norm = addressKey;
 /** `s` less what names an address outside `held` (normalized): its balances and its
  *  notified transactions. */
 function within(s: State, held: ReadonlySet<string>): State {
@@ -229,8 +230,13 @@ export function createWatcher(d: WatchDeps) {
     if (moved || notices.length > 0) d.changed();
   }
 
-  /** Show what a check found. Past `MAX_NOTICES`, one notice says how many more. */
-  async function deliver(s: State, notices: Notice[]): Promise<void> {
+  /** Show what a check found. Past `MAX_NOTICES`, one notice says how many more. Only for
+   *  accounts still on the list (each notice's ID ends with its account): a check that
+   *  waited on the network across a removal or a reset says nothing of them (run-2 C14). */
+  async function deliver(s: State, found: Notice[]): Promise<void> {
+    if (found.length === 0) return;
+    const mine = await held();
+    const notices = found.filter((n) => mine.has(norm(n.id.slice(n.id.lastIndexOf("|") + 1))));
     if (notices.length === 0) return;
     const list = notices.length > MAX_NOTICES ? [...notices.slice(0, MAX_NOTICES - 1), { id: notices[MAX_NOTICES - 1]!.id, title: `${notices.length - MAX_NOTICES + 1} more transactions`, message: "Open the wallet to see them." }] : notices;
     let shown = 0;

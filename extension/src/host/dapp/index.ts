@@ -18,7 +18,7 @@ import { ChainError, isObject, NETWORKS, Unreachable, type Coin, type NetworkId 
 import type { AccountInfo, Connection, CosmosDisplay, DappRequest, DappReview, DeviceRequest, Result, Risk } from "@choice-wallet/ui/protocol";
 
 import { displayDenoms } from "../send";
-import { fail, randomId } from "../util";
+import { fail, randomId, turns, type Turn } from "../util";
 import { createCosmosSite } from "./cosmos";
 import { createEvmSite } from "./evm";
 import { INTERNAL, INVALID_PARAMS, no, PENDING, UNAUTHORIZED, UNSUPPORTED, USER_REJECTED, type DappHost, type DappReply, type Grants, type Named, type Waiting } from "./shared";
@@ -41,14 +41,10 @@ export function createDapps(h: DappHost) {
   /** Every change to the grants runs here, one at a time, on the map as it is in its turn,
    *  so no writer overwrites another's change (a user's disconnect, a site's revoke, a
    *  connect). `change` edits the map and says whether it changed it; only then is it saved. */
-  let grantTurn: Promise<unknown> = Promise.resolve();
-  /** Run `work` in the grants' turn. A site's chain pick is saved and removed there too, so
-   *  none is saved for a site without a grant, nor outlives one (run-2 C9). */
-  function inGrantTurn<T>(work: () => Promise<T>): Promise<T> {
-    const turn = grantTurn.then(work);
-    grantTurn = turn.catch(() => {});
-    return turn;
-  }
+  /** Run `work` in the grants' turn: the host's records queue, which an added chain's removal
+   *  shares too. A site's chain pick is saved and removed there, so none is saved for a site
+   *  without a grant, nor outlives one (run-2 C9). */
+  const inGrantTurn: Turn = h.turn ?? turns();
   function changeGrants(change: (all: Grants) => boolean): Promise<boolean> {
     return inGrantTurn(async () => {
       const all = await grants();

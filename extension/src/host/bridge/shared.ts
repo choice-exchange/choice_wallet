@@ -7,6 +7,7 @@ import { BRIDGE_RECEIVER, INJECTIVE_DOMAIN, IrisClient, bytes32ToAddress, bytes3
 import type { createSender } from "../send";
 import type { Store } from "../service";
 import type { createSolana } from "../solana";
+import { ownTurn, type Turn } from "../util";
 
 export type Sender = ReturnType<typeof createSender>;
 export type Solana = ReturnType<typeof createSolana>;
@@ -60,7 +61,9 @@ export function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
 }
 
 /** What more than one part uses. */
-export function createContext(sender: Sender, session: Store, local: Store, fetch: Fetch, now: () => number, solana?: Solana) {
+/** `records`: the queue every writer of the account records shares, and whether an account
+ *  on the list still holds an address (run-2 C11, C14). */
+export function createContext(sender: Sender, session: Store, local: Store, fetch: Fetch, now: () => number, solana?: Solana, records?: { turn: Turn; owned(address: string): Promise<boolean> }) {
   // The package adds a user-agent outside pages (Circle's CDN refuses some servers' own); a
   // service worker's fetch would make it a CORS preflight, which Iris doesn't answer.
   const plainFetch = ((url: string, init?: RequestInit) => {
@@ -87,7 +90,9 @@ export function createContext(sender: Sender, session: Store, local: Store, fetc
     return Array.isArray(solana_rent) ? (solana_rent as RentRecord[]) : [];
   }
 
-  return { sender, session, local, now, solana, plainFetch, iris, gasDropOffer, rentRecords };
+  const turn = records?.turn ?? ownTurn;
+  const owned = records ? (a: string) => records.owned(a) : async () => true;
+  return { sender, session, local, now, solana, plainFetch, iris, gasDropOffer, rentRecords, turn, owned };
 }
 
 export type BridgeContext = ReturnType<typeof createContext>;

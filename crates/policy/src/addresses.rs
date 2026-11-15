@@ -15,8 +15,9 @@ use crate::{Contact, Context, Finding, Level, finding};
 const MAX_ADDRESS: usize = 128;
 
 fn too_long(addr: &str) -> bool {
-    // Untrimmed: padding is length too, and every helper trims it again.
-    addr.len() > MAX_ADDRESS
+    // Trimmed: a padded address is still read as the address it is. Padding costs only one
+    // trim per call now that the book's forms are made once (run-2 C7).
+    addr.trim().len() > MAX_ADDRESS
 }
 
 /// The address book's entries, the known contracts and the memo addresses in their forms,

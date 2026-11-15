@@ -29,7 +29,7 @@ import {
 import type { AccountInfo, ActivityItem, Balance, ChainHoldings, Result, TokenInfo } from "@choice-wallet/ui/protocol";
 
 import type { Store } from "./service";
-import { fail } from "./util";
+import { fail, ownTurn, type Turn } from "./util";
 
 /** A chain's endpoints as the user set them, per network and chain key. */
 export type ChainEndpoints = Partial<Record<NetworkId, Record<string, string[]>>>;
@@ -41,6 +41,10 @@ export interface EvmChainsDeps {
   /** Whether to show USD values. */
   prices(): Promise<boolean>;
   now?: () => number;
+  /** Whether an account on the list still holds an address (run-2 C14). */
+  owned?(address: string): Promise<boolean>;
+  /** The queue every writer of the account records shares. */
+  turn?: Turn;
 }
 
 /** Holdings on the chains Home isn't showing are read again after this long. */
@@ -170,11 +174,16 @@ export function createEvmChains(d: EvmChainsDeps) {
   /** What the wallet sent on a chain, newest first, for its history there. */
   type Sent = Partial<Record<string, string[]>>;
   const sentKey = (network: NetworkId, key: string, address: string) => `${network} ${key} ${address.toLowerCase()}`;
-  async function recordSent(network: NetworkId, key: string, address: string, hash: string): Promise<void> {
-    const { chain_sent } = (await d.local.get(["chain_sent"])) as { chain_sent?: Sent };
-    const id = sentKey(network, key, address);
-    const list = [hash.toLowerCase(), ...(chain_sent?.[id] ?? []).filter((h) => h !== hash.toLowerCase())].slice(0, MAX_SENT);
-    await d.local.set({ chain_sent: { ...(chain_sent ?? {}), [id]: list } });
+  /** A send this account made on another chain, in the records' turn, while the account is
+   *  still on the list. */
+  function recordSent(network: NetworkId, key: string, address: string, hash: string): Promise<void> {
+    return (d.turn ?? ownTurn)(async () => {
+      if (d.owned && !(await d.owned(address))) return;
+      const { chain_sent } = (await d.local.get(["chain_sent"])) as { chain_sent?: Sent };
+      const id = sentKey(network, key, address);
+      const list = [hash.toLowerCase(), ...(chain_sent?.[id] ?? []).filter((h) => h !== hash.toLowerCase())].slice(0, MAX_SENT);
+      await d.local.set({ chain_sent: { ...(chain_sent ?? {}), [id]: list } });
+    });
   }
 
   const metaCache = new Map<string, Promise<{ symbol: string; decimals: number } | null>>();

@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { createService } from "../src/host/service";
-import { callVault, chain, code, handle, INJ, memory, ok, PASSWORD, PHRASE, serviceOn, THEM, THEM_KEY, wallet } from "./fake";
+import { callVault, chain, code, handle, INJ, indexed, ME, memory, ok, PASSWORD, PHRASE, serviceOn, THEM, THEM_KEY, USDT, wallet } from "./fake";
 
 type Status = { hasWallet: boolean; unlocked: boolean; accounts: { addresses: Record<string, string> }[] };
 const NEW_PASSWORD = "a different long password";
@@ -183,9 +183,12 @@ test("a background check waiting on the network writes nothing after a reset", a
     }
     return honest(input, init);
   };
-  const { service, local } = await wallet(net);
+  const { service, local, ui } = await wallet(net);
   await service.watch();
   assert.ok(local.data.has("watch"));
+  // Something arrives, so the waiting check would have news of the account.
+  net.state.balances[USDT] = 2_500_000n;
+  net.state.receivedTxs.unshift({ ...indexed(130, THEM, ME, `2500000${USDT}`), timestamp: new Date().toISOString() });
   let open!: () => void;
   gate = new Promise((r) => (open = r));
   const tick = service.watch();
@@ -196,6 +199,9 @@ test("a background check waiting on the network writes nothing after a reset", a
   await tick;
   await service.settled();
   for (const k of ["watch", "watch_own", "snapshots"]) assert.ok(!local.data.has(k), k);
+  // Nor does it tell of the account it no longer has.
+  assert.equal(ui.notices, undefined);
+  assert.ok(!ui.badge, ui.badge);
 });
 
 // F17: Reset keeps only device settings and public caches; every other record goes, whatever

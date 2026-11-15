@@ -12,6 +12,8 @@ import { nameOf, networkName, Origin, SignBody } from "../../ui/src/Approve";
 import { Phrase } from "../../ui/src/kit";
 import type { DappReview, NetworkId } from "../../ui/src/protocol";
 
+import { setAddedChains } from "@choice-wallet/chain";
+
 import { chain, ME, ME_EVM, ok, THEM, THEM_EVM, wallet } from "./fake";
 
 const SITE = "https://app.example";
@@ -275,4 +277,11 @@ test("the network row names Injective for Injective typed data asked on another 
   assert.equal(networkName(typed("eip155:1776", true), "mainnet"), "Injective");
   // Other typed data on Ethereum is Ethereum's.
   assert.equal(networkName(typed("eip155:1", false), "mainnet"), "Ethereum");
+  // A chain a site added names itself, so its ID goes with the name.
+  setAddedChains([{ chainId: 999_999, name: "Ethereum", symbol: "ETH", rpc: ["https://rpc.example"], testnet: false }]);
+  try {
+    assert.equal(networkName(typed("eip155:999999", true), "mainnet"), "Injective (asked on Ethereum, chain 999999)");
+  } finally {
+    setAddedChains([]);
+  }
 });

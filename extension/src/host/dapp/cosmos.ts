@@ -6,6 +6,9 @@ import type { AccountInfo, DappReview } from "@choice-wallet/ui/protocol";
 
 import { b64, bytesHex, CHAIN_DISCONNECTED, fromB64, INVALID_PARAMS, MAX_ARBITRARY, no, UNAUTHORIZED, UNSUPPORTED, type DappReply, type SiteCore } from "./shared";
 
+/** The Cosmos methods a site may call once connected. */
+const METHODS = new Set(["choice_getKey", "choice_sendTx", "choice_signDirect", "choice_signAmino", "choice_signArbitrary", "choice_verifyArbitrary"]);
+
 export function createCosmosSite(core: SiteCore) {
   const { h, isConnected, connect, sign } = core;
   /** Signatures this wallet gave sites lately (hex): a site's broadcast carrying one is the
@@ -27,8 +30,10 @@ export function createCosmosSite(core: SiteCore) {
       if (ids.length === 0 || ids.some(wrongChain)) return no(CHAIN_DISCONNECTED, chainNote);
       return connect(origin, async () => ({ result: null }));
     }
+    if (!METHODS.has(method)) return no(UNSUPPORTED, `${method} isn't supported.`);
     if (wrongChain(p["chainId"])) return no(CHAIN_DISCONNECTED, chainNote);
     if (!(await isConnected(origin))) return no(UNAUTHORIZED, "Call enable first.");
+    // Null while locked, and for a watch-only account: neither can sign.
     const u = await h.unlocked();
     // Locked (or watch-only): one answer for everything that reads or compares the account
     // (sendTx needs none), before the signer or a key is compared, so a site can't test a
@@ -68,7 +73,7 @@ export function createCosmosSite(core: SiteCore) {
     // The account in use, as unlocked (not the list's first: another account, or a
     // Ledger's, signs for itself).
     const account = u!.account;
-    if (account.account.derivation === "watch" || p["signer"] !== account.addresses[net.cosmos]) return no(UNAUTHORIZED, "The signer isn't this wallet's connected account.");
+    if (p["signer"] !== account.addresses[net.cosmos]) return no(UNAUTHORIZED, "The signer isn't this wallet's connected account.");
     const pubkey = account.public_key;
     const signature = (sig: unknown) => {
       gave(sig);

@@ -11,7 +11,7 @@ import type { AccountInfo, GovView, Result, SendReview } from "@choice-wallet/ui
 
 import type { createSender } from "./send";
 import type { Store } from "./service";
-import { fail } from "./util";
+import { fail, ownTurn, type Turn } from "./util";
 
 type Sender = ReturnType<typeof createSender>;
 type Kept = Partial<Record<NetworkId, Record<string, Record<string, VoteCast>>>>;
@@ -26,8 +26,11 @@ const CASTS: readonly string[] = [...VOTE_OPTIONS, "weighted"];
 const without = (votes: Record<string, VoteCast>, ids: readonly string[]) => Object.fromEntries(Object.entries(votes).filter(([id]) => !ids.includes(id)));
 
 /** `owned`: whether an account on the list still holds an address; votes for one that went
- *  away while the chain was asked aren't kept (run-2 C14). */
-export function createGov(d: { sender: Sender; local: Store; owned?: (address: string) => Promise<boolean> }) {
+ *  away while the chain was asked aren't kept (run-2 C14). `turn`: the queue every writer of
+ *  the account records shares, so removing an account's and keeping another's never undo
+ *  each other. */
+export function createGov(d: { sender: Sender; local: Store; owned?: (address: string) => Promise<boolean>; turn?: Turn }) {
+  const turn = d.turn ?? ownTurn;
   const still = async (voter: string) => !d.owned || (await d.owned(voter));
 
   async function kept(network: NetworkId, voter: string): Promise<Record<string, VoteCast>> {
@@ -36,22 +39,27 @@ export function createGov(d: { sender: Sender; local: Store; owned?: (address: s
     return Object.fromEntries(Object.entries(mine).filter(([id, v]) => /^[1-9][0-9]{0,19}$/.test(id) && CASTS.includes(v)));
   }
 
-  async function keep(network: NetworkId, voter: string, votes: Record<string, VoteCast>): Promise<void> {
-    const { votes_cast } = (await d.local.get(["votes_cast"])) as { votes_cast?: Kept };
-    const merged = { ...(await kept(network, voter)), ...votes };
-    // The newest proposals' votes, when there are too many.
-    const ids = Object.keys(merged).sort((a, b) => (BigInt(b) > BigInt(a) ? 1 : -1)).slice(0, MAX_KEPT);
-    const mine = Object.fromEntries(ids.map((id) => [id, merged[id]!]));
-    if (!(await still(voter))) return;
-    await d.local.set({ votes_cast: { ...(votes_cast ?? {}), [network]: { ...(votes_cast?.[network] ?? {}), [voter]: mine } } });
+  /** Write an account's votes: `next` from what is kept now. In the records' turn, for an
+   *  account still on the list. */
+  function write(network: NetworkId, voter: string, next: (kept: Record<string, VoteCast>) => Record<string, VoteCast>): Promise<void> {
+    return turn(async () => {
+      if (!(await still(voter))) return;
+      const { votes_cast } = (await d.local.get(["votes_cast"])) as { votes_cast?: Kept };
+      const merged = Object.fromEntries(Object.entries(next(await kept(network, voter))).filter(([id, v]) => /^[1-9][0-9]{0,19}$/.test(id) && CASTS.includes(v)));
+      // The newest proposals' votes, when there are too many.
+      const ids = Object.keys(merged).sort((a, b) => (BigInt(b) > BigInt(a) ? 1 : -1)).slice(0, MAX_KEPT);
+      const mine = Object.fromEntries(ids.map((id) => [id, merged[id]!]));
+      await d.local.set({ votes_cast: { ...(votes_cast ?? {}), [network]: { ...(votes_cast?.[network] ?? {}), [voter]: mine } } });
+    });
+  }
+
+  function keep(network: NetworkId, voter: string, votes: Record<string, VoteCast>): Promise<void> {
+    return write(network, voter, (k) => ({ ...k, ...votes }));
   }
 
   /** Replace an account's kept votes. */
-  async function replace(network: NetworkId, voter: string, votes: Record<string, VoteCast>): Promise<void> {
-    if (!(await still(voter))) return;
-    const { votes_cast } = (await d.local.get(["votes_cast"])) as { votes_cast?: Kept };
-    await d.local.set({ votes_cast: { ...(votes_cast ?? {}), [network]: { ...(votes_cast?.[network] ?? {}), [voter]: votes } } });
-    await keep(network, voter, {});
+  function replace(network: NetworkId, voter: string, votes: Record<string, VoteCast>): Promise<void> {
+    return write(network, voter, () => votes);
   }
 
   async function summary(network: NetworkId, account: AccountInfo): Promise<Result<GovView>> {
