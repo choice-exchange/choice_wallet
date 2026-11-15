@@ -6,6 +6,7 @@
 // Default endpoints are the bridge registry's public ones. Each answered `eth_chainId` with
 // CORS for an extension origin (checked 2026-11-10); the user can replace them per chain.
 
+import { isChainLogo } from "./image.ts";
 import { NETWORKS, type NetworkId } from "./networks.ts";
 
 /** Injective, Solana, or one of the EVM chains beside them. */
@@ -458,7 +459,15 @@ let added: { mainnet: readonly AddedInfo[]; testnet: readonly AddedInfo[]; list:
 /** Replace the added chains (each one's ID not built in, as `checkAddedChain` checks). */
 export function setAddedChains(list: readonly AddedChain[]): void {
   const builtIn = new Set([...CHAINS.mainnet, ...CHAINS.testnet].map((c) => c.chainId));
-  const ok = list.filter((a) => !builtIn.has(a.chainId));
+  // A logo is drawn only as the small PNG the wallet makes of one (run-2 NV1): any other,
+  // an SVG kept by an older version included, goes, and the chain keeps its letters.
+  const drawable = (a: AddedChain): AddedChain => {
+    if (a.logo === undefined || isChainLogo(a.logo)) return a;
+    const rest = { ...a };
+    delete rest.logo;
+    return rest;
+  };
+  const ok = list.filter((a) => !builtIn.has(a.chainId)).map(drawable);
   added = {
     mainnet: ok.filter((a) => !a.testnet).map(addedInfo),
     testnet: ok.filter((a) => a.testnet).map(addedInfo),

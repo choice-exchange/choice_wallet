@@ -184,11 +184,13 @@ export class SolanaRpc {
   }
 
   /** Simulate a transaction (base64, unsigned or partly signed), with what `addresses` hold
-   *  after it (at most 100). */
+   *  after it (at most 100: more is refused, never cut short, so no caller reads a partial
+   *  answer as whole). */
   async simulateWith(tx: string, addresses: readonly string[]): Promise<{ err: unknown; logs: string[]; after: (RawAccount | null)[] }> {
+    if (addresses.length > 100) throw new RangeError("A simulation reports on at most 100 accounts.");
     const r = await this.call("simulateTransaction", [
       tx,
-      { encoding: "base64", sigVerify: false, replaceRecentBlockhash: true, commitment: "confirmed", accounts: { encoding: "base64", addresses: addresses.slice(0, 100) } },
+      { encoding: "base64", sigVerify: false, replaceRecentBlockhash: true, commitment: "confirmed", accounts: { encoding: "base64", addresses } },
     ]);
     const v = isObject(r) ? r["value"] : undefined;
     if (!isObject(v)) throw new Down("simulateTransaction: no value");

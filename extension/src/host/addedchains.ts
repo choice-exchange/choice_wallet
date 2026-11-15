@@ -15,6 +15,8 @@ import {
   checkAddedChain,
   bytesToBase64,
   EvmRpc,
+  imageSize,
+  isChainLogo,
   isObject,
   MAX_ADDED_CHAINS,
   MAX_CHAIN_ID,
@@ -46,13 +48,14 @@ const MAX_RPC = 6;
 /** A logo's image as fetched, and as kept. */
 const MAX_IMAGE = 256 * 1024;
 const MAX_LOGO = 64 * 1024;
-const IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp", "image/svg+xml"];
+/** The most pixels a side of a fetched logo may declare: it is decoded only below this. */
+const MAX_SIDE = 2048;
 
 export interface AddedChainsDeps {
   fetch: Fetch;
   local: Store;
   /** An image made 64 pixels square, as a PNG data URL (null if it can't be read). Absent:
-   *  small images are kept as they came. */
+   *  a small PNG is kept as it came. */
   resize?(bytes: Uint8Array, type: string): Promise<string | null>;
   now?: () => number;
   /** The queue every writer of sites' chain picks and the account records shares. */
@@ -69,7 +72,9 @@ function storedChain(v: unknown): AddedChain | null {
   const logo = v["logo"];
   const llama = v["llama"];
   if (explorer !== undefined && !(typeof explorer === "string" && /^https:\/\/[^\s"<>]+$/.test(explorer))) return null;
-  if (logo !== undefined && !(typeof logo === "string" && /^data:image\/(png|jpeg|webp|svg\+xml);base64,[A-Za-z0-9+/=]+$/.test(logo) && logo.length <= MAX_LOGO * 2)) return null;
+  // Only the small PNG the wallet makes: an older version's SVG (or any other) is dropped,
+  // and the chain kept without it (run-2 NV1).
+  const drawable = isChainLogo(logo) ? logo : undefined;
   if (llama !== undefined && !(typeof llama === "string" && /^[a-z0-9-]{1,40}$/.test(llama))) return null;
   return {
     chainId: v["chainId"] as number,
@@ -78,7 +83,7 @@ function storedChain(v: unknown): AddedChain | null {
     rpc: rpc as string[],
     testnet: v["testnet"],
     ...(explorer ? { explorer: explorer as string } : {}),
-    ...(logo ? { logo: logo as string } : {}),
+    ...(drawable ? { logo: drawable } : {}),
     ...(llama ? { llama: llama as string } : {}),
   };
 }
@@ -133,6 +138,35 @@ export function listedChain(e: unknown): ListedChain | null {
     flags,
     ...(typeof tvl === "number" && Number.isFinite(tvl) && tvl > 0 ? { tvl } : {}),
   };
+}
+
+/** A response's body, or null past `max` bytes: read no further than that, whatever its
+ *  length header says. */
+async function capped(res: Response, max: number): Promise<Uint8Array | null> {
+  const said = Number(res.headers.get("content-length") ?? "0");
+  if (said > max) return null;
+  const reader = res.body?.getReader();
+  if (!reader) return null;
+  const parts: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.length;
+    if (size > max) {
+      void reader.cancel().catch(() => {});
+      return null;
+    }
+    parts.push(value);
+  }
+  if (size === 0) return null;
+  const out = new Uint8Array(size);
+  let at = 0;
+  for (const p of parts) {
+    out.set(p, at);
+    at += p.length;
+  }
+  return out;
 }
 
 export function createAddedChains(d: AddedChainsDeps) {
@@ -209,16 +243,19 @@ export function createAddedChains(d: AddedChainsDeps) {
     return { ok: true, result: found };
   }
 
-  /** An image at `url`, as a data URL small enough to keep, or undefined. */
+  /** An image at `url`, as the small PNG the wallet keeps of it, or undefined. Only a PNG,
+   *  JPEG or WebP, known by its own bytes rather than the server's word, and only one that
+   *  declares at most `MAX_SIDE` pixels a side, is decoded at all: an SVG, or a small file
+   *  that declares a huge picture, could take any amount of memory to draw (run-2 NV1). */
   async function image(url: string): Promise<string | undefined> {
     try {
       const res = await d.fetch(url, { signal: AbortSignal.timeout(10_000) });
-      const type = (res.headers.get("content-type") ?? "").split(";")[0]!.trim().toLowerCase();
-      if (!res.ok || !IMAGE_TYPES.includes(type)) return undefined;
-      const bytes = new Uint8Array(await res.arrayBuffer());
-      if (bytes.length === 0 || bytes.length > MAX_IMAGE) return undefined;
-      if (type !== "image/svg+xml" && d.resize) return (await d.resize(bytes, type)) ?? undefined;
-      return bytes.length <= MAX_LOGO ? `data:${type};base64,${bytesToBase64(bytes)}` : undefined;
+      if (!res.ok) return undefined;
+      const bytes = await capped(res, MAX_IMAGE);
+      const head = bytes ? imageSize(bytes) : null;
+      if (!bytes || !head || head.width > MAX_SIDE || head.height > MAX_SIDE) return undefined;
+      const kept = d.resize ? await d.resize(bytes, head.type) : head.type === "image/png" && bytes.length <= MAX_LOGO ? `data:image/png;base64,${bytesToBase64(bytes)}` : null;
+      return isChainLogo(kept) ? kept : undefined;
     } catch {
       return undefined;
     }

@@ -92,4 +92,5 @@ export {
   shortDenom,
   type Token,
 } from "./tokens.ts";
+export { imageSize, isChainLogo, LOGO_SIDE, type RasterType } from "./image.ts";
 export { ceilDecimal, formatShort, formatUnits, parseUnits, toBigInt } from "./units.ts";

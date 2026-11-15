@@ -9,7 +9,7 @@
 // a request first calls it.
 
 import init, { handle, resetVault } from "choice-wallet-vault-glue";
-import { bytesToBase64, explorerTxUrl, isNetworkId, NETWORKS } from "@choice-wallet/chain";
+import { bytesToBase64, explorerTxUrl, imageSize, isNetworkId, LOGO_SIDE, NETWORKS } from "@choice-wallet/chain";
 
 import { createService, dappOrigin, fromOwnPage, type Store } from "./host/service";
 import { callVault } from "./host/vault";
@@ -110,11 +110,14 @@ const service = createService({
 });
 
 /** An added chain's logo, drawn 64 pixels square and kept as a PNG: small to store, and only
- *  pixels (whatever the image came as). */
-async function resizeImage(bytes: Uint8Array, type: string): Promise<string | null> {
+ *  pixels (whatever the image came as). Only a PNG, JPEG or WebP whose header declares a
+ *  sane size is decoded (run-2 NV1); the caller checks this too. */
+async function resizeImage(bytes: Uint8Array): Promise<string | null> {
   try {
-    const size = 64;
-    const bitmap = await createImageBitmap(new Blob([new Uint8Array(bytes)], { type }), { resizeWidth: size, resizeHeight: size, resizeQuality: "high" });
+    const head = imageSize(bytes);
+    if (!head || head.width > 2048 || head.height > 2048) return null;
+    const size = LOGO_SIDE;
+    const bitmap = await createImageBitmap(new Blob([new Uint8Array(bytes)], { type: head.type }), { resizeWidth: size, resizeHeight: size, resizeQuality: "high" });
     const canvas = new OffscreenCanvas(size, size);
     canvas.getContext("2d")?.drawImage(bitmap, 0, 0, size, size);
     bitmap.close();

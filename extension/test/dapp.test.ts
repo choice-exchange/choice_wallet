@@ -501,6 +501,55 @@ test("a Solana transaction that hands away a stake account, or takes its SOL, sa
   assert.deepEqual(shownWithdraw.sends, [{ coins: [{ denom: "sol", amount: "100000000000" }], to: THEM_SOL }]);
 });
 
+// Run-2 NV2: the review compares what a site's transaction writes before and after a
+// simulation, which reports on at most 100 accounts. A transaction whose lookup table puts the
+// account's USDC account 101st isn't simulated in part: it isn't signed at all.
+test("a Solana transaction that writes more accounts than the wallet can check isn't signed", async () => {
+  const net = chain();
+  const { page, window, service } = await setup(net);
+  const site = page(SITE);
+  const asked = site("solana_connect", {});
+  ok(await service.handle({ type: "dapp_answer", id: (await window()).id, approve: true }));
+  await asked;
+  const program = bs58(new Uint8Array(32).fill(0x42));
+  const TABLE = bs58(new Uint8Array(32).fill(0x61));
+  const filler = (i: number) => bs58(Uint8Array.from({ length: 32 }, (_, k) => (k === 0 ? 0x70 : k === 1 ? i : 7)));
+  /** A v0 transaction: ME_SOL signs, the program reads, and every entry of the site's table
+   *  (`fillers` accounts, then the account's USDC account) is loaded writable. */
+  const tx = (fillers: number) => {
+    const entries = [...Array.from({ length: fillers }, (_, i) => filler(i)), ME_SOL_USDC];
+    const table = new Uint8Array(56 + 32 * entries.length);
+    entries.forEach((a, i) => table.set(base58Decode(a), 56 + 32 * i));
+    net.state.solana.accounts[TABLE] = { lamports: 1_000_000, owner: "AddressLookupTab1e1111111111111111111111111", data: [Buffer.from(table).toString("base64"), "base64"], executable: false, rentEpoch: 0, space: table.length };
+    const keys = [ME_SOL, program].map(base58Decode);
+    const message = Uint8Array.from([0x80, 1, 0, 1, keys.length, ...keys.flatMap((k) => [...k]), ...new Uint8Array(32).fill(9), 1, 1, 2, 0, 2, 1, 7, 1, ...base58Decode(TABLE), entries.length, ...entries.map((_, i) => i), 0]);
+    return Buffer.from(Uint8Array.from([1, ...new Uint8Array(64), ...message])).toString("hex");
+  };
+  const review = async (transaction: string) => {
+    const signing = site("solana_signTransaction", { account: ME_SOL, transaction });
+    const w = await window();
+    const r = await service.handle({ type: "dapp_review", id: w.id });
+    ok(await service.handle({ type: "dapp_answer", id: w.id, approve: false }));
+    assert.equal(((await signing) as Reply).error?.code, 4001);
+    return r;
+  };
+  // 99 fillers, then the USDC account: 101 with ME_SOL. Refused, not simulated in part.
+  const over = await review(tx(99));
+  assert.equal(code(over), "bad_request", JSON.stringify(over));
+  assert.match((over as { error: { message: string } }).error.message, /changes 101 accounts\. The wallet can check at most 100/);
+  // One fewer: every account it writes is checked, so the USDC account handed to THEM,
+  // 100th in the table's order, is seen and red.
+  net.state.solana.simulateAfter = (a: string, r: unknown) => {
+    if (a !== ME_SOL_USDC || r === null) return r;
+    const d = new Uint8Array(Buffer.from((r as { data: [string, string] }).data[0], "base64"));
+    d.set(base58Decode(THEM_SOL), 32);
+    return { ...(r as object), data: [Buffer.from(d).toString("base64"), "base64"] };
+  };
+  const whole = ok<DappReview>(await review(tx(98)));
+  assert.deepEqual([whole.risk.level, whole.risk.confirm], ["red", "GIVE"], JSON.stringify(whole.risk));
+  assert.ok(whole.risk.findings.some((f) => f.rule === "solana_token_account_owner"), JSON.stringify(whole.risk));
+});
+
 // Run-2 C3 follow-up: SOL moving between the account's own stake accounts (a merge, a split
 // into a new one) stays the account's, so no loss is shown. A lockup someone else holds, new
 // on a stake account it withdraws from, keeps its SOL from it: red with GIVE, and shown leaving.

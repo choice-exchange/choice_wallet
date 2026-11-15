@@ -120,6 +120,9 @@ export function wire(message: Uint8Array, signers: readonly string[], sigs: Read
  *  failed write costs only a lookup later (run-2 C12: one item per mint, unbounded, could
  *  fill the storage the vault and the account records share). */
 const TOKENS_KEPT = 500;
+/** The accounts a simulation reports on, at most: a site's transaction that writes more
+ *  isn't signed. */
+const MAX_WATCHED = 100;
 
 export function createSolana(d: SolanaDeps) {
   const tokensDisk = diskCache<TokenInfo>(d.local, "cache_solana_tokens", { fresh: Infinity, stale: Infinity, max: TOKENS_KEPT });
@@ -509,7 +512,11 @@ export function createSolana(d: SolanaDeps) {
     // What moves for the account: its SOL, and every token account of its that the
     // transaction writes (one it opens too), before and after a simulation.
     const writable = [...keys.keys.filter((_, i) => keys.writable[i]), ...keys.lookups.flatMap((l, i) => l.writable.map((j) => tables[i]!.addresses[j] ?? ""))].filter(Boolean);
-    const watched = [...new Set([owner, ...writable])].slice(0, 100);
+    // Every account it writes is compared before and after, or it isn't signed: one the
+    // simulation can't report on (past its 100) would hide what is handed over there, in
+    // whatever order the site's lookup table put it (run-2 NV2).
+    const watched = [...new Set([owner, ...writable])];
+    if (watched.length > MAX_WATCHED) throw new RangeError(`This transaction changes ${watched.length} accounts. The wallet can check at most ${MAX_WATCHED} before you sign, so it won't sign it.`);
     const before = await r.rawAccounts(watched);
     const accounts: Record<string, { owner: string; mint: string }> = {};
     const moved = new Map<string, bigint>();

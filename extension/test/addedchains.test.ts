@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { listedChain } from "../src/host/addedchains";
-import { chain, code, INJ, ME_EVM, ok, PASSWORD, THEM_EVM, wallet } from "./fake";
+import { chain, code, INJ, ME_EVM, ok, PASSWORD, THEM_EVM, TINY_PNG, wallet } from "./fake";
 
 type Added = { chainId: number; name: string; symbol: string; rpc: string[]; explorer?: string; testnet: boolean; logo?: string; llama?: string };
 type Status = { chain: string; network: string; added: Added[]; accounts: { addresses: Record<string, string> }[]; active: number };
@@ -147,4 +147,38 @@ test("a site adds a chain: reviewed with the list's details, kept, and the site 
   assert.equal(code(await w.service.handle({ type: "dapp_answer", id: b.id, approve: true })), "unreachable");
   ok(await w.service.handle({ type: "dapp_answer", id: b.id, approve: false }));
   assert.equal((await odd).error?.code, 4001);
+});
+
+// Run-2 NV1: a logo is kept only as a small PNG the wallet draws. An SVG (whatever its
+// server calls it), a picture whose header declares a huge size, or a body past the cap is
+// never decoded nor kept: the chain is added without a logo.
+test("a chain's logo that isn't a sane raster image is never kept", async () => {
+  const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><rect width="1" height="1"/></svg>');
+  const huge = Buffer.from(TINY_PNG);
+  huge.writeUInt32BE(30_000, 16);
+  huge.writeUInt32BE(30_000, 20);
+  for (const [name, body, type] of [
+    ["an SVG", svg, "image/svg+xml"],
+    ["an SVG called a PNG", svg, "image/png"],
+    ["a PNG declaring 30000 by 30000", huge, "image/png"],
+    ["a body past the cap", Buffer.concat([TINY_PNG, Buffer.alloc(300 * 1024)]), "image/png"],
+  ] as const) {
+    const net = chain({ balances: { inj: INJ } });
+    const honest = net.fetch;
+    net.fetch = async (input: string, init?: RequestInit) => (String(input).includes("/icons/chains/") ? new Response(body, { status: 200, headers: { "content-type": type } }) : honest(input, init));
+    const { service } = await wallet(net);
+    const s = ok<Status>(await service.handle({ type: "add_chain", chain: BNB }));
+    assert.equal(s.added[0]?.chainId, 56, name);
+    assert.equal(s.added[0]?.logo, undefined, name);
+  }
+});
+
+// Run-2 NV1: an older version kept SVG logos as they came. One read back is dropped, and the
+// chain is kept with its letters.
+test("a stored SVG logo is dropped and its chain kept", async () => {
+  const net = chain({ balances: { inj: INJ } });
+  const { service, local } = await wallet(net);
+  await local.set({ added_chains: [{ chainId: 56, name: "BNB Smart Chain", symbol: "BNB", rpc: ["https://bnb-rpc.example"], testnet: false, logo: `data:image/svg+xml;base64,${Buffer.from("<svg/>").toString("base64")}` }] });
+  const s = ok<Status>(await service.handle({ type: "status" }));
+  assert.deepEqual(s.added.map((a) => [a.chainId, a.logo]), [[56, undefined]]);
 });
