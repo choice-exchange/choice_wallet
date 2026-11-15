@@ -461,6 +461,78 @@ test("a Solana transaction that hands away a stake account, or takes its SOL, sa
   assert.deepEqual(shownWithdraw.sends, [{ coins: [{ denom: "sol", amount: "100000000000" }], to: THEM_SOL }]);
 });
 
+// Run-2 C3 follow-up: SOL moving between the account's own stake accounts (a merge, a split
+// into a new one) stays the account's, so no loss is shown. A lockup someone else holds, new
+// on a stake account it withdraws from, keeps its SOL from it: red with GIVE, and shown leaving.
+test("a Solana merge or split of the account's own stake moves nothing; a new lockup is red", async () => {
+  const net = chain();
+  const { page, window, service } = await setup(net);
+  const site = page(SITE);
+  const asked = site("solana_connect", {});
+  ok(await service.handle({ type: "dapp_answer", id: (await window()).id, approve: true }));
+  await asked;
+  const A = bs58(new Uint8Array(32).fill(0x53));
+  const B = bs58(new Uint8Array(32).fill(0x54));
+  const unread = bs58(new Uint8Array(32).fill(0x42));
+  const SOL1 = 1_000_000_000n;
+  const stakeAccount = (lamports: bigint, lockup?: { until: bigint; custodian: string }) => {
+    const d = new Uint8Array(200);
+    const v = new DataView(d.buffer);
+    v.setUint32(0, 2, true);
+    d.set(base58Decode(ME_SOL), 12);
+    d.set(base58Decode(ME_SOL), 44);
+    if (lockup) {
+      v.setBigInt64(76, lockup.until, true);
+      d.set(base58Decode(lockup.custodian), 92);
+    }
+    return { lamports: Number(lamports), owner: "Stake11111111111111111111111111111111111111", data: [Buffer.from(d).toString("base64"), "base64"], executable: false, rentEpoch: 0, space: 200 };
+  };
+  net.state.solana.simulateSpend = 5_000n;
+  // ME_SOL signs; A and B are writable; one instruction of a program the wallet can't read.
+  const keys = [ME_SOL, A, B, unread].map(base58Decode);
+  const message = Uint8Array.from([1, 0, 1, keys.length, ...keys.flatMap((k) => [...k]), ...new Uint8Array(32).fill(9), 1, 3, 2, 1, 2, 1, 7]);
+  const transaction = hexOf(Uint8Array.from([1, ...new Uint8Array(64), ...message]));
+  const review = async () => {
+    const signing = site("solana_signTransaction", { account: ME_SOL, transaction });
+    const w = await window();
+    const r = ok<DappReview>(await service.handle({ type: "dapp_review", id: w.id }));
+    ok(await service.handle({ type: "dapp_answer", id: w.id, approve: false }));
+    assert.equal(((await signing) as Reply).error?.code, 4001);
+    return { r, rules: r.risk.findings.map((f) => f.rule), changes: (r.simulation as { changes: { denom: string; amount: string }[] }).changes };
+  };
+  const feeOnly = [{ denom: "sol", amount: "-5000" }];
+
+  // Merge: A's 100 SOL into B, A closed.
+  net.state.solana.accounts[A] = stakeAccount(100n * SOL1);
+  net.state.solana.accounts[B] = stakeAccount(50n * SOL1);
+  net.state.solana.simulateAfter = (a: string, r: unknown) => (a === A ? null : a === B ? stakeAccount(150n * SOL1) : r);
+  let v = await review();
+  assert.deepEqual(v.changes, feeOnly, JSON.stringify(v.r.simulation));
+  assert.ok(!v.rules.some((x) => x.startsWith("solana_stake_")), JSON.stringify(v.r.risk));
+
+  // Split: 40 SOL of A into B, a stake account that didn't exist before.
+  delete net.state.solana.accounts[B];
+  net.state.solana.simulateAfter = (a: string, r: unknown) => (a === A ? stakeAccount(60n * SOL1) : a === B ? stakeAccount(40n * SOL1) : r);
+  v = await review();
+  assert.deepEqual(v.changes, feeOnly, JSON.stringify(v.r.simulation));
+
+  // A split of a stake account already locked: the lockup it was under isn't new.
+  const theirs = { until: 4_000_000_000n, custodian: THEM_SOL };
+  net.state.solana.accounts[A] = stakeAccount(100n * SOL1, theirs);
+  net.state.solana.simulateAfter = (a: string, r: unknown) => (a === A ? stakeAccount(60n * SOL1, theirs) : a === B ? stakeAccount(40n * SOL1, theirs) : r);
+  v = await review();
+  assert.deepEqual(v.changes, feeOnly, JSON.stringify(v.r.simulation));
+  assert.ok(!v.rules.includes("solana_stake_lockup"), JSON.stringify(v.r.risk));
+
+  // A lockup THEM holds, new on A: its 100 SOL is no longer the account's to take.
+  net.state.solana.accounts[A] = stakeAccount(100n * SOL1);
+  net.state.solana.simulateAfter = (a: string, r: unknown) => (a === A ? stakeAccount(100n * SOL1, theirs) : r);
+  v = await review();
+  assert.deepEqual([v.r.risk.level, v.r.risk.confirm], ["red", "GIVE"], JSON.stringify(v.r.risk));
+  assert.ok(v.rules.includes("solana_stake_lockup"), JSON.stringify(v.r.risk));
+  assert.deepEqual(v.changes, [{ denom: "sol", amount: (-(100n * SOL1 + 5_000n)).toString() }], JSON.stringify(v.r.simulation));
+});
+
 // F8: only the user's own use holds off the auto-lock. A site's reads, its connect
 // window's status poll, and pages re-reading after a broadcast never restart the timer.
 test("sites and the approval window's poll never restart the auto-lock timer", async () => {

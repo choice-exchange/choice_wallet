@@ -238,3 +238,61 @@ test("a swap of an unlisted denom shows the contract traded, never the picked de
     assert.equal(out(c), `evm:${c}`);
   }
 });
+
+// A bridge step on another EVM chain names its USDC by the wallet's key for it, when the
+// contract is that chain's USDC; any other contract is shown as itself.
+test("a bridge step on Base shows Base's USDC as the picked key", () => {
+  const BASE_USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
+  const approve = (token: string) =>
+    shown(
+      {
+        kind: "evm_transaction",
+        chain: "eip155:8453",
+        from: "0x9858EfFD232B4033E47d90003D41EC34EcaEda94",
+        to: token,
+        value: "0",
+        data: "0x",
+        // CCTP's TokenMessenger (published).
+        call: { type: "approve", spender: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d", amount: "25000000" },
+        max_gas_cost: "1",
+      } as never,
+      "mainnet",
+      { from: "usdc:eip155:8453", to: "erc20:0x0000000000000000000000000000000000000001" },
+    ).approvals[0]!.token;
+  assert.equal(approve(BASE_USDC), "usdc:eip155:8453");
+  assert.equal(approve("0x5555555555555555555555555555555555555555"), "evm:0x5555555555555555555555555555555555555555");
+});
+
+// Run-2 C2 follow-up: a simulated delegate's card replaces only the instruction's card for the
+// same token account; another account's approval, or another simulated delegate, stays.
+test("Solana approval cards: one per token account", () => {
+  // Placeholders: the review reads these as names, never as keys.
+  const SIGNER = "signer";
+  const SPENDER = "delegate";
+  // USDC's mint (published).
+  const MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+  const X = "token-account-x";
+  const Y = "token-account-y";
+  const approve = (source: string, amount: string) => ({ program: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", program_name: "Token", type: "token_approve" as const, source, delegate: SPENDER, owner: SIGNER, amount, mint: MINT, decimals: 6 });
+  const display = (instructions: unknown[]) =>
+    ({
+      kind: "solana_transaction",
+      chain: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+      signer: SIGNER,
+      fee_payer: SIGNER,
+      signers: [SIGNER],
+      version: "legacy",
+      fee: { base: "5000", priority: "0", total: "5000", unit_limit: null, unit_price: null },
+      durable_nonce: false,
+      lookup_tables: [],
+      instructions,
+    }) as never;
+  const simulated = (account: string, amount: string) => ({ rule: "solana_delegate", level: "amber" as const, message: "", params: { account, to: SPENDER, token: MINT, amount, simulated: true } });
+  const cards = (instructions: unknown[], findings: ReturnType<typeof simulated>[]) => shown(display(instructions), "mainnet", undefined, findings).approvals.map((a) => a.amount);
+  // Same account: the simulated allowance replaces the instruction's.
+  assert.deepEqual(cards([approve(X, "1")], [simulated(X, "4999999")]), ["4999999"]);
+  // Another account's approval stays beside it.
+  assert.deepEqual(cards([approve(X, "1")], [simulated(Y, "4999999")]), ["1", "4999999"]);
+  // Two simulated delegates, two accounts: both shown.
+  assert.deepEqual(cards([], [simulated(X, "7"), simulated(Y, "8")]), ["7", "8"]);
+});

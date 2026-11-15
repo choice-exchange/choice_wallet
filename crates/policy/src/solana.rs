@@ -522,6 +522,20 @@ fn handovers(ctx: &Context, out: &mut Vec<Finding>) {
                 }
                 f
             }
+            // A lockup someone else holds, new on a stake account it withdraws from: its SOL
+            // stays there until the lockup ends or the custodian lifts it.
+            "stake_lockup" => {
+                let stake = short(account.unwrap_or("?"));
+                // No custodian (the zero key): nobody can lift it before it ends.
+                let message = if base58::decode32(&h.to) == Some([0; 32]) {
+                    format!("Locks the SOL in stake account {stake} until a set time.")
+                } else {
+                    format!("Locks the SOL in stake account {stake}. Only {to} can unlock it early.")
+                };
+                let mut f = finding("solana_stake_lockup", Level::Red, message, params);
+                f.confirm = Some("GIVE");
+                f
+            }
             _ => continue,
         };
         if !out.iter().any(|said| covers(said, &f)) {
@@ -821,6 +835,11 @@ mod tests {
         assert!(rules_of(&a).contains(&"solana_stake_withdrawer"));
         let a = grade(Instruction::Other { program: [0x42; 32] }, Some("stake_staker"));
         assert!(rules_of(&a).contains(&"solana_stake_staker"));
+        // A lockup someone else holds, put on its stake account (SetLockup, or an account it
+        // funds made locked): red, typed confirmation.
+        let a = grade(Instruction::Other { program: [0x42; 32] }, Some("stake_lockup"));
+        assert_eq!((a.level, a.confirm), (Level::Red, Some("GIVE")));
+        assert!(rules_of(&a).contains(&"solana_stake_lockup"));
         // Withdrawing to someone else is a send of staked SOL; to itself, unstaking.
         let withdraw = |to| Instruction::StakeWithdraw {
             stake,

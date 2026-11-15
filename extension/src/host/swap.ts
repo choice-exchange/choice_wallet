@@ -201,9 +201,14 @@ export function createSwaps(sender: Sender, session: Store, fetch: Fetch, shown:
     const net = NETWORKS[network];
     const amount = BigInt(q.route.amountIn);
     const extra = { swap: { step, left, from: q.from, to: q.to, expectedOut: q.route.amountOut } };
-    // The picked tokens, and the contracts actually traded: the review names an unlisted
-    // denom's LCD pair by its own contract, so that is described too (run-2 C4).
-    const tokens = [q.from, q.to, ...[q.tokenIn, q.tokenOut].filter((t) => t !== NATIVE).map(evmDenom)];
+    // The picked tokens, and a traded contract the picked token isn't bound to (an unlisted
+    // denom's LCD pair): the review names that by its own contract, so it is described too
+    // (run-2 C4).
+    const pair = (denom: string, contract: string) => {
+      const bound = boundErc20(network, denom);
+      return typeof bound === "string" && bound.toLowerCase() === contract.toLowerCase() ? [] : [evmDenom(contract)];
+    };
+    const tokens = [q.from, q.to, ...pair(q.from, q.tokenIn), ...pair(q.to, q.tokenOut)];
     if (step === "approve") {
       return sender.prepareEvmCall(network, account, {
         to: q.tokenIn,

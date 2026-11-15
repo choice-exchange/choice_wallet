@@ -1,7 +1,7 @@
 // What a review shows, from the vault's decode of the transaction that will be signed: the
 // sends, the conversions, anything else the transaction does, and the fee.
 
-import { adapterCw20, adapterDenom, boundErc20, chainByCaip2, chainCoin, chainUsdc, cw20Denom, evmDenom, isContractAddress, NETWORKS } from "@choice-wallet/chain";
+import { adapterCw20, adapterDenom, boundErc20, cctpChainByCaip2, chainByCaip2, chainCoin, chainUsdc, cw20Denom, evmDenom, isContractAddress, NETWORKS } from "@choice-wallet/chain";
 
 import type { Coin, CosmosDisplay, EvmDisplay, EvmSwapCall, Finding, NetworkId, SendReview, SolanaDisplay, SwapStepInfo } from "./protocol";
 
@@ -141,11 +141,13 @@ export function shown(display: SendReview["display"], network: NetworkId, swap?:
     const key = (a: string, side?: "from" | "to") => {
       if (a.toLowerCase() === NATIVE) return away ? chainCoin(away.caip2) : net.feeDenom;
       // The token the user picked, only when the decoded contract is the one the wallet binds
-      // it to without asking an LCD (a listed token's pinned pair, an ERC20's own key). Any
-      // other contract, an unlisted denom's LCD pair included, is shown as itself (run-2 C4).
+      // it to without asking an LCD (a listed token's pinned pair, an ERC20's own key, a
+      // built-in chain's USDC). Any other contract, an unlisted denom's LCD pair included, is
+      // shown as itself (run-2 C4).
       if (swap && side) {
-        const bound = boundErc20(network, swap[side]);
-        if (typeof bound === "string" && bound.toLowerCase() === a.toLowerCase()) return swap[side];
+        const picked = swap[side];
+        const bound = picked.startsWith("usdc:") ? cctpChainByCaip2(network, picked.slice(5))?.usdc : boundErc20(network, picked);
+        if (typeof bound === "string" && bound.toLowerCase() === a.toLowerCase()) return picked;
         return evmDenom(a);
       }
       if (away && !away.added && a.toLowerCase() === away.usdc.toLowerCase()) return chainUsdc(away.caip2);
@@ -308,6 +310,8 @@ const short = (a: string) => (a.length > 12 ? `${a.slice(0, 4)}…${a.slice(-4)}
  *  the instruction's for that delegate and token (run-2 C2). */
 function solanaShown(d: SolanaDisplay, cluster: string, findings: Finding[]): Shown {
   const out: Shown = { sends: [], nfts: [], moves: [], swaps: [], bridges: [], mints: [], approvals: [], converts: [], stakes: [], revokes: [], votes: [], others: [], fee: [{ denom: "sol", amount: d.fee.total }], memo: "", evm: false };
+  /** The token account an instruction's approval card is for. */
+  const approvedFrom = new Map<ApprovalLine, string>();
   for (const s of d.instructions) {
     const name = s.program_name ?? short(s.program);
     switch (s.type) {
@@ -324,9 +328,12 @@ function solanaShown(d: SolanaDisplay, cluster: string, findings: Finding[]): Sh
       case "create_token_account":
         if (s.owner !== d.signer) out.others.push(`Opens ${short(s.owner)}'s account for this token, paying its rent`);
         break;
-      case "token_approve":
-        out.approvals.push({ token: s.mint ? `spl:${s.mint}` : s.source, spender: s.delegate, amount: s.amount, via: "token" });
+      case "token_approve": {
+        const card: ApprovalLine = { token: s.mint ? `spl:${s.mint}` : s.source, spender: s.delegate, amount: s.amount, via: "token" };
+        out.approvals.push(card);
+        approvedFrom.set(card, s.source);
         break;
+      }
       case "bridge": {
         const usdc = `spl:${s.token}`;
         const at = (amount: string) => ({ denom: usdc, amount });
@@ -382,12 +389,18 @@ function solanaShown(d: SolanaDisplay, cluster: string, findings: Finding[]): Sh
     }
   }
   for (const f of findings) {
-    const p = (f.params ?? {}) as { simulated?: unknown; to?: unknown; token?: unknown; amount?: unknown };
+    const p = (f.params ?? {}) as { simulated?: unknown; account?: unknown; to?: unknown; token?: unknown; amount?: unknown };
     if ((f.rule !== "solana_delegate" && f.rule !== "solana_unlimited_delegate") || p.simulated !== true) continue;
     if (typeof p.to !== "string" || typeof p.token !== "string" || typeof p.amount !== "string") continue;
     const token = `spl:${p.token}`;
     const spender = p.to;
-    out.approvals = out.approvals.filter((a) => !(a.spender === spender && a.token === token));
+    const account = typeof p.account === "string" ? p.account : null;
+    // Only an instruction's card for the same token account, delegate and token: another
+    // simulated delegate's card, or an approval from another account, stays.
+    out.approvals = out.approvals.filter((a) => {
+      const from = approvedFrom.get(a);
+      return !(from !== undefined && a.spender === spender && a.token === token && (account === null || from === account));
+    });
     out.approvals.push({ token, spender, amount: p.amount, via: "token" });
   }
   return out;

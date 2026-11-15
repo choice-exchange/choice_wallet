@@ -48,6 +48,7 @@ export {
   type RawAccount,
   type SignatureInfo,
   type SolanaTokenAccount,
+  type StakeLockup,
 } from "./solana.ts";
 export { joinSolanaTransaction, lookupTableAddresses, LOOKUP_TABLE_PROGRAM, readSolanaMessage, splitSolanaTransaction, type SolanaMessageKeys } from "./solanaWire.ts";
 export { abiString, EvmRpc, word, type Call } from "./evm.ts";

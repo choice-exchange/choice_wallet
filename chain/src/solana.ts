@@ -91,14 +91,28 @@ export function tokenAccountOf(a: RawAccount): { mint: string; owner: string; am
 
 export const STAKE_PROGRAM = "Stake11111111111111111111111111111111111111";
 
-/** A native stake account's staker and withdrawer (StakeStateV2 `Initialized` or `Stake`:
- *  its Meta's authorities follow the 4-byte state and 8-byte rent reserve). Null for any
- *  other account or state. */
-export function stakeAccountOf(a: RawAccount): { staker: string; withdrawer: string } | null {
-  if (a.owner !== STAKE_PROGRAM || a.data.length < 76) return null;
-  const state = new DataView(a.data.buffer, a.data.byteOffset, a.data.length).getUint32(0, true);
+/** A stake account's lockup: until both the time and the epoch pass, its SOL can't be
+ *  withdrawn, nor its withdrawer changed, without the custodian's signature. */
+export interface StakeLockup {
+  /** Unix seconds; 0 for none. */
+  unixTimestamp: bigint;
+  epoch: bigint;
+  custodian: string;
+}
+
+/** A native stake account's staker, withdrawer and lockup (StakeStateV2 `Initialized` or
+ *  `Stake`: its Meta follows the 4-byte state, the 8-byte rent reserve, then the two
+ *  authorities and the lockup). Null for any other account or state. */
+export function stakeAccountOf(a: RawAccount): { staker: string; withdrawer: string; lockup: StakeLockup } | null {
+  if (a.owner !== STAKE_PROGRAM || a.data.length < 124) return null;
+  const view = new DataView(a.data.buffer, a.data.byteOffset, a.data.length);
+  const state = view.getUint32(0, true);
   if (state !== 1 && state !== 2) return null;
-  return { staker: bytesToBase58(a.data.slice(12, 44)), withdrawer: bytesToBase58(a.data.slice(44, 76)) };
+  return {
+    staker: bytesToBase58(a.data.slice(12, 44)),
+    withdrawer: bytesToBase58(a.data.slice(44, 76)),
+    lockup: { unixTimestamp: view.getBigInt64(76, true), epoch: view.getBigUint64(84, true), custodian: bytesToBase58(a.data.slice(92, 124)) },
+  };
 }
 
 export class SolanaRpc {

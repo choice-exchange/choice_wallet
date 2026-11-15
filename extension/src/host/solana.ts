@@ -39,6 +39,7 @@ import {
   Unreachable,
   type Fetch,
   type NetworkId,
+  type StakeLockup,
 } from "@choice-wallet/chain";
 import type { AccountInfo, ActivityItem, Balance, Result, Risk, SendReview, Sent, TokenInfo, TxState } from "@choice-wallet/ui/protocol";
 import { ed25519 } from "@noble/curves/ed25519";
@@ -507,6 +508,17 @@ export function createSolana(d: SolanaDeps) {
       if (sim.err !== null) {
         simulation = { ok: false, error: siteFailure(sim.err, sim.logs) };
       } else {
+        // A lockup lets SOL out of a stake account only when it ends or its custodian signs.
+        // One the account's own stake accounts were already under (one it splits from, say)
+        // isn't new; any other someone else holds keeps the SOL from the account.
+        const lockKey = (l: StakeLockup) => `${l.unixTimestamp}:${l.epoch}:${l.custodian}`;
+        const lockups = new Set(
+          before.flatMap((acc) => {
+            const s = acc ? stakeAccountOf(acc) : null;
+            return s?.withdrawer === owner ? [lockKey(s.lockup)] : [];
+          }),
+        );
+        const lockedAway = (l: StakeLockup) => l.custodian !== owner && (l.unixTimestamp > 0n || l.epoch > 0n) && !lockups.has(lockKey(l));
         watched.forEach((a, i) => {
           const pre = before[i] ?? null;
           const post = sim.after[i] ?? null;
@@ -516,18 +528,24 @@ export function createSolana(d: SolanaDeps) {
             if (pre && post && post.owner !== pre.owner) handovers.push({ kind: "assign", to: post.owner });
             return;
           }
-          // A native stake account the account controls (run-2 C3): its SOL is the account's
-          // to withdraw, so what leaves it leaves the account, and its withdrawer or staker
-          // passing to someone else is a handover.
+          // A native stake account the account controls, before or after (run-2 C3): its SOL
+          // is the account's while it is the withdrawer and no one else's lockup holds it, so
+          // it counts like a token account's balance (a merge or split between its own stake
+          // accounts moves nothing). Its withdrawer or staker passing to someone else, or a
+          // new lockup someone else holds, is a handover.
           const s0 = pre ? stakeAccountOf(pre) : null;
-          if (s0 && (s0.staker === owner || s0.withdrawer === owner)) {
-            const s1 = post ? stakeAccountOf(post) : null;
-            if (s0.withdrawer === owner) {
-              const out = pre!.lamports - (post?.lamports ?? 0n);
-              if (out > 0n) moved.set(SOL, (moved.get(SOL) ?? 0n) - out);
-              if (s1 && s1.withdrawer !== owner) handovers.push({ kind: "stake_withdrawer", account: a, to: s1.withdrawer });
-            }
-            if (s0.staker === owner && s1 && s1.staker !== owner) handovers.push({ kind: "stake_staker", account: a, to: s1.staker });
+          const s1 = post ? stakeAccountOf(post) : null;
+          const controls = (s: typeof s0) => s !== null && (s.staker === owner || s.withdrawer === owner);
+          if (controls(s0) || controls(s1)) {
+            const locked = s1 !== null && s1.withdrawer === owner && lockedAway(s1.lockup);
+            const had = s0?.withdrawer === owner ? pre!.lamports : 0n;
+            const has = s1?.withdrawer === owner && !locked ? post!.lamports : 0n;
+            if (had !== has) moved.set(SOL, (moved.get(SOL) ?? 0n) + has - had);
+            if (s0?.withdrawer === owner && s1 && s1.withdrawer !== owner) handovers.push({ kind: "stake_withdrawer", account: a, to: s1.withdrawer });
+            if (locked && s1) handovers.push({ kind: "stake_lockup", account: a, to: s1.lockup.custodian });
+            // Its staker before, or (a stake account it opens) the withdrawer's choice of one.
+            const staked = s0 ? s0.staker === owner : s1?.withdrawer === owner;
+            if (staked && s1 && s1.staker !== owner) handovers.push({ kind: "stake_staker", account: a, to: s1.staker });
             return;
           }
           const t0 = pre ? tokenAccountOf(pre) : null;

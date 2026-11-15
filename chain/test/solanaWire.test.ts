@@ -60,22 +60,28 @@ test("a lookup table's addresses, and a token account's mint, owner and amount",
   assert.equal(tokenAccountOf({ lamports: 1n, owner: "11111111111111111111111111111111", data }), null);
 });
 
-// Run-2 C3: a stake account's staker and withdrawer, so a review can tell when they change.
-test("a stake account's staker and withdrawer", () => {
+// Run-2 C3: a stake account's staker, withdrawer and lockup, so a review can tell when they
+// change.
+test("a stake account's staker, withdrawer and lockup", () => {
   const a = base58ToBytes(V["owner"]!);
   const b = base58ToBytes(V["other"]!);
   const data = new Uint8Array(200);
   const view = new DataView(data.buffer);
   data.set(a, 12);
   data.set(b, 44);
+  // Lockup: a time, an epoch, and its custodian.
+  view.setBigInt64(76, 1_900_000_000n, true);
+  view.setBigUint64(84, 900n, true);
+  data.set(b, 92);
+  const lockup = { unixTimestamp: 1_900_000_000n, epoch: 900n, custodian: V["other"] };
   for (const state of [1, 2]) {
     view.setUint32(0, state, true);
-    assert.deepEqual(stakeAccountOf({ lamports: 1n, owner: STAKE_PROGRAM, data }), { staker: V["owner"], withdrawer: V["other"] });
+    assert.deepEqual(stakeAccountOf({ lamports: 1n, owner: STAKE_PROGRAM, data }), { staker: V["owner"], withdrawer: V["other"], lockup });
   }
   // Uninitialized, a rewards pool, another program's account, or too short: none.
   view.setUint32(0, 0, true);
   assert.equal(stakeAccountOf({ lamports: 1n, owner: STAKE_PROGRAM, data }), null);
   view.setUint32(0, 2, true);
   assert.equal(stakeAccountOf({ lamports: 1n, owner: TOKEN_PROGRAM, data }), null);
-  assert.equal(stakeAccountOf({ lamports: 1n, owner: STAKE_PROGRAM, data: data.slice(0, 75) }), null);
+  assert.equal(stakeAccountOf({ lamports: 1n, owner: STAKE_PROGRAM, data: data.slice(0, 123) }), null);
 });

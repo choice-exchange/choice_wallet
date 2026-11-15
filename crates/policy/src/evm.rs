@@ -3,8 +3,8 @@
 
 use choice_wallet_core::EthAddress;
 use choice_wallet_evm::U256;
-use choice_wallet_evm::abi;
 use choice_wallet_evm::request::{Call, TxRequest};
+use choice_wallet_evm::{abi, erc20};
 use choice_wallet_injective::cctp::{self, Cctp};
 use choice_wallet_injective::chain::Network;
 use choice_wallet_injective::choice;
@@ -188,11 +188,11 @@ const STAKING_METHODS: &[Method] = &[
     ),
 ];
 
-const APPROVE: [u8; 4] = 0x095ea7b3u32.to_be_bytes();
+const APPROVE: [u8; 4] = erc20::APPROVE_SELECTOR;
 const INCREASE_ALLOWANCE: [u8; 4] = 0x39509351u32.to_be_bytes();
 const SET_APPROVAL_FOR_ALL: [u8; 4] = 0xa22cb465u32.to_be_bytes();
 /// ERC721 `safeTransferFrom(address,address,uint256)` and its `bytes` form.
-pub(crate) const SAFE_TRANSFER_FROM: [u8; 4] = 0x42842e0eu32.to_be_bytes();
+pub(crate) const SAFE_TRANSFER_FROM: [u8; 4] = erc20::SAFE_TRANSFER_FROM_SELECTOR;
 const SAFE_TRANSFER_FROM_DATA: [u8; 4] = 0xb88d4fdeu32.to_be_bytes();
 /// `transferFrom(address,address,uint256)`: ERC20's and ERC721's alike.
 const TRANSFER_FROM: [u8; 4] = 0x23b872ddu32.to_be_bytes();
@@ -200,7 +200,7 @@ const TRANSFER_FROM: [u8; 4] = 0x23b872ddu32.to_be_bytes();
 const PERMIT2_APPROVE: [u8; 4] = 0x87517c45u32.to_be_bytes();
 /// ERC20 `transfer(address,uint256)`. Its exact form is `Call::Erc20Transfer`; any other form
 /// reaches `contract_call`.
-const TRANSFER: [u8; 4] = 0xa9059cbbu32.to_be_bytes();
+const TRANSFER: [u8; 4] = erc20::TRANSFER_SELECTOR;
 
 /// Token calls a contract runs whatever their exact byte form: Solidity's decoder ignores
 /// bytes after the arguments, and ABI coder v1 masks an address's padding. The rules read
@@ -461,7 +461,6 @@ fn contract_call(
             format!("Calls {name} in a form the wallet can't read. The token may still run it."),
             json!({ "contract": to, "bytes": data.len() }),
         ));
-        return;
     }
     if !known_contract(ctx, &to) {
         out.push(finding(
@@ -800,6 +799,8 @@ mod tests {
             a.findings[0].message,
             "Calls approve in a form the wallet can't read. The token may still run it."
         );
+        // A contract never used before still says so: a lookalike token is that signal.
+        assert_eq!(rules_of(&a), ["token_call_unreadable", "new_contract"]);
         // The exact forms keep their own rules.
         assert_eq!(
             rules_of(&grade(&req(token, call(APPROVE, &[them, max])))),
@@ -963,8 +964,12 @@ mod tests {
         max160[12..].fill(0xff);
         assert_eq!(grade(&p2(max160, soon)).level, Level::Red);
         assert_eq!(grade(&p2([0; 32], soon)).findings[0].rule, "allowance_revoke");
-        // Out of range for uint160: not read as an approval, so red as unreadable.
-        assert_eq!(rules_of(&grade(&p2([0xff; 32], soon))), ["token_call_unreadable"]);
+        // Out of range for uint160: not read as an approval, so red as unreadable (and Permit2
+        // is a contract this context hasn't seen).
+        assert_eq!(
+            rules_of(&grade(&p2([0xff; 32], soon))),
+            ["token_call_unreadable", "new_contract"]
+        );
         // An ERC20 approval to Permit2 names it.
         let a = grade(&req(
             EthAddress::from_bytes([0x11; 20]),

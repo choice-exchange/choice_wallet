@@ -41,6 +41,9 @@ test("INJ in: one step, the swap, read by the vault and sent", async () => {
   assert.equal(r.display.call["minimum_out"], "8145811");
   assert.equal(r.risk.level, "info");
   assert.deepEqual(rules(r), ["swap"]);
+  // USDT's pinned pair is shown as USDT, so it isn't described again as a contract.
+  const described = Object.keys((r as Review & { tokens: Record<string, unknown> }).tokens);
+  assert.ok(described.includes(USDT) && !described.some((k) => k.startsWith("evm:")), JSON.stringify(described));
   ok(await service.handle({ type: "confirm_send", digest: r.digest }));
   assert.equal(net.state.evmSent.length, 1);
 });
