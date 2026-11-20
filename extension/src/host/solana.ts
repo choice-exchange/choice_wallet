@@ -66,7 +66,7 @@ export interface SolanaDeps {
   session: Store;
   /** The Solana endpoints the user chose for a network's cluster (or the defaults). */
   endpoints(network: NetworkId): Promise<readonly string[]>;
-  riskFacts(network: NetworkId, recipient: string | null): Promise<RiskFacts>;
+  riskFacts(network: NetworkId, recipients: string | readonly string[] | null): Promise<RiskFacts>;
   /** Whether an account on the list still holds an address: tokens seen for one that went
    *  away while the cluster was asked aren't kept (run-2 C14). */
   owned?(address: string): Promise<boolean>;

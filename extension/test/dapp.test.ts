@@ -10,7 +10,7 @@ import { ed25519 } from "@noble/curves/ed25519";
 import type { DappReview } from "../../ui/src/protocol";
 import { shown } from "../../ui/src/review";
 
-import { base58Decode, bs58, callVault, chain, code, handle, INJ, ME, ME_EVM, ME_SOL, ME_SOL_USDC, ok, PASSWORD, PHRASE, SOL_USDC, solTransfer, THEM, THEM_EVM, THEM_SOL, wallet } from "./fake";
+import { base58Decode, bs58, callVault, chain, code, exchangeDeposits, handle, INJ, ME, ME_EVM, ME_SOL, ME_SOL_USDC, ok, PASSWORD, PHRASE, SOL_USDC, solTransfer, THEM, THEM_EVM, THEM_SOL, wallet } from "./fake";
 
 const SITE = "https://app.example";
 const OTHER = "https://other.example";
@@ -178,6 +178,39 @@ test("eth_sendTransaction: the wallet's own nonce, gas and fee; signed, broadcas
   assert.equal((await page(SITE)("eth_sendTransaction", [{ from: THEM_EVM, to: ME_EVM }])).error?.code, 4100);
   assert.equal((await page(SITE)("eth_sendTransaction", [{ from: ME_EVM, data: "0x6080" }])).error?.code, -32602);
   assert.equal((await page(SITE)("eth_sendTransaction", [{ from: ME_EVM, to: THEM_EVM, chainId: "0x1" }])).error?.code, 4901);
+});
+
+// Review of #8: a site's send to an exchange's shared deposit address got no memo check
+// (the dapp review asked for facts about no recipient), and a check the endpoint couldn't
+// answer passed as "not an exchange". Now both are said.
+test("a site's send to an exchange is red; one whose deposits couldn't be read is amber", async () => {
+  const net = chain();
+  const { page, window, service } = await connected(net);
+  const inj = (evm: string) => {
+    const r = callVault<{ addresses: Record<string, string> }>(handle, "addresses", { address: evm });
+    assert.ok(r.ok);
+    return r.result.addresses["cosmos:injective-1"]!;
+  };
+  const EXCHANGE = "0x7777777777777777777777777777777777777777";
+  const DOWN = "0x8888888888888888888888888888888888888888";
+  net.state.deposits[inj(EXCHANGE)] = exchangeDeposits(inj(EXCHANGE));
+  net.state.depositsDown.push(inj(DOWN));
+  const review = async (to: string) => {
+    const asked = page(SITE)("eth_sendTransaction", [{ from: ME_EVM, to, value: "0x2386f26fc10000" }]);
+    const w = await window();
+    const r = ok<DappReview>(await service.handle({ type: "dapp_review", id: w.id }));
+    ok(await service.handle({ type: "dapp_answer", id: w.id, approve: false }));
+    await asked;
+    // Each finding but the first-visit note every new site gets.
+    return r.risk.findings.filter((f) => f.rule !== "site_new").map((f) => `${f.rule} ${f.level}`);
+  };
+  assert.deepEqual(await review(EXCHANGE), ["memo_unsupported red"]);
+  assert.deepEqual(await review(DOWN), ["memo_unchecked amber"]);
+  assert.deepEqual(await review(THEM_EVM), []);
+  // The failed check isn't remembered: the next review asks again.
+  assert.equal(net.state.depositChecks.filter((a) => a === inj(DOWN)).length, 1);
+  await review(DOWN);
+  assert.equal(net.state.depositChecks.filter((a) => a === inj(DOWN)).length, 2);
 });
 
 test("each site on its own EVM chain: switched freely within the network, the network only when the user agrees", async () => {

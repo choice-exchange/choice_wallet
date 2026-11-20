@@ -140,6 +140,10 @@ pub struct Context {
     /// carry one, from many senders, as an exchange's shared deposit address does.
     #[serde(default)]
     pub memo_addresses: Vec<String>,
+    /// Recipients whose deposits the host couldn't read in time (or didn't look at, past
+    /// how many it checks): whether they need a memo is unknown.
+    #[serde(default)]
+    pub memo_unchecked: Vec<String>,
     /// Contracts this account has used before.
     #[serde(default)]
     pub known_contracts: Vec<String>,

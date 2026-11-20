@@ -313,6 +313,8 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
     /** What other accounts (inj1…) received, newest first (indexed txs), and whose were asked. */
     deposits: {} as Record<string, unknown[]>,
     depositChecks: [] as string[],
+    /** Accounts whose deposit check the endpoint fails (an error, as when it is down). */
+    depositsDown: [] as string[],
     /** Choice's /route: the real answers recorded on 2026-11-09 (they pay ME_EVM), by
      *  `tokenIn tokenOut amountIn`; the questions asked; and what Permit2 lets each (token spender) take. */
     routes: CHOICE_ROUTES,
@@ -818,6 +820,7 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
       if (to && state.otherReceived[to]) return json(200, { tx_responses: state.otherReceived[to], total: String(state.otherReceived[to].length) });
       if (to) {
         state.depositChecks.push(to);
+        if (state.depositsDown.includes(to)) return json(500, { code: 2, message: "index unavailable" });
         const list = state.deposits[to] ?? [];
         return json(200, { tx_responses: list, total: String(list.length) });
       }

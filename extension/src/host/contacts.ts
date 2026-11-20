@@ -22,12 +22,15 @@ export const MAX_MEMO_BYTES = 256;
 const MAX_NAME = 40;
 /** How long a recipient's deposit pattern is believed. */
 const MEMO_CACHE_MS = 10 * 60_000;
-/** A deposit check the endpoint doesn't answer in this long is left out of the review. */
+/** A deposit check the endpoint doesn't answer in this long is said as unchecked. */
 const MEMO_CHECK_MS = 4000;
+/** How many recipients of one request get the deposit check (at once); any more are said
+ *  as unchecked. */
+export const MAX_MEMO_CHECKS = 8;
 
 
 /** What the risk rules take: `Contact` and `memo_addresses` in `choice-wallet-policy`. */
-export type RiskFacts = { address_book: { address: string; name: string; memo?: string; mine?: true; rescue?: true }[]; memo_addresses: string[] };
+export type RiskFacts = { address_book: { address: string; name: string; memo?: string; mine?: true; rescue?: true }[]; memo_addresses: string[]; memo_unchecked: string[] };
 
 export interface ContactDeps {
   vault<T>(method: string, params?: unknown): Promise<Result<T>>;
@@ -111,9 +114,9 @@ export function createContacts(d: ContactDeps) {
   }
 
   const memoCache = new Map<string, { at: number; value: boolean }>();
-  /** Whether an address's latest deposits mostly carry a memo. False when the endpoint
-   *  can't say in time: the review then goes on without the fact. */
-  async function takesMemo(network: NetworkId, inj: string): Promise<boolean> {
+  /** Whether an address's latest deposits mostly carry a memo; null when the endpoint can't
+   *  say in time (not kept: the next review asks again). */
+  async function takesMemo(network: NetworkId, inj: string): Promise<boolean | null> {
     const key = `${network} ${inj}`;
     const hit = memoCache.get(key);
     if (hit && Date.now() - hit.at < MEMO_CACHE_MS) return hit.value;
@@ -125,12 +128,12 @@ export function createContacts(d: ContactDeps) {
           timer = setTimeout(() => resolve(null), MEMO_CHECK_MS);
         }),
       ]);
-      if (txs === null) return false;
+      if (txs === null) return null;
       const value = takesMemos(txs, inj);
       memoCache.set(key, { at: Date.now(), value });
       return value;
     } catch {
-      return false;
+      return null;
     } finally {
       clearTimeout(timer);
     }
@@ -144,12 +147,12 @@ export function createContacts(d: ContactDeps) {
     if (own) return { ok: true, result: { mine: own, takesMemo: false } };
     const contact = (await list()).find((c) => c.address === f.inj);
     if (contact?.memo) return { ok: true, result: { contact, takesMemo: true } };
-    return { ok: true, result: { ...(contact ? { contact } : {}), takesMemo: await takesMemo(network, f.inj) } };
+    return { ok: true, result: { ...(contact ? { contact } : {}), takesMemo: (await takesMemo(network, f.inj)) === true } };
   }
 
-  /** The address book and the user's accounts for the risk rules, and whether `recipient`
-   *  (if any) takes deposits with a memo. */
-  async function facts(network: NetworkId, recipient: string | null): Promise<RiskFacts> {
+  /** The address book and the user's accounts for the risk rules, and which recipients
+   *  take deposits with a memo (or couldn't be checked). */
+  async function facts(network: NetworkId, recipients: string | readonly string[] | null): Promise<RiskFacts> {
     const net = NETWORKS[network];
     const address_book: RiskFacts["address_book"] = (await list()).map((c) => ({ address: c.address, name: c.name, ...(c.memo ? { memo: c.memo } : {}) }));
     // Accounts this wallet can sign for are the user's; a watched one is named like a contact.
@@ -168,12 +171,19 @@ export function createContacts(d: ContactDeps) {
       else address_book.push({ address: rescue, name: "", rescue: true });
     }
     const memo_addresses: string[] = [];
-    if (recipient) {
-      const f = await forms(recipient);
-      const settled = f && address_book.some((c) => c.address === f.inj && (c.mine || c.memo));
-      if (f && !settled && (await takesMemo(network, f.inj))) memo_addresses.push(f.inj);
-    }
-    return { address_book, memo_addresses };
+    const memo_unchecked: string[] = [];
+    const wanted = [...new Set(recipients === null ? [] : typeof recipients === "string" ? [recipients] : recipients)];
+    await Promise.all(
+      wanted.map(async (r, i) => {
+        const f = await forms(r);
+        // The user's own accounts and contacts with a saved memo are settled already.
+        if (!f || address_book.some((c) => c.address === f.inj && (c.mine || c.memo))) return;
+        const takes = i < MAX_MEMO_CHECKS ? await takesMemo(network, f.inj) : null;
+        if (takes === true) memo_addresses.push(f.inj);
+        else if (takes === null) memo_unchecked.push(f.inj);
+      }),
+    );
+    return { address_book, memo_addresses, memo_unchecked };
   }
 
   return { list, save, remove, check, facts };

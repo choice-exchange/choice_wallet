@@ -32,6 +32,7 @@ struct Forms {
     book: Vec<Vec<(String, String)>>,
     contracts: Vec<String>,
     memos: Vec<String>,
+    unchecked: Vec<String>,
 }
 
 // Derived data: a copy works it out again, and it never makes two contexts differ.
@@ -61,6 +62,7 @@ fn forms_of(ctx: &Context) -> &Forms {
             .collect(),
         contracts: ctx.known_contracts.iter().map(|c| canonical(c)).collect(),
         memos: ctx.memo_addresses.iter().map(|a| canonical(a)).collect(),
+        unchecked: ctx.memo_unchecked.iter().map(|a| canonical(a)).collect(),
     })
 }
 
@@ -196,6 +198,25 @@ fn memo_rules(ctx: &Context, to: &str, found: Option<&Contact>, memo: Option<&st
     let saved = found.map(|c| c.memo.trim()).filter(|m| !m.is_empty());
     let seen = forms_of(ctx).memos.contains(&canonical(to));
     if saved.is_none() && !seen {
+        // Not known to need one, but not known not to: said when the send has no memo.
+        let unchecked = found.is_none_or(|c| !c.mine) && forms_of(ctx).unchecked.contains(&canonical(to));
+        let carries = memo.map(str::trim).is_some_and(|m| !m.is_empty());
+        if unchecked && !carries {
+            out.push(finding(
+                "memo_unchecked",
+                Level::Amber,
+                format!(
+                    "Couldn't check whether {} is an exchange, which needs a memo. {}",
+                    short(to),
+                    if memo.is_none() {
+                        "An EVM send can't carry one."
+                    } else {
+                        "This send has none."
+                    }
+                ),
+                json!({ "address": to }),
+            ));
+        }
         return;
     }
     let named = found.filter(|c| !c.name.is_empty()).map(|c| c.name.clone());
@@ -390,6 +411,26 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(rules(&c, &a, Some(""))[0].2, "To your account Savings.");
+    }
+
+    /// Review of #8: a recipient whose deposits the host couldn't read is amber when the send
+    /// carries no memo, and quiet when it carries one.
+    #[test]
+    fn an_unchecked_recipient_is_said() {
+        let them = EthAddress::from_bytes([0x44; 20]);
+        let c = Context {
+            memo_unchecked: vec![them.to_inj()],
+            ..Default::default()
+        };
+        let r = rules(&c, &them.to_inj(), Some(""));
+        assert_eq!((r[0].0, r[0].1), ("memo_unchecked", Level::Amber));
+        assert!(r[0].2.ends_with("This send has none."), "{}", r[0].2);
+        let r = rules(&c, &them.to_checksum_hex(), None);
+        assert_eq!(r[0].0, "memo_unchecked");
+        assert!(r[0].2.ends_with("An EVM send can't carry one."), "{}", r[0].2);
+        assert!(rules(&c, &them.to_inj(), Some("42")).is_empty());
+        // Someone else: nothing.
+        assert!(rules(&c, &EthAddress::from_bytes([0x45; 20]).to_inj(), Some("")).is_empty());
     }
 
     #[test]

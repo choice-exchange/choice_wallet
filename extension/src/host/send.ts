@@ -46,7 +46,7 @@ export interface SendDeps extends HoldingsDeps {
   session: Store;
   /** The address book and the user's accounts for the risk rules, and whether `recipient`
    *  takes deposits with a memo (./contacts.ts). */
-  riskFacts(network: NetworkId, recipient: string | null): Promise<RiskFacts>;
+  riskFacts(network: NetworkId, recipients: string | readonly string[] | null): Promise<RiskFacts>;
   /** A transaction the wallet just broadcast, signed by `from` (./watch.ts follows it). */
   onBroadcast?(network: NetworkId, hash: string, from: string): void;
   /** A deposit's burn just broadcast on the chain it comes from (./bridge/ follows it). */

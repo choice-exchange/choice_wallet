@@ -23,6 +23,7 @@ import { createCosmosSite } from "./cosmos";
 import { createEvmSite } from "./evm";
 import { INTERNAL, INVALID_PARAMS, no, PENDING, UNAUTHORIZED, UNSUPPORTED, USER_REJECTED, type DappHost, type DappReply, type Grants, type Named, type Waiting } from "./shared";
 import { createSolanaSite } from "./solana";
+import { recipientsOf } from "./recipients";
 
 export type { DappHost, DappReply } from "./shared";
 
@@ -177,8 +178,17 @@ export function createDapps(h: DappHost) {
       const context = built.context
         ? { origin: w.req.origin, origin_known: known, ...(await h.sender.riskFacts(network, null)), ...built.context }
         : await reviewContext(network, u.account, w.req.origin, known);
-      const d = await h.vault<{ digest: string; display: DappReview["display"]; risk: Risk }>("decode", { request: built.request, context });
+      type Decoded = { digest: string; display: DappReview["display"]; risk: Risk };
+      let d = await h.vault<Decoded>("decode", { request: built.request, context });
       if (!d.ok) return d;
+      // Who it pays is known once it's read: then the exchange-memo facts for them, and the
+      // rules again with those (the signed bytes, and so the digest, are the same).
+      const paid = recipientsOf(network, d.result.display);
+      if (paid.length > 0) {
+        const facts = await h.sender.riskFacts(network, paid);
+        d = await h.vault<Decoded>("decode", { request: built.request, context: { ...context, memo_addresses: facts.memo_addresses, memo_unchecked: facts.memo_unchecked } });
+        if (!d.ok) return d;
+      }
       const { digest, display, risk } = d.result;
       // What a Ledger can't sign is said before the user reads the whole request.
       const kind = (display as { kind?: unknown }).kind;
