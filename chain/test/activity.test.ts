@@ -433,6 +433,11 @@ test("a fee granter isn't the signer", () => {
   // Signed, but someone else's grant paid: the send is exactly what left, and no fee is ME's.
   assert.deepEqual(mine.changes, [{ denom: "inj", amount: "-1" }]);
   assert.deepEqual(mine.fee, []);
+  // An explicit fee.payer signs, whatever its messages name.
+  const payer = { ...tx(23, [send(THEM, ME, "1inj")], [...feePaidBy(ME), ...move(THEM, ME, "1inj")]), feePayer: ME };
+  const p = summarize(payer, ME);
+  assert.equal(p.signed, true);
+  assert.deepEqual(p.fee.length > 0, true);
   // No granter: the fee payer is the signer, as before.
   assert.equal(summarize(tx(22, [send(ME, THEM, "1inj")], [...feePaidBy(ME), ...move(ME, THEM, "1inj")]), ME).signed, true);
 });

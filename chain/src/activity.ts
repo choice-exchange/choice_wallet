@@ -197,7 +197,8 @@ export function summarize(tx: IndexedTx, address: string, evm?: EvmView): Activi
   // Someone else paid the fee (a fee grant, or EIP-712 fee delegation): whether this account
   // signed is in the messages' own signer fields (run-3: a grantee's tx read as the granter's).
   const delegated = tx.feeGranter !== undefined || tx.feePayer !== undefined;
-  const bank = balanceChanges(tx.events, address, tx.fee, evmSigner || (delegated && messageSigner(tx, address)), delegated);
+  // An explicit fee.payer must sign (cosmos-sdk tx.proto), so it counts as this account's own.
+  const bank = balanceChanges(tx.events, address, tx.fee, evmSigner || (delegated && (tx.feePayer === address || messageSigner(tx, address))), delegated);
   const { signed, paid } = bank;
   let { changes, from } = bank;
 
