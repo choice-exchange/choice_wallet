@@ -149,6 +149,11 @@ pub struct Context {
     /// make what the review shows (balance, gas estimate, token) look safe.
     #[serde(default)]
     pub endpoint_from: Option<String>,
+    /// A site's swap through Choice, weighed by the host: what its minimum could lose
+    /// against the input, by Choice's prices. `None` for the wallet's own swaps, which the
+    /// swap screen weighs itself.
+    #[serde(default)]
+    pub site_swap: Option<SiteSwap>,
     /// Contracts this account has used before.
     #[serde(default)]
     pub known_contracts: Vec<String>,
@@ -192,6 +197,16 @@ pub struct SolanaHandover {
     /// A delegate's allowance after the transaction, in base units.
     #[serde(default)]
     pub amount: Option<String>,
+}
+
+/// How the host weighed a site's swap.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SiteSwap {
+    /// The share of the input's value the minimum could lose, in basis points (negative: a
+    /// gain); `None` when either token can't be priced.
+    #[serde(default)]
+    pub lost_bps: Option<i64>,
 }
 
 /// A Solana token account as the host's RPC describes it.

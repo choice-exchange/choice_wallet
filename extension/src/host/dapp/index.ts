@@ -14,7 +14,7 @@
 // Each chain's requests are handled in its own file (./evm.ts, ./cosmos.ts, ./solana.ts);
 // this one keeps the grants, the requests waiting and the approval window's side.
 
-import { chainByCaip2, ChainError, isObject, NETWORKS, Unreachable, type Coin, type NetworkId } from "@choice-wallet/chain";
+import { chainByCaip2, ChainError, evmDenom, isObject, NETWORKS, Unreachable, valueLost, type Coin, type NetworkId } from "@choice-wallet/chain";
 import type { AccountInfo, Connection, CosmosDisplay, DappRequest, DappReview, DeviceRequest, Result, Risk } from "@choice-wallet/ui/protocol";
 
 import { displayDenoms } from "../send";
@@ -30,6 +30,8 @@ export type { DappHost, DappReply } from "./shared";
 /** Requests waiting at once: in all, and per site. */
 const MAX_WAITING = 10;
 const MAX_PER_SITE = 3;
+/** Tokens a site's review describes, at most: any more are shown by denom and base units. */
+const MAX_REVIEW_TOKENS = 64;
 
 export function createDapps(h: DappHost) {
   const waiting = new Map<string, Waiting>();
@@ -214,10 +216,17 @@ export function createDapps(h: DappHost) {
       if (typeof on === "string" && !chainByCaip2(network, on)) return fail("network", "The wallet changed network. Ask the site again.");
       // Who it pays is known once it's read: then the exchange-memo facts for them, and the
       // rules again with those (the signed bytes, and so the digest, are the same).
+      const more: Record<string, unknown> = {};
       const paid = recipientsOf(network, d.result.display);
       if (paid.length > 0) {
         const facts = await h.sender.riskFacts(network, paid);
-        d = await h.vault<Decoded>("decode", { request: built.request, context: { ...context, memo_addresses: facts.memo_addresses, memo_unchecked: facts.memo_unchecked } });
+        Object.assign(more, { memo_addresses: facts.memo_addresses, memo_unchecked: facts.memo_unchecked });
+      }
+      // A site's swap is weighed as the wallet's own are: its minimum against Choice's prices.
+      const swap = siteSwap(d.result.display);
+      if (swap) more["site_swap"] = { lost_bps: await lostBps(network, swap) };
+      if (Object.keys(more).length > 0) {
+        d = await h.vault<Decoded>("decode", { request: built.request, context: { ...context, ...more } });
         if (!d.ok) return d;
       }
       const { digest, display, risk } = d.result;
@@ -234,11 +243,34 @@ export function createDapps(h: DappHost) {
         );
       }
       w.prepared = { request: built.request, digest, confirm: risk.confirm ?? null, blocked: risk.level === "blocked" };
-      const tokens = built.tokens ?? (await h.sender.tokensFor(network, reviewDenoms(network, display, built.simulation?.ok ? built.simulation.changes : [])));
+      const tokens = built.tokens ?? (await h.sender.tokensFor(network, reviewDenoms(network, display, built.simulation?.ok ? built.simulation.changes : []).slice(0, MAX_REVIEW_TOKENS)));
       return { ok: true, result: { digest, display, risk, tokens, checkedBy: built.checkedBy ?? "", ...(built.simulation ? { simulation: built.simulation } : {}) } };
     } catch (e) {
       if (e instanceof RangeError) return fail("bad_request", e.message);
       return h.sender.chainFailure(e);
+    }
+  }
+
+  /** What a site's swap through Choice trades, as the vault read it. */
+  function siteSwap(display: unknown): { from: string; to: string; amountIn: string; minimum: string } | null {
+    const d = isObject(display) ? display : {};
+    const call = isObject(d["call"]) ? d["call"] : {};
+    const [a, b, n, m] = [call["token_in"], call["token_out"], call["amount_in"], call["minimum_out"]];
+    if (d["kind"] !== "evm_transaction" || call["type"] !== "swap" || typeof a !== "string" || typeof b !== "string" || typeof n !== "string" || typeof m !== "string") return null;
+    const denom = (x: string) => (/^0x0{40}$/i.test(x) ? "inj" : evmDenom(x));
+    return { from: denom(a), to: denom(b), amountIn: n, minimum: m };
+  }
+
+  /** How much of a swap's input its minimum could lose, by Choice's prices, in basis points;
+   *  null when either token can't be priced. */
+  async function lostBps(network: NetworkId, s: { from: string; to: string; amountIn: string; minimum: string }): Promise<number | null> {
+    try {
+      const t = await h.sender.tokensFor(network, [s.from, s.to], true);
+      const lost = t[s.from] && t[s.to] ? valueLost(s.amountIn, s.minimum, t[s.from]!, t[s.to]!) : null;
+      return lost === null || !Number.isFinite(lost) ? null : Math.max(-1_000_000, Math.min(10_000, Math.round(lost * 10_000)));
+    } catch (e) {
+      if (e instanceof Unreachable || e instanceof ChainError) return null;
+      throw e;
     }
   }
 

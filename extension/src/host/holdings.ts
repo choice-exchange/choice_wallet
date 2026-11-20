@@ -400,12 +400,20 @@ export function createHoldings(d: HoldingsDeps) {
     const client = await lcd(network);
     const list = [...new Set(denoms)];
     const px = (await choiceFor(network, client, list, true, evenWithoutUsd)).prices;
-    const described = await Promise.all(
-      list.map(async (dn) => {
-        const a = evmAddress(dn);
-        const t = a ? await erc20Token(network, await evm(network), a) : await token(network, client, dn);
-        const p = px.get(dn);
-        return t ? ([dn, p ? { ...t, priceUsd: p } : t] as const) : null;
+    // A few at a time, as the CW20 balances are read: a long list (a site's request names any
+    // denoms it likes) never floods the endpoints.
+    const described: ((readonly [string, TokenInfo]) | null)[] = list.map(() => null);
+    let next = 0;
+    await Promise.all(
+      Array.from({ length: Math.min(CW20_PARALLEL, list.length) }, async () => {
+        while (next < list.length) {
+          const i = next++;
+          const dn = list[i]!;
+          const a = evmAddress(dn);
+          const t = a ? await erc20Token(network, await evm(network), a) : await token(network, client, dn);
+          const p = px.get(dn);
+          described[i] = t ? [dn, p ? { ...t, priceUsd: p } : t] : null;
+        }
       }),
     );
     return Object.fromEntries(described.filter((x) => x !== null));

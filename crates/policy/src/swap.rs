@@ -15,7 +15,7 @@ use serde_json::json;
 
 use crate::amounts::UNLIMITED;
 use crate::text::{date, short};
-use crate::{Finding, Level, finding};
+use crate::{Context, Finding, Level, finding};
 
 fn executor_name(e: Executor) -> &'static str {
     match e {
@@ -38,12 +38,18 @@ pub(crate) fn to_self(s: &Swap, from: &EthAddress) -> bool {
     s.recipient.is_none_or(|r| r == *from)
 }
 
+/// The swap screen's thresholds (ui/src/valueLost.tsx): a minimum that could lose this much
+/// of the input's value is a warning, and this much is red.
+const LOST_WARN_BPS: i64 = 500;
+const LOST_RED_BPS: i64 = 2_000;
+
 /// Findings about one Choice swap, sent from `from` with `value` attached.
 pub(crate) fn swap(
     choice: &Choice,
     from: &EthAddress,
     value: U256,
     read: &Result<Swap, SwapError>,
+    ctx: &Context,
     out: &mut Vec<Finding>,
 ) {
     let s = match read {
@@ -90,6 +96,33 @@ pub(crate) fn swap(
             "This swap has no minimum: it could return nothing.".into(),
             json!({}),
         ));
+    }
+    // A minimum guards the swap only as far as it is worth what goes in: a route through a
+    // pool or pair the site chose can return exactly the minimum.
+    if let Some(site) = &ctx.site_swap
+        && !s.minimum_out.is_zero()
+    {
+        match site.lost_bps {
+            Some(l) if l >= LOST_RED_BPS => out.push(finding(
+                "swap_value_lost",
+                Level::Red,
+                format!("At the minimum shown, you could lose {}% of what you swap.", l / 100),
+                json!({ "lost_bps": l }),
+            )),
+            Some(l) if l >= LOST_WARN_BPS => out.push(finding(
+                "swap_value_lost",
+                Level::Amber,
+                format!("At the minimum shown, you could lose {}% of what you swap.", l / 100),
+                json!({ "lost_bps": l }),
+            )),
+            Some(_) => {}
+            None => out.push(finding(
+                "swap_unweighed",
+                Level::Amber,
+                "The wallet can't price these tokens, so it can't check the minimum.".into(),
+                json!({}),
+            )),
+        }
     }
     if s.fee_bps > 0 {
         let pct = format!("{}.{:02}%", s.fee_bps / 100, s.fee_bps % 100);

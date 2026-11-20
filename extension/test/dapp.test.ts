@@ -10,7 +10,7 @@ import { ed25519 } from "@noble/curves/ed25519";
 import type { DappReview } from "../../ui/src/protocol";
 import { shown } from "../../ui/src/review";
 
-import { base58Decode, bs58, callVault, chain, code, exchangeDeposits, handle, INJ, ME, ME_EVM, ME_SOL, ME_SOL_USDC, ok, PASSWORD, PHRASE, SOL_USDC, solTransfer, THEM, THEM_EVM, THEM_SOL, wallet } from "./fake";
+import { base58Decode, bs58, callVault, chain, CHOICE_ROUTES, code, exchangeDeposits, handle, INJ, ME, ME_EVM, ME_SOL, ME_SOL_USDC, ok, PASSWORD, PHRASE, SOL_USDC, solTransfer, THEM, THEM_EVM, THEM_SOL, wallet } from "./fake";
 
 const SITE = "https://app.example";
 const OTHER = "https://other.example";
@@ -931,4 +931,51 @@ test("a request is reviewed only on the network it was built for", async () => {
   assert.equal(code(await s.service.handle({ type: "dapp_review", id: w.id })), "network");
   ok(await s.service.handle({ type: "dapp_answer", id: w.id, approve: false }));
   assert.equal((await asked).error?.code, 4001);
+});
+
+// Run-3: a site's swap through Choice's aggregator is weighed as the wallet's own are. A
+// route whose minimum is dust (a pool or pair the site chose can return exactly that) is red.
+test("a site's swap is weighed against Choice's prices", async () => {
+  const s = await connected();
+  const route = CHOICE_ROUTES["0x0000000000000000000000000000000000000000 0x88f7f2b685f9692caf8c478f5badf09ee9b1cc13 1000000000000000000"]!;
+  const tx = route["tx"] as { to: string; data: string; value: string };
+  const review = async (data: string) => {
+    const asked = s.page(SITE)("eth_sendTransaction", [{ from: ME_EVM, to: tx.to, data, value: `0x${BigInt(tx.value).toString(16)}` }]);
+    const w = await s.window();
+    const r = ok<{ risk: { level: string; findings: { rule: string }[] } }>(await s.service.handle({ type: "dapp_review", id: w.id }));
+    ok(await s.service.handle({ type: "dapp_answer", id: w.id, approve: false }));
+    await asked;
+    return r.risk;
+  };
+  // Choice's own route: its minimum is worth what goes in.
+  const fair = await review(tx.data);
+  assert.ok(!fair.findings.some((f) => f.rule === "swap_value_lost" || f.rule === "swap_unweighed"), JSON.stringify(fair));
+  // The same route with a minimum of one base unit.
+  const min = (8145811).toString(16).padStart(64, "0");
+  assert.ok(tx.data.includes(min));
+  const dust = await review(tx.data.replace(min, "1".padStart(64, "0")));
+  assert.equal(dust.level, "red");
+  assert.ok(dust.findings.some((f) => f.rule === "swap_value_lost"), JSON.stringify(dust));
+});
+
+// Run-3: a site's review describes a bounded number of tokens, however many it names, and a
+// few at a time.
+test("a site's review looks up at most a bounded number of tokens", async () => {
+  const s = await connected();
+  const coins = Array.from({ length: 300 }, (_, i) => ({ amount: "1", denom: `q${i.toString(36).padStart(4, "0")}` }));
+  const doc = {
+    chain_id: "injective-1",
+    account_number: "1",
+    sequence: "0",
+    fee: { amount: [{ denom: "inj", amount: "100000000000000" }], gas: "200000" },
+    msgs: [{ type: "cosmos-sdk/MsgSend", value: { from_address: ME, to_address: THEM, amount: coins } }],
+    memo: "",
+  };
+  const asked = s.page(SITE)("choice_signAmino", { chainId: "injective-1", signer: ME, signDoc: doc });
+  const w = await s.window();
+  const before = s.net.state.metadataCalls;
+  ok(await s.service.handle({ type: "dapp_review", id: w.id }));
+  assert.ok(s.net.state.metadataCalls - before <= 64, `${s.net.state.metadataCalls - before} lookups`);
+  ok(await s.service.handle({ type: "dapp_answer", id: w.id, approve: false }));
+  await asked;
 });

@@ -317,7 +317,7 @@ pub fn evm_transaction(req: &TxRequest, chain: &EvmSide<'_>, ctx: &Context) -> A
         .cctp
         .and_then(|(c, _)| cctp::receive(c, &tx.to, tx.value, &tx.data));
     match (&swapped, &bridged, &minted, network, chain.cctp) {
-        (Some(read), _, _, Some(n), _) => swap::swap(&n.choice, &req.from, tx.value, read, &mut out),
+        (Some(read), _, _, Some(n), _) => swap::swap(&n.choice, &req.from, tx.value, read, ctx, &mut out),
         (_, Some(read), _, _, Some((c, local))) => {
             bridge::burn(c, local, &req.from, read, ctx, &mut out, &mut outflows);
         }
@@ -1193,6 +1193,21 @@ mod tests {
             "0x0000000000000000000000000000000000000000"
         );
         assert_eq!(a.findings[1].params["minimum_out"], "8145811");
+        // A site's swap, weighed by the host: a minimum worth far less than the input is red,
+        // one the wallet can't price is amber, a fair one adds nothing.
+        let site = |lost_bps: Option<i64>| {
+            let ctx = Context {
+                site_swap: Some(crate::SiteSwap { lost_bps }),
+                ..Context::default()
+            };
+            evm_transaction(&r, &EvmSide::injective(&MAINNET), &ctx)
+        };
+        let dust = site(Some(9_999));
+        assert_eq!(dust.level, Level::Red);
+        assert!(rules_of(&dust).contains(&"swap_value_lost"));
+        assert_eq!(site(Some(800)).level, Level::Amber);
+        assert!(rules_of(&site(None)).contains(&"swap_unweighed"));
+        assert_eq!(rules_of(&site(Some(100))), ["swap"]);
         // Signed by another account, the same route pays someone else.
         r.from = EthAddress::from_bytes(FROM);
         let a = grade(&r);
