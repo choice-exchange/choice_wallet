@@ -549,6 +549,9 @@ export function createSolana(d: SolanaDeps) {
             moved.set(SOL, (post?.lamports ?? 0n) - (pre?.lamports ?? 0n));
             // A new program owner takes the account itself (System's Assign).
             if (pre && post && post.owner !== pre.owner) handovers.push({ kind: "assign", to: post.owner });
+            // Data put on it (System's Allocate, directly or by any program): a system account
+            // carrying data can't send SOL or pay a fee again.
+            else if (pre && post && post.data.length !== pre.data.length) handovers.push({ kind: "allocate", to: post.owner });
             return;
           }
           // A native stake account the account controls, before or after (run-2 C3): its SOL

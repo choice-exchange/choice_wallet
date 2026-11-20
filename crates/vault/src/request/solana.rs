@@ -105,6 +105,26 @@ fn solana_step(cluster: &SolanaChain, r: &choice_wallet_solana::Read, s: &choice
         I::Assign { account, owner } => {
             json!({ "type": "assign", "account": b58(account), "owner": b58(owner), "owner_name": program::name(owner) })
         }
+        I::Allocate { account, space } => {
+            json!({ "type": "allocate", "account": b58(account), "space": space.to_string() })
+        }
+        I::NonceWithdraw {
+            nonce,
+            to,
+            lamports,
+            signers,
+        } => json!({
+            "type": "nonce_withdraw", "nonce": b58(nonce), "to": b58(to), "lamports": lamports.to_string(),
+            "signers": signers.iter().map(b58).collect::<Vec<_>>(),
+        }),
+        I::NonceAuthorize {
+            nonce,
+            new_authority,
+            signers,
+        } => json!({
+            "type": "nonce_authorize", "nonce": b58(nonce), "new_authority": b58(new_authority),
+            "signers": signers.iter().map(b58).collect::<Vec<_>>(),
+        }),
         I::AdvanceNonce { nonce, authority } => {
             json!({ "type": "advance_nonce", "nonce": b58(nonce), "authority": b58(authority) })
         }

@@ -362,6 +362,17 @@ function solanaShown(d: SolanaDisplay, cluster: string, findings: Finding[]): Sh
       case "assign":
         out.others.push(`Hands ${short(s.account)} to ${s.owner_name ?? short(s.owner)}`);
         break;
+      case "allocate":
+        out.others.push(`Puts ${s.space} bytes of data on ${s.account === d.signer ? "this account" : short(s.account)}`);
+        break;
+      case "nonce_withdraw":
+        // This account as the nonce's authority: its SOL, sent.
+        if (s.signers.includes(d.signer) && s.to !== d.signer) out.sends.push({ coins: [{ denom: "sol", amount: s.lamports }], to: s.to });
+        else out.others.push(`Takes SOL out of nonce account ${short(s.nonce)} to ${s.to === d.signer ? "this account" : short(s.to)}`);
+        break;
+      case "nonce_authorize":
+        out.others.push(`Gives nonce account ${short(s.nonce)}, and its SOL, to ${short(s.new_authority)}`);
+        break;
       case "token_set_authority":
         out.others.push(`Gives control of ${short(s.account)} to ${s.new_authority ? short(s.new_authority) : "nobody"}`);
         break;

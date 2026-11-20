@@ -187,6 +187,35 @@ pub enum Instruction {
         /// The program that will own it.
         owner: Pubkey,
     },
+    /// Puts `space` bytes of data on a system account. A system account carrying data can't
+    /// send SOL or pay a fee again.
+    Allocate {
+        /// The account; signs.
+        account: Pubkey,
+        /// Bytes of data.
+        space: u64,
+    },
+    /// Takes SOL out of a nonce account, to `to`. The System program accepts the nonce's
+    /// authority from any of the instruction's signing accounts, so those are kept.
+    NonceWithdraw {
+        /// The nonce account.
+        nonce: Pubkey,
+        /// Receives.
+        to: Pubkey,
+        /// Lamports.
+        lamports: u64,
+        /// The instruction's signing accounts: one is the nonce's authority.
+        signers: Vec<Pubkey>,
+    },
+    /// Hands a nonce account, and the SOL in it, to a new authority.
+    NonceAuthorize {
+        /// The nonce account.
+        nonce: Pubkey,
+        /// Its new authority.
+        new_authority: Pubkey,
+        /// The instruction's signing accounts: one is the current authority.
+        signers: Vec<Pubkey>,
+    },
     /// Hands an account to a program: the program can then take everything in it.
     Assign {
         /// The account; signs.
@@ -513,6 +542,10 @@ fn two_vecs(d: &[u8]) -> bool {
     d.len() == 8 + a + b
 }
 
+fn signers(accounts: &[Account]) -> Vec<Pubkey> {
+    accounts.iter().filter(|a| a.signer).map(|a| a.key).collect()
+}
+
 /// System instructions are bincode: a u32 kind, then its fields. The program ignores bytes
 /// past them, so a known kind of any other length is unreadable here rather than guessed at.
 fn system(accounts: &[Account], d: &[u8]) -> Option<Instruction> {
@@ -536,13 +569,38 @@ fn system(accounts: &[Account], d: &[u8]) -> Option<Instruction> {
                 owner: key_at(d, 4)?,
             }
         }
-        // Transfer, and WithdrawNonceAccount (SOL out of a nonce account).
-        2 | 5 => {
+        2 => {
             len(12)?;
             Instruction::Transfer {
                 from: acct(0)?,
                 to: acct(1)?,
                 lamports: u64_at(d, 4)?,
+            }
+        }
+        // WithdrawNonceAccount: [nonce, to, recent blockhashes, rent, authority].
+        5 => {
+            len(12)?;
+            Instruction::NonceWithdraw {
+                nonce: acct(0)?,
+                to: acct(1)?,
+                lamports: u64_at(d, 4)?,
+                signers: signers(accounts),
+            }
+        }
+        // AuthorizeNonceAccount: [nonce, authority], the new authority in the data.
+        7 => {
+            len(36)?;
+            Instruction::NonceAuthorize {
+                nonce: acct(0)?,
+                new_authority: key_at(d, 4)?,
+                signers: signers(accounts),
+            }
+        }
+        8 => {
+            len(12)?;
+            Instruction::Allocate {
+                account: acct(0)?,
+                space: u64_at(d, 4)?,
             }
         }
         4 => {
@@ -562,7 +620,8 @@ fn system(accounts: &[Account], d: &[u8]) -> Option<Instruction> {
                 owner: key_at(d, 44 + seed)?,
             }
         }
-        3 | 6..=9 | 11 | 12 => Instruction::Other { program: SYSTEM.key() },
+        // AllocateWithSeed (9) allocates a derived address, not a signing account.
+        3 | 6 | 9 | 11 | 12 => Instruction::Other { program: SYSTEM.key() },
         _ => return None,
     })
 }
@@ -796,6 +855,60 @@ mod tests {
             Instruction::Other { program: STAKE.key() }
         );
         assert_eq!(name(&STAKE.key()), Some("Stake"));
+    }
+
+    /// Run-3: Allocate on a signing account, and the nonce instructions with their signers
+    /// (the System program takes the nonce's authority from any of them).
+    #[test]
+    fn allocate_and_nonce_layouts() {
+        let (n, to, auth) = ([1u8; 32], [2u8; 32], [3u8; 32]);
+        let signer = |key: [u8; 32]| Account {
+            key,
+            signer: true,
+            writable: true,
+            table: None,
+        };
+        let mut alloc = 8u32.to_le_bytes().to_vec();
+        alloc.extend_from_slice(&1u64.to_le_bytes());
+        assert_eq!(
+            read(&SYSTEM.key(), &[signer(n)], &alloc),
+            Instruction::Allocate { account: n, space: 1 }
+        );
+        let mut withdraw = 5u32.to_le_bytes().to_vec();
+        withdraw.extend_from_slice(&7u64.to_le_bytes());
+        let accts = [
+            acct(n),
+            acct(to),
+            acct([4; 32]),
+            acct([5; 32]),
+            acct([6; 32]),
+            signer(auth),
+        ];
+        assert_eq!(
+            read(&SYSTEM.key(), &accts, &withdraw),
+            Instruction::NonceWithdraw {
+                nonce: n,
+                to,
+                lamports: 7,
+                signers: vec![auth]
+            }
+        );
+        let mut authorize = 7u32.to_le_bytes().to_vec();
+        authorize.extend_from_slice(&to);
+        assert_eq!(
+            read(&SYSTEM.key(), &[acct(n), signer(auth)], &authorize),
+            Instruction::NonceAuthorize {
+                nonce: n,
+                new_authority: to,
+                signers: vec![auth]
+            }
+        );
+        // Any other length is unreadable.
+        alloc.push(0);
+        assert!(matches!(
+            read(&SYSTEM.key(), &[signer(n)], &alloc),
+            Instruction::Unreadable { .. }
+        ));
     }
 
     #[test]

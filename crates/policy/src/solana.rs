@@ -67,6 +67,35 @@ fn token_owner(r: &Read, ctx: &Context, account: &Pubkey, mint: Option<&Pubkey>)
 }
 
 /// The mint of a token account, if the transaction or the host names it.
+/// SPL Token's and Token-2022's native mints: a token account of these holds wrapped SOL,
+/// which its close authority takes by closing it.
+const NATIVE_MINTS: [&str; 2] = [
+    "So11111111111111111111111111111111111111112",
+    "9pan9bMn5HatX4EJdBwg9VgCa7Uz5HL8N1m5D3NdXejP",
+];
+
+/// A token account's close authority handed to `who`. On wrapped SOL, or a token account
+/// whose token the wallet can't tell, that is the whole balance; elsewhere only its rent.
+fn close_authority(who: &str, mint: Option<&str>, params: serde_json::Value) -> Finding {
+    if mint.is_none_or(|m| NATIVE_MINTS.contains(&m)) {
+        let mut f = finding(
+            "solana_close_authority",
+            Level::Red,
+            format!("Lets {who} close this token account and take what's in it, at any time."),
+            params,
+        );
+        f.confirm = Some("GIVE");
+        f
+    } else {
+        finding(
+            "solana_close_authority",
+            Level::Amber,
+            format!("Lets {who} close this token account and take its SOL."),
+            params,
+        )
+    }
+}
+
 fn token_mint(r: &Read, ctx: &Context, account: &Pubkey) -> Option<Pubkey> {
     r.steps
         .iter()
@@ -131,6 +160,55 @@ pub fn solana_transaction(r: &Read, signer: &Pubkey, c: &Cctp, ctx: &Context) ->
             Instruction::Assign { account, owner } => {
                 if account == signer {
                     out.push(assign_away(owner));
+                }
+            }
+            Instruction::Allocate { account, space } => {
+                if account == signer {
+                    out.push(allocated(
+                        &json!({ "account": b58(account), "space": space.to_string() }),
+                    ));
+                }
+            }
+            // The signer may be the nonce's authority: then it's this account's SOL leaving.
+            Instruction::NonceWithdraw {
+                nonce,
+                to,
+                lamports,
+                signers,
+            } => {
+                if signers.contains(signer) && to != signer {
+                    sol_out = sol_out.saturating_add(*lamports);
+                    recipient(ctx, &b58(to), None, &mut out);
+                    out.push(finding(
+                        "solana_nonce_withdraw",
+                        Level::Amber,
+                        format!(
+                            "Takes SOL out of nonce account {} to {}.",
+                            short(&b58(nonce)),
+                            short(&b58(to))
+                        ),
+                        json!({ "nonce": b58(nonce), "to": b58(to), "lamports": lamports.to_string() }),
+                    ));
+                }
+            }
+            Instruction::NonceAuthorize {
+                nonce,
+                new_authority,
+                signers,
+            } => {
+                if signers.contains(signer) && new_authority != signer {
+                    let mut f = finding(
+                        "solana_nonce_authority",
+                        Level::Red,
+                        format!(
+                            "Gives nonce account {}, and the SOL in it, to {}.",
+                            short(&b58(nonce)),
+                            short(&b58(new_authority))
+                        ),
+                        json!({ "nonce": b58(nonce), "new_authority": b58(new_authority) }),
+                    );
+                    f.confirm = Some("GIVE");
+                    out.push(f);
                 }
             }
             Instruction::AdvanceNonce { .. }
@@ -241,12 +319,7 @@ pub fn solana_transaction(r: &Read, signer: &Pubkey, c: &Cctp, ctx: &Context) ->
                         f.confirm = Some("GIVE");
                         f
                     }
-                    3 => finding(
-                        "solana_close_authority",
-                        Level::Amber,
-                        format!("Lets {who} close this token account and take its SOL."),
-                        params,
-                    ),
+                    3 => close_authority(&who, token_mint(r, ctx, account).map(|m| b58(&m)).as_deref(), params),
                     _ => finding(
                         "solana_authority",
                         Level::Amber,
@@ -467,6 +540,10 @@ fn amount_of(f: &Finding) -> Option<u128> {
 /// for the instructions that would say so, unless one already says it.
 fn handovers(ctx: &Context, out: &mut Vec<Finding>) {
     for h in &ctx.solana_handovers {
+        // Data on the account is said once, whether an instruction or the simulation shows it.
+        if h.kind == "allocate" && out.iter().any(|f| f.rule == "solana_allocate") {
+            continue;
+        }
         let account = h.account.as_deref();
         let to = base58::decode32(&h.to).map_or_else(|| short(&h.to), |p| program_name(&p));
         let token = h.mint.as_deref().map_or("this token", |m| ctx.token_name(m));
@@ -509,12 +586,9 @@ fn handovers(ctx: &Context, out: &mut Vec<Finding>) {
                     )
                 }
             }
-            "close_authority" => finding(
-                "solana_close_authority",
-                Level::Amber,
-                format!("Lets {to} close this token account and take its SOL."),
-                params,
-            ),
+            "close_authority" => close_authority(&to, h.mint.as_deref(), params),
+            // Data put on the account itself, by whatever program.
+            "allocate" => allocated(&params),
             "stake_withdrawer" | "stake_staker" => {
                 let mut f = stake_handover(h.kind == "stake_withdrawer", account.unwrap_or("?"), &h.to, "to");
                 if let Some(p) = f.params.as_object_mut() {
@@ -567,6 +641,19 @@ fn stake_handover(withdrawer: bool, stake: &str, to: &str, key: &str) -> Finding
             params,
         )
     }
+}
+
+/// Data put on the signing account: a system account carrying data can't send SOL or pay a
+/// fee again, and nothing the wallet can sign takes it off.
+fn allocated(params: &serde_json::Value) -> Finding {
+    let mut f = finding(
+        "solana_allocate",
+        Level::Red,
+        "Puts data on this account: its SOL could never be sent or pay a fee again.".into(),
+        params.clone(),
+    );
+    f.confirm = Some("GIVE");
+    f
 }
 
 fn assign_away(owner: &Pubkey) -> Finding {
@@ -669,6 +756,124 @@ mod tests {
             },
             durable_nonce: false,
         }
+    }
+
+    /// Run-3: a close authority on wrapped SOL (or an account whose token the wallet can't
+    /// tell) takes the whole balance; data on the signer freezes its SOL; a nonce the signer
+    /// is the authority of is the signer's SOL.
+    #[test]
+    fn close_authority_allocate_and_nonce() {
+        use crate::{SolanaHandover, SolanaTokenAccount};
+        let set_close = || {
+            tx(
+                &[ME],
+                vec![Instruction::TokenSetAuthority {
+                    program: TOKEN.key(),
+                    account: [3; 32],
+                    kind: 3,
+                    new_authority: Some(THEM),
+                    current: ME,
+                }],
+            )
+        };
+        let held = |mint: &str| Context {
+            solana_token_accounts: [(
+                b58(&[3; 32]),
+                SolanaTokenAccount {
+                    owner: b58(&ME),
+                    mint: mint.into(),
+                },
+            )]
+            .into(),
+            ..Default::default()
+        };
+        let native = solana_transaction(&set_close(), &ME, &MAINNET, &held(NATIVE_MINTS[0]));
+        assert_eq!((native.level, native.confirm), (Level::Red, Some("GIVE")));
+        let unknown = solana_transaction(&set_close(), &ME, &MAINNET, &Context::default());
+        assert_eq!((unknown.level, unknown.confirm), (Level::Red, Some("GIVE")));
+        let usdc = solana_transaction(
+            &set_close(),
+            &ME,
+            &MAINNET,
+            &held("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"),
+        );
+        assert_eq!((usdc.level, usdc.confirm), (Level::Amber, None));
+        // The same through the simulation, and once only.
+        let sim = |mint: &str| Context {
+            solana_handovers: vec![SolanaHandover {
+                kind: "close_authority".into(),
+                account: Some(b58(&[3; 32])),
+                mint: Some(mint.into()),
+                to: b58(&THEM),
+                all: false,
+                amount: None,
+            }],
+            ..Default::default()
+        };
+        let other = tx(&[ME], vec![Instruction::Other { program: [0x42; 32] }]);
+        let a = solana_transaction(&other, &ME, &MAINNET, &sim(NATIVE_MINTS[1]));
+        assert_eq!((a.level, a.confirm), (Level::Red, Some("GIVE")));
+
+        let alloc = tx(&[ME], vec![Instruction::Allocate { account: ME, space: 1 }]);
+        let a = solana_transaction(&alloc, &ME, &MAINNET, &Context::default());
+        assert_eq!(
+            (a.level, a.confirm, a.findings[0].rule),
+            (Level::Red, Some("GIVE"), "solana_allocate")
+        );
+        let simulated = Context {
+            solana_handovers: vec![SolanaHandover {
+                kind: "allocate".into(),
+                account: None,
+                mint: None,
+                to: b58(&program::SYSTEM.key()),
+                all: false,
+                amount: None,
+            }],
+            ..Default::default()
+        };
+        let both = solana_transaction(&alloc, &ME, &MAINNET, &simulated);
+        assert_eq!(both.findings.iter().filter(|f| f.rule == "solana_allocate").count(), 1);
+        let by_cpi = solana_transaction(&other, &ME, &MAINNET, &simulated);
+        assert_eq!((by_cpi.level, by_cpi.confirm), (Level::Red, Some("GIVE")));
+        // Someone else's account: not this account's SOL.
+        let theirs = tx(
+            &[ME],
+            vec![Instruction::Allocate {
+                account: THEM,
+                space: 1,
+            }],
+        );
+        assert!(!rules(&theirs, &MAINNET, &Context::default()).contains(&"solana_allocate"));
+
+        let withdraw = |signers: Vec<Pubkey>| {
+            tx(
+                &[ME],
+                vec![Instruction::NonceWithdraw {
+                    nonce: [5; 32],
+                    to: THEM,
+                    lamports: 10_000_000_000,
+                    signers,
+                }],
+            )
+        };
+        let ctx = Context {
+            balances: [("native".to_owned(), "11000000000".to_owned())].into(),
+            ..Default::default()
+        };
+        let mine = rules(&withdraw(vec![ME]), &MAINNET, &ctx);
+        assert!(mine.contains(&"solana_nonce_withdraw"), "{mine:?}");
+        assert!(mine.contains(&"most_of_balance"), "{mine:?}");
+        assert!(!rules(&withdraw(vec![THEM]), &MAINNET, &ctx).contains(&"solana_nonce_withdraw"));
+        let authorize = tx(
+            &[ME],
+            vec![Instruction::NonceAuthorize {
+                nonce: [5; 32],
+                new_authority: THEM,
+                signers: vec![ME],
+            }],
+        );
+        let a = solana_transaction(&authorize, &ME, &MAINNET, &Context::default());
+        assert_eq!((a.level, a.confirm), (Level::Red, Some("GIVE")));
     }
 
     fn rules(r: &Read, c: &Cctp, ctx: &Context) -> Vec<&'static str> {

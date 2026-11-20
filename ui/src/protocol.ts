@@ -313,6 +313,9 @@ export type SolanaStep = { program: string; program_name: string | null } & (
   | { type: "sol_transfer"; from: string; to: string; lamports: string }
   | { type: "create_account"; from: string; account: string; lamports: string; space: string; owner: string; owner_name: string | null }
   | { type: "assign"; account: string; owner: string; owner_name: string | null }
+  | { type: "allocate"; account: string; space: string }
+  | { type: "nonce_withdraw"; nonce: string; to: string; lamports: string; signers: string[] }
+  | { type: "nonce_authorize"; nonce: string; new_authority: string; signers: string[] }
   | { type: "advance_nonce"; nonce: string; authority: string }
   | { type: "compute_budget"; unit_limit?: number; unit_price?: string }
   | { type: "token_transfer"; source: string; destination: string; destination_owner: string | null; authority: string; amount: string; mint: string | null; decimals: number | null; usdc: boolean }
