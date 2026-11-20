@@ -137,12 +137,14 @@ function cw20Move(e: TxEvent): { token: string; from?: string; to?: string; amou
 
 /** What a transaction's events did to `address`: the net change per denom (a CW20 under
  *  its `cw20:` key), the fee left out when `address` paid it, and who sent what arrived.
- *  `signer` says `address` signed it where the events don't name a fee payer (EVM). */
+ *  `signer` says `address` signed it where the events don't name a fee payer (EVM), or
+ *  don't name the signer (`delegated`: a fee granter or payer paid, and fee_payer names it). */
 export function balanceChanges(
   events: readonly TxEvent[],
   address: string,
   fee: readonly Coin[],
   signer = false,
+  delegated = false,
 ): { changes: Coin[]; signed: boolean; from?: string } {
   const net = new Map<string, bigint>();
   const add = (coins: Coin[], sign: bigint) => {
@@ -160,13 +162,21 @@ export function balanceChanges(
     if (m?.from === address) add([{ denom: m.token, amount: m.amount }], -1n);
     if (m?.to === address && m.from && from === undefined) from = m.from;
   }
-  const signed = signer || feePayer === address;
+  // fee_payer is the first signer only when nobody else paid: a fee granter never signs.
+  const signed = signer || (!delegated && feePayer === address);
   if (signed) add([...fee], 1n); // the fee is reported apart
   const changes = [...net].filter(([, a]) => a !== 0n).map(([denom, a]) => ({ denom, amount: a.toString() }));
   return { changes, signed, ...(from ? { from } : {}) };
 }
 
 const ERC20_DENOM = /^erc20:(0x[0-9a-fA-F]{40})$/;
+
+/** The fields that name each message's signer, by the SDK's first-signer rule. */
+const SIGNER_FIELDS = ["from_address", "sender", "delegator_address", "granter", "voter", "proposer", "depositor", "signer"];
+
+function messageSigner(tx: IndexedTx, address: string): boolean {
+  return tx.messages.some((m) => (m["@type"] === "/cosmos.authz.v1beta1.MsgExec" ? m["grantee"] === address : SIGNER_FIELDS.some((k) => m[k] === address)));
+}
 
 export function summarize(tx: IndexedTx, address: string, evm?: EvmView): Activity {
   const call = tx.evm && tx.messages[0] ? evmCall(tx.messages[0]) : null;
@@ -176,7 +186,10 @@ export function summarize(tx: IndexedTx, address: string, evm?: EvmView): Activi
   const evmSigner =
     tx.evm !== undefined &&
     ((call !== null && call.from === me) || tx.events.some((e) => e.type === "message" && attr(e, "action") === EVM_MSG && attr(e, "sender") === address));
-  const bank = balanceChanges(tx.events, address, tx.fee, evmSigner);
+  // Someone else paid the fee (a fee grant, or EIP-712 fee delegation): whether this account
+  // signed is in the messages' own signer fields (run-3: a grantee's tx read as the granter's).
+  const delegated = tx.feeGranter !== undefined || tx.feePayer !== undefined;
+  const bank = balanceChanges(tx.events, address, tx.fee, evmSigner || (delegated && messageSigner(tx, address)), delegated);
   const { signed } = bank;
   let { changes, from } = bank;
 

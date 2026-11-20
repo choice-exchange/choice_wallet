@@ -66,7 +66,8 @@ export interface AddedChainsDeps {
 function storedChain(v: unknown): AddedChain | null {
   if (!isObject(v) || checkAddedChain(v as { chainId: unknown; name: unknown; symbol: unknown })) return null;
   const rpc = v["rpc"];
-  if (!Array.isArray(rpc) || rpc.length === 0 || rpc.length > MAX_RPC || !rpc.every((u) => typeof u === "string" && /^https?:\/\//.test(u))) return null;
+  // The same rule as adding one: https, or plain http to this computer only.
+  if (!Array.isArray(rpc) || rpc.length === 0 || rpc.length > MAX_RPC || !rpc.every((u) => typeof u === "string" && /^(https:\/\/|http:\/\/(localhost|127\.0\.0\.1)(:[0-9]{1,5})?(\/|$))/.test(u))) return null;
   if (typeof v["testnet"] !== "boolean") return null;
   const explorer = v["explorer"];
   const logo = v["logo"];

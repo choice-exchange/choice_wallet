@@ -280,7 +280,9 @@ export function createWallets(h: WalletsHost) {
       const r = await h.vault<{ unlock_key: string }>("unlock", { vault: s.vault, password });
       if (!r.ok) return r;
       await h.session.set({ unlock_key: r.result.unlock_key });
-      await fillAddresses(s, r.result.unlock_key);
+      // Best effort, and never between the unlock and the auto-lock: a failure here (a full
+      // disk, a vault trap) must not leave the wallet open with no timer.
+      await fillAddresses(s, r.result.unlock_key).catch(() => {});
     } else if (s.keystore && s.kind) {
       // From before vaults: move the keystore into one, and read every account again from
       // the moved secret (so the list matches it, whatever it said before).

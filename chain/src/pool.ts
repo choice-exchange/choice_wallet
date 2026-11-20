@@ -40,9 +40,40 @@ export interface PoolOptions {
   fetch: Fetch;
   /** Per request, body included. */
   timeoutMs?: number;
+  /** The most of an answer read, after the browser decodes it (default `MAX_ANSWER`). */
+  maxBytes?: number;
   /** Throws `Down` unless the endpoint serves the expected chain. Run once per endpoint
    *  while it keeps passing. */
   identify(base: string): Promise<void>;
+}
+
+/** The most of one answer a pool reads: the largest the wallet asks for (a busy account's
+ *  token accounts, a page of history) is well under it. An endpoint can send a few bytes the
+ *  browser decodes into any amount, so the answer is read as a stream and cut off here (run-3). */
+export const MAX_ANSWER = 16 * 1024 * 1024;
+
+async function bounded(res: Response, max: number): Promise<string> {
+  const reader = res.body?.getReader();
+  if (!reader) return "";
+  const parts: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.length;
+    if (size > max) {
+      void reader.cancel().catch(() => {});
+      throw new Down("answer too large");
+    }
+    parts.push(value);
+  }
+  const all = new Uint8Array(size);
+  let at = 0;
+  for (const p of parts) {
+    all.set(p, at);
+    at += p.length;
+  }
+  return new TextDecoder().decode(all);
 }
 
 export class Pool {
@@ -114,8 +145,9 @@ export class Pool {
     try {
       const res = await this.#opts.fetch(url, { ...init, signal: AbortSignal.timeout(this.#opts.timeoutMs ?? 10_000) });
       status = res.status;
-      text = await res.text();
+      text = await bounded(res, this.#opts.maxBytes ?? MAX_ANSWER);
     } catch (e) {
+      if (e instanceof Down) throw e;
       throw new Down(e instanceof Error && e.name === "TimeoutError" ? "timed out" : `network error (${String(e)})`);
     }
     try {

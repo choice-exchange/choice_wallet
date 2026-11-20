@@ -79,7 +79,7 @@ impl Ty {
 /// Decode `data` (no selector) as the tuple `tys`, and refuse it unless it is the one
 /// canonical encoding of what it holds.
 pub fn decode(tys: &[Ty], data: &[u8]) -> Result<Vec<Val>, AbiError> {
-    let vals = tuple(tys, data, 0, 0)?;
+    let (vals, _) = tuple(tys, data, 0, 0)?;
     if encode(&vals) != data {
         return Err(AbiError("calldata is not canonically encoded"));
     }
@@ -236,38 +236,50 @@ fn read_usize(data: &[u8], at: usize) -> Result<usize, AbiError> {
         .map_err(|_| AbiError("offset out of range"))
 }
 
-/// The tuple `tys` whose encoding starts at `base`.
-fn tuple(tys: &[Ty], data: &[u8], base: usize, depth: usize) -> Result<Vec<Val>, AbiError> {
+/// The tuple `tys` whose encoding starts at `base`, and where its encoding ends. Each
+/// dynamic item must start where the one before it ended, as the canonical encoding puts it:
+/// items that share bytes (aliased offsets) are refused before anything is copied, so the work
+/// and memory a decode costs stay linear in the calldata (run-3).
+fn tuple(tys: &[Ty], data: &[u8], base: usize, depth: usize) -> Result<(Vec<Val>, usize), AbiError> {
     if depth > MAX_DEPTH {
         return Err(AbiError("nested too deeply"));
     }
+    let head: usize = tys.iter().map(Ty::head_len).sum();
+    let mut tail = base.checked_add(head).ok_or(AbiError("offset out of range"))?;
     let mut out = Vec::with_capacity(tys.len());
     let mut at = base;
     for t in tys {
         let v = if t.is_dynamic() {
             let offset = read_usize(data, at)?;
             let start = base.checked_add(offset).ok_or(AbiError("offset out of range"))?;
-            value(t, data, start, depth + 1)?
+            if start != tail {
+                return Err(AbiError("calldata is not canonically encoded"));
+            }
+            let (v, end) = value(t, data, start, depth + 1)?;
+            tail = end;
+            v
         } else {
-            value(t, data, at, depth + 1)?
+            value(t, data, at, depth + 1)?.0
         };
         at += t.head_len();
         out.push(v);
     }
-    Ok(out)
+    Ok((out, tail))
 }
 
-/// One value of type `t` at `at`.
-fn value(t: &Ty, data: &[u8], at: usize, depth: usize) -> Result<Val, AbiError> {
+/// One value of type `t` at `at`, and where its encoding ends.
+fn value(t: &Ty, data: &[u8], at: usize, depth: usize) -> Result<(Val, usize), AbiError> {
     match t {
-        Ty::Word => Ok(Val::Word(read_word(data, at)?)),
+        Ty::Word => Ok((Val::Word(read_word(data, at)?), at + 32)),
         Ty::Bytes => {
             let len = read_usize(data, at)?;
             let start = at + 32;
             let end = start.checked_add(len).ok_or(AbiError("bytes out of range"))?;
-            data.get(start..end)
-                .map(|b| Val::Bytes(b.to_vec()))
-                .ok_or(AbiError("calldata too short"))
+            let padded = start
+                .checked_add(len.div_ceil(32).checked_mul(32).ok_or(AbiError("bytes out of range"))?)
+                .ok_or(AbiError("bytes out of range"))?;
+            let b = data.get(start..end).ok_or(AbiError("calldata too short"))?;
+            Ok((Val::Bytes(b.to_vec()), padded))
         }
         Ty::Array(item) => {
             let len = read_usize(data, at)?;
@@ -275,9 +287,13 @@ fn value(t: &Ty, data: &[u8], at: usize, depth: usize) -> Result<Val, AbiError> 
                 return Err(AbiError("array too long"));
             }
             let items = vec![**item; len];
-            Ok(Val::Array(tuple(&items, data, at + 32, depth)?))
+            let (vs, end) = tuple(&items, data, at + 32, depth)?;
+            Ok((Val::Array(vs), end))
         }
-        Ty::Tuple(ts) => Ok(Val::Tuple(tuple(ts, data, at, depth)?)),
+        Ty::Tuple(ts) => {
+            let (vs, end) = tuple(ts, data, at, depth)?;
+            Ok((Val::Tuple(vs), end))
+        }
     }
 }
 
@@ -359,6 +375,27 @@ mod tests {
         let mut far = data;
         far[32..64].copy_from_slice(&[0xff; 32]);
         assert!(decode(PAIR, &far).is_err());
+    }
+
+    /// Run-3: items that share one blob (every offset pointing at it) are refused as they are
+    /// read, before any is copied: a 1 MB request could otherwise cost 256 copies of itself.
+    #[test]
+    fn refuses_aliased_items_before_copying() {
+        const ITEMS: &[Ty] = &[Ty::Array(&Ty::Bytes)];
+        let blob = Val::Bytes(vec![7; 64]);
+        let fine = encode(&[Val::Array(vec![blob.clone(), blob.clone()])]);
+        assert_eq!(decode(ITEMS, &fine).unwrap(), [Val::Array(vec![blob.clone(), blob])]);
+        // [offset 0x20] [len 2] [0x40] [0x40]: both items at the one blob.
+        let mut aliased = usize_word(0x20).to_vec();
+        aliased.extend_from_slice(&usize_word(2));
+        aliased.extend_from_slice(&usize_word(0x40));
+        aliased.extend_from_slice(&usize_word(0x40));
+        aliased.extend_from_slice(&usize_word(64));
+        aliased.extend_from_slice(&[7; 64]);
+        assert_eq!(
+            tuple(ITEMS, &aliased, 0, 0).unwrap_err(),
+            AbiError("calldata is not canonically encoded")
+        );
     }
 
     #[test]

@@ -41,6 +41,15 @@ const browser: ArmEnv = {
     const t = setTimeout(f, ms);
     return () => clearTimeout(t);
   },
+  presses(f) {
+    // Captured on the window: a disabled button gets no click, but the press still arrives.
+    window.addEventListener("pointerdown", f, true);
+    window.addEventListener("keydown", f, true);
+    return () => {
+      window.removeEventListener("pointerdown", f, true);
+      window.removeEventListener("keydown", f, true);
+    };
+  },
 };
 
 /** Whether the main button works: see ./arm.ts. Counted from when it shows. */

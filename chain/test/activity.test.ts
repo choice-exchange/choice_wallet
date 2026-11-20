@@ -416,3 +416,17 @@ test("EVM: a reverted send says what it tried; only the fee moved", () => {
   const created = summarize(evmTx(213, { from: ME_EVM, fromInj: ME, to: null, input: "0x6080" }), ME, view);
   assert.deepEqual([created.kind, created.label], ["other", "Contract created"]);
 });
+
+// Run-3: when a fee grant pays, Injective's fee_payer names the granter, who never signed.
+// A grantee's send to the granter isn't the granter's own transaction; the granter's own
+// send that someone else's grant paid for is.
+test("a fee granter isn't the signer", () => {
+  const granted = { ...tx(20, [send(THEM, ME, `5000000${USDT}`)], [...feePaidBy(ME), ...move(THEM, ME, `5000000${USDT}`)]), feeGranter: ME };
+  const a = summarize(granted, ME);
+  assert.equal(a.signed, false);
+  assert.ok(a.changes.some((c) => c.denom === USDT && c.amount === "5000000"));
+  const own = { ...tx(21, [send(ME, THEM, "1inj")], [...feePaidBy(THEM), ...move(ME, THEM, "1inj")]), feeGranter: THEM };
+  assert.equal(summarize(own, ME).signed, true);
+  // No granter: the fee payer is the signer, as before.
+  assert.equal(summarize(tx(22, [send(ME, THEM, "1inj")], [...feePaidBy(ME), ...move(ME, THEM, "1inj")]), ME).signed, true);
+});

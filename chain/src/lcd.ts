@@ -52,6 +52,10 @@ export interface IndexedTx {
   messages: Record<string, unknown>[];
   memo: string;
   fee: Coin[];
+  /** auth_info.fee's granter or payer, when set: then the fee isn't the first signer's, and
+   *  the tx event's fee_payer names whoever it came from. */
+  feeGranter?: string;
+  feePayer?: string;
   events: TxEvent[];
   /** For an EVM transaction: its 0x hash (null if the node didn't say) and its logs (none
    *  when it reverted). */
@@ -473,7 +477,11 @@ function coin(c: unknown): Coin {
 function indexedTx(r: unknown): IndexedTx {
   const tx = isObject(r) && isObject(r["tx"]) ? r["tx"] : {};
   const body = isObject(tx["body"]) ? tx["body"] : {};
-  const fee = isObject(tx["auth_info"]) && isObject(tx["auth_info"]["fee"]) ? tx["auth_info"]["fee"]["amount"] : undefined;
+  const feeInfo = isObject(tx["auth_info"]) && isObject(tx["auth_info"]["fee"]) ? tx["auth_info"]["fee"] : {};
+  const fee = feeInfo["amount"];
+  const named = (v: unknown) => (typeof v === "string" && v !== "" ? v : undefined);
+  const feeGranter = named(feeInfo["granter"]);
+  const feePayer = named(feeInfo["payer"]);
   if (
     !isObject(r) ||
     typeof r["txhash"] !== "string" ||
@@ -495,6 +503,8 @@ function indexedTx(r: unknown): IndexedTx {
     messages,
     memo: typeof body["memo"] === "string" ? body["memo"] : "",
     fee: Array.isArray(fee) ? fee.map(coin) : [],
+    ...(feeGranter ? { feeGranter } : {}),
+    ...(feePayer ? { feePayer } : {}),
     events,
   };
   if (messages.length === 1 && messages[0]!["@type"] === EVM_MSG) {

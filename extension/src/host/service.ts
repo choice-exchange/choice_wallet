@@ -556,7 +556,9 @@ export function createService(d: Deps) {
   let tidied: Promise<void> | null = null;
   function tidy(): Promise<void> {
     tidied ??= (async () => {
-      const old = ((await d.local.keys?.()) ?? []).filter((k) => k.startsWith(OLD_SOLANA_TOKENS));
+      // What older versions kept that this one no longer reads: their Solana token names,
+      // and per-account bridge records (bridge_in_pending, before bridge_transfers).
+      const old = ((await d.local.keys?.()) ?? []).filter((k) => k.startsWith(OLD_SOLANA_TOKENS) || k === "bridge_in_pending");
       if (old.length > 0) await d.local.remove(old);
     })().catch(() => {});
     return tidied;
