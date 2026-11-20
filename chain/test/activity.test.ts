@@ -425,8 +425,14 @@ test("a fee granter isn't the signer", () => {
   const a = summarize(granted, ME);
   assert.equal(a.signed, false);
   assert.ok(a.changes.some((c) => c.denom === USDT && c.amount === "5000000"));
+  // The granter's fee is reported apart, never as a change: only the junk arrived.
+  assert.deepEqual(a.changes, [{ denom: USDT, amount: "5000000" }]);
   const own = { ...tx(21, [send(ME, THEM, "1inj")], [...feePaidBy(THEM), ...move(ME, THEM, "1inj")]), feeGranter: THEM };
-  assert.equal(summarize(own, ME).signed, true);
+  const mine = summarize(own, ME);
+  assert.equal(mine.signed, true);
+  // Signed, but someone else's grant paid: the send is exactly what left, and no fee is ME's.
+  assert.deepEqual(mine.changes, [{ denom: "inj", amount: "-1" }]);
+  assert.deepEqual(mine.fee, []);
   // No granter: the fee payer is the signer, as before.
   assert.equal(summarize(tx(22, [send(ME, THEM, "1inj")], [...feePaidBy(ME), ...move(ME, THEM, "1inj")]), ME).signed, true);
 });

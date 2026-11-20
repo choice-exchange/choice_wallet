@@ -326,3 +326,17 @@ test("an older record's endpoints are said to be possibly a site's", async () =>
   assert.ok(f, JSON.stringify(r.risk));
   assert.match(f.message, /a site may have given/);
 });
+
+// Review of run-3's fixes: read back by Pool's own rule, so an endpoint add() kept (any case,
+// a query after a local port) isn't dropped on the next load.
+test("an added chain's endpoints read back by the rule they were kept by", async () => {
+  const { service, local } = await wallet(chain({ balances: { inj: INJ } }));
+  await local.set({
+    added_chains: [
+      { chainId: 56, name: "Smart Chain", symbol: "BNB", rpc: ["HTTPS://bnb-rpc.example", "http://localhost:8545?key=x"], testnet: false, rpcFrom: null },
+      { chainId: 57, name: "Plain Http", symbol: "X", rpc: ["http://rpc.example"], testnet: false, rpcFrom: null },
+    ],
+  });
+  const s = ok<Status>(await service.handle({ type: "status" }));
+  assert.deepEqual(s.added.map((a) => a.chainId), [56]);
+});

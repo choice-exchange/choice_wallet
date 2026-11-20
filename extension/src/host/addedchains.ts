@@ -66,8 +66,8 @@ export interface AddedChainsDeps {
 function storedChain(v: unknown): AddedChain | null {
   if (!isObject(v) || checkAddedChain(v as { chainId: unknown; name: unknown; symbol: unknown })) return null;
   const rpc = v["rpc"];
-  // The same rule as adding one: https, or plain http to this computer only.
-  if (!Array.isArray(rpc) || rpc.length === 0 || rpc.length > MAX_RPC || !rpc.every((u) => typeof u === "string" && /^(https:\/\/|http:\/\/(localhost|127\.0\.0\.1)(:[0-9]{1,5})?(\/|$))/.test(u))) return null;
+  // The same rule as adding one (Pool's): https, or plain http to this computer only.
+  if (!Array.isArray(rpc) || rpc.length === 0 || rpc.length > MAX_RPC || !rpc.every(usableEndpoint)) return null;
   if (typeof v["testnet"] !== "boolean") return null;
   const explorer = v["explorer"];
   const logo = v["logo"];
@@ -102,6 +102,18 @@ function storedChain(v: unknown): AddedChain | null {
 
 /** An added chain's endpoints whose source wasn't recorded (an older version's record). */
 export const UNKNOWN_SOURCE = "unknown";
+
+/** An endpoint Pool would use: https, or plain http to this computer. */
+function usableEndpoint(u: unknown): boolean {
+  if (typeof u !== "string") return false;
+  try {
+    const p = new URL(u.trim());
+    const local = p.hostname === "127.0.0.1" || p.hostname === "localhost";
+    return p.protocol === "https:" || (local && p.protocol === "http:");
+  } catch {
+    return false;
+  }
+}
 
 /** A site's origin, as the browser gives it (./service.ts `dappOrigin`). */
 function isOrigin(v: unknown): v is string {

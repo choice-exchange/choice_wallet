@@ -224,16 +224,8 @@ pub const RED_ACTIONS: &[&str] = &[
 
 /// Keys other contracts use too (a multisig's `approve`, a bridge's `transfer`): unread only
 /// when the message carries a field a token call would, so it reads like one.
-const COMMON_ACTIONS: &[&str] = &["transfer", "send", "burn", "approve", "revoke", "mint"];
-const TOKEN_FIELDS: &[&str] = &[
-    "amount",
-    "recipient",
-    "spender",
-    "token_id",
-    "operator",
-    "contract",
-    "owner",
-];
+const COMMON_ACTIONS: &[&str] = &["transfer", "send", "burn", "approve", "revoke"];
+const TOKEN_FIELDS: &[&str] = &["amount", "recipient", "spender", "token_id", "operator", "contract"];
 
 /// A message the token rules would have read, had it been shaped like the standard's.
 fn token_named(o: &serde_json::Map<String, serde_json::Value>) -> Option<&str> {
@@ -902,10 +894,6 @@ mod tests {
             Error::Amount("07".into())
         );
         for (json, action) in [
-            (
-                r#"{"mint":{"recipient":"inj1a","amount":"5","token_id":"7","owner":"inj1a"}}"#,
-                "mint",
-            ),
             (r#"{"set_withdraw_address":{"address":7}}"#, "set_withdraw_address"),
             (
                 r#"{"update_minter_ownership":{"transfer_ownership":{}}}"#,
@@ -920,8 +908,14 @@ mod tests {
                 "{json}"
             );
         }
-        // Another contract's own mint, carrying nothing a token's would.
+        // A mint makes new tokens rather than moving the signer's: any other shape (a
+        // launchpad's own, or one with both an amount and an NFT ID) is another contract's call.
         assert_eq!(parse(br#"{"mint":{}}"#).unwrap(), ContractCall::Other);
+        assert_eq!(parse(br#"{"mint":{"amount":2}}"#).unwrap(), ContractCall::Other);
+        assert_eq!(
+            parse(br#"{"mint":{"recipient":"inj1a","amount":"5","token_id":"7","owner":"inj1a"}}"#).unwrap(),
+            ContractCall::Other
+        );
     }
 
     #[test]

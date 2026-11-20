@@ -15,6 +15,7 @@
 
 import { EVM_MSG, erc20Event, evmCall, transferRecipient, type Erc20Event } from "./evmtx.ts";
 import type { Coin, IndexedTx, TxEvent } from "./lcd.ts";
+import { isObject } from "./pool.ts";
 import { NETWORKS } from "./networks.ts";
 import { evmDenom } from "./tokens.ts";
 import { toBigInt } from "./units.ts";
@@ -145,7 +146,7 @@ export function balanceChanges(
   fee: readonly Coin[],
   signer = false,
   delegated = false,
-): { changes: Coin[]; signed: boolean; from?: string } {
+): { changes: Coin[]; signed: boolean; paid: boolean; from?: string } {
   const net = new Map<string, bigint>();
   const add = (coins: Coin[], sign: bigint) => {
     for (const c of coins) net.set(c.denom, (net.get(c.denom) ?? 0n) + sign * toBigInt(c.amount));
@@ -164,18 +165,25 @@ export function balanceChanges(
   }
   // fee_payer is the first signer only when nobody else paid: a fee granter never signs.
   const signed = signer || (!delegated && feePayer === address);
-  if (signed) add([...fee], 1n); // the fee is reported apart
+  // Whoever the fee came from: the events name it, or (EVM) the signer paid. It is reported
+  // apart, never as a change, so a grantee's send to a granter moves only what it sent.
+  const paid = feePayer === address || (feePayer === undefined && signer);
+  if (paid) add([...fee], 1n);
   const changes = [...net].filter(([, a]) => a !== 0n).map(([denom, a]) => ({ denom, amount: a.toString() }));
-  return { changes, signed, ...(from ? { from } : {}) };
+  return { changes, signed, paid, ...(from ? { from } : {}) };
 }
 
 const ERC20_DENOM = /^erc20:(0x[0-9a-fA-F]{40})$/;
 
 /** The fields that name each message's signer, by the SDK's first-signer rule. */
-const SIGNER_FIELDS = ["from_address", "sender", "delegator_address", "granter", "voter", "proposer", "depositor", "signer"];
+const SIGNER_FIELDS = ["from_address", "sender", "delegator_address", "granter", "voter", "proposer", "depositor", "signer", "authority", "admin"];
 
 function messageSigner(tx: IndexedTx, address: string): boolean {
-  return tx.messages.some((m) => (m["@type"] === "/cosmos.authz.v1beta1.MsgExec" ? m["grantee"] === address : SIGNER_FIELDS.some((k) => m[k] === address)));
+  return tx.messages.some((m) => {
+    if (m["@type"] === "/cosmos.authz.v1beta1.MsgExec") return m["grantee"] === address;
+    if (m["@type"] === "/cosmos.bank.v1beta1.MsgMultiSend") return Array.isArray(m["inputs"]) && m["inputs"].some((i) => isObject(i) && i["address"] === address);
+    return SIGNER_FIELDS.some((k) => m[k] === address);
+  });
 }
 
 export function summarize(tx: IndexedTx, address: string, evm?: EvmView): Activity {
@@ -190,7 +198,7 @@ export function summarize(tx: IndexedTx, address: string, evm?: EvmView): Activi
   // signed is in the messages' own signer fields (run-3: a grantee's tx read as the granter's).
   const delegated = tx.feeGranter !== undefined || tx.feePayer !== undefined;
   const bank = balanceChanges(tx.events, address, tx.fee, evmSigner || (delegated && messageSigner(tx, address)), delegated);
-  const { signed } = bank;
+  const { signed, paid } = bank;
   let { changes, from } = bank;
 
   // ERC20 logs: who moved what, and what counts that bank events didn't already.
@@ -235,7 +243,7 @@ export function summarize(tx: IndexedTx, address: string, evm?: EvmView): Activi
     ok: tx.code === 0,
     signed,
     changes,
-    fee: signed ? tx.fee : [],
+    fee: paid ? tx.fee : [],
     ...(tx.evm?.hash ? { evmHash: tx.evm.hash } : {}),
   };
   const types = tx.messages.map((m) => String(m["@type"] ?? ""));
