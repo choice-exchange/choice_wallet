@@ -12,6 +12,7 @@ import { useKept } from "./kept";
 import { BackBar, Callout, Screen, Segmented, tokenSub } from "./kit";
 import type { NetworkId, SendReview, SwapQuote, SwapToken } from "./protocol";
 import { errorText, useRequest } from "./request";
+import { swapValueLost } from "./review";
 import { TokenMark } from "./TokenMark";
 
 /** What the user has typed, kept while they review and come back. */
@@ -188,6 +189,7 @@ export function SwapView({
       </div>
       {problem && <p className="error">{problem}</p>}
       {quoteError && <Callout level="amber">{quoteError}</Callout>}
+      {q && from && to && <ValueLost lost={swapValueLost(q.amountIn, q.amountOut, from, to)} />}
       {q && from && to && (
         <div className="well rows">
           <div className="row">
@@ -219,6 +221,13 @@ export function SwapView({
       <p className="footnote">Quotes and routes from Choice. Network: {network === "testnet" ? "Injective testnet" : "Injective"} (EVM).</p>
     </Screen>
   );
+}
+
+/** The quote against the wallet's own prices: a router that is wrong, or a pool that is
+ *  thin, pays much less than the tokens are worth, and the minimum only holds it to that. */
+function ValueLost({ lost }: { lost: number | null }) {
+  if (lost === null || lost < 0.05) return null;
+  return <Callout level={lost >= 0.2 ? "red" : "amber"}>You get about {Math.round(lost * 100)}% less than you pay, by Choice&apos;s prices.</Callout>;
 }
 
 function Chip({ token, placeholder, label, onClick }: { token: SwapToken | undefined; placeholder: string; label: string; onClick: () => void }) {

@@ -68,14 +68,20 @@ export function createSwaps(sender: Sender, session: Store, fetch: Fetch, shown:
       out.push(b);
       seen.add(b.denom);
     }
+    const listed: SwapToken[] = [];
     for (const t of knownTokens(network)) {
       if (seen.has(t.denom) || (await evmToken(network, t.denom)) === null) continue;
-      out.push(t);
+      listed.push(t);
       seen.add(t.denom);
     }
     const chosen: string[] = [];
     for (const dn of await shown(network)) if (!seen.has(dn) && (await evmToken(network, dn)) !== null) chosen.push(dn);
-    const described = await sender.tokensFor(network, chosen);
+    // Listed tokens not held get their price too: the swap screen weighs a quote by them.
+    const described = await sender.tokensFor(network, [...listed.map((t) => t.denom), ...chosen]);
+    for (const t of listed) {
+      const p = described[t.denom]?.priceUsd;
+      out.push(p ? { ...t, priceUsd: p } : t);
+    }
     for (const dn of chosen) if (described[dn]) out.push(described[dn]);
     return { ok: true, result: out };
   }

@@ -1,7 +1,7 @@
 // What a review shows, from the vault's decode of the transaction that will be signed: the
 // sends, the conversions, anything else the transaction does, and the fee.
 
-import { adapterCw20, adapterDenom, boundErc20, cctpChainByCaip2, chainByCaip2, chainCoin, chainUsdc, cw20Denom, evmDenom, isContractAddress, NETWORKS } from "@choice-wallet/chain";
+import { adapterCw20, adapterDenom, boundErc20, cctpChainByCaip2, chainByCaip2, chainCoin, chainUsdc, cw20Denom, evmDenom, formatUnits, isContractAddress, NETWORKS } from "@choice-wallet/chain";
 
 import type { Coin, CosmosDisplay, EvmDisplay, EvmSwapCall, Finding, NetworkId, SendReview, SolanaDisplay, SwapStepInfo } from "./protocol";
 
@@ -405,4 +405,17 @@ function solanaShown(d: SolanaDisplay, cluster: string, findings: Finding[]): Sh
     out.approvals.push({ token, spender, amount: p.amount, via: "token" });
   }
   return out;
+}
+
+/** How much less a swap quote pays than it costs, as a fraction, by the wallet's prices
+ *  (Choice's price index, apart from the router that made the quote); null without a price
+ *  for both tokens. The Choice fee and the pools' spread are in it. */
+export function swapValueLost(amountIn: string, amountOut: string, from: { decimals: number; priceUsd?: string }, to: { decimals: number; priceUsd?: string }): number | null {
+  const pIn = Number(from.priceUsd);
+  const pOut = Number(to.priceUsd);
+  if (!(pIn > 0) || !(pOut > 0)) return null;
+  const paid = Number(formatUnits(amountIn, from.decimals)) * pIn;
+  const got = Number(formatUnits(amountOut, to.decimals)) * pOut;
+  if (!(paid > 0) || !Number.isFinite(got)) return null;
+  return 1 - got / paid;
 }

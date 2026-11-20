@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { CosmosDisplay } from "../src/protocol.ts";
-import { shown } from "../src/review.ts";
+import { shown, swapValueLost } from "../src/review.ts";
 
 // The BIP-39 test phrase's account and the EIP-155 example key's (both published).
 const ME = "inj1npvwllfr9dqr8erajqqr6s0vxnk2ak55re90dz";
@@ -297,4 +297,20 @@ test("Solana approval cards: one per token account", () => {
   assert.deepEqual(cards([approve(X, "1")], [simulated(Y, "4999999")]), ["1", "4999999"]);
   // Two simulated delegates, two accounts: both shown.
   assert.deepEqual(cards([], [simulated(X, "7"), simulated(Y, "8")]), ["7", "8"]);
+});
+
+// Review of #7's list: a swap quote is weighed against the wallet's own prices, so a router
+// that is wrong (or a thin pool) can't pass off a bad rate as the market's.
+test("a swap quote's lost value, by the wallet's prices", () => {
+  const inj = { decimals: 18, priceUsd: "20" };
+  const usdt = { decimals: 6, priceUsd: "1" };
+  // 1 INJ for 19.80 USDT: 1% less.
+  assert.ok(Math.abs(swapValueLost("1000000000000000000", "19800000", inj, usdt)! - 0.01) < 1e-9);
+  // 1 INJ for 2 USDT: 90% less.
+  assert.ok(Math.abs(swapValueLost("1000000000000000000", "2000000", inj, usdt)! - 0.9) < 1e-9);
+  // More than it costs: negative, never a warning.
+  assert.ok(swapValueLost("1000000000000000000", "21000000", inj, usdt)! < 0);
+  // Without both prices, nothing is said.
+  assert.equal(swapValueLost("1", "1", inj, { decimals: 6 }), null);
+  assert.equal(swapValueLost("0", "1", inj, usdt), null);
 });
