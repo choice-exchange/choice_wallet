@@ -79,10 +79,34 @@ pub enum ContractCall {
         new_minter: Option<String>,
     },
     /// CW20 adapter `redeem_and_transfer`: burn the attached adapter denom and send the CW20
-    /// to `recipient`, or to the sender when `None`.
+    /// to `recipient`, or to the sender when `None`. `redeem_and_send` does the same with a
+    /// CW20 `send` to the contract `recipient`, which runs its receive hook with `hook`.
     AdapterRedeem {
         /// Who receives the CW20.
         recipient: Option<String>,
+        /// The base64 message for the receiving contract (`redeem_and_send`).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        hook: Option<String>,
+    },
+    /// CW20 `mint`: create `amount` new tokens for `recipient`. Only the minter can.
+    Cw20Mint {
+        /// Who receives them.
+        recipient: String,
+        /// Amount in the token's base units.
+        amount: String,
+    },
+    /// CW721 `mint`: create NFT `token_id` for `owner`. Only the minter can.
+    NftMint {
+        /// The new NFT's ID.
+        token_id: String,
+        /// Who receives it.
+        owner: String,
+    },
+    /// cw721 0.19+ `set_withdraw_address`: the collection's funds go to `address` when
+    /// anyone calls `withdraw_funds`. Only the creator can.
+    WithdrawAddress {
+        /// Where the funds go.
+        address: String,
     },
     /// CW721 `transfer_nft`: give NFT `token_id` to `recipient`.
     NftTransfer {
@@ -139,6 +163,23 @@ pub enum ContractCall {
     /// cw-ownable `update_ownership` with `renounce_ownership`: the contract has no owner
     /// from then on.
     OwnershipRenounce,
+    /// cw721 0.19+ `update_minter_ownership` / `update_creator_ownership` with
+    /// `transfer_ownership`: offer the collection's `role` (`minter` or `creator`) to
+    /// `new_owner`.
+    RoleTransfer {
+        /// `minter` or `creator`.
+        role: String,
+        /// Who is offered it.
+        new_owner: String,
+        /// When the offer ends, as the contract's JSON; `None` for never.
+        expiry: Option<String>,
+    },
+    /// cw721 0.19+ `update_minter_ownership` / `update_creator_ownership` with
+    /// `renounce_ownership`: nobody holds `role` from then on.
+    RoleRenounce {
+        /// `minter` or `creator`.
+        role: String,
+    },
     /// A call named like a token call (`action`, such as `transfer` or `approve`) in a shape
     /// the wallet can't read: a field of the wrong type, or a `burn` with both an amount
     /// and an NFT ID (a CW20 burns the one, a CW721 the other). The standard contracts
@@ -162,12 +203,37 @@ const TOKEN_ACTIONS: &[&str] = &[
     "approve_all",
     "revoke_all",
     "update_ownership",
+    "update_minter_ownership",
+    "update_creator_ownership",
+    "set_withdraw_address",
+    "redeem_and_transfer",
+    "redeem_and_send",
+];
+
+/// Of [`TOKEN_ACTIONS`] and [`COMMON_ACTIONS`], those whose read form can be graded red: an
+/// unread one is graded as severely.
+pub const RED_ACTIONS: &[&str] = &[
+    "increase_allowance",
+    "update_minter",
+    "approve_all",
+    "update_ownership",
+    "update_minter_ownership",
+    "update_creator_ownership",
+    "set_withdraw_address",
 ];
 
 /// Keys other contracts use too (a multisig's `approve`, a bridge's `transfer`): unread only
 /// when the message carries a field a token call would, so it reads like one.
-const COMMON_ACTIONS: &[&str] = &["transfer", "send", "burn", "approve", "revoke"];
-const TOKEN_FIELDS: &[&str] = &["amount", "recipient", "spender", "token_id", "operator", "contract"];
+const COMMON_ACTIONS: &[&str] = &["transfer", "send", "burn", "approve", "revoke", "mint"];
+const TOKEN_FIELDS: &[&str] = &[
+    "amount",
+    "recipient",
+    "spender",
+    "token_id",
+    "operator",
+    "contract",
+    "owner",
+];
 
 /// A message the token rules would have read, had it been shaped like the standard's.
 fn token_named(o: &serde_json::Map<String, serde_json::Value>) -> Option<&str> {
@@ -199,6 +265,15 @@ enum Known {
     RedeemAndTransfer {
         recipient: Option<String>,
     },
+    RedeemAndSend {
+        recipient: String,
+        submsg: String,
+    },
+    /// CW20 `{"mint": {"recipient", "amount"}}` or CW721 `{"mint": {"token_id", "owner", …}}`.
+    Mint(Mint),
+    SetWithdrawAddress {
+        address: String,
+    },
     IncreaseAllowance {
         spender: String,
         amount: String,
@@ -218,6 +293,8 @@ enum Known {
         new_minter: Option<String>,
     },
     UpdateOwnership(OwnerAction),
+    UpdateMinterOwnership(OwnerAction),
+    UpdateCreatorOwnership(OwnerAction),
     TransferNft {
         recipient: String,
         token_id: String,
@@ -265,6 +342,30 @@ struct BurnToken {
     token_id: String,
 }
 
+/// `mint`'s two shapes: CW20 by amount, CW721 by token.
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum Mint {
+    Amount(MintAmount),
+    Token(MintToken),
+}
+
+#[derive(Serialize, Deserialize)]
+struct MintAmount {
+    recipient: String,
+    amount: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct MintToken {
+    token_id: String,
+    owner: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    token_uri: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    extension: Option<serde_json::Value>,
+}
+
 /// cw-ownable's `update_ownership` actions.
 #[allow(clippy::enum_variant_names, reason = "the wire names are cw-ownable's")]
 #[derive(Serialize, Deserialize)]
@@ -307,12 +408,10 @@ fn read(msg: &[u8]) -> Result<(ContractCall, Vec<String>), Error> {
     let Ok(known) = serde_json::from_slice::<Known>(msg) else {
         return Ok((unread(), Vec::new()));
     };
-    // A burn with both an amount and an NFT ID burns tokens on a CW20 and an NFT on a CW721:
-    // which one is the contract's to say.
-    if let Known::Burn(_) = known
-        && value["burn"].get("amount").is_some()
-        && value["burn"].get("token_id").is_some()
-    {
+    // A burn or mint with both an amount and an NFT ID means one thing to a CW20 and another
+    // to a CW721: which one is the contract's to say.
+    let both = |key: &str| value[key].get("amount").is_some() && value[key].get("token_id").is_some();
+    if matches!(known, Known::Burn(_)) && both("burn") || matches!(known, Known::Mint(_)) && both("mint") {
         return Ok((unread(), Vec::new()));
     }
     let mut ignored = Vec::new();
@@ -359,7 +458,8 @@ fn recognised(known: Known) -> Result<ContractCall, Error> {
     | Known::Send { amount, .. }
     | Known::IncreaseAllowance { amount, .. }
     | Known::DecreaseAllowance { amount, .. }
-    | Known::Burn(Burn::Amount(BurnAmount { amount })) = &known
+    | Known::Burn(Burn::Amount(BurnAmount { amount }))
+    | Known::Mint(Mint::Amount(MintAmount { amount, .. })) = &known
         && !is_canonical_amount(amount)
     {
         return Err(Error::Amount(amount.clone()));
@@ -368,7 +468,8 @@ fn recognised(known: Known) -> Result<ContractCall, Error> {
     | Known::SendNft { token_id, .. }
     | Known::Approve { token_id, .. }
     | Known::Revoke { token_id, .. }
-    | Known::Burn(Burn::Token(BurnToken { token_id })) = &known
+    | Known::Burn(Burn::Token(BurnToken { token_id }))
+    | Known::Mint(Mint::Token(MintToken { token_id, .. })) = &known
         && !is_token_id(token_id)
     {
         return Err(Error::TokenId(token_id.clone()));
@@ -377,7 +478,14 @@ fn recognised(known: Known) -> Result<ContractCall, Error> {
     Ok(match known {
         Known::Transfer { recipient, amount } => ContractCall::Cw20Transfer { recipient, amount },
         Known::Send { contract, amount, msg } => ContractCall::Cw20Send { contract, amount, msg },
-        Known::RedeemAndTransfer { recipient } => ContractCall::AdapterRedeem { recipient },
+        Known::RedeemAndTransfer { recipient } => ContractCall::AdapterRedeem { recipient, hook: None },
+        Known::RedeemAndSend { recipient, submsg } => ContractCall::AdapterRedeem {
+            recipient: Some(recipient),
+            hook: Some(submsg),
+        },
+        Known::Mint(Mint::Amount(MintAmount { recipient, amount })) => ContractCall::Cw20Mint { recipient, amount },
+        Known::Mint(Mint::Token(MintToken { token_id, owner, .. })) => ContractCall::NftMint { token_id, owner },
+        Known::SetWithdrawAddress { address } => ContractCall::WithdrawAddress { address },
         Known::IncreaseAllowance {
             spender,
             amount,
@@ -437,9 +545,23 @@ fn recognised(known: Known) -> Result<ContractCall, Error> {
             }
         }
         Known::UpdateOwnership(OwnerAction::RenounceOwnership) => ContractCall::OwnershipRenounce,
+        Known::UpdateMinterOwnership(action) => role("minter", action),
+        Known::UpdateCreatorOwnership(action) => role("creator", action),
         // Taking ownership offered to the signer hands nothing over.
         Known::UpdateOwnership(OwnerAction::AcceptOwnership) => ContractCall::Other,
     })
+}
+
+fn role(role: &str, action: OwnerAction) -> ContractCall {
+    match action {
+        OwnerAction::TransferOwnership { new_owner, expiry } => ContractCall::RoleTransfer {
+            role: role.into(),
+            new_owner,
+            expiry: expiry.map(|e| e.to_string()),
+        },
+        OwnerAction::RenounceOwnership => ContractCall::RoleRenounce { role: role.into() },
+        OwnerAction::AcceptOwnership => ContractCall::Other,
+    }
 }
 
 /// CW20 `{"transfer": {"recipient", "amount"}}`.
@@ -518,7 +640,17 @@ mod tests {
         );
         assert_eq!(
             parse(br#"{"redeem_and_transfer":{}}"#).unwrap(),
-            ContractCall::AdapterRedeem { recipient: None }
+            ContractCall::AdapterRedeem {
+                recipient: None,
+                hook: None
+            }
+        );
+        assert_eq!(
+            parse(br#"{"redeem_and_send":{"recipient":"inj1c","submsg":"e30="}}"#).unwrap(),
+            ContractCall::AdapterRedeem {
+                recipient: Some("inj1c".into()),
+                hook: Some("e30=".into())
+            }
         );
     }
 
@@ -700,7 +832,8 @@ mod tests {
         assert_eq!(
             parse(br#"{"redeem_and_transfer":{"recipient":"inj1b","x":[]}}"#).unwrap(),
             ContractCall::AdapterRedeem {
-                recipient: Some("inj1b".into())
+                recipient: Some("inj1b".into()),
+                hook: None
             }
         );
         // An extra field doesn't hide a non-canonical amount either.
@@ -720,6 +853,75 @@ mod tests {
         // Not a token call: nothing to name.
         assert!(ignored_fields(br#"{"swap":{"offer_asset":{},"x":1}}"#).is_empty());
         assert!(ignored_fields(br#"{"update_ownership":"accept_ownership"}"#).is_empty());
+    }
+
+    #[test]
+    fn recognises_cw721_v019_admin_calls_and_mints() {
+        assert_eq!(
+            parse(br#"{"update_minter_ownership":{"transfer_ownership":{"new_owner":"inj1o","expiry":null}}}"#)
+                .unwrap(),
+            ContractCall::RoleTransfer {
+                role: "minter".into(),
+                new_owner: "inj1o".into(),
+                expiry: None
+            }
+        );
+        assert_eq!(
+            parse(br#"{"update_creator_ownership":"renounce_ownership"}"#).unwrap(),
+            ContractCall::RoleRenounce { role: "creator".into() }
+        );
+        assert_eq!(
+            parse(br#"{"update_creator_ownership":"accept_ownership"}"#).unwrap(),
+            ContractCall::Other
+        );
+        assert_eq!(
+            parse(br#"{"set_withdraw_address":{"address":"inj1w"}}"#).unwrap(),
+            ContractCall::WithdrawAddress {
+                address: "inj1w".into()
+            }
+        );
+        assert_eq!(
+            parse(br#"{"mint":{"recipient":"inj1a","amount":"5"}}"#).unwrap(),
+            ContractCall::Cw20Mint {
+                recipient: "inj1a".into(),
+                amount: "5".into()
+            }
+        );
+        let nft = br#"{"mint":{"token_id":"7","owner":"inj1a","token_uri":"ipfs://x","extension":{"a":1}}}"#;
+        assert_eq!(
+            parse(nft).unwrap(),
+            ContractCall::NftMint {
+                token_id: "7".into(),
+                owner: "inj1a".into()
+            }
+        );
+        // A CW721 mint's own optional fields aren't extra.
+        assert!(ignored_fields(nft).is_empty());
+        assert_eq!(
+            parse(br#"{"mint":{"recipient":"inj1a","amount":"07"}}"#).unwrap_err(),
+            Error::Amount("07".into())
+        );
+        for (json, action) in [
+            (
+                r#"{"mint":{"recipient":"inj1a","amount":"5","token_id":"7","owner":"inj1a"}}"#,
+                "mint",
+            ),
+            (r#"{"set_withdraw_address":{"address":7}}"#, "set_withdraw_address"),
+            (
+                r#"{"update_minter_ownership":{"transfer_ownership":{}}}"#,
+                "update_minter_ownership",
+            ),
+            (r#"{"redeem_and_send":{"recipient":"inj1c"}}"#, "redeem_and_send"),
+            (r#"{"redeem_and_transfer":{"recipient":7}}"#, "redeem_and_transfer"),
+        ] {
+            assert_eq!(
+                parse(json.as_bytes()).unwrap(),
+                ContractCall::Unread { action: action.into() },
+                "{json}"
+            );
+        }
+        // Another contract's own mint, carrying nothing a token's would.
+        assert_eq!(parse(br#"{"mint":{}}"#).unwrap(), ContractCall::Other);
     }
 
     #[test]
@@ -752,7 +954,6 @@ mod tests {
         for json in [
             r#"{"transfer":{"recipient":"inj1a","amount":"5"},"send":{}}"#,
             r#"{"swap":{"offer_asset":{}}}"#,
-            r#"{"mint":{"recipient":"inj1a","amount":"5"}}"#,
             r#"{"transfer_from":{"owner":"inj1a","recipient":"inj1b","amount":"5"}}"#,
             // Common names with nothing a token call would carry: another contract's own.
             r#"{"approve":{"proposal_id":7}}"#,

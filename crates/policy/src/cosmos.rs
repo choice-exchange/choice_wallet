@@ -1,6 +1,6 @@
 //! Rules for Cosmos messages, whichever sign path decoded them.
 
-use choice_wallet_cosmos::cosmwasm::{ContractCall, ignored_fields};
+use choice_wallet_cosmos::cosmwasm::{ContractCall, RED_ACTIONS, ignored_fields};
 use choice_wallet_cosmos::msg::{Allowance, Authorization, Coin, Msg};
 use choice_wallet_evm::U256;
 use serde_json::json;
@@ -245,9 +245,14 @@ fn message(
                     if !known_contract(ctx, contract) {
                         out.push(new_contract(contract));
                     }
+                    // As severe as what the call could be.
                     out.push(finding(
                         "contract_call_unread",
-                        Level::Amber,
+                        if RED_ACTIONS.contains(&action.as_str()) {
+                            Level::Red
+                        } else {
+                            Level::Amber
+                        },
                         format!(
                             "Named like a token call ({action}) but not shaped like one, so the wallet can't say what it moves."
                         ),
@@ -318,25 +323,101 @@ fn message(
                     },
                     json!({ "collection": contract, "spender": spender, "token_id": token_id }),
                 )),
-                ContractCall::AdapterRedeem { recipient: to } => {
+                ContractCall::AdapterRedeem { recipient: to, hook } => {
                     // Redeem-shaped is a shape any contract can take: only the adapter the
                     // host knows is the wallet's conversion.
                     if !known_contract(ctx, contract) {
                         out.push(new_contract(contract));
                     }
-                    // The CW20 goes to `to`: a send, when that isn't the signer.
-                    if let Some(to) = to.as_deref().filter(|to| !same(to, signer)) {
+                    // The CW20 goes to `to`: a send, when that isn't the signer, and always
+                    // with a hook, which hands it to a contract's code.
+                    if let Some(to) = to.as_deref().filter(|to| hook.is_some() || !same(to, signer)) {
                         recipient(ctx, to, Some(memo), out);
                         out.push(finding(
                             "redeem_to_other",
                             Level::Amber,
-                            format!("The CW20 goes to {}, not to this account.", short(to)),
+                            if hook.is_some() {
+                                format!(
+                                    "The CW20 goes to contract {}, which runs its own code with it.",
+                                    short(to)
+                                )
+                            } else {
+                                format!("The CW20 goes to {}, not to this account.", short(to))
+                            },
                             json!({ "contract": contract, "recipient": to }),
                         ));
                     }
                 }
+                ContractCall::Cw20Mint { recipient: to, amount } => out.push(finding(
+                    "token_mint",
+                    Level::Amber,
+                    format!("Mints new tokens of {} for {}.", short(contract), short(to)),
+                    json!({ "token": contract, "recipient": to, "amount": amount }),
+                )),
+                ContractCall::NftMint { token_id, owner } => out.push(finding(
+                    "token_mint",
+                    Level::Amber,
+                    format!(
+                        "Mints NFT {} of collection {} for {}.",
+                        nft_name(token_id),
+                        short(contract),
+                        short(owner)
+                    ),
+                    json!({ "collection": contract, "token_id": token_id, "owner": owner }),
+                )),
+                ContractCall::WithdrawAddress { address } => out.push(if same(address, signer) {
+                    finding(
+                        "withdraw_address",
+                        Level::Info,
+                        format!(
+                            "Sends collection {}'s funds to this account from now on.",
+                            short(contract)
+                        ),
+                        json!({ "collection": contract, "address": address }),
+                    )
+                } else {
+                    finding(
+                        "withdraw_address",
+                        Level::Red,
+                        format!(
+                            "Sends collection {}'s funds to {} from now on.",
+                            short(contract),
+                            short(address)
+                        ),
+                        json!({ "collection": contract, "address": address }),
+                    )
+                }),
+                ContractCall::RoleTransfer {
+                    role,
+                    new_owner,
+                    expiry,
+                } => out.push(finding(
+                    "contract_owner",
+                    Level::Red,
+                    format!(
+                        "Hands the {role} role of contract {} to {}.",
+                        short(contract),
+                        short(new_owner)
+                    ),
+                    json!({ "contract": contract, "role": role, "new_owner": new_owner, "expiry": expiry }),
+                )),
+                ContractCall::RoleRenounce { role } => out.push(finding(
+                    "contract_owner",
+                    Level::Red,
+                    format!("Gives up the {role} role of contract {} for good.", short(contract)),
+                    json!({ "contract": contract, "role": role }),
+                )),
                 ContractCall::Other => {
-                    if !known_contract(ctx, contract) {
+                    if known_contract(ctx, contract) {
+                        // A contract the wallet itself calls (the CW20 adapter, a collection it
+                        // sends from), in a call it doesn't read: never silent.
+                        out.push(finding(
+                            "known_contract_unread",
+                            Level::Amber,
+                            format!("Calls contract {} in a way the wallet can't read.", short(contract)),
+                            json!({ "contract": contract }),
+                        ));
+                    } else {
                         out.push(new_contract(contract));
                     }
                 }
@@ -715,6 +796,7 @@ mod tests {
                 contract,
                 ContractCall::AdapterRedeem {
                     recipient: to.map(Into::into),
+                    hook: None,
                 },
             );
             let ctx = Context {
@@ -724,6 +806,35 @@ mod tests {
             let a = cosmos(&[m], ME, "", CosmosFee::default(), &ctx);
             (a.level, a.findings.iter().map(|f| f.rule).collect::<Vec<_>>())
         };
+        // redeem_and_send hands the CW20 to a contract's code: said, whoever it names.
+        let ctx = Context {
+            known_contracts: vec![ADAPTER.into()],
+            ..Default::default()
+        };
+        let hooked = cosmos(
+            &[exec(
+                ADAPTER,
+                ContractCall::AdapterRedeem {
+                    recipient: Some(OTHER.into()),
+                    hook: Some("e30=".into()),
+                },
+            )],
+            ME,
+            "",
+            CosmosFee::default(),
+            &ctx,
+        );
+        assert_eq!(hooked.level, Level::Amber);
+        assert!(rules(&hooked).contains(&"redeem_to_other"));
+        // A call to the adapter the wallet can't read is never silent.
+        let other = cosmos(
+            &[exec(ADAPTER, ContractCall::Other)],
+            ME,
+            "",
+            CosmosFee::default(),
+            &ctx,
+        );
+        assert_eq!(rules(&other), ["known_contract_unread"]);
         // The wallet's own conversion: nothing to say.
         assert_eq!(redeem(ADAPTER, None), (Level::Info, vec![]));
         assert_eq!(redeem(ADAPTER, Some(ME)), (Level::Info, vec![]));
@@ -813,11 +924,41 @@ mod tests {
             Level::Red
         );
         assert_eq!(one(ContractCall::OwnershipRenounce).0, Level::Red);
+        // An unread call is as severe as what it could be.
         assert_eq!(
             one(ContractCall::Unread {
                 action: "increase_allowance".into()
             }),
+            (Level::Red, vec!["contract_call_unread", "new_contract"])
+        );
+        assert_eq!(
+            one(ContractCall::Unread {
+                action: "transfer".into()
+            }),
             (Level::Amber, vec!["contract_call_unread", "new_contract"])
+        );
+        assert_eq!(
+            one(ContractCall::RoleTransfer {
+                role: "minter".into(),
+                new_owner: OTHER.into(),
+                expiry: None
+            })
+            .0,
+            Level::Red
+        );
+        assert_eq!(one(ContractCall::RoleRenounce { role: "creator".into() }).0, Level::Red);
+        assert_eq!(
+            one(ContractCall::WithdrawAddress { address: OTHER.into() }).0,
+            Level::Red
+        );
+        assert_eq!(one(ContractCall::WithdrawAddress { address: ME.into() }).0, Level::Info);
+        assert_eq!(
+            one(ContractCall::Cw20Mint {
+                recipient: OTHER.into(),
+                amount: "5".into()
+            })
+            .0,
+            Level::Amber
         );
         // A plain decrease is quiet; one that also sets when the rest ends is amber.
         let decrease = |expires: Option<&str>| {

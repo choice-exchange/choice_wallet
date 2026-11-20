@@ -284,8 +284,9 @@ export function shown(display: SendReview["display"], network: NetworkId, swap?:
         carded.add(i);
         continue;
       }
-      // Redeeming at the adapter burns the attached bank form and returns the CW20.
-      if (call["type"] === "adapter_redeem" && contract === net.cw20Adapter && funds.length === 1) {
+      // Redeeming at the adapter burns the attached bank form and returns the CW20. One that
+      // hands it to a contract's hook (redeem_and_send) is a contract call, not a conversion.
+      if (call["type"] === "adapter_redeem" && call["hook"] === undefined && contract === net.cw20Adapter && funds.length === 1) {
         const inner = adapterCw20(network, funds[0]!.denom);
         if (inner) {
           out.converts.push({ from: funds[0]!, to: { denom: cw20Denom(inner), amount: funds[0]!.amount }, recipient: text(call["recipient"]) ?? c.signer });
