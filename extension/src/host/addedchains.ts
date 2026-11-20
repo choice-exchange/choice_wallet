@@ -76,22 +76,31 @@ function storedChain(v: unknown): AddedChain | null {
   // and the chain kept without it (run-2 NV1).
   const drawable = isChainLogo(logo) ? logo : undefined;
   if (llama !== undefined && !(typeof llama === "string" && /^[a-z0-9-]{1,40}$/.test(llama))) return null;
-  const rpcFrom = v["rpcFrom"];
-  if (rpcFrom !== undefined && !isOrigin(rpcFrom)) return null;
+  // Written with every record since run-3: a site's origin, or null for the user's own or the
+  // list's endpoints. A record without it is from before whose endpoints were kept: they may
+  // be a site's, so they are said to be until the user sets their own.
+  const legacy = !Object.hasOwn(v, "rpcFrom");
+  const rpcFrom = legacy ? UNKNOWN_SOURCE : v["rpcFrom"];
+  if (rpcFrom !== null && rpcFrom !== UNKNOWN_SOURCE && !isOrigin(rpcFrom)) return null;
+  const name = v["name"] as string;
   return {
     chainId: v["chainId"] as number,
     // One kept from before names were checked, called after a chain on the wallet's own list
-    // ("Ethereum" with its own chain ID): shown by its ID instead.
-    name: copiedChainName(v["name"] as string) ? `Chain ${v["chainId"] as number}` : (v["name"] as string),
+    // ("Ethereum" with its own chain ID), or from before a site's chain had to be named in
+    // plain letters: shown by its ID instead.
+    name: copiedChainName(name) || (legacy && !/^[\x20-\x7e]+$/.test(name)) ? `Chain ${v["chainId"] as number}` : name,
     symbol: v["symbol"] as string,
     rpc: rpc as string[],
     testnet: v["testnet"],
     ...(explorer ? { explorer: explorer as string } : {}),
     ...(drawable ? { logo: drawable } : {}),
     ...(llama ? { llama: llama as string } : {}),
-    ...(rpcFrom ? { rpcFrom: rpcFrom as string } : {}),
+    ...(typeof rpcFrom === "string" ? { rpcFrom } : {}),
   };
 }
+
+/** An added chain's endpoints whose source wasn't recorded (an older version's record). */
+export const UNKNOWN_SOURCE = "unknown";
 
 /** A site's origin, as the browser gives it (./service.ts `dappOrigin`). */
 function isOrigin(v: unknown): v is string {
@@ -195,7 +204,8 @@ export function createAddedChains(d: AddedChainsDeps) {
   }
 
   async function save(list: AddedChain[]): Promise<void> {
-    await d.local.set({ added_chains: list });
+    // The source always written: a record without it reads back as an older version's.
+    await d.local.set({ added_chains: list.map((c) => ({ ...c, rpcFrom: c.rpcFrom ?? null })) });
     setAddedChains(list);
   }
 
@@ -365,6 +375,7 @@ export function createAddedChains(d: AddedChainsDeps) {
       ...(onList?.llama ? { llama: onList.llama } : {}),
       ...(rpcFrom ? { rpcFrom } : {}),
     };
+    // On disk the source is always written, null for the user's own or the list's.
     await save([...current, chain]);
     return { ok: true, result: chain };
   }

@@ -27,6 +27,22 @@ function cosmos(messages: unknown, out: Set<string>, depth = 0): void {
   }
 }
 
+/** Token calls the policy runs its recipient rules on but the display doesn't type
+ *  (crates/policy/src/evm.rs contract_call): the destination, as the policy reads it. */
+const TO_FIRST = new Set(["1296ee62", "4000aea0"]); // transferAndCall: (to, amount, …)
+const FROM_THEN_TO = new Set(["23b872dd", "b88d4fde", "f242432a", "2eb2c2d6", "d8fbe994", "c1d34b89"]); // (from, to, …) from the signer
+
+function weighedTo(data: string, from: string): string | null {
+  const m = /^0x([0-9a-f]{8})((?:[0-9a-f]{64})+)/i.exec(data);
+  if (!m) return null;
+  const sel = m[1]!.toLowerCase();
+  const word = (i: number) => m[2]!.slice(64 * i, 64 * (i + 1));
+  const address = (i: number) => (/^0{24}[0-9a-f]{40}$/i.test(word(i)) ? `0x${word(i).slice(24)}` : null);
+  if (TO_FIRST.has(sel)) return address(0);
+  if (FROM_THEN_TO.has(sel) && address(0)?.toLowerCase() === from.toLowerCase()) return address(1);
+  return null;
+}
+
 export function recipientsOf(network: NetworkId, display: unknown): string[] {
   const d = obj(display);
   const out = new Set<string>();
@@ -44,6 +60,10 @@ export function recipientsOf(network: NetworkId, display: unknown): string[] {
       const call = obj(d["call"]);
       if ((call?.["type"] === "erc20_transfer" || call?.["type"] === "nft_transfer") && text(call["to"])) out.add(text(call["to"])!);
       else if (call?.["type"] === "transfer" && text(d["to"])) out.add(text(d["to"])!);
+      else {
+        const to = weighedTo(text(d["data"]) ?? "", text(d["from"]) ?? "");
+        if (to) out.add(to);
+      }
       break;
     }
   }

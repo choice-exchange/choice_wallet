@@ -93,7 +93,9 @@ export function createHoldings(d: HoldingsDeps) {
   const pairsDisk = diskCache<[string, string][]>(d.local, "cache_pairs", { fresh: PAIRS_TTL_MS, stale: 7 * DAY, max: 6 });
   // EVM transactions Blockscout knows of that this node's index doesn't hold (it keeps its
   // own window of history): not asked again for a while.
-  const unindexed = diskCache<true>(d.local, "cache_unindexed", { fresh: 6 * HOUR, stale: 6 * HOUR, max: 2000 });
+  // In memory only (run-3): its keys are transaction hashes from the account's history, which
+  // Reset and account removal must not leave on disk, and a worker's copy outlived Reset.
+  const unindexed = diskCache<true>(d.local, "cache_unindexed", { fresh: 6 * HOUR, stale: 6 * HOUR, max: 2000, memoryOnly: true });
   const pricesDisk = diskCache<{ observedAt: string; prices: [string, string][] }>(d.local, "cache_prices", { fresh: PRICE_TTL_MS, stale: 15 * MINUTE, fallback: 15 * MINUTE, max: 1 });
 
   async function lcd(network: NetworkId): Promise<Lcd> {

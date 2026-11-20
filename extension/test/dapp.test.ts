@@ -979,3 +979,12 @@ test("a site's review looks up at most a bounded number of tokens", async () => 
   ok(await s.service.handle({ type: "dapp_answer", id: w.id, approve: false }));
   await asked;
 });
+
+// Run-3: an unconnected site hears "Connect first." for any chain it names, and no message
+// names the chains the user added.
+test("an unconnected site can't read the chains the user added", async () => {
+  const s = await setup();
+  const site = s.page(SITE);
+  for (const id of ["0x38", "0x6f0", "0x2a2a2a2a"]) assert.equal((await site("wallet_switchEthereumChain", [{ chainId: id }])).error?.code, 4100, id);
+  assert.equal(s.ui.opened.length, 0);
+});

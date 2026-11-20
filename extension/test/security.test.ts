@@ -249,3 +249,31 @@ test("each install has an anti-phishing phrase, kept across lock and reset", asy
   const other = await wallet();
   assert.notEqual(ok<Status>(await other.service.handle({ type: "status" })).phrase, phrase);
 });
+
+// Run-3: a lock that lands while a password change runs stays a lock: the change doesn't
+// write its new unlock key after it.
+test("a lock during a password change isn't undone", async () => {
+  const { service, session, local } = await wallet();
+  const get = session.get.bind(session);
+  let vaultWritten = false;
+  const set = local.set.bind(local);
+  local.set = async (items) => {
+    if ("vault" in items) vaultWritten = true;
+    return set(items);
+  };
+  let locked = false;
+  session.get = async (keys) => {
+    const r = await get(keys);
+    // The change's check of the session, after its vault write: the user's Lock lands now.
+    if (vaultWritten && !locked && keys.includes("unlock_key")) {
+      locked = true;
+      ok(await service.handle({ type: "lock" }));
+    }
+    return r;
+  };
+  ok(await service.handle({ type: "change_password", password: PASSWORD, new_password: "another long password" }));
+  assert.ok(locked, "the lock landed");
+  assert.equal((await get(["unlock_key"]))["unlock_key"], undefined);
+  assert.equal(ok<{ unlocked: boolean }>(await service.handle({ type: "status" })).unlocked, false);
+  ok(await service.handle({ type: "unlock", password: "another long password" }));
+});

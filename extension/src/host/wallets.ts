@@ -524,8 +524,16 @@ export function createWallets(h: WalletsHost) {
     return { ok: true, result: { ...(phrase ? { phrase } : {}), ...(private_key ? { private_key } : {}) } };
   }
 
+  /** Locks so far: a lock changes it before anything it awaits, so a write that checks it
+   *  just before it is issued never undoes one. */
+  let locks = 0;
+  function noteLock(): void {
+    locks++;
+  }
+
   /** The vault under a new password. Every wallet, and the unlocked session, stay as they are. */
   async function changePassword(password: unknown, next: unknown, minimum: number): Promise<UiResponse<Status>> {
+    const at = locks;
     const s = await open();
     if ("ok" in s) return s;
     if (typeof password !== "string" || typeof next !== "string") return err("bad_request", "Enter both passwords.");
@@ -539,8 +547,10 @@ export function createWallets(h: WalletsHost) {
     const wallets = s.wallets.map((w) => (w.secret ? { ...w, secret: r.result.secrets[w.id] ?? "" } : w));
     if (wallets.some((w, i) => s.wallets[i]!.secret && !w.secret)) return err("internal", "A wallet's secret didn't come back. Nothing changed.");
     await h.local.set({ vault: r.result.vault, wallets });
-    // Locked meanwhile: it stays locked, and the new password opens it.
-    if ((await unlockKey()) === s.key) await h.session.set({ unlock_key: r.result.unlock_key });
+    // Locked meanwhile: it stays locked, and the new password opens it. Nothing is awaited
+    // between the check and the write's issue, so a lock after the check removes the new key.
+    const key = await unlockKey();
+    if (locks === at && key === s.key) await h.session.set({ unlock_key: r.result.unlock_key });
     return { ok: true, result: await status() };
   }
 
@@ -594,6 +604,7 @@ export function createWallets(h: WalletsHost) {
     status,
     chain,
     unlockKey,
+    noteLock,
     create: serial(create),
     unlock: serial(unlock),
     addWallet: serial(addWallet),

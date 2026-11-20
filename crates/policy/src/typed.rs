@@ -94,7 +94,33 @@ fn rule(td: &TypedData) -> Finding {
             )
         };
     }
-    if app == "Seaport" && primary == "OrderComponents" {
+    // EIP-3009 (USDC's own): a signed transfer anyone can submit.
+    if primary == "TransferWithAuthorization" || primary == "ReceiveWithAuthorization" {
+        let to = text(msg, "to").unwrap_or("someone");
+        return finding(
+            "token_authorization",
+            Level::Red,
+            format!(
+                "{} could take the amount shown of this token, without a transaction from you.",
+                short(to)
+            ),
+            json!({ "token": contract, "from": msg.get("from"), "to": to, "value": msg.get("value") }),
+        );
+    }
+    // ERC-2771 forwarders: a call someone else sends as you, which the wallet doesn't read.
+    if primary == "ForwardRequest" {
+        let to = text(msg, "to").unwrap_or("a contract");
+        return finding(
+            "forward_request",
+            Level::Red,
+            format!(
+                "Signs a call to {} that anyone can send as you. The wallet can't read what it does.",
+                short(to)
+            ),
+            json!({ "forwarder": contract, "to": to }),
+        );
+    }
+    if app == "Seaport" && (primary == "OrderComponents" || primary == "BulkOrder") {
         return finding(
             "marketplace_listing",
             Level::Red,
@@ -130,6 +156,34 @@ mod tests {
             &json!({ "types": all, "primaryType": primary, "domain": domain, "message": message }).to_string(),
         )
         .unwrap()
+    }
+
+    /// Run-3: EIP-3009 authorizations, forwarder requests and Seaport bulk orders move
+    /// assets once anyone submits them.
+    #[test]
+    fn asset_moving_types_are_red() {
+        let domain = json!({ "name": "USD Coin", "verifyingContract": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" });
+        let auth = json!({ "TransferWithAuthorization": [
+            { "name": "from", "type": "address" }, { "name": "to", "type": "address" }, { "name": "value", "type": "uint256" },
+            { "name": "validAfter", "type": "uint256" }, { "name": "validBefore", "type": "uint256" }, { "name": "nonce", "type": "bytes32" }
+        ] });
+        let msg = json!({ "from": "0x1111111111111111111111111111111111111111", "to": "0x2222222222222222222222222222222222222222", "value": "5", "validAfter": "0", "validBefore": "9999999999", "nonce": format!("0x{}", "00".repeat(32)) });
+        let a = grade(&td(domain.clone(), "TransferWithAuthorization", auth, msg));
+        assert_eq!(a.level, Level::Red);
+        assert!(a.findings.iter().any(|f| f.rule == "token_authorization"));
+        let fwd = json!({ "ForwardRequest": [
+            { "name": "from", "type": "address" }, { "name": "to", "type": "address" }, { "name": "value", "type": "uint256" },
+            { "name": "gas", "type": "uint256" }, { "name": "nonce", "type": "uint256" }, { "name": "data", "type": "bytes" }
+        ] });
+        let msg = json!({ "from": "0x1111111111111111111111111111111111111111", "to": "0x2222222222222222222222222222222222222222", "value": "0", "gas": "1", "nonce": "0", "data": "0x" });
+        let a = grade(&td(
+            json!({ "name": "MinimalForwarder", "verifyingContract": "0x3333333333333333333333333333333333333333" }),
+            "ForwardRequest",
+            fwd,
+            msg,
+        ));
+        assert_eq!(a.level, Level::Red);
+        assert!(a.findings.iter().any(|f| f.rule == "forward_request"));
     }
 
     fn grade(t: &TypedData) -> Assessment {

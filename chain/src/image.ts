@@ -18,7 +18,10 @@ export function imageSize(b: Uint8Array): { type: RasterType; width: number; hei
   if (b.length >= 24 && b[0] === 0x89 && is(1, "PNG\r\n\x1a\n") && is(12, "IHDR")) {
     return sized("image/png", u32be(16), u32be(20));
   }
-  // JPEG: markers up to the first start-of-frame, which holds the size.
+  // JPEG: markers up to the first start-of-frame, which holds the size. Only the segments a
+  // decoder reads before a frame, each skipped by its length: anything else (a stuffed FF 00,
+  // a restart, a second SOI, a reserved code) is refused rather than skipped, so the size
+  // read here is the one the decoder reads (run-3: FF 00 read as a length hid the real frame).
   if (b.length >= 4 && b[0] === 0xff && b[1] === 0xd8) {
     let i = 2;
     while (i + 9 < b.length) {
@@ -28,13 +31,12 @@ export function imageSize(b: Uint8Array): { type: RasterType; width: number; hei
         i++;
         continue;
       }
-      // Markers without a length: the restarts, and the image's start and end.
-      if ((m >= 0xd0 && m <= 0xd9) || m === 0x01) {
-        i += 2;
-        continue;
-      }
       if (m >= 0xc0 && m <= 0xcf && m !== 0xc4 && m !== 0xc8 && m !== 0xcc) return sized("image/jpeg", u16be(i + 7), u16be(i + 5));
-      i += 2 + u16be(i + 2);
+      // APPn, COM, DQT, DHT, DRI, DAC.
+      const segment = (m >= 0xe0 && m <= 0xef) || m === 0xfe || m === 0xdb || m === 0xc4 || m === 0xdd || m === 0xcc;
+      const length = u16be(i + 2);
+      if (!segment || length < 2) return null;
+      i += 2 + length;
     }
     return null;
   }

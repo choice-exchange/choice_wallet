@@ -401,6 +401,9 @@ export function createService(d: Deps) {
   }
 
   async function lock(): Promise<UiResponse<Status>> {
+    // First, before anything is awaited: a password change that read the session before
+    // this lock can't write its new key after it.
+    wallets.noteLock();
     dapps.rejectAll("The wallet locked.");
     await d.session.remove(["unlock_key", "pending_send", "pending_device"]);
     d.cancelLock();
@@ -613,11 +616,15 @@ export function createService(d: Deps) {
       case "change_password":
         return wallets.changePassword(r.password, r.new_password, MIN_PASSWORD);
       case "reset": {
-        const per = solanaMintKeys((await wallets.stored()).accounts);
-        const rest = ((await d.local.keys?.()) ?? []).filter((k) => !DEVICE_KEYS.has(k));
         // The sites connected until now, told after the reset drops their grants.
         const wereConnected = Object.keys(((await d.local.get(["connections"])) as { connections?: Record<string, unknown> }).connections ?? {});
-        const out = await wallets.reset(r.password, [...new Set([...WALLET_KEYS, ...per, ...rest, ...(await snapshots.keys())])]);
+        // In the records' turn: a grant or record writer's read and write never straddle the
+        // removal, so none puts back what it read before it (run-3).
+        const out = await records(async () => {
+          const per = solanaMintKeys((await wallets.stored()).accounts);
+          const rest = ((await d.local.keys?.()) ?? []).filter((k) => !DEVICE_KEYS.has(k));
+          return wallets.reset(r.password, [...new Set([...WALLET_KEYS, ...per, ...rest, ...(await snapshots.keys())])]);
+        });
         if (out.ok) {
           dapps.rejectAll("The wallet was reset.");
           d.notify(wereConnected);

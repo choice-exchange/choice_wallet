@@ -247,10 +247,15 @@ fn site(ctx: &Context) -> Vec<Finding> {
         out.push(finding(
             "site_endpoint",
             Level::Amber,
-            format!(
-                "Checked through {}'s endpoint, which can make this look safe. Set your own in Settings.",
-                text::clip(host, 64)
-            ),
+            // An endpoint kept from an older version, which didn't record whose it was.
+            if from == "unknown" {
+                "Checked through an endpoint a site may have given. Set your own in Settings.".into()
+            } else {
+                format!(
+                    "Checked through {}'s endpoint, which can make this look safe. Set your own in Settings.",
+                    text::clip(host, 64)
+                )
+            },
             serde_json::json!({ "from": from }),
         ));
     }

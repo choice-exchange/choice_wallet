@@ -6,7 +6,7 @@
 // the site's to make (nothing is signed by it, and every request names its chain in the
 // approval window); moving the whole wallet between mainnet and the test networks asks first.
 
-import { addedKey, chainByKey, ChainError, chainList, checkAddedChain, copiedChainName, erc20Meta, evmDenom, isObject, MIN_GAS_PRICE, NETWORKS, type AnyChain, type EvmRpc, type NetworkId } from "@choice-wallet/chain";
+import { addedKey, chainByKey, ChainError, chainList, CHAINS, checkAddedChain, copiedChainName, erc20Meta, evmDenom, isObject, MIN_GAS_PRICE, NETWORKS, type AnyChain, type EvmRpc, type NetworkId } from "@choice-wallet/chain";
 import type { AccountInfo, NewChain, TokenInfo } from "@choice-wallet/ui/protocol";
 
 import { cleanName } from "../addedchains";
@@ -95,12 +95,15 @@ export function createEvmSite(core: SiteCore) {
   }
 
   async function switchTo(origin: string, chainId: unknown): Promise<DappReply> {
+    // A site without a grant hears only that, whatever chain it names: which chains the user
+    // added is the wallet's state, as the account is.
+    if (!(await isConnected(origin))) return no(UNAUTHORIZED, "Connect first.");
     const to = chainOfId(chainId);
     if (!to) {
-      const names = chainList("mainnet").filter((c) => c.kind !== "solana").map((c) => `${c.name} (${c.chainId})`);
+      // The built-in chains only: the ones the user added name the apps they use.
+      const names = CHAINS.mainnet.filter((c) => c.kind !== "solana").map((c) => `${c.name} (${c.chainId})`);
       return no(UNRECOGNIZED_CHAIN, `Choice Wallet doesn't know that chain. It has ${names.join(", ")}, and their test networks.`);
     }
-    if (!(await isConnected(origin))) return no(UNAUTHORIZED, "Connect first.");
     const net = await h.network();
     if (to.network === net) {
       await setSiteChain(origin, net, to.chain.key);

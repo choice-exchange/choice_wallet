@@ -188,7 +188,13 @@ fn decoded_messages_are_recognised() {
     let [Msg::ExecuteContract { call, funds, .. }] = msgs.as_slice() else {
         panic!()
     };
-    assert!(matches!(call, ContractCall::AdapterRedeem { recipient: Some(_) }));
+    assert!(matches!(
+        call,
+        ContractCall::AdapterRedeem {
+            recipient: Some(_),
+            hook: None
+        }
+    ));
     assert!(
         funds[0]
             .denom()

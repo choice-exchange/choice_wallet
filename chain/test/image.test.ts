@@ -22,6 +22,17 @@ test("an image's format and size come from its header", () => {
   // JPEG: an APP0 segment, then a baseline frame of 640 by 480.
   const jpeg = Uint8Array.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x04, 0x00, 0x00, 0xff, 0xc0, 0x00, 0x11, 0x08, 0x01, 0xe0, 0x02, 0x80, 0x03, 0, 0, 0, 0]);
   assert.deepEqual(imageSize(jpeg), { type: "image/jpeg", width: 640, height: 480 });
+  // Run-3: FF 00 isn't a marker. Read as one with a length, it jumped over the real frame
+  // (4096 by 4096) onto a fake one inside a comment (64 by 64), and Chrome drew the real one.
+  const hidden = Uint8Array.from([
+    0xff, 0xd8, 0xff, 0x00, 0x00, 0x13, 0xff, 0xc0, 0x00, 0x0b, 0x08, 0x10, 0x00, 0x10, 0x00, 0x01, 0x01, 0x11, 0x00,
+    0xff, 0xfe, 0x00, 0x0f, 0xff, 0xc0, 0x00, 0x0b, 0x08, 0x00, 0x40, 0x00, 0x40, 0x01, 0x01, 0x11, 0x00, 0, 0, 0, 0,
+  ]);
+  assert.equal(imageSize(hidden), null);
+  // A restart, a second SOI or a zero length before the frame: refused too.
+  for (const m of [[0xff, 0xd0], [0xff, 0xd8], [0xff, 0xe0, 0x00, 0x00]]) {
+    assert.equal(imageSize(Uint8Array.from([0xff, 0xd8, ...m, 0xff, 0xc0, 0x00, 0x11, 0x08, 0x01, 0xe0, 0x02, 0x80, 0x03, 0, 0, 0, 0, 0, 0])), null, String(m));
+  }
   // WebP, each kind of header.
   const riff = (chunk: string, body: number[]) => Uint8Array.from([...Buffer.from("RIFF"), 0, 0, 0, 0, ...Buffer.from("WEBP"), ...Buffer.from(chunk), 0, 0, 0, 0, ...body, ...new Array(16).fill(0)]);
   assert.deepEqual(imageSize(riff("VP8X", [0, 0, 0, 0, 99, 0, 0, 49, 0, 0])), { type: "image/webp", width: 100, height: 50 });

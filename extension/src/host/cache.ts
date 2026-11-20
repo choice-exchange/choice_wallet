@@ -26,6 +26,8 @@ export interface DiskCacheOptions {
   max: number;
   /** The oldest an entry may be to stand in when fetching fails (default: any age). */
   fallback?: number;
+  /** Never on disk: for entries that name an account's history. */
+  memoryOnly?: boolean;
 }
 
 /** How long the batched write waits for more entries. */
@@ -46,6 +48,14 @@ export function diskCache<V>(local: Store, item: string, opts: DiskCacheOptions,
   const refreshing = new Map<string, Promise<V>>();
 
   function load(): Promise<Record<string, Entry<V>>> {
+    // Kept in memory only: what an older build wrote goes, and nothing is written.
+    if (opts.memoryOnly) {
+      loaded ??= local.remove([item]).then(
+        () => ({}),
+        () => ({}),
+      );
+      return loaded;
+    }
     loaded ??= local.get([item]).then((r) => {
       const v = r[item];
       return typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Record<string, Entry<V>>) : {};
@@ -54,7 +64,7 @@ export function diskCache<V>(local: Store, item: string, opts: DiskCacheOptions,
   }
 
   function schedule() {
-    if (pending) return;
+    if (pending || opts.memoryOnly) return;
     let resolve!: () => void;
     const promise = new Promise<void>((r) => (resolve = r));
     pending = { promise, resolve };
@@ -84,7 +94,12 @@ export function diskCache<V>(local: Store, item: string, opts: DiskCacheOptions,
   }
 
   async function put(key: string, v: V): Promise<void> {
-    (await load())[key] = { at: now(), v };
+    const all = await load();
+    all[key] = { at: now(), v };
+    if (opts.memoryOnly && Object.keys(all).length > opts.max) {
+      const oldest = Object.keys(all).sort((a, b) => all[a]!.at - all[b]!.at)[0]!;
+      delete all[oldest];
+    }
     schedule();
   }
 

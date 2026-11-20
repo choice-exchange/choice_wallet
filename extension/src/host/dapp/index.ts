@@ -50,6 +50,9 @@ export function createDapps(h: DappHost) {
   const inGrantTurn: Turn = h.turn ?? turns();
   function changeGrants(change: (all: Grants) => boolean): Promise<boolean> {
     return inGrantTurn(async () => {
+      // No wallet (reset while a connect or a request was being approved): no grant is kept
+      // or made, so the next wallet starts with no site connected.
+      if (!(await h.local.get(["vault"]))["vault"]) return false;
       const all = await grants();
       if (!change(all)) return false;
       await h.local.set({ connections: all });

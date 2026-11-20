@@ -306,3 +306,23 @@ test("a stored chain with a copied name is shown by its ID", async () => {
   const s = ok<Status>(await w.service.handle({ type: "status" }));
   assert.deepEqual(s.added.map((c) => [c.chainId, c.name]), [[99999, "Chain 99999"]]);
 });
+
+// Run-3: an older version's record didn't say whose endpoints it kept (a site's could be).
+// Read back, its reviews say so, as a site's do, until the user sets their own; and a name
+// in look-alike letters is shown by the chain's ID.
+test("an older record's endpoints are said to be possibly a site's", async () => {
+  const net = chain({ balances: { inj: INJ } });
+  const { service, local } = await wallet(net);
+  await local.set({
+    added_chains: [
+      { chainId: 56, name: "Smart Chain", symbol: "BNB", rpc: ["https://bnb-rpc.example"], testnet: false },
+      { chainId: 99999, name: "Еthereum", symbol: "ETH", rpc: ["https://bnb-rpc.example"], testnet: false },
+    ],
+  });
+  const s = ok<Status & { added: (Added & { rpcFrom?: string })[] }>(await service.handle({ type: "status" }));
+  assert.deepEqual(s.added.map((a) => [a.chainId, a.name, a.rpcFrom]), [[56, "Smart Chain", "unknown"], [99999, "Chain 99999", "unknown"]]);
+  const r = ok<{ risk: { findings: { rule: string; message: string }[] } }>(await service.handle({ type: "prepare_send", denom: "native:eip155:56", to: THEM_EVM, amount: "1" }));
+  const f = r.risk.findings.find((x) => x.rule === "site_endpoint");
+  assert.ok(f, JSON.stringify(r.risk));
+  assert.match(f.message, /a site may have given/);
+});
