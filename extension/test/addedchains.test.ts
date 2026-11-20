@@ -241,3 +241,57 @@ test("a stored SVG logo is dropped and its chain kept", async () => {
   const s = ok<Status>(await service.handle({ type: "status" }));
   assert.deepEqual(s.added.map((a) => [a.chainId, a.logo]), [[56, undefined]]);
 });
+
+// Review of #8: a chain a site adds that the list doesn't have is read through the site's
+// own endpoint. Every review through it says so, the wallet's own sends too, until the user
+// sets an endpoint; and a site can't name such a chain after one of the wallet's own.
+test("a site's own endpoint is said in every review through it; a copied chain name is refused", async () => {
+  const net = chain({ balances: { inj: INJ } });
+  net.state.directory = null;
+  const w = await wallet(net);
+  const origin = "https://app.example";
+  const site = (method: string, params?: unknown) => w.service.dapp(origin, { method, params }) as Promise<{ result?: unknown; error?: { code: number; message: string } }>;
+  let seen = 0;
+  const window = async () => {
+    for (let i = 0; i < 200 && w.ui.opened.length <= seen; i++) await new Promise((r) => setTimeout(r, 5));
+    seen = w.ui.opened.length;
+    return w.ui.opened.at(-1)!;
+  };
+  const connect = site("eth_requestAccounts");
+  ok(await w.service.handle({ type: "dapp_answer", id: await window(), approve: true }));
+  await connect;
+
+  // Named after a chain on the wallet's list, or in look-alike letters: refused at once.
+  const coin = { symbol: "BNB", decimals: 18 };
+  for (const chainName of ["Ethereum", "base mainnet", "Injective EVM", "Еthereum"]) {
+    const r = await site("wallet_addEthereumChain", [{ chainId: "0x38", chainName, nativeCurrency: coin, rpcUrls: ["https://bnb-rpc.example"] }]);
+    assert.equal(r.error?.code, -32602, chainName);
+  }
+  // By hand too, whatever the list says.
+  assert.equal(code(await w.service.handle({ type: "add_chain", chain: { ...BNB, name: "Arbitrum One" } })), "invalid");
+
+  // The list can't be reached: the site's endpoint, remembered as the site's.
+  const asked = site("wallet_addEthereumChain", [{ chainId: "0x38", chainName: "Smart Chain", nativeCurrency: coin, rpcUrls: ["https://bnb-rpc.example"] }]);
+  ok(await w.service.handle({ type: "dapp_answer", id: await window(), approve: true }));
+  assert.deepEqual(await asked, { result: null });
+  const s = ok<Status & { added: (Added & { rpcFrom?: string })[] }>(await w.service.handle({ type: "status" }));
+  assert.equal(s.added[0]?.rpcFrom, origin);
+
+  const rules = (r: { risk: { findings: { rule: string; level: string }[] } }) => r.risk.findings.map((f) => `${f.rule} ${f.level}`);
+  const siteTx = async () => {
+    const sent = site("eth_sendTransaction", [{ from: ME_EVM, to: THEM_EVM, value: "0x1" }]);
+    const id = await window();
+    const r = ok<{ risk: { findings: { rule: string; level: string }[] } }>(await w.service.handle({ type: "dapp_review", id }));
+    ok(await w.service.handle({ type: "dapp_answer", id, approve: false }));
+    await sent;
+    return rules(r);
+  };
+  const ownSend = async () => rules(ok(await w.service.handle({ type: "prepare_send", denom: "native:eip155:56", to: THEM_EVM, amount: "1" })));
+  assert.ok((await siteTx()).includes("site_endpoint amber"));
+  assert.ok((await ownSend()).includes("site_endpoint amber"));
+
+  // The user's own endpoint: no longer the site's.
+  ok(await w.service.handle({ type: "save_settings", network: "mainnet", chain: { key: "added-56", rpc: ["https://bnb-rpc.example"] } }));
+  assert.ok(!(await siteTx()).includes("site_endpoint amber"));
+  assert.ok(!(await ownSend()).includes("site_endpoint amber"));
+});

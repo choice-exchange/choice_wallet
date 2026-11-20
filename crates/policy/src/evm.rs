@@ -681,6 +681,31 @@ mod tests {
         EthAddress::from_bytes(b)
     }
 
+    /// Review of #8: a transaction checked through an endpoint a site gave (a chain it
+    /// added that the list doesn't have) says so, the wallet's own sends too.
+    #[test]
+    fn a_site_endpoint_is_said() {
+        let r = req(EthAddress::from_bytes([0x22; 20]), vec![]);
+        let ctx = Context {
+            endpoint_from: Some("https://app.example".into()),
+            ..Default::default()
+        };
+        let a = evm_transaction(
+            &r,
+            &EvmSide {
+                injective: None,
+                cctp: None,
+            },
+            &ctx,
+        );
+        assert_eq!((a.level, a.findings[0].rule), (Level::Amber, "site_endpoint"));
+        assert_eq!(
+            a.findings[0].message,
+            "Checked through app.example's endpoint, which can make this look safe. Set your own in Settings."
+        );
+        assert!(grade(&r).findings.iter().all(|f| f.rule != "site_endpoint"));
+    }
+
     /// F4: native coin attached to a token call is named, with its amount.
     #[test]
     fn value_attached_to_a_call_is_named() {

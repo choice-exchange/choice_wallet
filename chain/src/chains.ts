@@ -405,6 +405,9 @@ export interface AddedChain {
   logo?: string;
   /** DefiLlama's name for it, where its coin is priced. */
   llama?: string;
+  /** The site whose endpoints these are: one a site added that chainlist.org didn't list
+   *  (or couldn't be reached). The review says so until the user sets endpoints of their own. */
+  rpcFrom?: string;
 }
 
 /** An added chain as the wallet lists it: an EVM chain without CCTP (no domain, no USDC
@@ -414,6 +417,7 @@ export type AddedInfo = Omit<ChainInfo, "kind" | "domain" | "usdc" | "forwarding
   chainId: number;
   added: true;
   logo?: string;
+  rpcFrom?: string;
 };
 
 /** Any chain on the wallet's list: built in, or added. */
@@ -449,6 +453,7 @@ function addedInfo(a: AddedChain): AddedInfo {
     mark: markOf(a.name, a.chainId),
     ...(a.llama ? { llama: a.llama } : {}),
     ...(a.logo ? { logo: a.logo } : {}),
+    ...(a.rpcFrom ? { rpcFrom: a.rpcFrom } : {}),
   };
 }
 
@@ -505,6 +510,27 @@ export function cctpChain(network: NetworkId, key: unknown): ChainInfo | undefin
 export function cctpChainByCaip2(network: NetworkId, caip2: string): ChainInfo | undefined {
   if (caip2 === NETWORKS[network].cosmos) return CHAINS[network][0];
   return CHAINS[network].find((c) => c.caip2 === caip2);
+}
+
+/** Words a chain's name may carry besides its own: "Base Mainnet" is Base. */
+const NAME_FILLER = new Set(["mainnet", "main", "network", "chain", "one", "evm", "l1", "l2"]);
+const plainName = (s: string): string =>
+  s
+    .normalize("NFKD")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .split(" ")
+    .filter((w) => w !== "" && !NAME_FILLER.has(w))
+    .join("");
+
+/** The chain on the wallet's own list whose name `name` copies ("Ethereum", "base mainnet",
+ *  "Injective EVM"), or null. An added chain is named by whoever adds it, and a site's chain
+ *  called Ethereum with its own chain ID would read as Ethereum everywhere. */
+export function copiedChainName(name: string): string | null {
+  const plain = plainName(name);
+  if (plain === "") return null;
+  const own = [...CHAINS.mainnet, ...CHAINS.testnet].find((c) => plainName(c.name) === plain);
+  return own ? own.name : null;
 }
 
 /** Why a chain can't be added as given, or null. Endpoints and the explorer are checked

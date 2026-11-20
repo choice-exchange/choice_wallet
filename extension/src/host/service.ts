@@ -211,6 +211,7 @@ export function createService(d: Deps) {
     onDeposit: (n, deposit) => bridge.track(n, deposit),
     solanaBroadcast: (n, p, signed) => solana.broadcast(n, p, signed),
     chainRpc: (n, key) => evmChains.rpc(n, key),
+    endpointFrom: (n, key) => evmChains.endpointFrom(n, key),
     onChainSent: (n, key, from, hash) => evmChains.recordSent(n, key, from, hash),
     onVoted: (n, voter, vote) => gov.voted(n, voter, vote),
   });

@@ -6,7 +6,7 @@
 // the site's to make (nothing is signed by it, and every request names its chain in the
 // approval window); moving the whole wallet between mainnet and the test networks asks first.
 
-import { addedKey, chainByKey, ChainError, chainList, checkAddedChain, erc20Meta, evmDenom, isObject, MIN_GAS_PRICE, NETWORKS, type AnyChain, type EvmRpc, type NetworkId } from "@choice-wallet/chain";
+import { addedKey, chainByKey, ChainError, chainList, checkAddedChain, copiedChainName, erc20Meta, evmDenom, isObject, MIN_GAS_PRICE, NETWORKS, type AnyChain, type EvmRpc, type NetworkId } from "@choice-wallet/chain";
 import type { AccountInfo, NewChain, TokenInfo } from "@choice-wallet/ui/protocol";
 
 import { cleanName } from "../addedchains";
@@ -153,11 +153,19 @@ export function createEvmSite(core: SiteCore) {
     const why = checkAddedChain(chain);
     if (why) return no(INVALID_PARAMS, why);
     if (chain.rpc.length === 0) return no(INVALID_PARAMS, "rpcUrls needs an https endpoint.");
+    if (!listed) {
+      // The site names a chain the list doesn't have: never after one of the wallet's own
+      // (an "Ethereum" with its own chain ID), and in plain letters, so no look-alike.
+      const copied = copiedChainName(chain.name);
+      if (copied) return no(INVALID_PARAMS, `${copied} is on the wallet's list already, with its own chain ID.`);
+      if (!/^[A-Za-z0-9 .()'_-]+$/.test(chain.name)) return no(INVALID_PARAMS, "chainName must be plain letters and numbers.");
+    }
     const to: NetworkId = chain.testnet ? "testnet" : "mainnet";
     return ask(
       {
         check: async () => {
-          const r = await h.chains.add(chain);
+          // Endpoints the site gave are remembered as its: every review through them says so.
+          const r = await h.chains.add(listed ? chain : { ...chain, rpcFrom: origin });
           return r.ok || r.error.code === "exists" ? { ok: true, result: null } : r;
         },
         approve: async () => {
@@ -238,7 +246,7 @@ export function createEvmSite(core: SiteCore) {
 
   /** On another EVM chain than Injective's: what the review shows amounts in (its coin, its
    *  USDC, the token a call is to) and what the rules weigh them against. */
-  async function elsewhere(chain: AnyChain, rpc: EvmRpc, to: string | null, held: bigint | null) {
+  async function elsewhere(network: NetworkId, chain: AnyChain, rpc: EvmRpc, to: string | null, held: bigint | null) {
     const coin = `native:${chain.caip2}`;
     const usdc = `usdc:${chain.caip2}`;
     const tokens: Record<string, TokenInfo> = {
@@ -249,7 +257,8 @@ export function createEvmSite(core: SiteCore) {
       const meta = await erc20Meta(rpc, to).catch(() => null);
       if (meta) tokens[evmDenom(to)] = { denom: evmDenom(to), symbol: meta.symbol, name: meta.symbol, decimals: meta.decimals, known: false, chain: chain.caip2 };
     }
-    return { tokens, context: { balances: held === null ? {} : { native: held.toString() }, symbols: { native: chain.native.symbol } } };
+    const from = chain.added ? await h.sender.endpointFrom(network, chain.key) : null;
+    return { tokens, context: { balances: held === null ? {} : { native: held.toString() }, symbols: { native: chain.native.symbol }, ...(from ? { endpoint_from: from } : {}) } };
   }
 
   async function evmSign(origin: string, method: string, params: unknown): Promise<DappReply> {
@@ -288,7 +297,7 @@ export function createEvmSite(core: SiteCore) {
           const filled = await fillEvmTx(network, chain, await me(), tx);
           const request = { evm_transaction: { chain: chain.caip2, tx: filled.tx } };
           if (chain.kind === "injective") return { request, checkedBy: filled.checkedBy };
-          const extra = await elsewhere(chain, await rpcFor(network, chain), filled.tx.to, filled.held);
+          const extra = await elsewhere(network, chain, await rpcFor(network, chain), filled.tx.to, filled.held);
           return { request, checkedBy: filled.checkedBy, tokens: extra.tokens, context: extra.context };
         },
         async (signed) => {

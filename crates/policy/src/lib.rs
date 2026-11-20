@@ -144,6 +144,11 @@ pub struct Context {
     /// how many it checks): whether they need a memo is unknown.
     #[serde(default)]
     pub memo_unchecked: Vec<String>,
+    /// The site whose endpoint the host checked this request through: a chain it added
+    /// that chainlist.org doesn't list, before the user set endpoints of their own. It can
+    /// make what the review shows (balance, gas estimate, token) look safe.
+    #[serde(default)]
+    pub endpoint_from: Option<String>,
     /// Contracts this account has used before.
     #[serde(default)]
     pub known_contracts: Vec<String>,
@@ -221,6 +226,19 @@ fn finding(rule: &'static str, level: Level, message: String, params: Value) -> 
 /// Rules about the site itself, for every request.
 fn site(ctx: &Context) -> Vec<Finding> {
     let mut out = Vec::new();
+    // The wallet's own sends on such a chain too, not only the site's requests.
+    if let Some(from) = &ctx.endpoint_from {
+        let host = from.split_once("://").map_or(from.as_str(), |(_, h)| h);
+        out.push(finding(
+            "site_endpoint",
+            Level::Amber,
+            format!(
+                "Checked through {}'s endpoint, which can make this look safe. Set your own in Settings.",
+                text::clip(host, 64)
+            ),
+            serde_json::json!({ "from": from }),
+        ));
+    }
     let Some(origin) = &ctx.origin else {
         return out;
     };

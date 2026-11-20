@@ -13,6 +13,7 @@ import {
   addedKey,
   CHAINS,
   checkAddedChain,
+  copiedChainName,
   bytesToBase64,
   EvmRpc,
   imageSize,
@@ -75,6 +76,8 @@ function storedChain(v: unknown): AddedChain | null {
   // and the chain kept without it (run-2 NV1).
   const drawable = isChainLogo(logo) ? logo : undefined;
   if (llama !== undefined && !(typeof llama === "string" && /^[a-z0-9-]{1,40}$/.test(llama))) return null;
+  const rpcFrom = v["rpcFrom"];
+  if (rpcFrom !== undefined && !isOrigin(rpcFrom)) return null;
   return {
     chainId: v["chainId"] as number,
     name: v["name"] as string,
@@ -84,7 +87,13 @@ function storedChain(v: unknown): AddedChain | null {
     ...(explorer ? { explorer: explorer as string } : {}),
     ...(drawable ? { logo: drawable } : {}),
     ...(llama ? { llama: llama as string } : {}),
+    ...(rpcFrom ? { rpcFrom: rpcFrom as string } : {}),
   };
+}
+
+/** A site's origin, as the browser gives it (./service.ts `dappOrigin`). */
+function isOrigin(v: unknown): v is string {
+  return typeof v === "string" && v.length <= 256 && /^(https:\/\/[^\s/?#"<>\\@]+|http:\/\/(localhost|127\.0\.0\.1)(:[0-9]{1,5})?)$/.test(v);
 }
 
 /** A name as the list writes it, made one the wallet keeps: letters, numbers and a little
@@ -296,6 +305,10 @@ export function createAddedChains(d: AddedChainsDeps) {
     const chainId = input["chainId"] as number;
     const name = (input["name"] as string).trim();
     const symbol = input["symbol"] as string;
+    const copied = copiedChainName(name);
+    if (copied) return fail("invalid", `${copied} is on the list already, with its own chain ID. Give this chain another name.`);
+    const rpcFrom = input["rpcFrom"];
+    if (rpcFrom !== undefined && !isOrigin(rpcFrom)) return fail("bad_request", "Not a site.");
     const current = [...(await load())];
     const same = current.find((a) => a.chainId === chainId);
     if (same) return fail("exists", `${same.name} is already on the list.`);
@@ -345,6 +358,7 @@ export function createAddedChains(d: AddedChainsDeps) {
       ...(explorer ? { explorer } : {}),
       ...(icon ? { logo: icon } : {}),
       ...(onList?.llama ? { llama: onList.llama } : {}),
+      ...(rpcFrom ? { rpcFrom } : {}),
     };
     await save([...current, chain]);
     return { ok: true, result: chain };

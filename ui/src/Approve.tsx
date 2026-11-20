@@ -447,11 +447,7 @@ function AddChainBody({ chain, listed, siteName, from }: { chain: NewChain; list
           From {from}. Every connected site sees the change.
         </p>
       </div>
-      {!listed && (
-        <Callout level="amber">
-          Not on chainlist.org&apos;s list (or the list couldn&apos;t be reached), so its endpoint is the one this site gave. The wallet will read balances and fees and check transactions on this chain through it, so a site that runs it can make them look safe. Check its chain ID with whoever runs it, and set an endpoint you trust in Settings.
-        </Callout>
-      )}
+      {!listed && <Callout level="amber">Not on chainlist.org&apos;s list, so its checks run on this site&apos;s endpoint. Set your own in Settings.</Callout>}
       {listed?.flags.includes("reusedChainId") && <Callout level="amber">chainlist.org says another chain uses this chain ID too.</Callout>}
       {siteName && <Callout level="amber">The site calls it {siteName}. The list says {chain.name}.</Callout>}
       <Rows>

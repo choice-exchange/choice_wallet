@@ -15,6 +15,7 @@ export {
   chainList,
   chainUsdc,
   checkAddedChain,
+  copiedChainName,
   MAX_ADDED_CHAINS,
   MAX_CHAIN_ID,
   markOf,

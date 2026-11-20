@@ -74,6 +74,15 @@ export function createEvmChains(d: EvmChainsDeps) {
     return own && own.length > 0 ? own : (chainByKey(network, key)?.rpc ?? []);
   }
 
+  /** The site whose endpoints a chain is read through (one it added that chainlist.org
+   *  didn't list), while the user hasn't set endpoints of their own; else null. */
+  async function endpointFrom(network: NetworkId, key: string): Promise<string | null> {
+    const c = chainByKey(network, key);
+    if (!c || !c.added || !c.rpcFrom) return null;
+    const { chain_endpoints } = (await d.local.get(["chain_endpoints"])) as { chain_endpoints?: ChainEndpoints };
+    return (chain_endpoints?.[network]?.[key]?.length ?? 0) > 0 ? null : c.rpcFrom;
+  }
+
   /** A client for an EVM chain, on the user's endpoints: each must serve that chain's ID. */
   async function rpc(network: NetworkId, key: string): Promise<EvmRpc> {
     const c = chainByKey(network, key);
@@ -261,7 +270,7 @@ export function createEvmChains(d: EvmChainsDeps) {
     return { ok: true, result: { items: items as ActivityItem[], tokens, next: done ? null : page + 1, indexed: urls.length > 0, ...(indexDown ? { indexDown: true as const } : {}) } };
   }
 
-  return { endpoints, rpc, prices, holdings, all, historyEndpoints, recordSent, activity };
+  return { endpoints, endpointFrom, rpc, prices, holdings, all, historyEndpoints, recordSent, activity };
 }
 
 function priced(b: Balance, prices: Map<string, string>): Balance {

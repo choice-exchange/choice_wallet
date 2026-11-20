@@ -55,7 +55,7 @@ export interface DappHost {
   /** The chains the user adds (../addedchains.ts). */
   chains: {
     listed(chainId: number): Promise<ListedChain | undefined>;
-    add(chain: NewChain): Promise<Result<AddedChain>>;
+    add(chain: NewChain & { rpcFrom?: string }): Promise<Result<AddedChain>>;
   };
 }
 

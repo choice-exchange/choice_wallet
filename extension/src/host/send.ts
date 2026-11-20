@@ -59,6 +59,9 @@ export interface SendDeps extends HoldingsDeps {
   /** A client for an EVM chain beside Injective, on the user's endpoints for it
    *  (./evmchains.ts). Without it, the chain's default endpoints. */
   chainRpc?(network: NetworkId, key: string): Promise<EvmRpc>;
+  /** The site whose endpoints a chain is read through, while the user hasn't set their own
+   *  (./evmchains.ts); its reviews say so. */
+  endpointFrom?(network: NetworkId, key: string): Promise<string | null>;
   /** A transaction just broadcast on another EVM chain, for that chain's history. */
   onChainSent?(network: NetworkId, key: string, from: string, hash: string): Promise<void>;
 }
@@ -647,9 +650,10 @@ export function createSender(d: SendDeps) {
       if (coin > held) return fail("gas", plain ? `Not enough ${source.symbol} on ${source.name} for that and the fee.` : `Not enough ${source.symbol} on ${source.name} for the fee.`);
       // A send's recipient is checked against the address book like any other.
       const facts = spec.token || plain ? await d.riskFacts(network, spec.to) : {};
+      const from_site = (await d.endpointFrom?.(network, source.key)) ?? null;
       const decoded = await d.vault<Pick<SendReview, "digest" | "display" | "risk">>("decode", {
         request: built.result.request,
-        context: { ...facts, balances: { native: held.toString(), ...(spec.usdcHeld === undefined || !source.usdc ? {} : { [source.usdc]: spec.usdcHeld.toString() }) } },
+        context: { ...facts, ...(from_site ? { endpoint_from: from_site } : {}), balances: { native: held.toString(), ...(spec.usdcHeld === undefined || !source.usdc ? {} : { [source.usdc]: spec.usdcHeld.toString() }) } },
       });
       if (!decoded.ok) return decoded;
       const { digest, display, risk } = decoded.result;
@@ -870,6 +874,7 @@ export function createSender(d: SendDeps) {
       if (!c || c.kind !== "evm") throw new RangeError(`not an EVM chain: ${key}`);
       return rpcOn(network, sourceOfChain(c));
     },
+    endpointFrom: async (network: NetworkId, key: string): Promise<string | null> => (await d.endpointFrom?.(network, key)) ?? null,
     pairs: async (network: NetworkId) => pairsFor(network, await lcd(network)),
     solanaPrices: holdings.solanaPrices,
     confirm,
