@@ -202,11 +202,13 @@ impl Context {
     }
 }
 
+/// Every finding's sentence goes through [`text::shown`]: whatever a site wrote into a name
+/// it quotes, it can't hide or reorder the words around it.
 fn finding(rule: &'static str, level: Level, message: String, params: Value) -> Finding {
     Finding {
         rule,
         level,
-        message,
+        message: text::shown(&message),
         confirm: None,
         params,
     }

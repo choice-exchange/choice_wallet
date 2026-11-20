@@ -124,6 +124,8 @@ test("revokes: grants, fee allowances, the rewards address and allowances taken 
       { type: "fee_revoke", granter: ME, grantee: THEM },
       { type: "set_withdraw_address", delegator: ME, withdraw_address: ME },
       exec(CW, { type: "cw20_decrease_allowance", spender: THEM, amount: "5" }),
+      // A decrease that also sets when the rest ends is not a revoke (it can extend it).
+      exec(CW, { type: "cw20_decrease_allowance", spender: THEM, amount: "1", expires: '{"never":{}}' }),
       // Pointing rewards elsewhere is not a revoke.
       { type: "set_withdraw_address", delegator: ME, withdraw_address: THEM },
     ]),
@@ -136,7 +138,7 @@ test("revokes: grants, fee allowances, the rewards address and allowances taken 
     { kind: "allowance", token: `cw20:${CW}`, spender: THEM },
   ]);
   // Rewards sent somewhere else aren't a revoke: named in full, never dropped.
-  assert.deepEqual(v.others, [`Staking rewards go to ${THEM} from now on`]);
+  assert.deepEqual(v.others, [`Contract call to ${CW}`, `Staking rewards go to ${THEM} from now on`]);
   const spender = "4444444444444444444444444444444444444444";
   const evm = shown(
     {

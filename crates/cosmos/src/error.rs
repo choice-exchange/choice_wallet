@@ -65,6 +65,10 @@ pub enum Error {
     /// A CosmWasm message that isn't UTF-8 JSON.
     #[error("contract message is not valid JSON")]
     ContractJson,
+    /// A CW721 token ID the wallet won't name (empty, over 256 characters, or with
+    /// control characters) in an NFT call.
+    #[error("invalid NFT token ID {0:?}")]
+    TokenId(String),
     /// The key doesn't belong to the request's signer.
     #[error("this key does not match the request's signer")]
     KeyMismatch,

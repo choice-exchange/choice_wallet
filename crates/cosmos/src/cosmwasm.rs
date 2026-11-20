@@ -1,8 +1,13 @@
 //! The CosmWasm contract messages the wallet builds and recognises.
 //!
-//! - CW20 `transfer` and `send`.
-//! - CW721 (NFT) `transfer_nft`, `send_nft`, `approve`, `approve_all`, `revoke` and
-//!   `revoke_all`.
+//! - CW20 `transfer`, `send`, `increase_allowance`, `decrease_allowance`, `burn` and
+//!   `update_minter`.
+//! - CW721 (NFT) `transfer_nft`, `send_nft`, `approve`, `approve_all`, `revoke`,
+//!   `revoke_all` and `burn`.
+//! - cw-ownable `update_ownership` (any contract's owner handing it on or giving it up).
+//!
+//! A message named like one of these but shaped otherwise is [`ContractCall::Unread`]; a
+//! known shape with an amount or NFT ID the wallet can't read as written is refused.
 //! - The CW20 adapter's `redeem_and_transfer` (the adapter runs on Injective). Sending a
 //!   CW20 to the adapter (`send` with an empty `msg`) mints the bank denom
 //!   `factory/{adapter}/{cw20}` to the sender; redeeming burns that denom and returns the
@@ -54,6 +59,20 @@ pub enum ContractCall {
         spender: String,
         /// How much less, in base units.
         amount: String,
+        /// A new end for what's left, as the contract's JSON; `None` keeps the old one. With
+        /// it, a decrease can make an allowance that was about to end last for good.
+        expires: Option<String>,
+    },
+    /// CW20 `burn`: destroy `amount` of the sender's tokens.
+    Cw20Burn {
+        /// Amount in the token's base units.
+        amount: String,
+    },
+    /// CW20 `update_minter`: hand minting to `new_minter`, or end it for good (`None`).
+    /// Only the minter can.
+    Cw20UpdateMinter {
+        /// The new minter.
+        new_minter: Option<String>,
     },
     /// CW20 adapter `redeem_and_transfer`: burn the attached adapter denom and send the CW20
     /// to `recipient`, or to the sender when `None`.
@@ -100,12 +119,53 @@ pub enum ContractCall {
         /// The NFT, or `None` for every NFT (`revoke_all`).
         token_id: Option<String>,
     },
+    /// CW721 `burn`: destroy NFT `token_id`.
+    NftBurn {
+        /// The NFT's ID in its collection.
+        token_id: String,
+    },
+    /// cw-ownable `update_ownership` with `transfer_ownership`: offer the contract to
+    /// `new_owner`, who takes it by accepting. Only the owner can.
+    OwnershipTransfer {
+        /// The new owner.
+        new_owner: String,
+        /// When the offer ends, as the contract's JSON; `None` for never.
+        expiry: Option<String>,
+    },
+    /// cw-ownable `update_ownership` with `renounce_ownership`: the contract has no owner
+    /// from then on.
+    OwnershipRenounce,
+    /// A call named like a token call (`action`, such as `transfer` or `approve`) in a shape
+    /// the wallet can't read. The standard contracts refuse such shapes; one that doesn't
+    /// may still move tokens.
+    Unread {
+        /// The message's one top-level key.
+        action: String,
+    },
     /// Any other call. Shown raw.
     Other,
 }
 
+/// The top-level keys of the token calls above. A message under one of these that doesn't
+/// parse is [`ContractCall::Unread`], not [`ContractCall::Other`].
+const TOKEN_ACTIONS: &[&str] = &[
+    "transfer",
+    "send",
+    "increase_allowance",
+    "decrease_allowance",
+    "burn",
+    "update_minter",
+    "transfer_nft",
+    "send_nft",
+    "approve",
+    "approve_all",
+    "revoke",
+    "revoke_all",
+    "update_ownership",
+];
+
 /// Wire shapes. `deny_unknown_fields` and serde's duplicate-field check make anything
-/// unusual fall through to [`ContractCall::Other`].
+/// unusual fall through to [`ContractCall::Unread`] or [`ContractCall::Other`].
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 enum Known {
@@ -127,11 +187,19 @@ enum Known {
         #[serde(default)]
         expires: Option<serde_json::Value>,
     },
-    /// Without `expires`: a decrease that also sets an expiry isn't a plain decrease.
     DecreaseAllowance {
         spender: String,
         amount: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expires: Option<serde_json::Value>,
     },
+    /// CW20 `{"burn": {"amount"}}` or CW721 `{"burn": {"token_id"}}`.
+    Burn(Burn),
+    UpdateMinter {
+        #[serde(default)]
+        new_minter: Option<String>,
+    },
+    UpdateOwnership(OwnerAction),
     TransferNft {
         recipient: String,
         token_id: String,
@@ -161,6 +229,40 @@ enum Known {
     },
 }
 
+/// `burn`'s two shapes: CW20 by amount, CW721 by token.
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum Burn {
+    Amount(BurnAmount),
+    Token(BurnToken),
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BurnAmount {
+    amount: String,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BurnToken {
+    token_id: String,
+}
+
+/// cw-ownable's `update_ownership` actions.
+#[allow(clippy::enum_variant_names, reason = "the wire names are cw-ownable's")]
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+enum OwnerAction {
+    TransferOwnership {
+        new_owner: String,
+        #[serde(default)]
+        expiry: Option<serde_json::Value>,
+    },
+    AcceptOwnership,
+    RenounceOwnership,
+}
+
 /// A CW721 token ID the wallet will name: 1 to 256 characters, none of them control
 /// characters. (CW721 allows any string; one built to mislead is shown raw elsewhere.)
 pub fn is_token_id(id: &str) -> bool {
@@ -169,77 +271,105 @@ pub fn is_token_id(id: &str) -> bool {
 
 /// Parse a `MsgExecuteContract.msg`. The bytes must be UTF-8 JSON, as wasmd requires.
 pub fn parse(msg: &[u8]) -> Result<ContractCall, Error> {
-    serde_json::from_slice::<serde_json::Value>(msg).map_err(|_| Error::ContractJson)?;
-    let known = serde_json::from_slice::<Known>(msg);
-    // A CW20 amount the wallet can't read as written is refused, not passed on as an
-    // unknown call: cw20's Uint128 parses "0340…" and "+1" as numbers, so an allowance or
-    // transfer written that way would move tokens while graded as any contract call.
-    if let Ok(
-        Known::Transfer { amount, .. }
-        | Known::Send { amount, .. }
-        | Known::IncreaseAllowance { amount, .. }
-        | Known::DecreaseAllowance { amount, .. },
-    ) = &known
+    let value = serde_json::from_slice::<serde_json::Value>(msg).map_err(|_| Error::ContractJson)?;
+    let Ok(known) = serde_json::from_slice::<Known>(msg) else {
+        // Named like a token call but not shaped like one: said, not passed on as any call.
+        return Ok(match value.as_object() {
+            Some(o) if o.len() == 1 && o.keys().all(|k| TOKEN_ACTIONS.contains(&k.as_str())) => ContractCall::Unread {
+                action: o.keys().next().cloned().unwrap_or_default(),
+            },
+            _ => ContractCall::Other,
+        });
+    };
+    // A CW20 amount or CW721 token ID the wallet can't read as written is refused, not
+    // passed on as an unknown call: cw20's Uint128 parses "0340…" and "+1" as numbers, so
+    // an allowance or transfer written that way would move tokens while graded as any
+    // contract call.
+    if let Known::Transfer { amount, .. }
+    | Known::Send { amount, .. }
+    | Known::IncreaseAllowance { amount, .. }
+    | Known::DecreaseAllowance { amount, .. }
+    | Known::Burn(Burn::Amount(BurnAmount { amount })) = &known
         && !is_canonical_amount(amount)
     {
         return Err(Error::Amount(amount.clone()));
     }
-    let call = match known {
-        Ok(Known::Transfer { recipient, amount }) if is_canonical_amount(&amount) => {
-            ContractCall::Cw20Transfer { recipient, amount }
-        }
-        Ok(Known::Send { contract, amount, msg }) if is_canonical_amount(&amount) => {
-            ContractCall::Cw20Send { contract, amount, msg }
-        }
-        Ok(Known::RedeemAndTransfer { recipient }) => ContractCall::AdapterRedeem { recipient },
-        Ok(Known::IncreaseAllowance {
+    if let Known::TransferNft { token_id, .. }
+    | Known::SendNft { token_id, .. }
+    | Known::Approve { token_id, .. }
+    | Known::Revoke { token_id, .. }
+    | Known::Burn(Burn::Token(BurnToken { token_id })) = &known
+        && !is_token_id(token_id)
+    {
+        return Err(Error::TokenId(token_id.clone()));
+    }
+    let expiry = |e: Option<serde_json::Value>| e.map(|e| e.to_string());
+    Ok(match known {
+        Known::Transfer { recipient, amount } => ContractCall::Cw20Transfer { recipient, amount },
+        Known::Send { contract, amount, msg } => ContractCall::Cw20Send { contract, amount, msg },
+        Known::RedeemAndTransfer { recipient } => ContractCall::AdapterRedeem { recipient },
+        Known::IncreaseAllowance {
             spender,
             amount,
             expires,
-        }) if is_canonical_amount(&amount) => ContractCall::Cw20IncreaseAllowance {
+        } => ContractCall::Cw20IncreaseAllowance {
             spender,
             amount,
-            expires: expires.map(|e| e.to_string()),
+            expires: expiry(expires),
         },
-        Ok(Known::DecreaseAllowance { spender, amount }) if is_canonical_amount(&amount) => {
-            ContractCall::Cw20DecreaseAllowance { spender, amount }
-        }
-        Ok(Known::TransferNft { recipient, token_id }) if is_token_id(&token_id) => {
-            ContractCall::NftTransfer { recipient, token_id }
-        }
-        Ok(Known::SendNft {
+        Known::DecreaseAllowance {
+            spender,
+            amount,
+            expires,
+        } => ContractCall::Cw20DecreaseAllowance {
+            spender,
+            amount,
+            expires: expiry(expires),
+        },
+        Known::Burn(Burn::Amount(BurnAmount { amount })) => ContractCall::Cw20Burn { amount },
+        Known::Burn(Burn::Token(BurnToken { token_id })) => ContractCall::NftBurn { token_id },
+        Known::UpdateMinter { new_minter } => ContractCall::Cw20UpdateMinter { new_minter },
+        Known::TransferNft { recipient, token_id } => ContractCall::NftTransfer { recipient, token_id },
+        Known::SendNft {
             contract,
             token_id,
             msg,
-        }) if is_token_id(&token_id) => ContractCall::NftSend {
+        } => ContractCall::NftSend {
             contract,
             token_id,
             msg,
         },
-        Ok(Known::Approve {
+        Known::Approve {
             spender,
             token_id,
             expires,
-        }) if is_token_id(&token_id) => ContractCall::NftApprove {
+        } => ContractCall::NftApprove {
             spender,
             token_id,
-            expires: expires.map(|e| e.to_string()),
+            expires: expiry(expires),
         },
-        Ok(Known::ApproveAll { operator, expires }) => ContractCall::NftApproveAll {
+        Known::ApproveAll { operator, expires } => ContractCall::NftApproveAll {
             operator,
-            expires: expires.map(|e| e.to_string()),
+            expires: expiry(expires),
         },
-        Ok(Known::Revoke { spender, token_id }) if is_token_id(&token_id) => ContractCall::NftRevoke {
+        Known::Revoke { spender, token_id } => ContractCall::NftRevoke {
             spender,
             token_id: Some(token_id),
         },
-        Ok(Known::RevokeAll { operator }) => ContractCall::NftRevoke {
+        Known::RevokeAll { operator } => ContractCall::NftRevoke {
             spender: operator,
             token_id: None,
         },
-        _ => ContractCall::Other,
-    };
-    Ok(call)
+        Known::UpdateOwnership(OwnerAction::TransferOwnership { new_owner, expiry: e }) => {
+            ContractCall::OwnershipTransfer {
+                new_owner,
+                expiry: expiry(e),
+            }
+        }
+        Known::UpdateOwnership(OwnerAction::RenounceOwnership) => ContractCall::OwnershipRenounce,
+        // Taking ownership offered to the signer hands nothing over.
+        Known::UpdateOwnership(OwnerAction::AcceptOwnership) => ContractCall::Other,
+    })
 }
 
 /// CW20 `{"transfer": {"recipient", "amount"}}`.
@@ -271,6 +401,7 @@ pub fn decrease_allowance(spender: &str, amount: &str) -> Vec<u8> {
     to_json(&Known::DecreaseAllowance {
         spender: spender.into(),
         amount: amount.into(),
+        expires: None,
     })
 }
 
@@ -340,9 +471,15 @@ mod tests {
             parse(&decrease_allowance("inj1a", "5")).unwrap(),
             ContractCall::Cw20DecreaseAllowance {
                 spender: "inj1a".into(),
-                amount: "5".into()
+                amount: "5".into(),
+                expires: None
             }
         );
+        // A decrease that also sets when the rest ends: read, with its new end.
+        assert!(matches!(
+            parse(br#"{"decrease_allowance":{"spender":"inj1a","amount":"1","expires":{"never":{}}}}"#).unwrap(),
+            ContractCall::Cw20DecreaseAllowance { expires: Some(e), .. } if e == r#"{"never":{}}"#
+        ));
         assert_eq!(
             decrease_allowance("inj1a", "5"),
             br#"{"decrease_allowance":{"spender":"inj1a","amount":"5"}}"#
@@ -380,26 +517,118 @@ mod tests {
                 token_id: None
             }
         );
-        for bad in [
-            r#"{"transfer_nft":{"recipient":"inj1a","token_id":""}}"#,
-            r#"{"transfer_nft":{"recipient":"inj1a","token_id":"a\u0000b"}}"#,
-            r#"{"transfer_nft":{"recipient":"inj1a","token_id":7}}"#,
+        // A token ID the wallet won't name is refused, as an unreadable amount is.
+        for (bad, id) in [
+            (r#"{"transfer_nft":{"recipient":"inj1a","token_id":""}}"#, ""),
+            (
+                r#"{"transfer_nft":{"recipient":"inj1a","token_id":"a\u0000b"}}"#,
+                "a\u{0}b",
+            ),
+            (r#"{"approve":{"spender":"inj1a","token_id":"a\nb"}}"#, "a\nb"),
+            (r#"{"burn":{"token_id":""}}"#, ""),
         ] {
-            assert_eq!(parse(bad.as_bytes()).unwrap(), ContractCall::Other, "{bad}");
+            assert_eq!(parse(bad.as_bytes()).unwrap_err(), Error::TokenId(id.into()), "{bad}");
+        }
+        let long = format!(
+            r#"{{"send_nft":{{"contract":"inj1a","token_id":"{}","msg":""}}}}"#,
+            "x".repeat(257)
+        );
+        assert!(matches!(parse(long.as_bytes()).unwrap_err(), Error::TokenId(_)));
+        // A number isn't a CW721 token ID: named like an NFT call, not shaped like one.
+        assert_eq!(
+            parse(br#"{"transfer_nft":{"recipient":"inj1a","token_id":7}}"#).unwrap(),
+            ContractCall::Unread {
+                action: "transfer_nft".into()
+            }
+        );
+    }
+
+    #[test]
+    fn recognises_burns_minters_and_owners() {
+        assert_eq!(
+            parse(br#"{"burn":{"amount":"5"}}"#).unwrap(),
+            ContractCall::Cw20Burn { amount: "5".into() }
+        );
+        assert_eq!(
+            parse(br#"{"burn":{"token_id":"7"}}"#).unwrap(),
+            ContractCall::NftBurn { token_id: "7".into() }
+        );
+        assert_eq!(
+            parse(br#"{"burn":{"amount":"05"}}"#).unwrap_err(),
+            Error::Amount("05".into())
+        );
+        assert_eq!(
+            parse(br#"{"update_minter":{"new_minter":"inj1m"}}"#).unwrap(),
+            ContractCall::Cw20UpdateMinter {
+                new_minter: Some("inj1m".into())
+            }
+        );
+        assert_eq!(
+            parse(br#"{"update_minter":{}}"#).unwrap(),
+            ContractCall::Cw20UpdateMinter { new_minter: None }
+        );
+        assert_eq!(
+            parse(br#"{"update_ownership":{"transfer_ownership":{"new_owner":"inj1o","expiry":null}}}"#).unwrap(),
+            ContractCall::OwnershipTransfer {
+                new_owner: "inj1o".into(),
+                expiry: None
+            }
+        );
+        assert!(matches!(
+            parse(br#"{"update_ownership":{"transfer_ownership":{"new_owner":"inj1o","expiry":{"at_height":9}}}}"#)
+                .unwrap(),
+            ContractCall::OwnershipTransfer { expiry: Some(_), .. }
+        ));
+        assert_eq!(
+            parse(br#"{"update_ownership":"renounce_ownership"}"#).unwrap(),
+            ContractCall::OwnershipRenounce
+        );
+        assert_eq!(
+            parse(br#"{"update_ownership":"accept_ownership"}"#).unwrap(),
+            ContractCall::Other
+        );
+    }
+
+    #[test]
+    fn token_calls_in_odd_shapes_are_unread() {
+        // Shapes the standard contracts reject (cw_serde denies unknown fields; Uint128 is a
+        // string), but one that doesn't may still move tokens: unread, not any call. A
+        // malformed amount cw20 would still read ("05") is refused: see refuses_non_json.
+        for (json, action) in [
+            (
+                r#"{"transfer":{"recipient":"inj1a","amount":"5","extra":1}}"#,
+                "transfer",
+            ),
+            (
+                r#"{"transfer":{"recipient":"inj1a","amount":"5","amount":"6"}}"#,
+                "transfer",
+            ),
+            (r#"{"transfer":{"recipient":"inj1a","amount":5}}"#, "transfer"),
+            (
+                r#"{"increase_allowance":{"spender":"inj1a","amount":"5","memo":"x"}}"#,
+                "increase_allowance",
+            ),
+            (r#"{"approve":{"proposal_id":7}}"#, "approve"),
+            (r#"{"burn":{"amount":"5","token_id":"7"}}"#, "burn"),
+            (r#"{"update_ownership":{"transfer_ownership":{}}}"#, "update_ownership"),
+        ] {
+            assert_eq!(
+                parse(json.as_bytes()).unwrap(),
+                ContractCall::Unread { action: action.into() },
+                "{json}"
+            );
         }
     }
 
     #[test]
-    fn anything_unusual_is_other() {
-        // Shapes cw20 itself rejects (cw_serde denies unknown fields; Uint128 is a string).
-        // A malformed amount cw20 would still read ("05") is refused: see refuses_non_json.
+    fn anything_else_is_other() {
         for json in [
-            r#"{"transfer":{"recipient":"inj1a","amount":"5","extra":1}}"#,
-            r#"{"transfer":{"recipient":"inj1a","amount":"5","amount":"6"}}"#,
             r#"{"transfer":{"recipient":"inj1a","amount":"5"},"send":{}}"#,
-            r#"{"transfer":{"recipient":"inj1a","amount":5}}"#,
-            r#"{"increase_allowance":{"spender":"inj1a","amount":"5","memo":"x"}}"#,
-            r#"{"decrease_allowance":{"spender":"inj1a","amount":"5","expires":{"never":{}}}}"#,
+            r#"{"swap":{"offer_asset":{}}}"#,
+            r#"{"mint":{"recipient":"inj1a","amount":"5"}}"#,
+            r#"{"transfer_from":{"owner":"inj1a","recipient":"inj1b","amount":"5"}}"#,
+            r#""transfer""#,
+            r#"[]"#,
         ] {
             assert_eq!(parse(json.as_bytes()).unwrap(), ContractCall::Other, "{json}");
         }

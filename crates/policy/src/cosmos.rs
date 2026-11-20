@@ -142,12 +142,96 @@ fn message(
                 } => {
                     out.push(allowance(ctx, contract, spender, amount, expires.as_deref()));
                 }
-                ContractCall::Cw20DecreaseAllowance { spender, amount } => out.push(finding(
+                ContractCall::Cw20DecreaseAllowance {
+                    spender,
+                    amount,
+                    expires: None,
+                } => out.push(finding(
                     "allowance_decrease",
                     Level::Info,
                     format!("Lowers {}'s allowance for this token.", short(spender)),
                     json!({ "token": contract, "spender": spender, "amount": amount }),
                 )),
+                // A new end for what's left: a lowered allowance that was about to end can
+                // last for good.
+                ContractCall::Cw20DecreaseAllowance {
+                    spender,
+                    amount,
+                    expires: Some(expires),
+                } => out.push(finding(
+                    "allowance_expiry",
+                    Level::Amber,
+                    format!(
+                        "Lowers {}'s allowance for this token and sets when the rest ends: it can still spend it{}.",
+                        short(spender),
+                        cw_until(Some(expires))
+                    ),
+                    json!({ "token": contract, "spender": spender, "amount": amount, "expires": expires }),
+                )),
+                ContractCall::Cw20Burn { amount } => {
+                    out.push(finding(
+                        "token_burn",
+                        Level::Amber,
+                        "Burns some of this token: it's destroyed, not sent.".into(),
+                        json!({ "token": contract, "amount": amount }),
+                    ));
+                    if let Some(o) = outflows {
+                        o.add_str(contract, amount);
+                    }
+                }
+                ContractCall::Cw20UpdateMinter { new_minter } => out.push(match new_minter {
+                    Some(m) => finding(
+                        "token_minter",
+                        Level::Red,
+                        format!("Hands minting of token {} to {}.", short(contract), short(m)),
+                        json!({ "token": contract, "new_minter": m }),
+                    ),
+                    None => finding(
+                        "token_minter",
+                        Level::Red,
+                        format!("Ends minting of token {} for good.", short(contract)),
+                        json!({ "token": contract, "new_minter": null }),
+                    ),
+                }),
+                ContractCall::NftBurn { token_id } => out.push(finding(
+                    "nft_burn",
+                    Level::Amber,
+                    format!(
+                        "Burns NFT {} of collection {}: it's destroyed, not sent.",
+                        nft_name(token_id),
+                        short(contract)
+                    ),
+                    json!({ "collection": contract, "token_id": token_id }),
+                )),
+                ContractCall::OwnershipTransfer { new_owner, expiry } => out.push(finding(
+                    "contract_owner",
+                    Level::Red,
+                    format!(
+                        "Hands ownership of contract {} to {}.",
+                        short(contract),
+                        short(new_owner)
+                    ),
+                    json!({ "contract": contract, "new_owner": new_owner, "expiry": expiry }),
+                )),
+                ContractCall::OwnershipRenounce => out.push(finding(
+                    "contract_owner",
+                    Level::Red,
+                    format!("Gives up ownership of contract {} for good.", short(contract)),
+                    json!({ "contract": contract }),
+                )),
+                ContractCall::Unread { action } => {
+                    if !known_contract(ctx, contract) {
+                        out.push(new_contract(contract));
+                    }
+                    out.push(finding(
+                        "contract_call_unread",
+                        Level::Amber,
+                        format!(
+                            "Named like a token call ({action}) but not shaped like one, so the wallet can't say what it moves."
+                        ),
+                        json!({ "contract": contract, "action": action }),
+                    ));
+                }
                 ContractCall::NftTransfer {
                     recipient: to,
                     token_id,
@@ -675,6 +759,86 @@ mod tests {
             (back.level, back.findings[0].rule),
             (Level::Info, "nft_approval_revoke")
         );
+    }
+
+    /// Review of PR #7: the token calls the decoder used to pass on as any call are read
+    /// and graded, and one named like a token call but shaped otherwise is said.
+    #[test]
+    fn burns_minters_owners_and_unread_token_calls() {
+        let one = |call: ContractCall| {
+            let a = grade(&[exec(OTHER, call)]);
+            (a.level, a.findings.iter().map(|f| f.rule).collect::<Vec<_>>())
+        };
+        assert_eq!(
+            one(ContractCall::Cw20Burn { amount: "5".into() }),
+            (Level::Amber, vec!["token_burn"])
+        );
+        assert_eq!(
+            one(ContractCall::Cw20UpdateMinter {
+                new_minter: Some(ME.into())
+            })
+            .0,
+            Level::Red
+        );
+        assert_eq!(one(ContractCall::Cw20UpdateMinter { new_minter: None }).0, Level::Red);
+        assert_eq!(one(ContractCall::NftBurn { token_id: "7".into() }).0, Level::Amber);
+        assert_eq!(
+            one(ContractCall::OwnershipTransfer {
+                new_owner: OTHER.into(),
+                expiry: None
+            })
+            .0,
+            Level::Red
+        );
+        assert_eq!(one(ContractCall::OwnershipRenounce).0, Level::Red);
+        assert_eq!(
+            one(ContractCall::Unread {
+                action: "increase_allowance".into()
+            }),
+            (Level::Amber, vec!["contract_call_unread", "new_contract"])
+        );
+        // A plain decrease is quiet; one that also sets when the rest ends is amber.
+        let decrease = |expires: Option<&str>| {
+            one(ContractCall::Cw20DecreaseAllowance {
+                spender: OTHER.into(),
+                amount: "1".into(),
+                expires: expires.map(Into::into),
+            })
+        };
+        assert_eq!(decrease(None), (Level::Info, vec!["allowance_decrease"]));
+        let never = grade(&[exec(
+            OTHER,
+            ContractCall::Cw20DecreaseAllowance {
+                spender: OTHER.into(),
+                amount: "1".into(),
+                expires: Some(r#"{"never":{}}"#.into()),
+            },
+        )]);
+        assert_eq!(never.level, Level::Amber);
+        assert!(
+            never.findings[0]
+                .message
+                .ends_with("it can still spend it, with no end date."),
+            "{}",
+            never.findings[0].message
+        );
+    }
+
+    /// A burn is money out: it counts toward what the request spends.
+    #[test]
+    fn a_burn_counts_as_spent() {
+        let ctx = Context {
+            balances: vec![(OTHER.into(), "4".into())].into_iter().collect(),
+            ..Default::default()
+        };
+        let a = cosmos(
+            &[exec(OTHER, ContractCall::Cw20Burn { amount: "5".into() })],
+            ME,
+            "",
+            CosmosFee::default(),
+            &ctx,
+        );
+        assert!(rules(&a).contains(&"more_than_balance"), "{:?}", rules(&a));
     }
 
     fn rules(a: &Assessment) -> Vec<&'static str> {

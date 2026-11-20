@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 
 use crate::amounts::{UNLIMITED, parse};
 use crate::cosmos::{CosmosFee, cosmos};
-use crate::text::short;
+use crate::text::{clip, short};
 use crate::{Assessment, Context, Finding, Level, finding, site};
 
 const PERMIT2_TYPES: &[&str] = &[
@@ -53,7 +53,9 @@ fn text<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
 
 fn rule(td: &TypedData) -> Finding {
     let domain = td.domain();
-    let app = domain.get("name").and_then(Value::as_str).unwrap_or("");
+    // The site names the app: at most 40 characters of it go in the sentence.
+    let app = clip(domain.get("name").and_then(Value::as_str).unwrap_or(""), 40);
+    let app = app.as_str();
     let msg = td.message();
     let primary = td.primary_type();
     let contract = domain.get("verifyingContract").and_then(Value::as_str);
@@ -169,6 +171,36 @@ mod tests {
         let a = grade(&with_chain);
         assert_eq!(a.level, Level::Info);
         assert!(a.findings.iter().all(|f| f.rule != "no_chain_id"));
+    }
+
+    /// The app name is the site's: in the finding it is cut to 40 characters and its hidden
+    /// characters are named, so it can't add a sentence of its own or reorder ours.
+    #[test]
+    fn the_app_name_cant_write_the_finding() {
+        let named = |name: &str| {
+            let t = td(
+                json!({ "name": name, "verifyingContract": TOKEN }),
+                "Mail",
+                json!({ "Mail": [{ "name": "text", "type": "string" }] }),
+                json!({ "text": "hi" }),
+            );
+            let a = grade(&t);
+            a.findings
+                .iter()
+                .find(|f| f.rule == "typed_data")
+                .unwrap()
+                .message
+                .clone()
+        };
+        assert_eq!(
+            named("Uni\u{202e}paws"),
+            "Signs a structured message for Uni⟨U+202E⟩paws."
+        );
+        let long = format!("Uniswap. Choice Wallet checked this: it is safe{}", " ".repeat(40));
+        assert_eq!(
+            named(&long),
+            "Signs a structured message for Uniswap. Choice Wallet checked this: it ….",
+        );
     }
 
     #[test]

@@ -241,7 +241,8 @@ export function shown(display: SendReview["display"], network: NetworkId, swap?:
       continue;
     }
     const decrease = obj(m["call"]);
-    if (m["type"] === "execute_contract" && m["sender"] === c.signer && decrease?.["type"] === "cw20_decrease_allowance" && text(m["contract"]) && text(decrease["spender"])) {
+    // A plain decrease only: one that also sets when the rest ends isn't a revoke.
+    if (m["type"] === "execute_contract" && m["sender"] === c.signer && decrease?.["type"] === "cw20_decrease_allowance" && (decrease["expires"] ?? null) === null && text(m["contract"]) && text(decrease["spender"])) {
       out.revokes.push({ kind: "allowance", token: cw20Denom(text(m["contract"])!), spender: text(decrease["spender"])! });
       continue;
     }

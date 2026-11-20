@@ -12,7 +12,7 @@ import { BridgeCard, MintCard } from "./Bridge";
 import type { AccountInfo, Balance, BridgeStatus, BridgeStepInfo, Coin, EvmDisplay, Contact, DeviceRequest, DeviceSignature, NetworkId, RecipientCheck, SendReview, Sent, SwapStepInfo, TokenInfo, TxState } from "./protocol";
 import { errorText, useRequest } from "./request";
 import { permissionName } from "./permissions";
-import { shown, spenderName, type Shown, type StakeLine, type VoteLine } from "./review";
+import { shown, spenderName, visible, type Shown, type StakeLine, type VoteLine } from "./review";
 import { TokenMark } from "./TokenMark";
 
 /** An amount typed into a form: base units (or "max"), or what's wrong with it. */
@@ -410,7 +410,7 @@ export function Review({
       {/* What the risk rules found comes first: it must never sit below the fold. */}
       {risk.findings.map((f, i) => (
         <Callout key={i} level={f.level}>
-          {f.message}
+          {visible(f.message)}
         </Callout>
       ))}
       {review.swap && review.swap.left > 0 && <p className="meta">{review.swap.left === 1 ? "One more step after this." : "Two more steps after this."}</p>}

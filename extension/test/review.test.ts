@@ -57,3 +57,26 @@ test("hidden and right-to-left characters in an EIP-712 app name are made visibl
   assert.ok(!html.includes("‮"), "raw right-to-left override in the App row");
   assert.match(html, /Uniswap⟨U\+202E⟩/);
 });
+
+// A finding quotes what a site wrote (an app name, an NFT ID); the window names any hidden
+// character in it too, after the vault already has, and a contract's error text the same.
+test("hidden characters in a finding or a simulation error are made visible", () => {
+  const html = renderToStaticMarkup(
+    createElement(SignBody, {
+      review: {
+        digest: "00",
+        risk: { level: "info", findings: [{ rule: "typed_data", level: "info", message: "Signs a structured message for Uni‮paws.", params: {} }] },
+        display: { kind: "evm_typed_data", domain: { name: "x" }, primary_type: "Mail", message: {} },
+        tokens: {},
+        checkedBy: "",
+        simulation: { ok: false, error: "out of gas⁦ all good" },
+      } as unknown as DappReview,
+      network: "mainnet",
+      typed: "",
+      onTyped: () => {},
+    }),
+  ).replace(/<details class="raw">[\s\S]*?<\/details>/, "");
+  assert.ok(!html.includes("‮") && !html.includes("⁦"), "raw hidden characters in the window");
+  assert.match(html, /Uni⟨U\+202E⟩paws/);
+  assert.match(html, /out of gas⟨U\+2066⟩ all good/);
+});

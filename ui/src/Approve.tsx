@@ -287,12 +287,14 @@ export function SignBody({ review, network, typed, onTyped, account }: { review:
 
   return (
     <>
+      {/* The vault names hidden characters in its sentences already; this is the second
+          lock, and a contract's own error text gets the same. */}
       {risk.findings.map((f, i) => (
         <Callout key={i} level={f.level}>
-          {f.message}
+          {visible(f.message)}
         </Callout>
       ))}
-      {review.simulation && !review.simulation.ok && <Callout level="red">Simulation failed: {review.simulation.error}</Callout>}
+      {review.simulation && !review.simulation.ok && <Callout level="red">Simulation failed: {visible(review.simulation.error)}</Callout>}
       {review.simulation?.ok && (
         <div className="well">
           <div className="eyebrow">Simulated: what this account would see</div>
