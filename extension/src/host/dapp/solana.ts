@@ -42,6 +42,7 @@ export function createSolanaSite(core: SiteCore) {
       if (typeof message !== "string" || !bytesHex(message) || message.length === 0 || message.length > 2 * MAX_ARBITRARY) return no(INVALID_PARAMS, `signMessage takes the message as bytes, at most ${MAX_ARBITRARY} of them.`);
       return sign(
         origin,
+        network,
         "solana_message",
         async () => ({ request: { solana_message: { chain: net.solana.caip2, signer: mine, message: message.replace(/^0x/, "") } } }),
         async (signed) => ({ signature: signed["signature"] }),
@@ -55,6 +56,7 @@ export function createSolanaSite(core: SiteCore) {
       let read: Awaited<ReturnType<typeof h.solana.siteTransaction>> | null = null;
       return sign(
         origin,
+        network,
         "solana_transaction",
         async (account) => {
           read = await h.solana.siteTransaction(network, account, wire);

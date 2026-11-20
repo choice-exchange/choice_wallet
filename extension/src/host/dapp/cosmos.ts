@@ -92,6 +92,7 @@ export function createCosmosSite(core: SiteCore) {
       const auth = doc["authInfoBytes"].replace(/^0x/, "");
       return sign(
         origin,
+        network,
         "cosmos_direct",
         async () => {
           const request = { cosmos_direct: { chain: net.cosmos, signer: pubkey, body_bytes: body, auth_info_bytes: auth, account_number: accountNumber } };
@@ -106,6 +107,7 @@ export function createCosmosSite(core: SiteCore) {
       if (wrongChain(doc["chain_id"])) return no(CHAIN_DISCONNECTED, chainNote);
       return sign(
         origin,
+        network,
         "cosmos_amino",
         async () => ({ request: { cosmos_amino: { chain: net.cosmos, signer: pubkey, sign_doc: doc } } }),
         async (signed) => signature(signed["signature"]),
@@ -118,6 +120,7 @@ export function createCosmosSite(core: SiteCore) {
       if (method === "choice_signArbitrary") {
         return sign(
           origin,
+          network,
           "cosmos_arbitrary",
           async () => ({ request: { cosmos_arbitrary: { chain: net.cosmos, signer: pubkey, data: dataHex } } }),
           async (signed) => signature(signed["signature"]),

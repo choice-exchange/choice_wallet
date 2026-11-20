@@ -14,7 +14,7 @@
 // Each chain's requests are handled in its own file (./evm.ts, ./cosmos.ts, ./solana.ts);
 // this one keeps the grants, the requests waiting and the approval window's side.
 
-import { ChainError, isObject, NETWORKS, Unreachable, type Coin, type NetworkId } from "@choice-wallet/chain";
+import { chainByCaip2, ChainError, isObject, NETWORKS, Unreachable, type Coin, type NetworkId } from "@choice-wallet/chain";
 import type { AccountInfo, Connection, CosmosDisplay, DappRequest, DappReview, DeviceRequest, Result, Risk } from "@choice-wallet/ui/protocol";
 
 import { displayDenoms } from "../send";
@@ -145,6 +145,7 @@ export function createDapps(h: DappHost) {
   /** A signature request: checked now, built and decoded when the window asks. */
   async function sign(
     origin: string,
+    network: NetworkId,
     method: string,
     build: NonNullable<Waiting["build"]>,
     finish: NonNullable<Waiting["finish"]>,
@@ -152,7 +153,9 @@ export function createDapps(h: DappHost) {
   ): Promise<DappReply> {
     if (!(await isConnected(origin))) return no(UNAUTHORIZED, "Connect to Choice Wallet first.");
     if (named && !named.address) return no(UNAUTHORIZED, "Name the account to sign with.");
-    return ask({ build, finish, ...(named ? { named } : {}) }, { origin, network: await h.network(), kind: "sign", method });
+    // The network the handler read and built the request for: a second read here could name
+    // another one, and review checks only this against the wallet's network.
+    return ask({ build, finish, ...(named ? { named } : {}) }, { origin, network, kind: "sign", method });
   }
 
   const core = { h, isConnected, connect, ask, sign, disconnect, inGrantTurn };
@@ -205,6 +208,10 @@ export function createDapps(h: DappHost) {
       type Decoded = { digest: string; display: DappReview["display"]; risk: Risk };
       let d = await h.vault<Decoded>("decode", { request: built.request, context });
       if (!d.ok) return d;
+      // A second lock on the network: what was built must be for a chain of the network the
+      // window names.
+      const on = (d.result.display as { chain?: unknown }).chain;
+      if (typeof on === "string" && !chainByCaip2(network, on)) return fail("network", "The wallet changed network. Ask the site again.");
       // Who it pays is known once it's read: then the exchange-memo facts for them, and the
       // rules again with those (the signed bytes, and so the digest, are the same).
       const paid = recipientsOf(network, d.result.display);

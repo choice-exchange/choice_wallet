@@ -118,7 +118,8 @@ export interface SiteCore {
   /** Connect (asking the user if need be), then answer with `then`. */
   connect(origin: string, then: () => Promise<DappReply>): Promise<DappReply>;
   ask(w: Omit<Waiting, "req" | "resolve">, req: Omit<DappRequest, "id">): Promise<DappReply>;
-  sign(origin: string, method: string, build: NonNullable<Waiting["build"]>, finish: NonNullable<Waiting["finish"]>, named?: Named): Promise<DappReply>;
+  /** `network` is the one the handler built the request for, never a second read. */
+  sign(origin: string, network: NetworkId, method: string, build: NonNullable<Waiting["build"]>, finish: NonNullable<Waiting["finish"]>, named?: Named): Promise<DappReply>;
   disconnect(origin: unknown): Promise<unknown>;
   /** Run `work` in the grants' turn, after any grant change already queued. */
   inGrantTurn<T>(work: () => Promise<T>): Promise<T>;

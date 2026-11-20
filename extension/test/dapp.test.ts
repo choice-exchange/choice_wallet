@@ -905,3 +905,30 @@ test("Solana sites (Wallet Standard): connect, a transfer read by the vault and 
   const sig = ((await signing) as { result: { signature: string } }).result.signature;
   assert.ok(ed25519.verify(Buffer.from(sig, "hex"), text, base58Decode(ME_SOL)));
 });
+
+// Run-3: a request keeps the network its handler read and built it for. A switch landing
+// between that read and the request's queueing (a site's approved switch, the popup's pick)
+// used to leave a mainnet request under a window that named the testnet.
+test("a request is reviewed only on the network it was built for", async () => {
+  const s = await connected();
+  const get = s.local.get.bind(s.local);
+  let armed = false;
+  s.local.get = async (keys) => {
+    const r = await get(keys);
+    // The grant check runs after the handler read the network and before the request queues.
+    if (armed && keys.includes("connections")) {
+      armed = false;
+      s.local.data.set("network", "testnet");
+    }
+    return r;
+  };
+  armed = true;
+  const asked = s.page(SITE)("eth_sendTransaction", [{ from: ME_EVM, to: THEM_EVM, value: "0x1" }]);
+  const w = await s.window();
+  assert.equal(armed, false, "the switch landed");
+  const req = ok<{ network: string }>(await s.service.handle({ type: "dapp_request", id: w.id }));
+  assert.equal(req.network, "mainnet");
+  assert.equal(code(await s.service.handle({ type: "dapp_review", id: w.id })), "network");
+  ok(await s.service.handle({ type: "dapp_answer", id: w.id, approve: false }));
+  assert.equal((await asked).error?.code, 4001);
+});

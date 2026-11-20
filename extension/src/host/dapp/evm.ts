@@ -292,6 +292,7 @@ export function createEvmSite(core: SiteCore) {
       if (typeof tx["to"] !== "string") return no(INVALID_PARAMS, "Contract creation isn't supported.");
       return sign(
         origin,
+        network,
         "evm_transaction",
         async () => {
           const filled = await fillEvmTx(network, chain, await me(), tx);
@@ -321,6 +322,7 @@ export function createEvmSite(core: SiteCore) {
       if (!(await mine(address))) return no(UNAUTHORIZED, "personal_sign: that address isn't this wallet's connected account.");
       return sign(
         origin,
+        network,
         "evm_personal_sign",
         async () => ({ request: { evm_personal_sign: { chain: chain.caip2, signer: await me(), message } } }),
         async (signed) => signed["signature"],
@@ -334,6 +336,7 @@ export function createEvmSite(core: SiteCore) {
     if ((typeof typed === "string" ? typed : JSON.stringify(typed)).length > MAX_TYPED) return no(INVALID_PARAMS, `Typed data is limited to ${MAX_TYPED / 1024} KiB.`);
     return sign(
       origin,
+      network,
       "evm_typed_data",
       async () => ({ request: { evm_typed_data: { chain: chain.caip2, signer: await me(), typed_data: typed } } }),
       async (signed) => signed["signature"],
