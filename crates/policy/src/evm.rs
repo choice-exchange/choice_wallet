@@ -279,6 +279,37 @@ fn uint_arg(data: &[u8], i: usize) -> Option<U256> {
 }
 
 /// The precompile at `to`, if it's one of Injective's system addresses (0x…00 to 0x…ff).
+/// Another wallet chain's own system contract that moves the caller's funds with no
+/// allowance and no value attached (to an L1 address, an IBC channel, a HyperCore account),
+/// which the rules don't read: by chain ID. Read as unread calls, red (run-3).
+fn chain_system_contract(chain_id: u64, to: &EthAddress) -> Option<&'static str> {
+    let b = to.as_bytes();
+    let low = |n: u16| b[..18].iter().all(|&x| x == 0) && u16::from_be_bytes([b[18], b[19]]) == n;
+    let predeploy = |n: u8| b[0] == 0x42 && b[1..19].iter().all(|&x| x == 0) && b[19] == n;
+    match chain_id {
+        // OP-stack chains (OP, Base, Unichain, World Chain, Ink, and their test networks):
+        // the predeploys that send funds or messages to L1.
+        10 | 11_155_420 | 8453 | 84_532 | 130 | 1301 | 480 | 4801 | 57_073 | 763_373 => match () {
+            () if predeploy(0x07) => Some("the L2 cross-domain messenger"),
+            () if predeploy(0x10) => Some("the L2 standard bridge"),
+            () if predeploy(0x14) => Some("the L2 ERC-721 bridge"),
+            () if predeploy(0x16) => Some("the L2-to-L1 message passer"),
+            () => None,
+        },
+        // Arbitrum: ArbSys (withdrawEth, sendTxToL1) and ArbRetryableTx.
+        42_161 | 421_614 => match () {
+            () if low(0x64) => Some("ArbSys"),
+            () if low(0x6e) => Some("ArbRetryableTx"),
+            () => None,
+        },
+        // HyperEVM: CoreWriter, whose actions move HyperCore balances.
+        999 | 998 => b.iter().all(|&x| x == 0x33).then_some("CoreWriter"),
+        // Sei EVM's precompiles (bank, wasm, staking, gov, distribution, IBC, pointers, …).
+        1329 | 1328 => (0x1001..=0x100b).any(low).then_some("a Sei precompile"),
+        _ => None,
+    }
+}
+
 fn system_address(to: &EthAddress) -> Option<u8> {
     let b = to.as_bytes();
     b[..19].iter().all(|&x| x == 0).then_some(b[19])
@@ -393,6 +424,17 @@ fn contract_call(
     let data = tx.data.as_slice();
     let to = tx.to.to_checksum_hex();
     let choice = network.map(|n| &n.choice);
+    if network.is_none()
+        && let Some(name) = chain_system_contract(tx.chain_id, &tx.to)
+    {
+        out.push(finding(
+            "chain_system_contract",
+            Level::Red,
+            format!("Calls {name}, a system contract of this chain the wallet can't read. It can move your funds."),
+            json!({ "contract": to, "name": name }),
+        ));
+        return;
+    }
     if let Some(n) = system_address(&tx.to) {
         if n == SWAP && network.is_some() {
             orderbook_swap(req, out, outflows);
@@ -883,6 +925,40 @@ mod tests {
         ] {
             assert_eq!(keccak256(sig.as_bytes())[..4], sel, "{sig}");
         }
+    }
+
+    /// Run-3: another wallet chain's own fund-moving system contracts are unread calls, red;
+    /// the same addresses on other chains, and the predeploys that are ordinary tokens (WETH
+    /// at 0x4200…0006), are not.
+    #[test]
+    fn other_chains_system_contracts() {
+        let on = |chain_id: u64, to: [u8; 20], cctp: u64| {
+            let mut r = req(EthAddress::from_bytes(to), vec![1, 2, 3, 4]);
+            r.tx.chain_id = chain_id;
+            let side = EvmSide {
+                injective: None,
+                cctp: Some((&MAINNET.cctp, MAINNET.cctp.evm_chain(cctp).unwrap())),
+            };
+            evm_transaction(&r, &side, &Context::default())
+        };
+        let mut bridge = [0u8; 20];
+        bridge[0] = 0x42;
+        bridge[19] = 0x10;
+        let mut weth = bridge;
+        weth[19] = 0x06;
+        let mut arbsys = [0u8; 20];
+        arbsys[19] = 0x64;
+        let mut sei = [0u8; 20];
+        sei[18] = 0x10;
+        sei[19] = 0x09;
+        assert_eq!(on(8453, bridge, 8453).level, Level::Red);
+        assert!(rules_of(&on(8453, bridge, 8453)).contains(&"chain_system_contract"));
+        assert!(!rules_of(&on(8453, weth, 8453)).contains(&"chain_system_contract"));
+        assert_eq!(on(42_161, arbsys, 42_161).level, Level::Red);
+        assert_eq!(on(999, [0x33; 20], 999).level, Level::Red);
+        assert_eq!(on(1329, sei, 1329).level, Level::Red);
+        // Base's predeploy address means nothing on Arbitrum.
+        assert!(!rules_of(&on(42_161, bridge, 42_161)).contains(&"chain_system_contract"));
     }
 
     /// Run-3: a swap sent straight to the spot swap precompile (0x68) is read: someone else
