@@ -201,11 +201,31 @@ const PERMIT2_APPROVE: [u8; 4] = 0x87517c45u32.to_be_bytes();
 /// ERC20 `transfer(address,uint256)`. Its exact form is `Call::Erc20Transfer`; any other form
 /// reaches `contract_call`.
 const TRANSFER: [u8; 4] = erc20::TRANSFER_SELECTOR;
+/// ERC-1363 `approveAndCall(address,uint256)`: an `approve`, then a call to the spender.
+const APPROVE_AND_CALL: [u8; 4] = 0x3177029fu32.to_be_bytes();
+/// ERC-1363 `approveAndCall(address,uint256,bytes)`.
+const APPROVE_AND_CALL_DATA: [u8; 4] = 0xcae9ca51u32.to_be_bytes();
+/// `increaseApproval(address,uint256)`: older OpenZeppelin ERC20s' `increaseAllowance`.
+const INCREASE_APPROVAL: [u8; 4] = 0xd73dd623u32.to_be_bytes();
+/// ERC-777 `authorizeOperator(address)`: the operator may send all of the holder's tokens.
+const AUTHORIZE_OPERATOR: [u8; 4] = 0x959b8c3fu32.to_be_bytes();
+/// ERC-1155 `safeTransferFrom(address,address,uint256,uint256,bytes)`.
+const SAFE_TRANSFER_1155: [u8; 4] = 0xf242432au32.to_be_bytes();
+/// ERC-1155 `safeBatchTransferFrom(address,address,uint256[],uint256[],bytes)`.
+const SAFE_BATCH_TRANSFER_1155: [u8; 4] = 0x2eb2c2d6u32.to_be_bytes();
+/// ERC-1363 `transferAndCall(address,uint256)`: a `transfer`, then a call to the recipient.
+const TRANSFER_AND_CALL: [u8; 4] = 0x1296ee62u32.to_be_bytes();
+/// ERC-677 / ERC-1363 `transferAndCall(address,uint256,bytes)`.
+const TRANSFER_AND_CALL_DATA: [u8; 4] = 0x4000aea0u32.to_be_bytes();
+/// ERC-1363 `transferFromAndCall(address,address,uint256)`.
+const TRANSFER_FROM_AND_CALL: [u8; 4] = 0xd8fbe994u32.to_be_bytes();
+/// ERC-1363 `transferFromAndCall(address,address,uint256,bytes)`.
+const TRANSFER_FROM_AND_CALL_DATA: [u8; 4] = 0xc1d34b89u32.to_be_bytes();
 
 /// Token calls a contract runs whatever their exact byte form: Solidity's decoder ignores
 /// bytes after the arguments, and ABI coder v1 masks an address's padding. The rules read
 /// each one only in its exact form, so any other form of these is graded as unreadable.
-const TOKEN_CALLS: [([u8; 4], &str); 8] = [
+const TOKEN_CALLS: [([u8; 4], &str); 18] = [
     (APPROVE, "approve"),
     (INCREASE_ALLOWANCE, "increaseAllowance"),
     (SET_APPROVAL_FOR_ALL, "setApprovalForAll"),
@@ -214,7 +234,22 @@ const TOKEN_CALLS: [([u8; 4], &str); 8] = [
     (TRANSFER_FROM, "transferFrom"),
     (PERMIT2_APPROVE, "Permit2 approve"),
     (TRANSFER, "transfer"),
+    (APPROVE_AND_CALL, "approveAndCall"),
+    (APPROVE_AND_CALL_DATA, "approveAndCall"),
+    (INCREASE_APPROVAL, "increaseApproval"),
+    (AUTHORIZE_OPERATOR, "authorizeOperator"),
+    (SAFE_TRANSFER_1155, "safeTransferFrom"),
+    (SAFE_BATCH_TRANSFER_1155, "safeBatchTransferFrom"),
+    (TRANSFER_AND_CALL, "transferAndCall"),
+    (TRANSFER_AND_CALL_DATA, "transferAndCall"),
+    (TRANSFER_FROM_AND_CALL, "transferFromAndCall"),
+    (TRANSFER_FROM_AND_CALL_DATA, "transferFromAndCall"),
 ];
+
+/// The arguments of a call with a dynamic argument, read only in their canonical encoding.
+fn args(data: &[u8], tys: &[abi::Ty]) -> Option<Vec<abi::Val>> {
+    abi::decode(tys, data.get(4..)?).ok()
+}
 
 fn token_call_name(sel: &[u8; 4]) -> Option<&'static str> {
     TOKEN_CALLS.iter().find(|(s, _)| s == sel).map(|(_, name)| *name)
@@ -293,7 +328,7 @@ pub fn evm_transaction(req: &TxRequest, chain: &EvmSide<'_>, ctx: &Context) -> A
                 recipient(ctx, &r.to_checksum_hex(), None, &mut out);
                 outflows.add(&to, amount);
             }
-            Call::Contract { selector } => contract_call(req, selector, chain, ctx, &mut out),
+            Call::Contract { selector } => contract_call(req, selector, chain, ctx, &mut out, &mut outflows),
         },
     }
     // Native coin a call carries besides what its calldata reads as. A token call never
@@ -345,6 +380,7 @@ fn contract_call(
     chain: &EvmSide<'_>,
     ctx: &Context,
     out: &mut Vec<Finding>,
+    outflows: &mut Outflows,
 ) {
     let network = chain.injective;
     let tx = &req.tx;
@@ -365,7 +401,11 @@ fn contract_call(
         return;
     };
     match sel {
-        APPROVE | INCREASE_ALLOWANCE if data.len() == 68 => {
+        APPROVE | INCREASE_ALLOWANCE | INCREASE_APPROVAL | APPROVE_AND_CALL | APPROVE_AND_CALL_DATA
+            if data.len() == 68
+                || (sel == APPROVE_AND_CALL_DATA
+                    && args(data, &[abi::Ty::Word, abi::Ty::Word, abi::Ty::Bytes]).is_some()) =>
+        {
             if let (Some(spender), Some(amount)) = (address_arg(data, 0), uint_arg(data, 1)) {
                 let named = network
                     .and_then(|n| swap::known_name(&n.choice, &spender))
@@ -376,18 +416,115 @@ fn contract_call(
                     &spender.to_checksum_hex(),
                     named,
                     amount,
-                    sel == APPROVE,
+                    sel == APPROVE || sel == APPROVE_AND_CALL || sel == APPROVE_AND_CALL_DATA,
                 ));
                 return;
             }
         }
-        SAFE_TRANSFER_FROM | SAFE_TRANSFER_FROM_DATA | TRANSFER_FROM
-            if data.len() == 4 + 3 * 32 || (sel == SAFE_TRANSFER_FROM_DATA && data.len() >= 4 + 4 * 32) =>
+        AUTHORIZE_OPERATOR if data.len() == 36 => {
+            if let Some(operator) = address_arg(data, 0) {
+                let operator = operator.to_checksum_hex();
+                out.push(finding(
+                    "token_operator",
+                    Level::Red,
+                    format!("{} could move ALL of this token, now and later.", short(&operator)),
+                    json!({ "token": to, "operator": operator }),
+                ));
+                return;
+            }
+        }
+        TRANSFER_AND_CALL | TRANSFER_AND_CALL_DATA
+            if data.len() == 68
+                || (sel == TRANSFER_AND_CALL_DATA
+                    && args(data, &[abi::Ty::Word, abi::Ty::Word, abi::Ty::Bytes]).is_some()) =>
+        {
+            if let (Some(dest), Some(amount)) = (address_arg(data, 0), uint_arg(data, 1)) {
+                let dest = dest.to_checksum_hex();
+                recipient(ctx, &dest, None, out);
+                out.push(finding(
+                    "token_send_call",
+                    Level::Info,
+                    format!("Sends tokens to {}, then runs its code.", short(&dest)),
+                    json!({ "token": to, "to": dest, "amount": amount.to_string() }),
+                ));
+                outflows.add(&to, amount);
+                return;
+            }
+        }
+        SAFE_TRANSFER_1155 | SAFE_BATCH_TRANSFER_1155 => {
+            use abi::Ty::{Array, Bytes, Word};
+            let read = if sel == SAFE_TRANSFER_1155 {
+                args(data, &[Word, Word, Word, Word, Bytes]).and_then(|v| {
+                    Some((
+                        v[0].address().ok()?,
+                        v[1].address().ok()?,
+                        vec![(v[2].uint().ok()?, v[3].uint().ok()?)],
+                    ))
+                })
+            } else {
+                args(data, &[Word, Word, Array(&Word), Array(&Word), Bytes]).and_then(|v| {
+                    let ids = v[2].array().ok()?;
+                    let amounts = v[3].array().ok()?;
+                    (ids.len() == amounts.len()).then_some(())?;
+                    let pairs = ids
+                        .iter()
+                        .zip(amounts)
+                        .map(|(i, a)| Some((i.uint().ok()?, a.uint().ok()?)))
+                        .collect::<Option<Vec<_>>>()?;
+                    Some((v[0].address().ok()?, v[1].address().ok()?, pairs))
+                })
+            };
+            if let Some((from, dest, items)) = read {
+                let dest_hex = dest.to_checksum_hex();
+                let what = match items.as_slice() {
+                    [(id, amount)] => format!("{amount} of token #{id} of collection {}", short(&to)),
+                    _ => format!("{} kinds of token of collection {}", items.len(), short(&to)),
+                };
+                let params = json!({
+                    "collection": to,
+                    "from": from.to_checksum_hex(),
+                    "to": dest_hex,
+                    "items": items.iter().map(|(i, a)| json!({ "token_id": i.to_string(), "amount": a.to_string() })).collect::<Vec<_>>(),
+                });
+                if from == req.from {
+                    recipient(ctx, &dest_hex, None, out);
+                    out.push(finding(
+                        "nft_send",
+                        Level::Info,
+                        format!("Gives {what} to {}.", short(&dest_hex)),
+                        params,
+                    ));
+                } else {
+                    out.push(finding(
+                        "transfer_from_other",
+                        Level::Amber,
+                        format!(
+                            "Moves {what} out of {}, using its approval.",
+                            short(&from.to_checksum_hex())
+                        ),
+                        params,
+                    ));
+                }
+                return;
+            }
+        }
+        SAFE_TRANSFER_FROM
+        | SAFE_TRANSFER_FROM_DATA
+        | TRANSFER_FROM
+        | TRANSFER_FROM_AND_CALL
+        | TRANSFER_FROM_AND_CALL_DATA
+            if data.len() == 4 + 3 * 32
+                || (sel == SAFE_TRANSFER_FROM_DATA && data.len() >= 4 + 4 * 32)
+                || (sel == TRANSFER_FROM_AND_CALL_DATA
+                    && args(data, &[abi::Ty::Word, abi::Ty::Word, abi::Ty::Word, abi::Ty::Bytes]).is_some()) =>
         {
             if let (Some(from), Some(dest), Some(id)) = (address_arg(data, 0), address_arg(data, 1), uint_arg(data, 2))
             {
                 let dest_hex = dest.to_checksum_hex();
-                let what = if sel == TRANSFER_FROM {
+                let what = if matches!(
+                    sel,
+                    TRANSFER_FROM | TRANSFER_FROM_AND_CALL | TRANSFER_FROM_AND_CALL_DATA
+                ) {
                     format!("tokens or NFT #{id} of contract {}", short(&to))
                 } else {
                     format!("NFT #{id} of collection {}", short(&to))
@@ -634,9 +771,131 @@ mod tests {
                 SAFE_TRANSFER_FROM_DATA,
                 "safeTransferFrom(address,address,uint256,bytes)",
             ),
+            (APPROVE_AND_CALL, "approveAndCall(address,uint256)"),
+            (APPROVE_AND_CALL_DATA, "approveAndCall(address,uint256,bytes)"),
+            (INCREASE_APPROVAL, "increaseApproval(address,uint256)"),
+            (AUTHORIZE_OPERATOR, "authorizeOperator(address)"),
+            (
+                SAFE_TRANSFER_1155,
+                "safeTransferFrom(address,address,uint256,uint256,bytes)",
+            ),
+            (
+                SAFE_BATCH_TRANSFER_1155,
+                "safeBatchTransferFrom(address,address,uint256[],uint256[],bytes)",
+            ),
+            (TRANSFER_AND_CALL, "transferAndCall(address,uint256)"),
+            (TRANSFER_AND_CALL_DATA, "transferAndCall(address,uint256,bytes)"),
+            (TRANSFER_FROM_AND_CALL, "transferFromAndCall(address,address,uint256)"),
+            (
+                TRANSFER_FROM_AND_CALL_DATA,
+                "transferFromAndCall(address,address,uint256,bytes)",
+            ),
         ] {
             assert_eq!(keccak256(sig.as_bytes())[..4], sel, "{sig}");
         }
+    }
+
+    /// Run-3: the other standard ways to grant an allowance or operator rights are graded
+    /// like approve, and the other standard sends go through the recipient rules.
+    #[test]
+    fn other_token_standards_grant_and_send() {
+        use abi::Val;
+        let token = EthAddress::from_bytes([0x11; 20]);
+        let them = addr_word([0x22; 20]);
+        let me = addr_word(FROM);
+        let max = U256::MAX.to_be_bytes();
+        let five = U256::from_u128(5).to_be_bytes();
+        let with_data = |sel: [u8; 4], vals: Vec<Val>| {
+            let mut d = sel.to_vec();
+            d.extend(abi::encode(&vals));
+            d
+        };
+        let one = |data: Vec<u8>| grade(&req(token, data));
+        for data in [
+            call(APPROVE_AND_CALL, &[them, max]),
+            with_data(
+                APPROVE_AND_CALL_DATA,
+                vec![Val::Word(them), Val::Word(max), Val::Bytes(vec![1, 2])],
+            ),
+            call(INCREASE_APPROVAL, &[them, max]),
+        ] {
+            let a = one(data);
+            assert_eq!(a.level, Level::Red);
+            assert!(rules_of(&a).contains(&"unlimited_allowance"), "{:?}", rules_of(&a));
+        }
+        let op = one(call(AUTHORIZE_OPERATOR, &[them]));
+        assert_eq!(op.level, Level::Red);
+        assert!(rules_of(&op).contains(&"token_operator"));
+        // approveAndCall(x, 0) takes an allowance back, as approve(x, 0) does.
+        assert!(rules_of(&one(call(APPROVE_AND_CALL, &[them, [0; 32]]))).contains(&"allowance_revoke"));
+        // Sends: named, and through the recipient rules.
+        let sent = one(call(TRANSFER_AND_CALL, &[them, five]));
+        assert!(rules_of(&sent).contains(&"token_send_call"), "{:?}", rules_of(&sent));
+        let sent = one(with_data(
+            TRANSFER_AND_CALL_DATA,
+            vec![Val::Word(them), Val::Word(five), Val::Bytes(vec![])],
+        ));
+        assert!(rules_of(&sent).contains(&"token_send_call"), "{:?}", rules_of(&sent));
+        let nft = one(with_data(
+            SAFE_TRANSFER_1155,
+            vec![
+                Val::Word(me),
+                Val::Word(them),
+                Val::Word(five),
+                Val::Word(five),
+                Val::Bytes(vec![]),
+            ],
+        ));
+        assert!(rules_of(&nft).contains(&"nft_send"), "{:?}", rules_of(&nft));
+        let batch = one(with_data(
+            SAFE_BATCH_TRANSFER_1155,
+            vec![
+                Val::Word(me),
+                Val::Word(them),
+                Val::Array(vec![Val::Word(five), Val::Word(max)]),
+                Val::Array(vec![Val::Word(five), Val::Word(five)]),
+                Val::Bytes(vec![]),
+            ],
+        ));
+        let f = batch.findings.iter().find(|f| f.rule == "nft_send").expect("named");
+        assert!(f.message.contains("2 kinds of token"), "{}", f.message);
+        let other = one(with_data(
+            SAFE_TRANSFER_1155,
+            vec![
+                Val::Word(them),
+                Val::Word(them),
+                Val::Word(five),
+                Val::Word(five),
+                Val::Bytes(vec![]),
+            ],
+        ));
+        assert!(rules_of(&other).contains(&"transfer_from_other"));
+        let other = one(call(TRANSFER_FROM_AND_CALL, &[them, them, five]));
+        assert!(rules_of(&other).contains(&"transfer_from_other"));
+        // Any other form of these is unreadable, and red.
+        let mut trailing = call(AUTHORIZE_OPERATOR, &[them]);
+        trailing.push(0);
+        let mut uneven = with_data(
+            SAFE_BATCH_TRANSFER_1155,
+            vec![
+                Val::Word(me),
+                Val::Word(them),
+                Val::Array(vec![Val::Word(five)]),
+                Val::Array(vec![Val::Word(five), Val::Word(five)]),
+                Val::Bytes(vec![]),
+            ],
+        );
+        let mut extra = call(INCREASE_APPROVAL, &[them, max]);
+        extra.push(0);
+        let mut dirty = them;
+        dirty[0] = 1;
+        for data in [trailing, uneven.clone(), extra, call(APPROVE_AND_CALL, &[dirty, max])] {
+            let a = one(data);
+            assert_eq!(a.level, Level::Red);
+            assert!(rules_of(&a).contains(&"token_call_unreadable"), "{:?}", rules_of(&a));
+        }
+        uneven.push(0);
+        assert!(rules_of(&one(uneven)).contains(&"token_call_unreadable"));
     }
 
     const FROM: [u8; 20] = [0xaa; 20];
