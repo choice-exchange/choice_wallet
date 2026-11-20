@@ -296,18 +296,42 @@ fn chain_system_contract(chain_id: u64, to: &EthAddress) -> Option<&'static str>
             () if predeploy(0x16) => Some("the L2-to-L1 message passer"),
             () => None,
         },
-        // Arbitrum: ArbSys (withdrawEth, sendTxToL1) and ArbRetryableTx.
+        // Arbitrum: ArbSys (withdrawEth, sendTxToL1), ArbRetryableTx, and the L2 gateway
+        // router, whose outboundTransfer burns bridged tokens with no allowance.
         42_161 | 421_614 => match () {
             () if low(0x64) => Some("ArbSys"),
             () if low(0x6e) => Some("ArbRetryableTx"),
+            () if *to == EthAddress::from_bytes(hex20("5288c571fd7ad117bea99bf60fe0846c4e84f933")) => {
+                Some("the L2 gateway router")
+            }
+            () => None,
+        },
+        // Ethereum: the EIP-7002 withdrawal and EIP-7251 consolidation request predeploys,
+        // which act on validators whose withdrawal address is the caller.
+        1 | 11_155_111 => match () {
+            () if *to == EthAddress::from_bytes(hex20("00000961ef480eb55e80d19ad83579a64c007002")) => {
+                Some("the validator withdrawal request contract")
+            }
+            () if *to == EthAddress::from_bytes(hex20("0000bbddc7ce488642fb579f8b00f3a590007251")) => {
+                Some("the validator consolidation request contract")
+            }
             () => None,
         },
         // HyperEVM: CoreWriter, whose actions move HyperCore balances.
         999 | 998 => b.iter().all(|&x| x == 0x33).then_some("CoreWriter"),
         // Sei EVM's precompiles (bank, wasm, staking, gov, distribution, IBC, pointers, …).
-        1329 | 1328 => (0x1001..=0x100b).any(low).then_some("a Sei precompile"),
+        1329 | 1328 => (0x1001..=0x100c).any(low).then_some("a Sei precompile"),
         _ => None,
     }
+}
+
+/// 20 bytes from 40 hex digits (a constant written in source).
+fn hex20(h: &str) -> [u8; 20] {
+    let mut out = [0u8; 20];
+    for (i, b) in out.iter_mut().enumerate() {
+        *b = u8::from_str_radix(&h[2 * i..2 * i + 2], 16).expect("hex");
+    }
+    out
 }
 
 fn system_address(to: &EthAddress) -> Option<u8> {
@@ -957,6 +981,14 @@ mod tests {
         assert_eq!(on(42_161, arbsys, 42_161).level, Level::Red);
         assert_eq!(on(999, [0x33; 20], 999).level, Level::Red);
         assert_eq!(on(1329, sei, 1329).level, Level::Red);
+        assert_eq!(
+            on(1, hex20("0000bbddc7ce488642fb579f8b00f3a590007251"), 1).level,
+            Level::Red
+        );
+        assert_eq!(
+            on(42_161, hex20("5288c571fd7ad117bea99bf60fe0846c4e84f933"), 42_161).level,
+            Level::Red
+        );
         // Base's predeploy address means nothing on Arbitrum.
         assert!(!rules_of(&on(42_161, bridge, 42_161)).contains(&"chain_system_contract"));
     }
