@@ -11,6 +11,7 @@ import { RecipientPicker } from "./Contacts";
 import { BackBar, Callout, Screen, shortAddress } from "./kit";
 import type { AccountInfo, Contact, Nft, NftCollection, SendReview } from "./protocol";
 import { useRequest } from "./request";
+import { visible } from "./review";
 
 /** A collection's or NFT's tile: its first letters, never a remote image. */
 function Tile({ text, small }: { text: string; small?: boolean }) {
@@ -163,7 +164,7 @@ export function NftView({
         <div className="row">
           <span>Token ID</span>
           <span className="mono" style={{ wordBreak: "break-all" }}>
-            {nft.tokenId}
+            {visible(nft.tokenId)}
           </span>
         </div>
         <div className="row">
@@ -175,13 +176,15 @@ export function NftView({
         {nft.uri && (
           <div className="row">
             <span>Metadata</span>
-            {nft.uri.startsWith("https://") ? (
-              <button type="button" className="link" onClick={() => backend.openLink(nft.uri!)}>
-                Open
+            {/* The creator's address: named before it opens (the browser's form of the host,
+                so a look-alike shows as punycode). */}
+            {linkHost(nft.uri) ? (
+              <button type="button" className="link" onClick={() => backend.openLink(nft.uri!)} title={visible(nft.uri)}>
+                Open {linkHost(nft.uri)}
               </button>
             ) : (
               <span className="mono" style={{ wordBreak: "break-all" }}>
-                {nft.uri}
+                {visible(nft.uri)}
               </span>
             )}
           </div>
@@ -212,4 +215,14 @@ export function NftView({
       <p className="footnote">The wallet doesn&apos;t load NFT images or metadata, so their hosts don&apos;t learn what you hold.</p>
     </Screen>
   );
+}
+
+/** An https link's host as the browser reads it, or null for anything else. */
+function linkHost(uri: string): string | null {
+  try {
+    const u = new URL(uri);
+    return u.protocol === "https:" && !u.username && !u.password && u.host ? u.host : null;
+  } catch {
+    return null;
+  }
 }

@@ -135,6 +135,26 @@ function vaultSigns(request: unknown): Record<string, string> {
   return s.result;
 }
 
+// A connected site's requests come one window at a time: the next opens once the last is
+// answered, so a site can't stack windows that each take the focus. Locking rejects them
+// all and opens none.
+test("a site's requests open one approval window at a time", async () => {
+  const { page, window, service, ui } = await connected();
+  const before = ui.opened.length;
+  const asks = [0, 1, 2].map((i) => page(SITE)("personal_sign", [`0x0${i}`, ME_EVM]));
+  const first = await window();
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(ui.opened.length, before + 1, "one window for three requests");
+  ok(await service.handle({ type: "dapp_answer", id: first.id, approve: false }));
+  assert.equal((await asks[0])!.error?.code, 4001);
+  const second = await window();
+  assert.notEqual(second.id, first.id);
+  assert.equal(ui.opened.length, before + 2);
+  ok(await service.handle({ type: "lock" }));
+  for (const a of asks.slice(1)) assert.equal((await a).error?.code, 4001);
+  assert.equal(ui.opened.length, before + 2, "no window opened by the lock");
+});
+
 test("personal_sign: the window shows the text; the page gets the vault's signature for exactly it", async () => {
   const { page, window, service } = await connected();
   const asked = page(SITE)("personal_sign", ["0x48656c6c6f2066726f6d206120746573742e", ME_EVM]);

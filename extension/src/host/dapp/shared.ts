@@ -64,6 +64,8 @@ export type Prepared = { request: unknown; digest: string; confirm: string | nul
 export interface Waiting {
   req: DappRequest;
   resolve: (r: DappReply) => void;
+  /** Its approval window was opened (a site's next request waits until this one is gone). */
+  shown?: boolean;
   windowId?: number;
   /** An answer is being worked on: claimed before anything is awaited, so two answers to
    *  one request can't both sign. */

@@ -80,20 +80,39 @@ export function createDapps(h: DappHost) {
     const id = randomId(16);
     return new Promise<DappReply>((resolve) => {
       const entry: Waiting = { ...w, req: { ...req, id }, resolve };
+      // One window per site at a time: the next waits until this one is answered, so a site
+      // can't stack windows that take the focus one after another.
+      const behind = site.some((x) => x.shown);
       waiting.set(id, entry);
-      h.openWindow(id).then(
-        (windowId) => {
-          if (windowId !== undefined) entry.windowId = windowId;
-        },
-        () => settle(id, no(INTERNAL, "The wallet couldn't open its approval window.")),
-      );
+      if (!behind) show(entry);
     });
   }
 
-  function settle(id: string, reply: DappReply) {
+  function show(entry: Waiting) {
+    entry.shown = true;
+    h.openWindow(entry.req.id).then(
+      (windowId) => {
+        if (windowId !== undefined) entry.windowId = windowId;
+      },
+      () => settle(entry.req.id, no(INTERNAL, "The wallet couldn't open its approval window.")),
+    );
+  }
+
+  /** A request leaves the queue (answered, rejected, or handed to its signer): the site's
+   *  next one, if any, gets its window, unless everything is being rejected at once. */
+  function leave(id: string, next = true) {
     const w = waiting.get(id);
     if (!w) return;
     waiting.delete(id);
+    if (!next || !w.shown) return;
+    const queued = [...waiting.values()].find((x) => x.req.origin === w.req.origin && !x.shown);
+    if (queued) show(queued);
+  }
+
+  function settle(id: string, reply: DappReply, next = true) {
+    const w = waiting.get(id);
+    if (!w) return;
+    leave(id, next);
     w.resolve(reply);
   }
 
@@ -273,7 +292,7 @@ export function createDapps(h: DappHost) {
       return { ok: true, result: { device: request } };
     }
     // Answered once: from here the request is the page's, whatever happens.
-    waiting.delete(w.req.id);
+    leave(w.req.id);
     const signed = await h.vault<Record<string, unknown>>("sign", { secret: u.secret, wallet: u.wallet, unlock_key: u.key, account: u.account.account, request: p.request, digest: p.digest });
     if (!signed.ok) {
       w.resolve(no(INTERNAL, signed.error.message));
@@ -294,7 +313,7 @@ export function createDapps(h: DappHost) {
     if (typeof signature !== "string" || (format !== "der" && format !== "rs")) return fail("bad_request", "Not a signature.");
     const signed = await h.vault<Record<string, unknown>>("device_sign", { request: p.request, digest: p.digest, public_key: w.device.publicKey, signature, format });
     if (!signed.ok) return signed;
-    waiting.delete(w.req.id);
+    leave(w.req.id);
     return complete(w, signed.result);
   }
 
@@ -334,7 +353,7 @@ export function createDapps(h: DappHost) {
       // Its chain picks go with the grant they belong to.
       await forgetSiteChains(origin);
       // Its requests still waiting end with it.
-      for (const w of [...waiting.values()]) if (w.req.origin === origin) settle(w.req.id, no(USER_REJECTED, "The site was disconnected."));
+      for (const w of [...waiting.values()]) if (w.req.origin === origin) settle(w.req.id, no(USER_REJECTED, "The site was disconnected."), false);
       // Its grant is gone: told by name, so it drops the account it shows.
       h.notify(origin);
     }
@@ -349,7 +368,7 @@ export function createDapps(h: DappHost) {
   /** The wallet locked or was reset: every request still waiting is rejected, so none is
    *  answered later by an account the user didn't review it for. */
   function rejectAll(message: string) {
-    for (const w of [...waiting.values()]) settle(w.req.id, no(USER_REJECTED, message));
+    for (const w of [...waiting.values()]) settle(w.req.id, no(USER_REJECTED, message), false);
   }
 
   return { handle, request, review, answer, deviceSigned, connections, disconnect, windowClosed, rejectAll };
