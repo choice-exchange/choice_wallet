@@ -161,11 +161,11 @@ export function createHoldings(d: HoldingsDeps) {
    *  an error: with no prices the wallet shows amounts alone. With USD values off, Choice
    *  isn't asked, and only what it said before counts; the same with `ask` false (the
    *  background watcher, which never asks Choice). */
-  async function choiceFor(network: NetworkId, client: Lcd, denoms: Iterable<string>, askChoice = true): Promise<ChoiceView> {
+  async function choiceFor(network: NetworkId, client: Lcd, denoms: Iterable<string>, askChoice = true, evenWithoutUsd = false): Promise<ChoiceView> {
     const out: ChoiceView = { prices: new Map(), onChoice: new Set(), seen: new Set(), priceOf: () => undefined };
     if (network !== "mainnet") return out;
     const now = Date.now();
-    const ask = askChoice && (await d.prices());
+    const ask = askChoice && (evenWithoutUsd || (await d.prices()));
     // When Choice last priced each address, kept a week.
     const stored = ((await d.local.get(["choice_seen"]))["choice_seen"] ?? {}) as Record<string, number>;
     const seen: Record<string, number> = {};
@@ -394,10 +394,12 @@ export function createHoldings(d: HoldingsDeps) {
 
   /** How to show each denom, with Choice's price where it has one. An `evm:` key is read
    *  from its contract (and left out if it isn't an ERC20). */
-  async function tokensFor(network: NetworkId, denoms: Iterable<string>): Promise<Record<string, TokenInfo>> {
+  /** `evenWithoutUsd`: priced while USD values are off too (a swap's quote is weighed by
+   *  them; the list is the same for everyone, and the swap asks Choice anyway). */
+  async function tokensFor(network: NetworkId, denoms: Iterable<string>, evenWithoutUsd = false): Promise<Record<string, TokenInfo>> {
     const client = await lcd(network);
     const list = [...new Set(denoms)];
-    const px = (await choiceFor(network, client, list)).prices;
+    const px = (await choiceFor(network, client, list, true, evenWithoutUsd)).prices;
     const described = await Promise.all(
       list.map(async (dn) => {
         const a = evmAddress(dn);

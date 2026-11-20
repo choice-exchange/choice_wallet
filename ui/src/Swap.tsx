@@ -12,7 +12,7 @@ import { useKept } from "./kept";
 import { BackBar, Callout, Screen, Segmented, tokenSub } from "./kit";
 import type { NetworkId, SendReview, SwapQuote, SwapToken } from "./protocol";
 import { errorText, useRequest } from "./request";
-import { swapValueLost } from "./review";
+import { LOST_WARN, ValueLost } from "./valueLost";
 import { TokenMark } from "./TokenMark";
 
 /** What the user has typed, kept while they review and come back. */
@@ -112,6 +112,8 @@ export function SwapView({
       const fresh = await run({ type: "swap_quote", from: from.denom, to: to.denom, amount, slippageBps: Number(draft.slippage) });
       if (!fresh) return;
       setQuote({ q: fresh, at: Date.now() });
+      // A new quote that pays much less than it costs is shown here first: Review again to go on.
+      if ((fresh.valueLost ?? 0) >= LOST_WARN && (fresh.valueLost ?? 0) > (q?.valueLost ?? 0)) return;
       q = fresh;
     }
     const r = await run({ type: "prepare_swap", quote: q.id });
@@ -189,7 +191,7 @@ export function SwapView({
       </div>
       {problem && <p className="error">{problem}</p>}
       {quoteError && <Callout level="amber">{quoteError}</Callout>}
-      {q && from && to && <ValueLost lost={swapValueLost(q.amountIn, q.amountOut, from, to)} />}
+      {q && from && to && <ValueLost lost={q.valueLost} />}
       {q && from && to && (
         <div className="well rows">
           <div className="row">
@@ -221,13 +223,6 @@ export function SwapView({
       <p className="footnote">Quotes and routes from Choice. Network: {network === "testnet" ? "Injective testnet" : "Injective"} (EVM).</p>
     </Screen>
   );
-}
-
-/** The quote against the wallet's own prices: a router that is wrong, or a pool that is
- *  thin, pays much less than the tokens are worth, and the minimum only holds it to that. */
-function ValueLost({ lost }: { lost: number | null }) {
-  if (lost === null || lost < 0.05) return null;
-  return <Callout level={lost >= 0.2 ? "red" : "amber"}>You get about {Math.round(lost * 100)}% less than you pay, by Choice&apos;s prices.</Callout>;
 }
 
 function Chip({ token, placeholder, label, onClick }: { token: SwapToken | undefined; placeholder: string; label: string; onClick: () => void }) {

@@ -88,14 +88,19 @@ export function createDapps(h: DappHost) {
     });
   }
 
+  /** Windows closed that no request was known by yet: one closed before its ID came back. */
+  const closedEarly: number[] = [];
+
   function show(entry: Waiting) {
     entry.shown = true;
-    h.openWindow(entry.req.id).then(
-      (windowId) => {
-        if (windowId !== undefined) entry.windowId = windowId;
-      },
-      () => settle(entry.req.id, no(INTERNAL, "The wallet couldn't open its approval window.")),
-    );
+    const failed = () => settle(entry.req.id, no(INTERNAL, "The wallet couldn't open its approval window."));
+    // A request whose window can't be told apart is ended, never left holding the site's
+    // queue: one with no window ID, or whose window already closed.
+    h.openWindow(entry.req.id).then((windowId) => {
+      if (windowId === undefined) return failed();
+      if (closedEarly.includes(windowId)) return settle(entry.req.id, no(USER_REJECTED, "The user closed the request."));
+      entry.windowId = windowId;
+    }, failed);
   }
 
   /** A request leaves the queue (answered, rejected, or handed to its signer): the site's
@@ -362,7 +367,12 @@ export function createDapps(h: DappHost) {
 
   /** The window for a request closed: an unanswered request is rejected. */
   function windowClosed(windowId: number) {
-    for (const w of [...waiting.values()]) if (w.windowId === windowId) settle(w.req.id, no(USER_REJECTED, "The user closed the request."));
+    const ended = [...waiting.values()].filter((w) => w.windowId === windowId);
+    for (const w of ended) settle(w.req.id, no(USER_REJECTED, "The user closed the request."));
+    if (ended.length === 0) {
+      closedEarly.push(windowId);
+      if (closedEarly.length > 20) closedEarly.shift();
+    }
   }
 
   /** The wallet locked or was reset: every request still waiting is rejected, so none is

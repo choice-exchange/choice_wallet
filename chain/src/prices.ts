@@ -54,6 +54,18 @@ export function usdValue(amount: string, decimals: number, priceUsd: string): nu
   return Number(formatUnits(amount, decimals)) * Number(priceUsd);
 }
 
+/** How much less a trade pays than it costs, as a fraction, by USD prices (null without a
+ *  price for both sides). Negative when it pays more. */
+export function valueLost(amountIn: string, amountOut: string, from: { decimals: number; priceUsd?: string | undefined }, to: { decimals: number; priceUsd?: string | undefined }): number | null {
+  const pIn = Number(from.priceUsd);
+  const pOut = Number(to.priceUsd);
+  if (!(pIn > 0) || !(pOut > 0)) return null;
+  const paid = usdValue(amountIn, from.decimals, String(pIn));
+  const got = usdValue(amountOut, to.decimals, String(pOut));
+  if (!(paid > 0) || !Number.isFinite(got)) return null;
+  return 1 - got / paid;
+}
+
 // Each chain's tokens are priced where they trade: Injective's by Choice (above), Solana's by
 // Jupiter (its aggregator, which routes most of Solana's volume), and the EVM chains' by
 // DefiLlama (by chain and contract, from each chain's own markets). Each is asked about the

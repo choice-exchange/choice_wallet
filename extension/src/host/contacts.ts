@@ -172,15 +172,16 @@ export function createContacts(d: ContactDeps) {
     }
     const memo_addresses: string[] = [];
     const memo_unchecked: string[] = [];
-    const wanted = [...new Set(recipients === null ? [] : typeof recipients === "string" ? [recipients] : recipients)];
+    const given = [...new Set(recipients === null ? [] : typeof recipients === "string" ? [recipients] : recipients)];
+    // One account in either form once; the user's own accounts and contacts with a saved
+    // memo are settled already. The first MAX_MEMO_CHECKS of the rest are looked up.
+    const accounts = [...new Set((await Promise.all(given.map((r) => forms(r)))).flatMap((f) => (f ? [f.inj] : [])))];
+    const open = accounts.filter((inj) => !address_book.some((c) => c.address === inj && (c.mine || c.memo)));
     await Promise.all(
-      wanted.map(async (r, i) => {
-        const f = await forms(r);
-        // The user's own accounts and contacts with a saved memo are settled already.
-        if (!f || address_book.some((c) => c.address === f.inj && (c.mine || c.memo))) return;
-        const takes = i < MAX_MEMO_CHECKS ? await takesMemo(network, f.inj) : null;
-        if (takes === true) memo_addresses.push(f.inj);
-        else if (takes === null) memo_unchecked.push(f.inj);
+      open.map(async (inj, i) => {
+        const takes = i < MAX_MEMO_CHECKS ? await takesMemo(network, inj) : null;
+        if (takes === true) memo_addresses.push(inj);
+        else if (takes === null) memo_unchecked.push(inj);
       }),
     );
     return { address_book, memo_addresses, memo_unchecked };

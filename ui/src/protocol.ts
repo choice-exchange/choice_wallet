@@ -627,6 +627,9 @@ export type SwapStepInfo = {
   from: string;
   to: string;
   expectedOut: string;
+  /** The swap step's quote by the wallet's prices, as `SwapQuote.valueLost` (it may be a new
+   *  quote, asked for again after the approvals). */
+  valueLost?: number | null;
 };
 
 export type SwapStep = "approve" | "permit2" | "swap";
@@ -648,6 +651,9 @@ export type SwapQuote = {
   /** What it takes, in order: approvals first, when the token needs them. */
   steps: SwapStep[];
   tokens: Record<string, TokenInfo>;
+  /** How much less it pays than it costs by the wallet's prices (Choice's price index, apart
+   *  from its router), as a fraction; null without a price for both tokens. */
+  valueLost: number | null;
 };
 
 /** A token the swap screen offers. */

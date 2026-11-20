@@ -28,7 +28,8 @@ pub(crate) fn clip(s: &str, max: usize) -> String {
 
 /// A sentence as the approval screen may draw it. A site can put control, format (bidi
 /// overrides, zero-width) or line-separator characters in a name the sentence quotes, to
-/// hide or reorder its words: each is written as `⟨U+202E⟩`, as the UI's `visible()` does.
+/// hide or reorder its words: each is written as `⟨U+202E⟩`, as the UI's `visible()` does,
+/// and line breaks and tabs too (`visible()` keeps those): a finding is one sentence.
 pub(crate) fn shown(s: &str) -> String {
     if !s.chars().any(hidden) {
         return s.to_owned();

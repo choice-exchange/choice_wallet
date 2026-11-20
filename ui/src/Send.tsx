@@ -14,6 +14,7 @@ import { errorText, useRequest } from "./request";
 import { permissionName } from "./permissions";
 import { shown, spenderName, visible, type Shown, type StakeLine, type VoteLine } from "./review";
 import { TokenMark } from "./TokenMark";
+import { ValueLost } from "./valueLost";
 
 /** An amount typed into a form: base units (or "max"), or what's wrong with it. */
 /** SOL kept back by Max: the fee, with room for a priority fee. */
@@ -413,6 +414,7 @@ export function Review({
           {visible(f.message)}
         </Callout>
       ))}
+      {review.swap?.step === "swap" && <ValueLost lost={review.swap.valueLost} />}
       {review.swap && review.swap.left > 0 && <p className="meta">{review.swap.left === 1 ? "One more step after this." : "Two more steps after this."}</p>}
       {(review.bridge?.left || source) && (
         <p className="meta">

@@ -146,23 +146,34 @@ pub enum ContractCall {
     Other,
 }
 
-/// The top-level keys of the token calls above. A message under one of these that doesn't
-/// parse is [`ContractCall::Unread`], not [`ContractCall::Other`].
+/// The top-level keys only the token standards (and cw-ownable) use. A message under one of
+/// these that doesn't parse is [`ContractCall::Unread`], not [`ContractCall::Other`].
 const TOKEN_ACTIONS: &[&str] = &[
-    "transfer",
-    "send",
     "increase_allowance",
     "decrease_allowance",
-    "burn",
     "update_minter",
     "transfer_nft",
     "send_nft",
-    "approve",
     "approve_all",
-    "revoke",
     "revoke_all",
     "update_ownership",
 ];
+
+/// Keys other contracts use too (a multisig's `approve`, a bridge's `transfer`): unread only
+/// when the message carries a field a token call would, so it reads like one.
+const COMMON_ACTIONS: &[&str] = &["transfer", "send", "burn", "approve", "revoke"];
+const TOKEN_FIELDS: &[&str] = &["amount", "recipient", "spender", "token_id", "operator", "contract"];
+
+/// A message the token rules would have read, had it been shaped like the standard's.
+fn token_named(o: &serde_json::Map<String, serde_json::Value>) -> Option<&str> {
+    let (key, inner) = o.iter().next().filter(|_| o.len() == 1)?;
+    if TOKEN_ACTIONS.contains(&key.as_str()) {
+        return Some(key);
+    }
+    let fields = inner.as_object()?;
+    (COMMON_ACTIONS.contains(&key.as_str()) && fields.keys().any(|f| TOKEN_FIELDS.contains(&f.as_str())))
+        .then_some(key.as_str())
+}
 
 /// Wire shapes. `deny_unknown_fields` and serde's duplicate-field check make anything
 /// unusual fall through to [`ContractCall::Unread`] or [`ContractCall::Other`].
@@ -274,11 +285,9 @@ pub fn parse(msg: &[u8]) -> Result<ContractCall, Error> {
     let value = serde_json::from_slice::<serde_json::Value>(msg).map_err(|_| Error::ContractJson)?;
     let Ok(known) = serde_json::from_slice::<Known>(msg) else {
         // Named like a token call but not shaped like one: said, not passed on as any call.
-        return Ok(match value.as_object() {
-            Some(o) if o.len() == 1 && o.keys().all(|k| TOKEN_ACTIONS.contains(&k.as_str())) => ContractCall::Unread {
-                action: o.keys().next().cloned().unwrap_or_default(),
-            },
-            _ => ContractCall::Other,
+        return Ok(match value.as_object().and_then(token_named) {
+            Some(action) => ContractCall::Unread { action: action.into() },
+            None => ContractCall::Other,
         });
     };
     // A CW20 amount or CW721 token ID the wallet can't read as written is refused, not
@@ -608,7 +617,7 @@ mod tests {
                 r#"{"increase_allowance":{"spender":"inj1a","amount":"5","memo":"x"}}"#,
                 "increase_allowance",
             ),
-            (r#"{"approve":{"proposal_id":7}}"#, "approve"),
+            (r#"{"approve":{"spender":"inj1a","token_id":7}}"#, "approve"),
             (r#"{"burn":{"amount":"5","token_id":"7"}}"#, "burn"),
             (r#"{"update_ownership":{"transfer_ownership":{}}}"#, "update_ownership"),
         ] {
@@ -627,6 +636,10 @@ mod tests {
             r#"{"swap":{"offer_asset":{}}}"#,
             r#"{"mint":{"recipient":"inj1a","amount":"5"}}"#,
             r#"{"transfer_from":{"owner":"inj1a","recipient":"inj1b","amount":"5"}}"#,
+            // Common names with nothing a token call would carry: another contract's own.
+            r#"{"approve":{"proposal_id":7}}"#,
+            r#"{"transfer":{"channel":"channel-1"}}"#,
+            r#"{"burn":{}}"#,
             r#""transfer""#,
             r#"[]"#,
         ] {

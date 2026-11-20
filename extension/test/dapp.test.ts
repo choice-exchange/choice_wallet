@@ -155,6 +155,24 @@ test("a site's requests open one approval window at a time", async () => {
   assert.equal(ui.opened.length, before + 2, "no window opened by the lock");
 });
 
+// Review of #9: a request whose window can't be told apart would hold the site's queue for
+// good. A window with no ID, or one closed before its ID came back, ends the request.
+test("a request whose window can't be tracked ends, and the site's next one gets a window", async () => {
+  const { page, service, ui } = await connected();
+  ok(await service.handle({ type: "unlock", password: PASSWORD }));
+  ui.noWindowId = true;
+  assert.equal((await page(SITE)("personal_sign", ["0x01", ME_EVM])).error?.code, -32603);
+  ui.noWindowId = false;
+  // Closed before the browser said which window it was.
+  service.windowClosed(ui.opened.length + 1);
+  assert.equal((await page(SITE)("personal_sign", ["0x02", ME_EVM])).error?.code, 4001);
+  // The queue is free: the next request gets its window.
+  const before = ui.opened.length;
+  void page(SITE)("personal_sign", ["0x03", ME_EVM]);
+  for (let i = 0; i < 100 && ui.opened.length === before; i++) await new Promise((r) => setTimeout(r, 5));
+  assert.equal(ui.opened.length, before + 1);
+});
+
 test("personal_sign: the window shows the text; the page gets the vault's signature for exactly it", async () => {
   const { page, window, service } = await connected();
   const asked = page(SITE)("personal_sign", ["0x48656c6c6f2066726f6d206120746573742e", ME_EVM]);

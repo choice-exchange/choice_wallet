@@ -11,7 +11,7 @@
 //    INJ in needs no approval: it is sent with the swap.
 // After each step lands, the UI asks for the next one.
 
-import { boundErc20, cw20Address, evmDenom, fetchRoute, isContractAddress, knownTokens, NATIVE, NETWORKS, RouteError, type Fetch, type NetworkId, type Route } from "@choice-wallet/chain";
+import { boundErc20, cw20Address, evmDenom, fetchRoute, isContractAddress, knownTokens, NATIVE, NETWORKS, RouteError, valueLost, type Fetch, type NetworkId, type Route } from "@choice-wallet/chain";
 import type { AccountInfo, Result, SendReview, SwapQuote, SwapStep, SwapToken } from "@choice-wallet/ui/protocol";
 
 import type { createSender, EvmDisplayLike } from "./send";
@@ -155,8 +155,19 @@ export function createSwaps(sender: Sender, session: Store, fetch: Fetch, shown:
         fee: route.fee ? { bps: route.fee.bps } : null,
         steps: steps.result,
         tokens: await sender.tokensFor(network, [req.from, req.to]),
+        valueLost: await weigh(network, stored),
       },
     };
+  }
+
+  /** A quote by the wallet's own prices: how much less it pays than it costs. */
+  async function weigh(network: NetworkId, q: Stored): Promise<number | null> {
+    try {
+      const t = await sender.tokensFor(network, [q.from, q.to], true);
+      return t[q.from] && t[q.to] ? valueLost(q.route.amountIn, q.route.amountOut, t[q.from]!, t[q.to]!) : null;
+    } catch {
+      return null;
+    }
   }
 
   /** What a stored quote still needs, in order. */
@@ -206,7 +217,7 @@ export function createSwaps(sender: Sender, session: Store, fetch: Fetch, shown:
     const left = steps.result.length - 1;
     const net = NETWORKS[network];
     const amount = BigInt(q.route.amountIn);
-    const extra = { swap: { step, left, from: q.from, to: q.to, expectedOut: q.route.amountOut } };
+    const extra = { swap: { step, left, from: q.from, to: q.to, expectedOut: q.route.amountOut, ...(step === "swap" ? { valueLost: await weigh(network, q) } : {}) } };
     // The picked tokens, and a traded contract the picked token isn't bound to (an unlisted
     // denom's LCD pair): the review names that by its own contract, so it is described too
     // (run-2 C4).

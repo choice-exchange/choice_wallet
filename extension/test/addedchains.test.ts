@@ -295,3 +295,14 @@ test("a site's own endpoint is said in every review through it; a copied chain n
   assert.ok(!(await siteTx()).includes("site_endpoint amber"));
   assert.ok(!(await ownSend()).includes("site_endpoint amber"));
 });
+
+// Review of #9: a chain kept from before names were checked, called after one on the
+// wallet's own list, is shown by its chain ID; a listed chain under the list's own name is
+// still added.
+test("a stored chain with a copied name is shown by its ID", async () => {
+  const net = chain();
+  const w = await wallet(net);
+  await w.local.set({ added_chains: [{ chainId: 99999, name: "Ethereum", symbol: "ETH", rpc: ["https://bnb-rpc.example"], testnet: false }] });
+  const s = ok<Status>(await w.service.handle({ type: "status" }));
+  assert.deepEqual(s.added.map((c) => [c.chainId, c.name]), [[99999, "Chain 99999"]]);
+});

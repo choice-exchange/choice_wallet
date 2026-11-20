@@ -80,7 +80,9 @@ function storedChain(v: unknown): AddedChain | null {
   if (rpcFrom !== undefined && !isOrigin(rpcFrom)) return null;
   return {
     chainId: v["chainId"] as number,
-    name: v["name"] as string,
+    // One kept from before names were checked, called after a chain on the wallet's own list
+    // ("Ethereum" with its own chain ID): shown by its ID instead.
+    name: copiedChainName(v["name"] as string) ? `Chain ${v["chainId"] as number}` : (v["name"] as string),
     symbol: v["symbol"] as string,
     rpc: rpc as string[],
     testnet: v["testnet"],
@@ -305,13 +307,16 @@ export function createAddedChains(d: AddedChainsDeps) {
     const chainId = input["chainId"] as number;
     const name = (input["name"] as string).trim();
     const symbol = input["symbol"] as string;
-    const copied = copiedChainName(name);
-    if (copied) return fail("invalid", `${copied} is on the list already, with its own chain ID. Give this chain another name.`);
     const rpcFrom = input["rpcFrom"];
     if (rpcFrom !== undefined && !isOrigin(rpcFrom)) return fail("bad_request", "Not a site.");
     const current = [...(await load())];
     const same = current.find((a) => a.chainId === chainId);
     if (same) return fail("exists", `${same.name} is already on the list.`);
+    // Not named after a chain on the wallet's own list, unless chainlist.org names it so.
+    const copied = copiedChainName(name);
+    if (copied && (await listed(chainId).catch(() => undefined))?.name.toLowerCase() !== name.toLowerCase()) {
+      return fail("invalid", `${copied} is on the list already, with its own chain ID. Give this chain another name.`);
+    }
     if (current.length >= MAX_ADDED_CHAINS) return fail("too_many", `At most ${MAX_ADDED_CHAINS} added chains.`);
     if (typeof input["testnet"] !== "boolean") return fail("bad_request", "Say whether it's a test network.");
     const raw = input["rpc"];

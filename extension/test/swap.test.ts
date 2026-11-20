@@ -7,12 +7,12 @@ import { test } from "node:test";
 import { shown } from "../../ui/src/review";
 import { ADDED, AGGREGATOR, chain, code, CW_BANK, CW_PAIR, ERC20, INJ, ME_EVM, ok, PERMIT2, USDT, USDT_ERC20, wallet } from "./fake";
 
-type Quote = { id: string; amountIn: string; amountOut: string; minimumOut: string; steps: string[]; legs: { venue: string }[]; fee: unknown; executor: string; tokens: Record<string, { symbol: string }> };
+type Quote = { id: string; amountIn: string; amountOut: string; minimumOut: string; steps: string[]; legs: { venue: string }[]; fee: unknown; executor: string; tokens: Record<string, { symbol: string }>; valueLost: number | null };
 type Review = {
   digest: string;
   display: { to: string; value: string; call: Record<string, unknown> };
   risk: { level: string; findings: { rule: string; message: string }[] };
-  swap?: { step: string; left: number; from: string; to: string; expectedOut: string };
+  swap?: { step: string; left: number; from: string; to: string; expectedOut: string; valueLost?: number | null };
 };
 
 const rules = (r: Review) => r.risk.findings.map((f) => f.rule);
@@ -33,8 +33,11 @@ test("INJ in: one step, the swap, read by the vault and sent", async () => {
   assert.equal(asked.get("tokenIn"), "0x0000000000000000000000000000000000000000");
   assert.equal(asked.get("tokenOut")?.toLowerCase(), USDT_ERC20);
 
+  // Weighed by the wallet's prices: a little more than it costs here.
+  assert.ok(q.valueLost !== null && q.valueLost < 0, String(q.valueLost));
+
   const r = ok<Review>(await service.handle({ type: "prepare_swap", quote: q.id }));
-  assert.deepEqual(r.swap, { step: "swap", left: 0, from: "inj", to: USDT, expectedOut: q.amountOut });
+  assert.deepEqual(r.swap, { step: "swap", left: 0, from: "inj", to: USDT, expectedOut: q.amountOut, valueLost: q.valueLost });
   assert.equal(r.display.to, AGGREGATOR);
   assert.equal(r.display.value, INJ.toString());
   assert.equal(r.display.call["type"], "swap");
@@ -117,7 +120,7 @@ test("USDT in: approve Permit2, then Permit2 for the aggregator, then the swap; 
   net.state.permit2[`${USDT_ERC20} ${AGGREGATOR.toLowerCase()}`] = { amount: 5_000_000n, expiration: exp };
 
   const swap = ok<Review>(await service.handle({ type: "prepare_swap", quote: q.id }));
-  assert.deepEqual(swap.swap, { step: "swap", left: 0, from: USDT, to: "inj", expectedOut: q.amountOut });
+  assert.deepEqual({ ...swap.swap, valueLost: undefined }, { step: "swap", left: 0, from: USDT, to: "inj", expectedOut: q.amountOut, valueLost: undefined });
   assert.equal(swap.display.value, "0");
   assert.equal(swap.display.call["token_out"], "0x0000000000000000000000000000000000000000");
   assert.deepEqual(rules(swap), ["swap"]);
@@ -190,4 +193,27 @@ test("swap tokens: what's held that Choice can trade, then the wallet's list", a
   // A token added by contract is offered too, held or not.
   ok(await service.handle({ type: "add_token", address: ADDED }));
   assert.ok(ok<{ denom: string }[]>(await service.handle({ type: "swap_tokens" })).some((t) => t.denom === `evm:${ADDED}`));
+});
+
+// Review of #9: every quote is weighed by the wallet's prices, with USD values off too, and
+// so is the one asked for again at the swap step. A rate far below the market's is said.
+test("a quote that pays much less than the wallet's prices say is weighed, USD values on or off", async () => {
+  const net = chain({ balances: { inj: 3n * INJ } });
+  const honest = net.fetch;
+  // The price index says INJ is worth twice what the quote pays for it.
+  net.fetch = async (input: string, init?: RequestInit) => {
+    if (String(input).includes("evm-api.choice.exchange/prices")) {
+      const r = await honest(input, init);
+      const body = (await r.json()) as { prices: { address: string; priceUsd: string }[] };
+      for (const p of body.prices) if (p.address === "0x0000000000000000000000000000000000000000") p.priceUsd = "16";
+      return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    return honest(input, init);
+  };
+  const { service } = await wallet(net);
+  ok(await service.handle({ type: "save_settings", network: "mainnet", prices: false }));
+  const q = ok<Quote>(await service.handle({ type: "swap_quote", from: "inj", to: USDT, amount: INJ.toString() }));
+  assert.ok(q.valueLost !== null && q.valueLost > 0.4, String(q.valueLost));
+  const r = ok<Review>(await service.handle({ type: "prepare_swap", quote: q.id }));
+  assert.equal(r.swap?.valueLost, q.valueLost);
 });

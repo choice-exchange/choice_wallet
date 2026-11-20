@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { fetchPrices, priceAddress, usdValue } from "../src/prices.ts";
+import { fetchPrices, priceAddress, usdValue, valueLost } from "../src/prices.ts";
 
 test("prices: parsed by lowercase address, junk dropped, our client named", async () => {
   let sent: Headers | undefined;
@@ -41,4 +41,16 @@ test("denoms map to the address Choice prices them under", () => {
   assert.equal(priceAddress(`cw20:${cw20}`, withBank, (d) => (d === `cw20:${cw20}` ? bank : null)), "0x2222222222222222222222222222222222222222");
   assert.equal(priceAddress(`cw20:${cw20}`, withBank), undefined);
   assert.equal(usdValue("2500000", 6, "2"), 5);
+});
+
+// A swap quote is weighed by the wallet's own prices, so a router that is wrong (or a thin
+// pool) can't pass off a bad rate as the market's.
+test("a trade's lost value, by USD prices", () => {
+  const inj = { decimals: 18, priceUsd: "20" };
+  const usdt = { decimals: 6, priceUsd: "1" };
+  assert.ok(Math.abs(valueLost("1000000000000000000", "19800000", inj, usdt)! - 0.01) < 1e-9);
+  assert.ok(Math.abs(valueLost("1000000000000000000", "2000000", inj, usdt)! - 0.9) < 1e-9);
+  assert.ok(valueLost("1000000000000000000", "21000000", inj, usdt)! < 0);
+  assert.equal(valueLost("1", "1", inj, { decimals: 6 }), null);
+  assert.equal(valueLost("0", "1", inj, usdt), null);
 });
