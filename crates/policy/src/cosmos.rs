@@ -1,13 +1,13 @@
 //! Rules for Cosmos messages, whichever sign path decoded them.
 
-use choice_wallet_cosmos::cosmwasm::ContractCall;
+use choice_wallet_cosmos::cosmwasm::{ContractCall, ignored_fields};
 use choice_wallet_cosmos::msg::{Allowance, Authorization, Coin, Msg};
 use choice_wallet_evm::U256;
 use serde_json::json;
 
 use crate::addresses::{known_contract, own_name, recipient, same};
 use crate::amounts::{Outflows, UNLIMITED, balance};
-use crate::text::{date, msg_name, short};
+use crate::text::{clip, date, msg_name, short};
 use crate::{Assessment, Context, Finding, Level, finding, site};
 
 /// The fee of a Cosmos transaction, as any sign path decodes it.
@@ -101,12 +101,34 @@ fn message(
             }
         }
         Msg::ExecuteContract {
-            contract, funds, call, ..
+            contract,
+            funds,
+            call,
+            json,
+            ..
         } => {
             if let Some(o) = outflows.as_deref_mut() {
                 for c in funds {
                     o.add_str(c.denom(), c.amount());
                 }
+            }
+            // The standard contracts ignore fields they don't define, so the call is read
+            // without them; a contract that only looks like a token may act on them.
+            let ignored = ignored_fields(json.as_bytes());
+            if !ignored.is_empty() {
+                let mut names: Vec<String> = ignored.iter().take(3).map(|f| clip(f, 40)).collect();
+                if ignored.len() > 3 {
+                    names.push(format!("{} more", ignored.len() - 3));
+                }
+                out.push(finding(
+                    "contract_call_extra_fields",
+                    Level::Amber,
+                    format!(
+                        "Carries fields standard tokens ignore ({}); this contract might not.",
+                        names.join(", ")
+                    ),
+                    json!({ "contract": contract, "fields": ignored }),
+                ));
             }
             match call {
                 ContractCall::Cw20Transfer { recipient: to, amount } => {
@@ -1114,6 +1136,53 @@ mod tests {
         };
         let a = cosmos(&[call("5")], ME, "", CosmosFee::default(), &ctx);
         assert_eq!(rules(&a), ["allowance_over_balance"]);
+    }
+
+    /// cw_serde 2 ignores fields a message doesn't define: an extra field keeps the call's
+    /// own grade, and is named.
+    #[test]
+    fn extra_fields_keep_the_grade_and_are_named() {
+        let signed = |json: &str| Msg::ExecuteContract {
+            sender: ME.into(),
+            contract: OTHER.into(),
+            funds: vec![],
+            json: json.into(),
+            call: choice_wallet_cosmos::cosmwasm::parse(json.as_bytes()).unwrap(),
+        };
+        let a = grade(&[signed(&format!(
+            r#"{{"increase_allowance":{{"spender":"{ME}","amount":"340282366920938463463374607431768211455","memo":"x"}}}}"#
+        ))]);
+        assert_eq!(a.level, Level::Red);
+        assert_eq!(rules(&a), ["unlimited_allowance", "contract_call_extra_fields"]);
+        let extra = a
+            .findings
+            .iter()
+            .find(|f| f.rule == "contract_call_extra_fields")
+            .unwrap();
+        assert_eq!(
+            extra.message,
+            "Carries fields standard tokens ignore (increase_allowance.memo); this contract might not."
+        );
+        let many = grade(&[signed(
+            r#"{"update_ownership":{"transfer_ownership":{"new_owner":"inj1o","a":1,"b":1,"c":1,"d":1}}}"#,
+        )]);
+        assert_eq!(many.level, Level::Red);
+        let extra = many
+            .findings
+            .iter()
+            .find(|f| f.rule == "contract_call_extra_fields")
+            .unwrap();
+        assert!(extra.message.contains(", 1 more)"), "{}", extra.message);
+        // Redeeming to someone else is said whatever else the message carries.
+        let other = grade(&[signed(&format!(
+            r#"{{"redeem_and_transfer":{{"recipient":"{OTHER}","x":1}}}}"#
+        ))]);
+        assert!(rules(&other).contains(&"redeem_to_other"), "{:?}", rules(&other));
+        // What the wallet itself writes carries nothing extra.
+        let plain = grade(&[signed(
+            &String::from_utf8(choice_wallet_cosmos::cosmwasm::transfer(OTHER, "5")).unwrap(),
+        )]);
+        assert!(!rules(&plain).contains(&"contract_call_extra_fields"));
     }
 
     #[test]

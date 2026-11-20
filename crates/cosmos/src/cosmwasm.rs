@@ -6,8 +6,12 @@
 //!   `revoke_all` and `burn`.
 //! - cw-ownable `update_ownership` (any contract's owner handing it on or giving it up).
 //!
-//! A message named like one of these but shaped otherwise is [`ContractCall::Unread`]; a
-//! known shape with an amount or NFT ID the wallet can't read as written is refused.
+//! These are read the way the contracts read them: cosmwasm-schema 2's `cw_serde` (cw20 2.x,
+//! cw721 0.19+, cw-ownable 2.x, the CW20 adapter) ignores fields a message doesn't define,
+//! so a known shape with extra fields is still that call; [`ignored_fields`] names the
+//! extras for the policy. A message named like one of these but shaped otherwise is
+//! [`ContractCall::Unread`]; a known shape with an amount or NFT ID the wallet can't read as
+//! written is refused.
 //! - The CW20 adapter's `redeem_and_transfer` (the adapter runs on Injective). Sending a
 //!   CW20 to the adapter (`send` with an empty `msg`) mints the bank denom
 //!   `factory/{adapter}/{cw20}` to the sender; redeeming burns that denom and returns the
@@ -136,8 +140,9 @@ pub enum ContractCall {
     /// from then on.
     OwnershipRenounce,
     /// A call named like a token call (`action`, such as `transfer` or `approve`) in a shape
-    /// the wallet can't read. The standard contracts refuse such shapes; one that doesn't
-    /// may still move tokens.
+    /// the wallet can't read: a field of the wrong type, or a `burn` with both an amount
+    /// and an NFT ID (a CW20 burns the one, a CW721 the other). The standard contracts
+    /// refuse the first; one that doesn't may still move tokens.
     Unread {
         /// The message's one top-level key.
         action: String,
@@ -175,10 +180,12 @@ fn token_named(o: &serde_json::Map<String, serde_json::Value>) -> Option<&str> {
         .then_some(key.as_str())
 }
 
-/// Wire shapes. `deny_unknown_fields` and serde's duplicate-field check make anything
-/// unusual fall through to [`ContractCall::Unread`] or [`ContractCall::Other`].
+/// Wire shapes, read as `cw_serde` reads them: fields a shape doesn't define are ignored
+/// (and named by [`ignored_fields`]); a duplicate field, a second top-level key or a field
+/// of the wrong type fails, as it does in the contract, and falls through to
+/// [`ContractCall::Unread`] or [`ContractCall::Other`].
 #[derive(Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 enum Known {
     Transfer {
         recipient: String,
@@ -249,13 +256,11 @@ enum Burn {
 }
 
 #[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct BurnAmount {
     amount: String,
 }
 
 #[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct BurnToken {
     token_id: String,
 }
@@ -263,7 +268,7 @@ struct BurnToken {
 /// cw-ownable's `update_ownership` actions.
 #[allow(clippy::enum_variant_names, reason = "the wire names are cw-ownable's")]
 #[derive(Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 enum OwnerAction {
     TransferOwnership {
         new_owner: String,
@@ -282,14 +287,70 @@ pub fn is_token_id(id: &str) -> bool {
 
 /// Parse a `MsgExecuteContract.msg`. The bytes must be UTF-8 JSON, as wasmd requires.
 pub fn parse(msg: &[u8]) -> Result<ContractCall, Error> {
+    read(msg).map(|(call, _)| call)
+}
+
+/// The fields of a recognised token call that its standard doesn't define, as dotted paths
+/// (`transfer.memo`), sorted. The standard contracts ignore them; a contract that only looks
+/// like a token may not. Empty for anything [`parse`] doesn't read as a token call.
+pub fn ignored_fields(msg: &[u8]) -> Vec<String> {
+    read(msg).map(|(_, ignored)| ignored).unwrap_or_default()
+}
+
+fn read(msg: &[u8]) -> Result<(ContractCall, Vec<String>), Error> {
     let value = serde_json::from_slice::<serde_json::Value>(msg).map_err(|_| Error::ContractJson)?;
-    let Ok(known) = serde_json::from_slice::<Known>(msg) else {
+    let unread = || match value.as_object().and_then(token_named) {
         // Named like a token call but not shaped like one: said, not passed on as any call.
-        return Ok(match value.as_object().and_then(token_named) {
-            Some(action) => ContractCall::Unread { action: action.into() },
-            None => ContractCall::Other,
-        });
+        Some(action) => ContractCall::Unread { action: action.into() },
+        None => ContractCall::Other,
     };
+    let Ok(known) = serde_json::from_slice::<Known>(msg) else {
+        return Ok((unread(), Vec::new()));
+    };
+    // A burn with both an amount and an NFT ID burns tokens on a CW20 and an NFT on a CW721:
+    // which one is the contract's to say.
+    if let Known::Burn(_) = known
+        && value["burn"].get("amount").is_some()
+        && value["burn"].get("token_id").is_some()
+    {
+        return Ok((unread(), Vec::new()));
+    }
+    let mut ignored = Vec::new();
+    extra_keys(
+        &value,
+        &serde_json::to_value(&known).expect("plain values always serialize"),
+        "",
+        &mut ignored,
+    );
+    ignored.sort();
+    let call = recognised(known)?;
+    if call == ContractCall::Other {
+        ignored.clear();
+    }
+    Ok((call, ignored))
+}
+
+/// Object keys in `signed` that the re-serialized reading `read` doesn't have.
+fn extra_keys(signed: &serde_json::Value, read: &serde_json::Value, path: &str, out: &mut Vec<String>) {
+    let (Some(signed), Some(read)) = (signed.as_object(), read.as_object()) else {
+        return;
+    };
+    for (k, v) in signed {
+        let here = if path.is_empty() {
+            k.clone()
+        } else {
+            format!("{path}.{k}")
+        };
+        match read.get(k) {
+            Some(r) => extra_keys(v, r, &here, out),
+            // `"expires": null` reads as no expiry, which the wallet writes by leaving it out.
+            None if v.is_null() => {}
+            None => out.push(here),
+        }
+    }
+}
+
+fn recognised(known: Known) -> Result<ContractCall, Error> {
     // A CW20 amount or CW721 token ID the wallet can't read as written is refused, not
     // passed on as an unknown call: cw20's Uint128 parses "0340…" and "+1" as numbers, so
     // an allowance or transfer written that way would move tokens while graded as any
@@ -599,26 +660,83 @@ mod tests {
     }
 
     #[test]
+    fn extra_fields_are_ignored_as_the_contracts_ignore_them() {
+        // cw_serde 2 (cw20 2.x, cw721 0.19+, cw-ownable 2.x) ignores fields a message
+        // doesn't define, so an extra field can't make a token call read as another one.
+        assert_eq!(
+            parse(br#"{"increase_allowance":{"spender":"inj1a","amount":"5","memo":"x"}}"#).unwrap(),
+            ContractCall::Cw20IncreaseAllowance {
+                spender: "inj1a".into(),
+                amount: "5".into(),
+                expires: None
+            }
+        );
+        assert_eq!(
+            ignored_fields(br#"{"increase_allowance":{"spender":"inj1a","amount":"5","memo":"x"}}"#),
+            ["increase_allowance.memo"]
+        );
+        assert_eq!(
+            parse(br#"{"approve_all":{"operator":"inj1m","z":1,"a":{"b":2}}}"#).unwrap(),
+            ContractCall::NftApproveAll {
+                operator: "inj1m".into(),
+                expires: None
+            }
+        );
+        assert_eq!(
+            ignored_fields(br#"{"approve_all":{"operator":"inj1m","z":1,"a":{"b":2}}}"#),
+            ["approve_all.a", "approve_all.z"]
+        );
+        assert_eq!(
+            parse(br#"{"update_ownership":{"transfer_ownership":{"new_owner":"inj1o","note":1}}}"#).unwrap(),
+            ContractCall::OwnershipTransfer {
+                new_owner: "inj1o".into(),
+                expiry: None
+            }
+        );
+        assert_eq!(
+            ignored_fields(br#"{"update_ownership":{"transfer_ownership":{"new_owner":"inj1o","note":1}}}"#),
+            ["update_ownership.transfer_ownership.note"]
+        );
+        assert_eq!(
+            parse(br#"{"redeem_and_transfer":{"recipient":"inj1b","x":[]}}"#).unwrap(),
+            ContractCall::AdapterRedeem {
+                recipient: Some("inj1b".into())
+            }
+        );
+        // An extra field doesn't hide a non-canonical amount either.
+        assert_eq!(
+            parse(br#"{"transfer":{"recipient":"inj1a","amount":"05","extra":1}}"#).unwrap_err(),
+            Error::Amount("05".into())
+        );
+        // What the wallet writes, and an explicit null, carry nothing extra.
+        assert!(ignored_fields(&decrease_allowance("inj1a", "5")).is_empty());
+        assert!(
+            ignored_fields(br#"{"decrease_allowance":{"spender":"inj1a","amount":"5","expires":null}}"#).is_empty()
+        );
+        assert!(
+            ignored_fields(br#"{"increase_allowance":{"spender":"inj1a","amount":"5","expires":{"never":{}}}}"#)
+                .is_empty()
+        );
+        // Not a token call: nothing to name.
+        assert!(ignored_fields(br#"{"swap":{"offer_asset":{},"x":1}}"#).is_empty());
+        assert!(ignored_fields(br#"{"update_ownership":"accept_ownership"}"#).is_empty());
+    }
+
+    #[test]
     fn token_calls_in_odd_shapes_are_unread() {
-        // Shapes the standard contracts reject (cw_serde denies unknown fields; Uint128 is a
-        // string), but one that doesn't may still move tokens: unread, not any call. A
-        // malformed amount cw20 would still read ("05") is refused: see refuses_non_json.
+        // Shapes the standard contracts reject (a duplicate field; Uint128 is a string), but
+        // one that doesn't may still move tokens: unread, not any call. A burn with both an
+        // amount and an NFT ID means one thing to a CW20 and another to a CW721. A malformed
+        // amount cw20 would still read ("05") is refused: see refuses_non_json.
         for (json, action) in [
-            (
-                r#"{"transfer":{"recipient":"inj1a","amount":"5","extra":1}}"#,
-                "transfer",
-            ),
             (
                 r#"{"transfer":{"recipient":"inj1a","amount":"5","amount":"6"}}"#,
                 "transfer",
             ),
             (r#"{"transfer":{"recipient":"inj1a","amount":5}}"#, "transfer"),
-            (
-                r#"{"increase_allowance":{"spender":"inj1a","amount":"5","memo":"x"}}"#,
-                "increase_allowance",
-            ),
             (r#"{"approve":{"spender":"inj1a","token_id":7}}"#, "approve"),
             (r#"{"burn":{"amount":"5","token_id":"7"}}"#, "burn"),
+            (r#"{"burn":{"token_id":"7","amount":"5","x":1}}"#, "burn"),
             (r#"{"update_ownership":{"transfer_ownership":{}}}"#, "update_ownership"),
         ] {
             assert_eq!(
