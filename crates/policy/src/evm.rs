@@ -21,6 +21,12 @@ const BANK: u8 = 0x64;
 const EXCHANGE: u8 = 0x65;
 const STAKING: u8 = 0x66;
 const ORACLE: u8 = 0x67;
+/// The spot swap precompile (v1.20.4): sells the caller's bank balance on one INJ orderbook
+/// market, with no approve, and pays `recipient`.
+const SWAP: u8 = 0x68;
+/// `swapExactInputV1(address tokenIn, string marketId, uint256 amountIn, uint256 minOut,
+/// address recipient, uint256 deadline)`.
+const SWAP_EXACT_INPUT: [u8; 4] = 0x8d90dc37u32.to_be_bytes();
 
 /// A precompile method: selector, canonical signature (checked in tests), level, and what it
 /// does. Signatures from injective-core v1.20.3's precompile bindings; selectors computed by
@@ -388,6 +394,10 @@ fn contract_call(
     let to = tx.to.to_checksum_hex();
     let choice = network.map(|n| &n.choice);
     if let Some(n) = system_address(&tx.to) {
+        if n == SWAP && network.is_some() {
+            orderbook_swap(req, out, outflows);
+            return;
+        }
         out.push(system_call(req, n, selector, network.is_some()));
         return;
     }
@@ -650,6 +660,79 @@ pub(crate) fn erc20_allowance(
     }
 }
 
+/// A swap sent straight to the spot swap precompile. It debits this account's bank balance
+/// whatever `minOut` is (an order larger than the book fills partly), and the wallet can't
+/// weigh the minimum against prices here: amber at best, red for someone else as recipient or
+/// no minimum, and red unread.
+fn orderbook_swap(req: &TxRequest, out: &mut Vec<Finding>, outflows: &mut Outflows) {
+    use abi::Ty::{Bytes, Word};
+    let data = req.tx.data.as_slice();
+    let read = (data.first_chunk::<4>() == Some(&SWAP_EXACT_INPUT))
+        .then(|| abi::decode(&[Word, Bytes, Word, Word, Word, Word], &data[4..]).ok())
+        .flatten()
+        .and_then(|v| {
+            let market = String::from_utf8(v[1].bytes().ok()?.to_vec()).ok()?;
+            Some((
+                v[0].address().ok()?,
+                market,
+                v[2].uint().ok()?,
+                v[3].uint().ok()?,
+                v[4].address().ok()?,
+            ))
+        });
+    let Some((token_in, market, amount_in, min_out, recipient)) = read else {
+        out.push(finding(
+            "precompile_unknown",
+            Level::Red,
+            "Calls Injective's swap precompile in a way the wallet can't read. It can sell your tokens.".into(),
+            json!({ "precompile": req.tx.to.to_checksum_hex() }),
+        ));
+        return;
+    };
+    let native = token_in == EthAddress::from_bytes([0; 20]);
+    outflows.add(
+        if native {
+            "native".to_owned()
+        } else {
+            token_in.to_checksum_hex()
+        }
+        .as_str(),
+        amount_in,
+    );
+    let params = json!({
+        "token_in": token_in.to_checksum_hex(),
+        "market": crate::text::clip(&market, 66),
+        "amount_in": amount_in.to_string(),
+        "minimum_out": min_out.to_string(),
+        "recipient": recipient.to_checksum_hex(),
+    });
+    if recipient != req.from {
+        out.push(finding(
+            "swap_recipient",
+            Level::Red,
+            format!(
+                "This swap pays {}, not this account.",
+                short(&recipient.to_checksum_hex())
+            ),
+            params.clone(),
+        ));
+    }
+    if min_out.is_zero() {
+        out.push(finding(
+            "swap_no_minimum",
+            Level::Red,
+            "This swap has no minimum: it could return nothing.".into(),
+            params.clone(),
+        ));
+    }
+    out.push(finding(
+        "orderbook_swap",
+        Level::Amber,
+        "Sells on the INJ orderbook directly, at the minimum shown: the wallet can't check it against prices.".into(),
+        params,
+    ));
+}
+
 fn system_call(req: &TxRequest, n: u8, selector: Option<[u8; 4]>, injective: bool) -> Finding {
     let to = req.tx.to.to_checksum_hex();
     let data = req.tx.data.as_slice();
@@ -695,6 +778,9 @@ fn system_call(req: &TxRequest, n: u8, selector: Option<[u8; 4]>, injective: boo
                 params(json!({})),
             );
         }
+        // Injective's own range: a precompile the wallet doesn't know may move funds as the
+        // swap one does, so it is graded as the unread call it is.
+        0x60..=0xff => return unreadable(),
         _ => {
             return finding(
                 "system_address",
@@ -771,6 +857,10 @@ mod tests {
                 SAFE_TRANSFER_FROM_DATA,
                 "safeTransferFrom(address,address,uint256,bytes)",
             ),
+            (
+                SWAP_EXACT_INPUT,
+                "swapExactInputV1(address,string,uint256,uint256,address,uint256)",
+            ),
             (APPROVE_AND_CALL, "approveAndCall(address,uint256)"),
             (APPROVE_AND_CALL_DATA, "approveAndCall(address,uint256,bytes)"),
             (INCREASE_APPROVAL, "increaseApproval(address,uint256)"),
@@ -793,6 +883,58 @@ mod tests {
         ] {
             assert_eq!(keccak256(sig.as_bytes())[..4], sel, "{sig}");
         }
+    }
+
+    /// Run-3: a swap sent straight to the spot swap precompile (0x68) is read: someone else
+    /// as recipient or no minimum is red, and it is never below amber. Another Injective
+    /// system address the wallet doesn't know is an unread call, red.
+    #[test]
+    fn orderbook_swap_precompile() {
+        use abi::Val;
+        let swap = |recipient: [u8; 20], min: u128| {
+            let mut d = SWAP_EXACT_INPUT.to_vec();
+            d.extend(abi::encode(&[
+                Val::Word(addr_word([0; 20])),
+                Val::Bytes(b"0xa508cb32923323679f29a032c70342c147c17d0145625922b0ef22e955c844c0".to_vec()),
+                Val::Word(U256::from_u128(10u128.pow(21)).to_be_bytes()),
+                Val::Word(U256::from_u128(min).to_be_bytes()),
+                Val::Word(addr_word(recipient)),
+                Val::Word(U256::from_u128(9_999_999_999).to_be_bytes()),
+            ]));
+            grade(&req(precompile(SWAP), d))
+        };
+        let own = swap(FROM, 5_000_000);
+        assert_eq!(own.level, Level::Amber);
+        assert!(rules_of(&own).contains(&"orderbook_swap"));
+        let theirs = swap([0x22; 20], 5_000_000);
+        assert_eq!(theirs.level, Level::Red);
+        assert!(rules_of(&theirs).contains(&"swap_recipient"));
+        let free = swap(FROM, 0);
+        assert!(rules_of(&free).contains(&"swap_no_minimum"));
+        // Most of the balance going in is said, as for a send.
+        let ctx = Context {
+            balances: [("native".to_owned(), "1100000000000000000000".to_owned())].into(),
+            ..Context::default()
+        };
+        let mut d = req(precompile(SWAP), vec![]);
+        d.tx.data = {
+            let mut x = SWAP_EXACT_INPUT.to_vec();
+            x.extend(abi::encode(&[
+                Val::Word(addr_word([0; 20])),
+                Val::Bytes(b"m".to_vec()),
+                Val::Word(U256::from_u128(10u128.pow(21)).to_be_bytes()),
+                Val::Word(U256::from_u128(1).to_be_bytes()),
+                Val::Word(addr_word(FROM)),
+                Val::Word([0; 32]),
+            ]));
+            x
+        };
+        assert!(rules_of(&evm_transaction(&d, &EvmSide::injective(&MAINNET), &ctx)).contains(&"most_of_balance"));
+        // Unread forms, and an unknown Injective precompile: red.
+        assert_eq!(grade(&req(precompile(SWAP), vec![1, 2, 3, 4])).level, Level::Red);
+        assert_eq!(grade(&req(precompile(0x69), vec![1, 2, 3, 4])).level, Level::Red);
+        // An Ethereum precompile (ecrecover) called directly: odd, not dangerous.
+        assert_eq!(grade(&req(precompile(0x01), vec![1, 2, 3, 4])).level, Level::Amber);
     }
 
     /// Run-3: the other standard ways to grant an allowance or operator rights are graded
