@@ -83,6 +83,8 @@ export interface Waiting {
     simulation?: DappReview["simulation"];
     tokens?: DappReview["tokens"];
     context?: Record<string, unknown>;
+    /** Facts added on top of whichever context the review uses (an EVM simulation's moves). */
+    extra?: Record<string, unknown>;
   }>;
   /** sign: what to hand the page once signed. */
   finish?: (signed: Record<string, unknown>) => Promise<unknown>;

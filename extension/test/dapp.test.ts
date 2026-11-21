@@ -10,7 +10,7 @@ import { ed25519 } from "@noble/curves/ed25519";
 import type { DappReview } from "../../ui/src/protocol";
 import { shown } from "../../ui/src/review";
 
-import { base58Decode, bs58, callVault, chain, CHOICE_ROUTES, code, exchangeDeposits, handle, INJ, ME, ME_EVM, ME_SOL, ME_SOL_USDC, ok, PASSWORD, PHRASE, SOL_USDC, solTransfer, THEM, THEM_EVM, THEM_SOL, wallet } from "./fake";
+import { BASE_USDC, base58Decode, bs58, callVault, chain, CHOICE_ROUTES, code, exchangeDeposits, handle, INJ, ME, ME_EVM, ME_SOL, ME_SOL_USDC, ok, PASSWORD, PHRASE, SOL_USDC, solTransfer, THEM, THEM_EVM, THEM_SOL, wallet } from "./fake";
 
 const SITE = "https://app.example";
 const OTHER = "https://other.example";
@@ -285,6 +285,44 @@ test("each site on its own EVM chain: switched freely within the network, the ne
   assert.deepEqual(await moved, { result: null });
   assert.deepEqual(await site("eth_chainId"), { result: "0x14a34" });
   assert.deepEqual(await page(OTHER)("eth_chainId"), { result: "0x59f" });
+});
+
+// Run-3: a site's EVM call the wallet can't read is simulated on the user's own node, and what
+// it would move is shown and weighed: the account's tokens paid to someone else is red.
+test("a site's EVM transaction is simulated: what leaves the account is shown and weighed", async () => {
+  const { page, window, service, net } = await connected();
+  const site = page(SITE);
+  assert.deepEqual(await site("wallet_switchEthereumChain", [{ chainId: "0x2105" }]), { result: null });
+  const usdc = BASE_USDC.toLowerCase();
+  const router = `0x${"6f".repeat(20)}`;
+  const payee = `0x${"bb".repeat(20)}`;
+  const topic = (a: string) => `0x${a.slice(2).toLowerCase().padStart(64, "0")}`;
+  const move = (from: string, to: string) => ({ address: usdc, topics: ["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef", topic(from), topic(to)], data: `0x${(5_000_000n).toString(16).padStart(64, "0")}` });
+  type Review = { digest: string; risk: { level: string; findings: { rule: string }[] }; simulation?: { ok: boolean; changes?: { denom: string; amount: string }[] } };
+  const review = async (logs: ReturnType<typeof move>[] | null) => {
+    net.state.base.simulate = logs;
+    const asked = site("eth_sendTransaction", [{ from: ME_EVM, to: router, data: `0x3593564c${"00".repeat(32)}` }]);
+    const w = await window();
+    const r = ok<Review>(await service.handle({ type: "dapp_review", id: w.id }));
+    ok(await service.handle({ type: "dapp_answer", id: w.id, approve: false }));
+    await asked;
+    return r;
+  };
+  const rules = (r: Review) => r.risk.findings.map((f) => f.rule);
+  // The router pays the account's USDC (its Permit2 allowance) to someone else.
+  const drained = await review([move(ME_EVM, payee)]);
+  assert.equal(drained.risk.level, "red");
+  assert.ok(rules(drained).includes("simulated_loss"), rules(drained).join());
+  assert.deepEqual(drained.simulation, { ok: true, changes: [{ denom: `evm:${usdc}`, amount: "-5000000" }] });
+  // A swap: something comes back. Only the unread call is said.
+  const swap = await review([move(ME_EVM, router), { ...move(router, ME_EVM), address: `0x${"42".repeat(20)}` }]);
+  assert.equal(swap.risk.level, "amber");
+  assert.ok(!rules(swap).some((x) => x.startsWith("simulated_")));
+  assert.ok(rules(swap).includes("contract_call_unread"));
+  // A node that can't simulate: no simulation, the unread call still amber.
+  const blind = await review(null);
+  assert.equal(blind.simulation, undefined);
+  assert.equal(blind.risk.level, "amber");
 });
 
 // Hardening: two sites switching chains at once each read the map before either saved it,

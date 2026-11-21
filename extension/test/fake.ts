@@ -351,6 +351,8 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
       allowance: 0n,
       sent: [] as string[],
       down: false,
+      /** The logs eth_simulateV1 gives for any call (null: the node can't simulate). */
+      simulate: null as null | { address: string; topics: string[]; data: string }[],
       /** Transactions on Base by hash, for history. */
       txs: {} as Record<string, { from: string; to: string; value: bigint; input: string; logs: { address: string; topics: string[]; data: string }[]; block: bigint }>,
       /** What a test's Base index finds: hashes of transactions and of token transfers. */
@@ -378,10 +380,15 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
     if (r.method === "eth_getBlockByNumber") return answer({ number: "0x1000", baseFeePerGas: "0x5f5e100" });
     if (r.method === "eth_maxPriorityFeePerGas") return answer("0xf4240");
     if (r.method === "eth_getBalance") return answer(r.params[0] as unknown as string === ME_EVM ? `0x${state.base.eth.toString(16)}` : "0x0");
+    if (r.method === "eth_simulateV1") {
+      return state.base.simulate ? answer([{ number: "0x1000", calls: [{ status: "0x1", returnData: "0x", gasUsed: "0x30000", logs: state.base.simulate }] }]) : { jsonrpc: "2.0", id: r.id, error: { code: -32601, message: "the method eth_simulateV1 does not exist" } };
+    }
     if (r.method === "eth_estimateGas") {
       const tx = r.params[0] as unknown as { from: string; to: string; data: string };
       assert.equal(tx.from.toLowerCase(), ME_EVM.toLowerCase());
       if (tx.data.startsWith("0x095ea7b3")) return answer("0xb3b0");
+      // A UniversalRouter execute, to any router.
+      if (tx.data.startsWith("0x3593564c")) return answer("0x30000");
       if (/^0x(779b432d|8e0250ee)/.test(tx.data)) return BigInt(`0x${tx.data.slice(10, 74)}`) > state.base.allowance ? reverted : answer("0x29810");
       // A USDC transfer within what ME holds; a plain ETH transfer.
       if (tx.data.startsWith("0xa9059cbb")) return BigInt(`0x${tx.data.slice(74, 138)}`) > state.base.usdc ? reverted : answer("0xc350");

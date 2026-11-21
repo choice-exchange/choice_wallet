@@ -410,6 +410,9 @@ pub fn evm_transaction(req: &TxRequest, chain: &EvmSide<'_>, ctx: &Context) -> A
         ));
     }
     outflows.check(ctx, &mut out);
+    if let Some(moves) = &ctx.evm_transfers {
+        simulated(moves, req, &mut out);
+    }
     // The amount plus the most gas could cost, against the native balance.
     if let Some(bal) = balance(ctx, "native") {
         let max_gas = U256::product(u128::from(tx.gas_limit), tx.max_fee_per_gas);
@@ -426,6 +429,44 @@ pub fn evm_transaction(req: &TxRequest, chain: &EvmSide<'_>, ctx: &Context) -> A
 }
 
 /// An amount of an EVM chain's coin (18 decimals on every chain the wallet signs on).
+/// What the node's simulation shows leaving the account. A call that sends the account's
+/// tokens away and brings nothing back is a payment at best; when some go anywhere but the
+/// contract called (another address, or burned), it is how an approval or deposit is drained.
+fn simulated(moves: &[crate::EvmTransfer], req: &TxRequest, out: &mut Vec<Finding>) {
+    let me = req.from.to_checksum_hex().to_lowercase();
+    let called = req.tx.to.to_checksum_hex().to_lowercase();
+    let zero = format!("0x{}", "0".repeat(40));
+    let gone: Vec<&crate::EvmTransfer> = moves.iter().filter(|m| m.from == me && m.to != me).collect();
+    let back = moves.iter().any(|m| m.to == me && m.from != me);
+    if gone.is_empty() || back {
+        return;
+    }
+    let tokens = gone
+        .iter()
+        .map(|m| m.token.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    if let Some(m) = gone.iter().find(|m| m.to != called) {
+        let what = if m.to == zero {
+            "Some are burned".to_string()
+        } else {
+            format!("Some go to {}, not to the contract you call", short(&m.to))
+        };
+        out.push(finding(
+            "simulated_loss",
+            Level::Red,
+            format!("Simulated: tokens leave your account and nothing comes back. {what}."),
+            json!({ "to": m.to, "token": m.token, "amount": m.amount, "tokens": tokens }),
+        ));
+    } else {
+        out.push(finding(
+            "simulated_payment",
+            Level::Amber,
+            "Simulated: tokens leave your account for this contract and nothing comes back.".into(),
+            json!({ "contract": called, "tokens": tokens }),
+        ));
+    }
+}
+
 fn coin_units(v: &U256) -> String {
     let s = format!("{:0>19}", v.to_string());
     let (whole, frac) = s.split_at(s.len() - 18);
@@ -967,6 +1008,58 @@ mod tests {
     /// Run-3: another wallet chain's own fund-moving system contracts are unread calls, red;
     /// the same addresses on other chains, and the predeploys that are ordinary tokens (WETH
     /// at 0x4200…0006), are not.
+    #[test]
+    fn simulated_moves_show_what_leaves() {
+        let me = format!("0x{}", hex::encode(FROM));
+        let router = format!("0x{}", hex::encode([0x6f; 20]));
+        let payee = format!("0x{}", "bb".repeat(20));
+        let zero = format!("0x{}", "00".repeat(20));
+        let usdc = format!("0x{}", "83".repeat(20));
+        let mv = |from: &str, to: &str| crate::EvmTransfer {
+            token: usdc.clone(),
+            from: from.into(),
+            to: to.into(),
+            amount: "5000000000".into(),
+            nft: false,
+        };
+        let grade_with = |moves: Option<Vec<crate::EvmTransfer>>| {
+            let r = req(
+                EthAddress::from_bytes([0x6f; 20]),
+                call(0x3593564cu32.to_be_bytes(), &[[0x60; 32]]),
+            );
+            let ctx = Context {
+                evm_transfers: moves,
+                ..Context::default()
+            };
+            evm_transaction(&r, &EvmSide::injective(&MAINNET), &ctx)
+        };
+        // A router paying the account's tokens to someone else: red.
+        let drained = grade_with(Some(vec![mv(&me, &payee)]));
+        assert_eq!(drained.level, Level::Red);
+        assert!(rules_of(&drained).contains(&"simulated_loss"));
+        // A vault burning the account's shares and paying the assets elsewhere: red too.
+        let mut burned = mv(&me, &zero);
+        burned.token = router.clone();
+        let paid_out = mv(&router, &payee);
+        assert!(rules_of(&grade_with(Some(vec![burned.clone(), paid_out]))).contains(&"simulated_loss"));
+        // Paying the contract called, nothing back: amber.
+        let pay = grade_with(Some(vec![mv(&me, &router)]));
+        assert_eq!(pay.level, Level::Amber);
+        assert!(rules_of(&pay).contains(&"simulated_payment"));
+        // Something comes back (a swap, a withdrawal to the account): no simulated finding.
+        let swap = grade_with(Some(vec![mv(&me, &router), mv(&router, &me)]));
+        assert!(!rules_of(&swap).iter().any(|r| r.starts_with("simulated_")));
+        let withdraw = grade_with(Some(vec![burned, mv(&router, &me)]));
+        assert!(!rules_of(&withdraw).iter().any(|r| r.starts_with("simulated_")));
+        // Not simulated, or nothing moved: no simulated finding.
+        assert!(!rules_of(&grade_with(None)).iter().any(|r| r.starts_with("simulated_")));
+        assert!(
+            !rules_of(&grade_with(Some(vec![])))
+                .iter()
+                .any(|r| r.starts_with("simulated_"))
+        );
+    }
+
     #[test]
     fn calls_the_wallet_cant_read_are_never_info() {
         // A router, vault or lending pool the account approved or deposited at can pay that out

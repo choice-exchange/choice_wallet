@@ -207,9 +207,12 @@ export function createDapps(h: DappHost) {
       const built = await w.build(u.account);
       const all = await grants();
       const known = (all[w.req.origin]?.approvals ?? 0) > 0;
-      const context = built.context
-        ? { origin: w.req.origin, origin_known: known, ...(await h.sender.riskFacts(network, null)), ...built.context }
-        : await reviewContext(network, u.account, w.req.origin, known);
+      const context = {
+        ...(built.context
+          ? { origin: w.req.origin, origin_known: known, ...(await h.sender.riskFacts(network, null)), ...built.context }
+          : await reviewContext(network, u.account, w.req.origin, known)),
+        ...built.extra,
+      };
       type Decoded = { digest: string; display: DappReview["display"]; risk: Risk };
       let d = await h.vault<Decoded>("decode", { request: built.request, context });
       if (!d.ok) return d;

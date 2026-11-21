@@ -171,9 +171,31 @@ pub struct Context {
     /// can do this without an instruction that says so.
     #[serde(default)]
     pub solana_handovers: Vec<SolanaHandover>,
+    /// A site's EVM transaction as the user's own node simulated it: every token, NFT and coin
+    /// move it would make. `None` when it wasn't simulated. A contract the vault can't read
+    /// can move tokens the account approved or deposited there; this is where that shows.
+    #[serde(default)]
+    pub evm_transfers: Option<Vec<EvmTransfer>>,
     /// The addresses above in their forms, worked out once when the rules first need them.
     #[serde(skip)]
     pub(crate) address_forms: addresses::AddressForms,
+}
+
+/// One move in a simulated EVM transaction: an ERC20 or NFT `Transfer`, or a coin move.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EvmTransfer {
+    /// The token's contract (`0x…`, lowercase), or `native` for the chain's coin.
+    pub token: String,
+    /// Who it leaves, as a lowercase `0x…` address (the zero address mints).
+    pub from: String,
+    /// Who gets it, as a lowercase `0x…` address (the zero address burns).
+    pub to: String,
+    /// Base units (1 for an NFT).
+    pub amount: String,
+    /// An ERC-721 `Transfer` (the amount is one token).
+    #[serde(default)]
+    pub nft: bool,
 }
 
 /// Control of the account, or of one of its token accounts, passing to someone else.

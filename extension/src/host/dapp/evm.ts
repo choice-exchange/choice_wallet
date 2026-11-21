@@ -6,11 +6,18 @@
 // the site's to make (nothing is signed by it, and every request names its chain in the
 // approval window); moving the whole wallet between mainnet and the test networks asks first.
 
-import { addedKey, chainByKey, ChainError, chainList, CHAINS, checkAddedChain, copiedChainName, erc20Meta, evmDenom, isObject, MIN_GAS_PRICE, NETWORKS, type AnyChain, type EvmRpc, type NetworkId } from "@choice-wallet/chain";
+import { addedKey, chainByKey, ChainError, chainList, CHAINS, checkAddedChain, copiedChainName, erc20Meta, evmDenom, isObject, MIN_GAS_PRICE, NETWORKS, Unreachable, type AnyChain, type EvmRpc, type NetworkId } from "@choice-wallet/chain";
 import type { AccountInfo, NewChain, TokenInfo } from "@choice-wallet/ui/protocol";
 
 import { cleanName } from "../addedchains";
 import { CHAIN_DISCONNECTED, INVALID_PARAMS, MAX_ARBITRARY, MAX_TYPED, no, quantity, UNAUTHORIZED, UNRECOGNIZED_CHAIN, UNSUPPORTED, type DappReply, type Named, type SiteCore } from "./shared";
+
+/** keccak256("Transfer(address,address,uint256)"): ERC20 and ERC-721 transfers. */
+const TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+/** The address eth_simulateV1's transfer tracing logs coin moves from. */
+const NATIVE_MOVES = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+const MAX_SIMULATED_LOGS = 512;
+type EvmMove = { token: string; from: string; to: string; amount: string; nft: boolean };
 
 /** Read-only JSON-RPC methods passed to the user's own EVM endpoints. */
 const READS = new Set([
@@ -247,6 +254,46 @@ export function createEvmSite(core: SiteCore) {
     };
   }
 
+  /** What a site's transaction would move, from the user's own node: eth_simulateV1 with
+   *  transfer tracing gives every ERC20 and NFT Transfer log and every coin move. Null when
+   *  the node can't simulate it (the review then says nothing about it). */
+  async function simulateMoves(rpc: EvmRpc, tx: { from: string; to: string; value: string; data: string }): Promise<EvmMove[] | null> {
+    try {
+      const out = await rpc.call("eth_simulateV1", [{ blockStateCalls: [{ calls: [{ from: tx.from, to: tx.to, value: tx.value, data: tx.data }] }], traceTransfers: true }, "latest"]);
+      const block = Array.isArray(out) && isObject(out[0]) ? out[0] : null;
+      const call = block && Array.isArray(block["calls"]) && isObject(block["calls"][0]) ? block["calls"][0] : null;
+      if (!call || call["status"] !== "0x1" || !Array.isArray(call["logs"])) return null;
+      const address = (t: unknown) => (typeof t === "string" && /^0x0{24}[0-9a-fA-F]{40}$/.test(t) ? `0x${t.slice(26).toLowerCase()}` : null);
+      const moves: EvmMove[] = [];
+      for (const log of call["logs"].slice(0, MAX_SIMULATED_LOGS)) {
+        if (!isObject(log) || !Array.isArray(log["topics"]) || String(log["topics"][0]).toLowerCase() !== TRANSFER_TOPIC) continue;
+        const [from, to] = [address(log["topics"][1]), address(log["topics"][2])];
+        const token = typeof log["address"] === "string" && /^0x[0-9a-fA-F]{40}$/.test(log["address"]) ? log["address"].toLowerCase() : null;
+        if (!from || !to || !token) continue;
+        const nft = log["topics"].length === 4;
+        const data = log["data"];
+        if (!nft && !(typeof data === "string" && /^0x[0-9a-fA-F]{1,64}$/.test(data))) continue;
+        moves.push({ token: token === NATIVE_MOVES ? "native" : token, from, to, amount: nft ? "1" : BigInt(data as string).toString(), nft });
+      }
+      return moves;
+    } catch (e) {
+      if (e instanceof ChainError || e instanceof Unreachable || e instanceof SyntaxError || e instanceof RangeError) return null;
+      throw e;
+    }
+  }
+
+  /** What the account gains and loses, by token, for the review's simulation block. */
+  function changesOf(moves: readonly EvmMove[], me: string, coin: string): { denom: string; amount: string }[] {
+    const net = new Map<string, bigint>();
+    for (const m of moves) {
+      if (m.nft || m.from === m.to) continue;
+      const denom = m.token === "native" ? coin : evmDenom(m.token);
+      if (m.to === me) net.set(denom, (net.get(denom) ?? 0n) + BigInt(m.amount));
+      if (m.from === me) net.set(denom, (net.get(denom) ?? 0n) - BigInt(m.amount));
+    }
+    return [...net].filter(([, a]) => a !== 0n).map(([denom, a]) => ({ denom, amount: a.toString() }));
+  }
+
   /** On another EVM chain than Injective's: what the review shows amounts in (its coin, its
    *  USDC, the token a call is to) and what the rules weigh them against. */
   async function elsewhere(network: NetworkId, chain: AnyChain, rpc: EvmRpc, to: string | null, held: bigint | null) {
@@ -300,9 +347,20 @@ export function createEvmSite(core: SiteCore) {
         async () => {
           const filled = await fillEvmTx(network, chain, await me(), tx);
           const request = { evm_transaction: { chain: chain.caip2, tx: filled.tx } };
-          if (chain.kind === "injective") return { request, checkedBy: filled.checkedBy };
-          const extra = await elsewhere(network, chain, await rpcFor(network, chain), filled.tx.to, filled.held);
-          return { request, checkedBy: filled.checkedBy, tokens: extra.tokens, context: extra.context };
+          const rpc = await rpcFor(network, chain);
+          const moves = await simulateMoves(rpc, filled.tx);
+          const from = filled.tx.from.toLowerCase();
+          const coin = chain.kind === "injective" ? "inj" : `native:${chain.caip2}`;
+          const sim = moves ? { extra: { evm_transfers: moves }, simulation: { ok: true as const, changes: changesOf(moves, from, coin) } } : {};
+          if (chain.kind === "injective") return { request, checkedBy: filled.checkedBy, ...sim };
+          const extra = await elsewhere(network, chain, rpc, filled.tx.to, filled.held);
+          // The tokens the simulation moves, named (a few: each is a read of the token).
+          for (const c of sim.simulation?.changes ?? []) {
+            if (!c.denom.startsWith("evm:") || extra.tokens[c.denom] || Object.keys(extra.tokens).length >= 8) continue;
+            const meta = await erc20Meta(rpc, c.denom.slice(4)).catch(() => null);
+            if (meta) extra.tokens[c.denom] = { denom: c.denom, symbol: meta.symbol, name: meta.symbol, decimals: meta.decimals, known: false, chain: chain.caip2 };
+          }
+          return { request, checkedBy: filled.checkedBy, tokens: extra.tokens, context: extra.context, ...sim };
         },
         async (signed) => {
           const hash = String(signed["hash"]).toLowerCase();
