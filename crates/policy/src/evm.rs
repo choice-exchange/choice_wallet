@@ -666,13 +666,26 @@ fn contract_call(
         _ => {}
     }
     // Every arm that read its call has returned. A token call left here has a trailing byte,
-    // a dirty address word or the wrong length, and the token may still run it.
+    // a dirty address word or the wrong length, and the token may still run it. Any other call
+    // is one the wallet can't read: a contract the account approved, gave a Permit2 allowance
+    // or deposited at (a router, a vault, a lending pool) can pay that out to whoever the
+    // calldata names, so it is never shown as nothing unusual.
     if let Some(name) = token_call_name(&sel) {
         out.push(finding(
             "token_call_unreadable",
             Level::Red,
             format!("Calls {name} in a form the wallet can't read. The token may still run it."),
             json!({ "contract": to, "bytes": data.len() }),
+        ));
+    } else {
+        out.push(finding(
+            "contract_call_unread",
+            Level::Amber,
+            format!(
+                "The wallet can't read what this call to {} does. It can move tokens you approved or deposited there.",
+                short(&to)
+            ),
+            json!({ "contract": to, "selector": format!("0x{:08x}", u32::from_be_bytes(sel)) }),
         ));
     }
     if !known_contract(ctx, &to) {
@@ -954,6 +967,40 @@ mod tests {
     /// Run-3: another wallet chain's own fund-moving system contracts are unread calls, red;
     /// the same addresses on other chains, and the predeploys that are ordinary tokens (WETH
     /// at 0x4200…0006), are not.
+    #[test]
+    fn calls_the_wallet_cant_read_are_never_info() {
+        // A router, vault or lending pool the account approved or deposited at can pay that out
+        // to whoever the calldata names: UniversalRouter execute (PERMIT2_TRANSFER_FROM to a
+        // payee), ERC-4626 redeem(shares, receiver, owner), Aave withdraw(asset, max, to).
+        let payee = [0xbb; 32];
+        let mut user = [0u8; 32];
+        user[12..].copy_from_slice(&FROM);
+        let max = [0xff; 32];
+        let grade_on = |chain_id: u64, cctp: Option<u64>, data: Vec<u8>| {
+            let mut r = req(EthAddress::from_bytes([0x6f; 20]), data);
+            r.tx.chain_id = chain_id;
+            let side = match cctp {
+                Some(c) => EvmSide {
+                    injective: None,
+                    cctp: Some((&MAINNET.cctp, MAINNET.cctp.evm_chain(c).unwrap())),
+                },
+                None => EvmSide::injective(&MAINNET),
+            };
+            evm_transaction(&r, &side, &Context::default())
+        };
+        for data in [
+            call(0x3593564cu32.to_be_bytes(), &[[0x60; 32], payee]),
+            call(0xba087652u32.to_be_bytes(), &[max, payee, user]),
+            call(0x69328decu32.to_be_bytes(), &[payee, max, payee]),
+        ] {
+            for (chain_id, cctp) in [(8453, Some(8453)), (1776, None)] {
+                let a = grade_on(chain_id, cctp, data.clone());
+                assert_eq!(a.level, Level::Amber, "{chain_id} {}", hex::encode(&data[..4]));
+                assert!(rules_of(&a).contains(&"contract_call_unread"));
+            }
+        }
+    }
+
     #[test]
     fn other_chains_system_contracts() {
         let on = |chain_id: u64, to: [u8; 20], cctp: u64| {
@@ -1344,9 +1391,11 @@ mod tests {
             rules_of(&grade(&req(token, call(SET_APPROVAL_FOR_ALL, &[them, yes])))),
             ["nft_approval_all"]
         );
-        // Any other function of the same shape is still a plain contract call.
+        // Any other function of the same shape is a call the wallet can't read: never Info.
         let other = plus(call(0x12345678u32.to_be_bytes(), &[them, max]));
-        assert_eq!(evm_transaction(&req(token, other), &sides[0], &ctx).level, Level::Info);
+        let a = evm_transaction(&req(token, other), &sides[0], &ctx);
+        assert_eq!(a.level, Level::Amber);
+        assert!(rules_of(&a).contains(&"contract_call_unread"));
     }
 
     #[test]
@@ -1463,12 +1512,12 @@ mod tests {
         let a = grade(&r);
         assert_eq!(a.level, Level::Red);
         assert!(rules_of(&a).contains(&"swap_recipient"));
-        // Testnet has no aggregator there: just a contract.
+        // Testnet has no aggregator there: a contract call the wallet can't read.
         let mut t = req(to, data);
         t.tx.chain_id = 1439;
         assert_eq!(
             rules_of(&evm_transaction(&t, &EvmSide::injective(&TESTNET), &Context::default())),
-            ["new_contract"]
+            ["contract_call_unread", "new_contract"]
         );
         // Junk to the aggregator.
         assert_eq!(
