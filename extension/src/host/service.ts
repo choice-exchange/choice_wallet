@@ -583,8 +583,12 @@ export function createService(d: Deps) {
         return d.vault("generate_mnemonic", { words: r.words });
       case "create":
         return wallets.create(r.secret, r.password, r.imported === true);
-      case "unlock":
-        return wallets.unlock(r.password);
+      case "unlock": {
+        const out = await wallets.unlock(r.password);
+        // A wallet page a lock sent to the unlock screen comes back.
+        if (out.ok) d.refresh?.();
+        return out;
+      }
       case "lock":
         return lock();
       case "add_account":
