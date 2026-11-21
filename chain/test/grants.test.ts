@@ -136,8 +136,19 @@ test("Blockscout's Approval logs: ERC20 shapes only, each (token, spender) once"
     );
   };
   const found = await new EvmIndex(["https://blockscout.example"], fetch, 1000).approvals(OWNER);
-  assert.deepEqual(found, [{ token: T1, spender: S }]);
+  assert.deepEqual(found, { pairs: [{ token: T1, spender: S }], complete: true });
   const q = new URL(asked).searchParams;
   assert.equal(q.get("action"), "getLogs");
   assert.equal(q.get("topic1"), pad(OWNER));
+
+  // Run-3: any contract can log Approvals naming the owner. A search that stops at its page
+  // cap says so, so the screen never takes it as the whole list.
+  let pages = 0;
+  const flood: Fetch = async () => {
+    pages++;
+    return new Response(JSON.stringify({ message: "OK", status: "1", result: Array.from({ length: 1000 }, () => log(T1, S)) }), { status: 200 });
+  };
+  const capped = await new EvmIndex(["https://blockscout.example"], flood, 1000).approvals(OWNER);
+  assert.equal(capped.complete, false);
+  assert.equal(pages, 5);
 });

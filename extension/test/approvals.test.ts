@@ -14,6 +14,7 @@ type Summary = {
   erc20: { token: string; spender: string; amount: string }[];
   tokens: Record<string, { symbol: string }>;
   evmIndexDown?: true;
+  unchecked: string[];
 };
 type Review = { digest: string; display: { messages?: Record<string, unknown>[]; data?: string; to?: string }; risk: { level: string; findings: { rule: string }[] } };
 
@@ -43,6 +44,8 @@ test("approvals: grants, fee grants, rewards address, CW20 and ERC20 allowances"
   const { service } = await wallet(net);
   ok(await service.handle({ type: "add_token", address: CW }));
   const s = ok<Summary>(await service.handle({ type: "approvals" }));
+  // What the wallet can't read yet is named, so the screen never says nothing stands (run-3).
+  assert.deepEqual(s.unchecked, ["NFT approvals", "Permit2 allowances", "allowances on other EVM chains"]);
   assert.deepEqual(
     s.grants.map((g) => [g.grantee, g.msgTypeUrl]),
     [

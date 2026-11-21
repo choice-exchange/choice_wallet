@@ -25,11 +25,14 @@ export class EvmIndex {
 
   /** Every (token, spender) `owner` ever gave an ERC20 allowance to, from `Approval` logs
    *  (3 topics, a 32-byte amount; ERC721's have 4 and are left out). Places to look: what is
-   *  left of each comes from the token itself. */
-  async approvals(owner: string): Promise<{ token: string; spender: string }[]> {
+   *  left of each comes from the token itself. `complete` is false when the search stopped at
+   *  its page cap: any contract can log Approvals naming `owner`, so a full last page may hide
+   *  a real one. */
+  async approvals(owner: string): Promise<{ pairs: { token: string; spender: string }[]; complete: boolean }> {
     if (!/^0x[0-9a-fA-F]{40}$/.test(owner)) throw new RangeError(`not an address: ${owner}`);
     const topic1 = `0x${owner.slice(2).toLowerCase().padStart(64, "0")}`;
     const seen = new Map<string, { token: string; spender: string }>();
+    let complete = false;
     for (let page = 1; page <= 5; page++) {
       const q = new URLSearchParams({ module: "logs", action: "getLogs", fromBlock: "0", toBlock: "latest", topic0: APPROVAL, topic1, topic0_1_opr: "and", page: String(page), offset: "1000" });
       const result = (await this.pool.run(async (base) => {
@@ -50,9 +53,12 @@ export class EvmIndex {
         const spender = `0x${s.slice(26)}`;
         seen.set(`${token} ${spender}`, { token, spender });
       }
-      if (result.length < 1000) break;
+      if (result.length < 1000) {
+        complete = true;
+        break;
+      }
     }
-    return [...seen.values()];
+    return { pairs: [...seen.values()], complete };
   }
 
   /** The transactions behind a page of `holder`'s ERC20 transfers, newest first, each once

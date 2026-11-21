@@ -18,27 +18,34 @@ const NAMES: Record<string, string> = {
   "/ibc.applications.transfer.v1.MsgTransfer": "Send your tokens to other chains",
 };
 
-/** Grants that can move the account's funds out. */
-const DANGEROUS = new Set([
-  "/cosmos.bank.v1beta1.MsgSend",
-  "/cosmos.bank.v1beta1.MsgMultiSend",
-  "/cosmos.authz.v1beta1.MsgExec",
-  "/cosmos.authz.v1beta1.MsgGrant",
-  "/cosmwasm.wasm.v1.MsgExecuteContract",
-  "/ibc.applications.transfer.v1.MsgTransfer",
-  "/cosmos.distribution.v1beta1.MsgSetWithdrawAddress",
+/** Grants that can't move the account's funds out: the only ones not shown in red. Every other
+ *  type, unknown and future ones included, is treated as able to (as the signing rules do). */
+const HARMLESS = new Set([
+  "/cosmos.staking.v1beta1.MsgDelegate",
+  "/cosmos.staking.v1beta1.MsgUndelegate",
+  "/cosmos.staking.v1beta1.MsgBeginRedelegate",
+  "/cosmos.staking.v1beta1.MsgCancelUnbondingDelegation",
+  "/cosmos.distribution.v1beta1.MsgWithdrawDelegatorReward",
+  "/cosmos.gov.v1beta1.MsgVote",
+  "/cosmos.gov.v1.MsgVote",
 ]);
+
+/** Exchange messages that place or cancel orders (a trading grant); the exchange's other
+ *  messages move funds between accounts or into contracts, and are named for what they are. */
+const ORDERS = /^\/injective\.exchange\.v[0-9a-z]+\.Msg(Create|Cancel|BatchCreate|BatchCancel|BatchUpdate|IncreasePositionMargin|DecreasePositionMargin|LiquidatePosition)/;
+const CANCELS = /^\/injective\.exchange\.v[0-9a-z]+\.Msg(Cancel|BatchCancel)/;
 
 /** What a grant for `msgTypeUrl` lets the grantee do, in a few words. */
 export function permissionName(msgTypeUrl: string): string {
   const known = NAMES[msgTypeUrl];
   if (known) return known;
-  if (/^\/injective\.exchange\./.test(msgTypeUrl)) return "Trade on the INJ orderbook";
+  if (ORDERS.test(msgTypeUrl)) return "Trade on the INJ orderbook";
   const name = msgTypeUrl.split(".").pop()?.replace(/^Msg/, "") ?? msgTypeUrl;
   return `${name.replace(/([a-z])([A-Z])/g, "$1 $2")} for you`;
 }
 
-/** Whether a grant for `msgTypeUrl` can move funds out of the account. */
+/** Whether a grant for `msgTypeUrl` can move funds out of the account: anything not known
+ *  to be harmless. Placing orders can (a grantee can trade the funds away); cancelling can't. */
 export function canMoveFunds(msgTypeUrl: string | null): boolean {
-  return msgTypeUrl === null || DANGEROUS.has(msgTypeUrl) || /^\/injective\.exchange\.v[0-9a-z]+\.Msg(Deposit|Withdraw|SubaccountTransfer|ExternalTransfer)/.test(msgTypeUrl);
+  return msgTypeUrl === null || !(HARMLESS.has(msgTypeUrl) || CANCELS.test(msgTypeUrl));
 }

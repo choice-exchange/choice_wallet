@@ -26,6 +26,9 @@ const CW20_MAX = "340282366920938463463374607431768211455";
 
 const TYPE_URL = /^\/[A-Za-z0-9._]{1,127}$/;
 
+/** Standing permissions the wallet has no reader for yet: always named as not checked. */
+const NOT_READ = ["NFT approvals", "Permit2 allowances", "allowances on other EVM chains"];
+
 export function createApprovals(sender: Sender) {
   async function summary(network: NetworkId, account: AccountInfo): Promise<Result<ApprovalsSummary>> {
     const net = NETWORKS[network];
@@ -41,12 +44,17 @@ export function createApprovals(sender: Sender) {
         sender.balances(network, account),
       ]);
       // CW20 allowances on every CW20 the wallet lists for this account.
+      // What wasn't read: classes the wallet has no reader for yet, and sources that were off
+      // or failed. The screen names them, and never says nothing stands while any is left.
+      const unchecked: string[] = [...NOT_READ];
+      if (!held.ok) unchecked.push("CW20 allowances");
       const contracts = held.ok ? held.result.balances.map((b) => cw20Address(b.denom)).filter((c): c is string => c !== null) : [];
       const cw20: ApprovalsSummary["cw20"] = [];
       for (let i = 0; i < contracts.length; i += CW20_PARALLEL) {
         const batch = contracts.slice(i, i + CW20_PARALLEL);
         const answers = await Promise.all(batch.map((c) => client.cw20Allowances(c, address).catch(() => null)));
         batch.forEach((c, j) => {
+          if (answers[j] === null && !unchecked.includes("some CW20 allowances")) unchecked.push("some CW20 allowances");
           for (const a of answers[j] ?? []) cw20.push({ token: `cw20:${c}`, spender: a.spender, amount: a.amount.toString(), expires: a.expires });
         });
       }
@@ -59,16 +67,21 @@ export function createApprovals(sender: Sender) {
       let pairs: { token: string; spender: string }[] = [];
       if (index) {
         try {
-          pairs = await index.approvals(evm0x);
+          const found = await index.approvals(evm0x);
+          pairs = found.pairs;
+          if (!found.complete) unchecked.push("ERC20 allowances past the first 5,000 approval records");
         } catch {
           evmIndexDown = true;
         }
+      } else {
+        unchecked.push("ERC20 allowances (EVM history is off in Settings)");
       }
       if (pairs.length > 0) {
         try {
           const left = await (await sender.evm(network)).erc20Allowances(pairs, evm0x);
           pairs.forEach((p, i) => {
             const a = left[i];
+            if ((a === null || a === undefined) && !unchecked.includes("some ERC20 allowances")) unchecked.push("some ERC20 allowances");
             if (a !== null && a !== undefined && a > 0n) erc20.push({ token: evmDenom(p.token), spender: p.spender, amount: a.toString() });
           });
         } catch {
@@ -87,6 +100,7 @@ export function createApprovals(sender: Sender) {
           cw20,
           erc20,
           tokens,
+          unchecked,
           ...(evmIndexDown ? { evmIndexDown: true as const } : {}),
           ...(evmDown ? { evmDown: true as const } : {}),
         },

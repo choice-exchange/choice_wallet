@@ -690,6 +690,9 @@ export type ApprovalsSummary = {
   /** By the token's `evm:` key; what is left of each, from the token. */
   erc20: { token: string; spender: string; amount: string }[];
   tokens: Record<string, TokenInfo>;
+  /** What wasn't read (no reader yet, a source off or failing): named on the screen, which
+   *  then never says nothing stands. */
+  unchecked: string[];
   /** Blockscout didn't answer: ERC20 allowances may be missing. */
   evmIndexDown?: true;
   /** No EVM endpoint answered: ERC20 allowances couldn't be checked. */

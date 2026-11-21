@@ -73,7 +73,8 @@ export function ApprovalsView({ canSign, onReview, onBack }: { canSign: boolean;
       }
     >
       {error && <Callout level="red">{error}</Callout>}
-      {nothing && <p className="empty">Nothing here. No one can spend from or act for this account.</p>}
+      {nothing && <p className="empty">Nothing found.</p>}
+      {s.unchecked.length > 0 && <p className="meta warn">Not checked here: {s.unchecked.join(", ")}.</p>}
 
       {s.rewardsTo && (
         <Callout level="red">
