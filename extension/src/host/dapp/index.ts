@@ -198,7 +198,7 @@ export function createDapps(h: DappHost) {
     if (!w.build) return fail("bad_request", "Nothing to review.");
     const u = await h.unlocked();
     if (!u) return fail("locked", "Unlock the wallet first.");
-    await h.touch();
+    // No touch: a site opens this window without the user, so it mustn't hold off auto-lock.
     // Only the account the site named answers it.
     if (w.named && w.named.of(u.account) !== w.named.address) return fail("wrong_account", "The account in use isn't the one this site asked to sign with. Switch back, or ask the site again.");
     const network = w.req.network;
@@ -246,6 +246,8 @@ export function createDapps(h: DappHost) {
         );
       }
       w.prepared = { request: built.request, digest, confirm: risk.confirm ?? null, blocked: risk.level === "blocked" };
+      // A device request was for what was reviewed before; a new review needs a new approval.
+      delete w.device;
       const tokens = built.tokens ?? (await h.sender.tokensFor(network, reviewDenoms(network, display, built.simulation?.ok ? built.simulation.changes : []).slice(0, MAX_REVIEW_TOKENS)));
       return { ok: true, result: { digest, display, risk, tokens, checkedBy: built.checkedBy ?? "", ...(built.simulation ? { simulation: built.simulation } : {}) } };
     } catch (e) {
@@ -291,6 +293,10 @@ export function createDapps(h: DappHost) {
     return { origin, origin_known: known, balances, known_contracts: [net.cw20Adapter], symbols: { native: "INJ", inj: "INJ" }, ...(await h.sender.riskFacts(network, null)) };
   }
 
+  /** Whether request `w` is still waiting: nothing has ended it since it was claimed. */
+  const open = (w: Waiting) => waiting.get(w.req.id) === w;
+  const gone = () => fail("not_found", "This request is no longer open.");
+
   /** One answer at a time per request: claimed at once, before anything is awaited. */
   async function claimed<T>(id: unknown, run: (w: Waiting) => Promise<Result<T>>): Promise<Result<T>> {
     const w = typeof id === "string" ? waiting.get(id) : undefined;
@@ -316,9 +322,13 @@ export function createDapps(h: DappHost) {
     const u = await h.unlocked();
     if (!u) return fail("locked", "Unlock the wallet first.");
     await h.touch();
+    // After every await: a lock, reset, disconnect or closed window may have ended the request
+    // (rejecting it to the page), and then nothing more is done for it.
+    if (!open(w)) return gone();
     if (w.approve) {
       const checked = w.check ? await w.check() : null;
       if (checked && !checked.ok) return checked;
+      if (!open(w)) return gone();
       const reply = await w.approve();
       settle(w.req.id, reply);
       return { ok: true, result: { done: true } };
@@ -331,16 +341,23 @@ export function createDapps(h: DappHost) {
       // The device signs: it gets the vault's bytes; the request waits for its signature.
       const dev = await h.vault<Omit<DeviceRequest, "path">>("device_request", { request: p.request, digest: p.digest });
       if (!dev.ok) return dev;
+      if (!open(w)) return gone();
       // A Solana request goes to the Solana app, with the key read from there.
       const sol = dev.result.app === "solana" ? u.account.ledger_solana : undefined;
       if (dev.result.app === "solana" && !sol) return fail("device_unsupported", "Add this account's Solana key from your Ledger first.");
       const request: DeviceRequest = { ...dev.result, path: sol?.path ?? u.account.account.path };
-      w.device = { request, publicKey: sol?.public_key ?? u.account.public_key };
+      w.device = { request, publicKey: sol?.public_key ?? u.account.public_key, digest: p.digest };
       return { ok: true, result: { device: request } };
     }
     // Answered once: from here the request is the page's, whatever happens.
     leave(w.req.id);
-    const signed = await h.vault<Record<string, unknown>>("sign", { secret: u.secret, wallet: u.wallet, unlock_key: u.key, account: u.account.account, request: p.request, digest: p.digest });
+    let signed: Result<Record<string, unknown>>;
+    try {
+      signed = await h.vault<Record<string, unknown>>("sign", { secret: u.secret, wallet: u.wallet, unlock_key: u.key, account: u.account.account, request: p.request, digest: p.digest });
+    } catch (e) {
+      w.resolve(no(INTERNAL, "The wallet couldn't sign this."));
+      throw e;
+    }
     if (!signed.ok) {
       w.resolve(no(INTERNAL, signed.error.message));
       return signed;
@@ -356,10 +373,11 @@ export function createDapps(h: DappHost) {
 
   async function deviceSignedOnce(w: Waiting, digest: unknown, signature: unknown, format: unknown): Promise<Result<{ done: true; hash?: string }>> {
     const p = w.prepared;
-    if (!p || !w.device || p.digest !== digest) return fail("not_approved", "This request changed. Review it again.");
+    if (!p || !w.device || p.digest !== digest || w.device.digest !== digest) return fail("not_approved", "This request changed. Review it again.");
     if (typeof signature !== "string" || (format !== "der" && format !== "rs")) return fail("bad_request", "Not a signature.");
     const signed = await h.vault<Record<string, unknown>>("device_sign", { request: p.request, digest: p.digest, public_key: w.device.publicKey, signature, format });
     if (!signed.ok) return signed;
+    if (!open(w)) return gone();
     leave(w.req.id);
     return complete(w, signed.result);
   }

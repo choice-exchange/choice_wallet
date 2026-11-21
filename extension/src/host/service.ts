@@ -408,6 +408,8 @@ export function createService(d: Deps) {
     await d.session.remove(["unlock_key", "pending_send", "pending_device"]);
     d.cancelLock();
     d.notify();
+    // The wallet's own open pages go back to the unlock screen.
+    d.refresh?.();
     return { ok: true, result: await status() };
   }
 

@@ -59,6 +59,21 @@ export function App() {
     void run({ type: "status" }, show);
   }, []);
 
+  // A lock (auto-lock, or another page) or a reset sends an open wallet page back to the
+  // unlock screen, and whatever it showed, a revealed phrase or key included, goes with it.
+  const home = view.name === "home";
+  useEffect(() => {
+    if (!home) return;
+    return backend.onRefresh?.(() => {
+      backend.send({ type: "status", poll: true }).then(
+        (r) => {
+          if (r.ok && !r.result.unlocked) show(r.result);
+        },
+        () => {},
+      );
+    });
+  }, [home]);
+
   const err = error && <p className="error">{error}</p>;
 
   switch (view.name) {

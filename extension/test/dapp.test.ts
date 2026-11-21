@@ -737,16 +737,34 @@ test("sites and the approval window's poll never restart the auto-lock timer", a
     ok(await service.handle({ type: "status", poll: true }));
   }
   assert.deepEqual(ui.locks, [], "no site read or poll restarts the timer");
-  // The user's own use does: the popup's status, and reviewing or answering a request.
+  // The user's own use does: the popup's status, and answering a request. A review doesn't:
+  // a site opens that window without the user.
   ok(await service.handle({ type: "status" }));
   assert.equal(ui.locks.length, 1);
   const asked = site("personal_sign", ["0x6869", ME_EVM]);
   const w = await window();
   const review = ok<{ digest: string }>(await service.handle({ type: "dapp_review", id: w.id }));
-  assert.equal(ui.locks.length, 2);
+  assert.equal(ui.locks.length, 1, "a site's window doesn't hold off auto-lock");
   ok(await service.handle({ type: "dapp_answer", id: w.id, approve: true, digest: review.digest }));
-  assert.equal(ui.locks.length, 3);
+  assert.equal(ui.locks.length, 2);
   await asked;
+});
+
+// A lock that lands while an approved request is being answered ends it: the page hears a
+// rejection and nothing is signed for it afterwards.
+test("a lock during an answer stops it before anything is signed", async () => {
+  const { page, window, service, ui } = await connected();
+  const asked = page(SITE)("personal_sign", ["0x6869", ME_EVM]);
+  const w = await window();
+  const review = ok<{ digest: string }>(await service.handle({ type: "dapp_review", id: w.id }));
+  // Auto-lock fires inside the answer, after it was claimed and before it signs.
+  ui.onLockTimer = () => {
+    ui.onLockTimer = undefined;
+    void service.lock();
+  };
+  const r = await service.handle({ type: "dapp_answer", id: w.id, approve: true, digest: review.digest });
+  assert.equal((await asked).error?.code, 4001);
+  assert.equal(r.ok, false, "nothing is signed for a request the lock ended");
 });
 
 // F16: a page with no grant could flood revokes, each rewriting every site's grants and

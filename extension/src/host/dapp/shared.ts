@@ -90,7 +90,8 @@ export interface Waiting {
    *  that account answers: a review for another one is refused. */
   named?: Named;
   /** sign, on a Ledger: what the device was handed, waiting for its signature. */
-  device?: { request: DeviceRequest; publicKey: string };
+  /** The device request, for the review digest it was made from. */
+  device?: { request: DeviceRequest; publicKey: string; digest: string };
   prepared?: Prepared;
 }
 
