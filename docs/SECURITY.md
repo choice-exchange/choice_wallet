@@ -133,23 +133,21 @@ Protobuf types:
 
 ## Releases
 
-What protects the store listing, and what doesn't:
+In this repo, and anyone can check it:
+
+- **Release builds come only from a signed tag.** `node extension/release.mjs` refuses a tree with changes, untracked files or ignored files under `extension/public`, and a HEAD that isn't the annotated tag `v<version>`. It stamps the commit into the manifest's `version_name`.
+- **Reproducible package.** Pinned Rust toolchain (`rust-toolchain.toml`), `wasm-bindgen-cli` at exactly the crate's version, `--remap-path-prefix`, pinned lockfiles, no minification. The zip is deterministic: files sorted, stored, fixed dates and modes. Rebuilding a tag gives the same bytes, and `SHA256SUMS` names every file.
+- **Release workflow** (`.github/workflows/release.yml`). It runs for a `v*` tag GitHub verifies as signed, builds with pinned Node and Rust, and attaches the zip and `SHA256SUMS` to a draft release with a Sigstore provenance attestation. A maintainer publishes the draft.
+- **Store check.** `node extension/crx-compare.mjs <store.crx> <zip> SHA256SUMS` unwraps the store's CRX3, leaves out its `_metadata/` folder and the `update_url` it adds, and compares every other file. The watchdog workflow (`.github/workflows/watchdog.yml`) runs it every 6 hours against the live package and fails on any difference or a missing or unattested release.
+
+Set up outside the repo, before the first store release:
 
 - **Chrome Web Store verified uploads.** The store accepts only packages signed with our RSA key. A leaked dashboard login or API key can't publish on its own.
   - Limit: if the key is lost, store support replaces it within about a week. The publisher Google account plus a support request is still a way in.
   - So the listing lives under a group publisher account. Every member uses hardware security keys.
-- **Signing key on hardware.** Chrome's packer expects a PEM file. Keeping the key on a hardware token needs a PKCS#11 CRX3 signer; whether we can use an existing one is still open.
+- **Signing key on hardware.** Chrome's packer expects a PEM file. Keeping the key on a hardware token needs a PKCS#11 CRX3 signer; whether we can use an existing one is still open. Until then the PEM stays offline.
+- **GitHub.** A `release` environment with two required reviewers, a ruleset so only maintainers create `v*` tags, and hardware security keys for every maintainer. Set the `CWS_ITEM_ID` repository variable to turn the watchdog on.
 - **Chrome Web Store only in v1.** The Edge Add-ons publish API authenticates with an API key and checks no package signature, so a leaked Edge key could ship code. Edge and Brave users install from the Chrome Web Store.
-- **Public watchdog.** A job polls the live store package and alerts when its hash doesn't match a signed tag.
-
-Build and release process:
-
-- Public repo from the first commit. Signed tags only.
-- **Reproducible builds:**
-  - pinned Rust toolchain (`rust-toolchain.toml`), `wasm-bindgen-cli` at exactly the crate's version, pinned binaryen;
-  - `--remap-path-prefix`, a build container pinned by digest, pinned lockfiles, a deterministic zip;
-  - a published hash per release, and a script that unwraps the store's CRX3 package, ignores the `_metadata/` folder the store adds, and compares the rest with the tag.
-- Releases run from a protected GitHub environment with two required reviewers and Sigstore provenance. Every maintainer uses a hardware security key for GitHub.
 - Public bug bounty from the first beta.
 
 ## Reporting a vulnerability

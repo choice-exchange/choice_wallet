@@ -471,7 +471,7 @@ The wallet is free. If fees are added later, these rules hold:
 | Build | esbuild, with a 60-line build script (`extension/build.mjs`). WXT was the first pick, but it pulls 128 npm packages into the build, and build tools can tamper with what they produce; esbuild is 2. Decided 2026-11-08 | 0.28.2 |
 | UI | React, TypeScript (type checks only). Choice's visual language and tokens; the font and the listed tokens' logos ship inside the extension, so no page loads anything remote | 19.3.1, 7.0.2 |
 | Package manager | npm with a lockfile, install scripts off, exact versions, and `before` set two weeks back (`.npmrc`). npm workspaces: `chain`, `ui` and `extension`, one lockfile at the root. Twelve packages in all, three of them shipped | npm 11 |
-| WASM glue | `wasm-bindgen-cli` pinned to the crate's exact version (0.2.130), plus a pinned binaryen | |
+| WASM glue | `wasm-bindgen-cli` pinned to the crate's exact version (0.2.130); no wasm-opt step | |
 | Ledger | Device Management Kit + Cosmos signer kit + WebHID transport; the Ethereum and Solana apps' commands written here | DMK 1.11 |
 | Mobile dapp connections (phase 2) | Reown WalletKit | 1.6 |
 | Trezor (phase 2) | `@trezor/connect-webextension`. Its signing runs in a popup hosted on connect.trezor.io, a third-party site; Injective works only over EIP-712 | |

@@ -43,6 +43,8 @@ npm test         # the chain client's tests, the UI's (QR encoder, token filter)
 npm run dev      # a dev build that rebuilds and reloads itself in Chrome on every change (see extension/README.md)
 ```
 
+A store release is built only from a clean checkout of a signed tag `v<version>`: `npm run release -w extension` writes a deterministic zip and `SHA256SUMS` to `extension/release/`. The release workflow does this for every signed tag; see [docs/SECURITY.md](docs/SECURITY.md#releases).
+
 Regenerating protobuf code or test vectors (not needed for a normal build):
 
 ```sh

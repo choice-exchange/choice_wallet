@@ -1,0 +1,49 @@
+# Compares the live Chrome Web Store package with the published GitHub release of the same
+# version, and fails (GitHub then notifies the maintainers) when any file differs, when no
+# release of that version exists, or when the release has no valid provenance attestation.
+# Turn it on by setting the repository variable CWS_ITEM_ID to the store item's ID.
+name: store watchdog
+
+on:
+  schedule:
+    - cron: "23 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  attestations: read
+
+jobs:
+  compare:
+    if: vars.CWS_ITEM_ID != ''
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.22.1
+
+      - name: Download the live store package
+        env:
+          ITEM: ${{ vars.CWS_ITEM_ID }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$ITEM" =~ ^[a-p]{32}$ ]]; then echo "::error::CWS_ITEM_ID is not an extension ID"; exit 1; fi
+          curl -fsSL --proto '=https' -o store.crx \
+            "https://clients2.google.com/service/update2/crx?response=redirect&prodversion=150.0&acceptformat=crx3&x=id%3D${ITEM}%26uc"
+
+      - name: Fetch the release of the same version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version=$(node extension/crx-compare.mjs --version store.crx)
+          gh release download "v$version" --dir release --pattern "choice-wallet-$version.zip" --pattern SHA256SUMS
+          gh attestation verify "release/choice-wallet-$version.zip" --repo "$GITHUB_REPOSITORY"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Compare
+        run: node extension/crx-compare.mjs store.crx "release/choice-wallet-$VERSION.zip" release/SHA256SUMS
