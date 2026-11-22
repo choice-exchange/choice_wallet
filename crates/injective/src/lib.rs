@@ -7,6 +7,7 @@
 //! - [`choice`]: swaps through Choice's aggregator and router on the EVM side, read from
 //!   their calldata, and the contracts pinned per network.
 //! - [`cctp`]: native USDC to other chains over Circle's CCTP V2, read from burn calldata.
+//! - [`talis`]: Talis's NFT marketplace contracts on the EVM side, pinned per network.
 //!
 //! How each kind of token moves:
 //!
@@ -29,5 +30,6 @@ pub mod cctp;
 pub mod chain;
 pub mod choice;
 pub mod eip712;
+pub mod talis;
 
 pub use choice_wallet_cosmos::Error;

@@ -170,6 +170,32 @@ test("approvals: NFT operators, NFT approvals and Permit2 allowances, read and r
   assert.equal((await service.handle({ type: "prepare_revoke_evm", kind: "permit2", contract: NFT, token: LUMA, spender: SPENDER })).ok, false);
 });
 
+test("approvals name Seaport and Talis's contracts; Talis's only on Injective", async () => {
+  const net = chain();
+  const NFT = "0x7777777777777777777777777777777777777777";
+  const SEAPORT = "0x0000000000000068F116a894984e2DB1123eB395";
+  const AUCTION = "0xa4174A3aA35a04Fc6fA53817E74416B61CcC2C5F";
+  net.state.operatorLogs = [{ collection: NFT, operator: SEAPORT }];
+  net.state.nftOperatorOn = { [`${NFT} ${SEAPORT.toLowerCase()}`]: true };
+  const { service } = await wallet(net);
+  type Named = { nftOperators: { operator: string }[]; names?: Record<string, string> };
+  const s = ok<Named>(await service.handle({ type: "approvals" }));
+  assert.deepEqual(s.nftOperators.map((o) => o.operator.toLowerCase()), [SEAPORT.toLowerCase()]);
+  assert.equal(s.names?.[SEAPORT.toLowerCase()], "Seaport");
+  assert.equal(s.names?.[AUCTION.toLowerCase()], "Talis auction");
+  assert.equal(s.names?.["0x000000000022d473030f116ddee9f6b43ac78ba3"], "Permit2");
+  const other = ok<Named>(await service.handle({ type: "approvals", chain: "base" }));
+  assert.equal(other.names?.[SEAPORT.toLowerCase()], "Seaport", "Seaport is at one address on every chain");
+  assert.equal(other.names?.[AUCTION.toLowerCase()], undefined, "Talis's addresses are Injective's");
+  // Taking Seaport's access back is named in the review.
+  type Rev = { risk: { level: string; findings: { rule: string; message: string }[] } };
+  const r = ok<Rev>(await service.handle({ type: "prepare_revoke_evm", kind: "nft_all", contract: NFT, spender: SEAPORT }));
+  assert.deepEqual(
+    r.risk.findings.map((f) => [f.rule, f.message]),
+    [["nft_approval_revoke", "Removes Seaport's access to your NFTs in this collection."]],
+  );
+});
+
 test("approvals on another EVM chain: only where the user looks, revoked there", async () => {
   const net = chain();
   const { service } = await wallet(net);

@@ -60,6 +60,51 @@ test("batches keep their order even when the node answers out of order; one reve
   assert.deepEqual(await rpc.erc20Balances([TOKEN, BAD], HOLDER), [1234n * 10n ** 18n, null]);
 });
 
+// Found 2026-11-23 on a live wallet: Injective's public endpoint balances over nodes, and one
+// that hasn't reached "latest" answers a call `header not found`. Taken as the chain's answer,
+// an NFT check read it as "not yours" and 5 of 82 NFTs went missing from the list.
+test("a node that is behind is asked again, then the next endpoint; its answer is never the chain's", async () => {
+  const lagging = (behindFor: Record<string, number>, log: string[]) => {
+    const inner = node({ "a.example": "0x6f0", "b.example": "0x6f0" });
+    return async (input: string, init?: RequestInit) => {
+      const host = new URL(input).host;
+      const body = JSON.parse(String(init?.body)) as Req | Req[];
+      const reqs = Array.isArray(body) ? body : [body];
+      const res = (await (await inner(input, init)).json()) as unknown;
+      const answers = (Array.isArray(res) ? res : [res]) as { id: number; result?: unknown }[];
+      const out = answers.map((a) => {
+        const r = reqs.find((q) => q.id === a.id)!;
+        if (r.method === "eth_chainId" || (behindFor[host] ?? 0) <= 0) return a;
+        behindFor[host]!--;
+        log.push(`${host} behind`);
+        return { jsonrpc: "2.0", id: a.id, error: { code: -32000, message: "header not found" } };
+      });
+      return new Response(JSON.stringify(Array.isArray(body) ? out : out[0]));
+    };
+  };
+  const calls = [
+    { method: "eth_call", params: [{ to: TOKEN, data: `0x70a08231${word(HOLDER)}` }, "latest"] },
+    { method: "eth_call", params: [{ to: BAD, data: "0x95d89b41" }, "latest"] },
+    { method: "eth_call", params: [{ to: TOKEN, data: "0x313ce567" }, "latest"] },
+  ];
+  // Behind once: asked again on the same endpoint, every answer the chain's.
+  const log: string[] = [];
+  const once = new EvmRpc(NETWORKS.mainnet, ["https://a.example", "https://b.example"], lagging({ "a.example": 1 }, log));
+  const out = await once.batch(calls);
+  assert.equal(BigInt(out[0] as string), 1234n * 10n ** 18n);
+  assert.ok(out[1] instanceof ChainError && out[1].code === 3, "a revert is still the chain's");
+  assert.equal(BigInt(out[2] as string), 18n);
+  assert.equal(once.pool.current, "https://a.example");
+  // Still behind: the next endpoint answers the whole batch.
+  const twice = new EvmRpc(NETWORKS.mainnet, ["https://a.example", "https://b.example"], lagging({ "a.example": 99 }, []));
+  const moved = await twice.batch(calls);
+  assert.equal(BigInt(moved[0] as string), 1234n * 10n ** 18n);
+  assert.equal(twice.pool.current, "https://b.example");
+  // One call: the same.
+  assert.equal(BigInt((await new EvmRpc(NETWORKS.mainnet, ["https://a.example"], lagging({ "a.example": 1 }, [])).call("eth_call", calls[2]!.params)) as string), 18n);
+  await assert.rejects(new EvmRpc(NETWORKS.mainnet, ["https://a.example"], lagging({ "a.example": 99 }, [])).call("eth_call", calls[2]!.params), Unreachable);
+});
+
 test("ERC20 metadata: cleaned, and null for a contract that isn't one", async () => {
   const rpc = new EvmRpc(NETWORKS.mainnet, ["https://m.example"], node({ "m.example": "0x6f0" }));
   assert.deepEqual(await rpc.erc20Metadata(TOKEN), { symbol: "LUMA", name: "Luma Token", decimals: 18 });

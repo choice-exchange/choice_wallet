@@ -14,6 +14,16 @@ import { cleanText } from "./tokens.ts";
 const NODE_TROUBLE = new Set([-32005 /* limit exceeded */, -32603 /* internal */]);
 /** Calls per batch request; public nodes cap batch sizes. */
 const BATCH = 20;
+/** A node behind a load-balanced endpoint that hasn't reached "latest" yet answers
+ *  `header not found` (-32000); one missing the state, `missing trie node`. Seen 2026-11-23 on
+ *  Injective's public endpoint about once in 400 calls: read as the chain's answer, an NFT
+ *  check took it for "not yours" and the NFT went missing from the list. The same endpoint is
+ *  asked again once (usually another node behind it), then the next endpoint. */
+const BEHIND = /^(header not found|missing trie node)\b/i;
+
+function behind(e: unknown): e is ChainError {
+  return e instanceof ChainError && e.code === -32000 && BEHIND.test(e.message);
+}
 
 export interface Call {
   method: string;
@@ -40,14 +50,44 @@ export class EvmRpc {
     });
   }
 
-  /** One request to one endpoint. */
+  /** One request to one endpoint (twice when the node answering is behind). */
   async #send(base: string, call: Call): Promise<unknown> {
+    for (let tries = 0; ; tries++) {
+      const { status, body } = await this.pool.json(base, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: this.#id++, ...call }),
+      });
+      try {
+        return answer(status, body);
+      } catch (e) {
+        if (!behind(e)) throw e;
+        if (tries > 0) throw new Down(`node behind: ${e.message}`);
+      }
+    }
+  }
+
+  /** One batch request: each answer in the calls' order, a `ChainError` for a call the chain
+   *  refused. */
+  async #sendBatch(base: string, calls: readonly Call[]): Promise<(unknown | ChainError)[]> {
+    const chunk = calls.map((c) => ({ jsonrpc: "2.0", id: this.#id++, ...c }));
     const { status, body } = await this.pool.json(base, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: this.#id++, ...call }),
+      body: JSON.stringify(chunk),
     });
-    return answer(status, body);
+    if (status !== 200 || !Array.isArray(body)) throw new Down(`batch: HTTP ${status}`);
+    const byId = new Map(body.filter(isObject).map((r) => [r["id"], r]));
+    return chunk.map((c) => {
+      const r = byId.get(c.id);
+      if (!r) throw new Down("batch: an answer is missing");
+      try {
+        return answer(200, r);
+      } catch (e) {
+        if (e instanceof ChainError) return e;
+        throw e;
+      }
+    });
   }
 
   /** One call, on whichever endpoint answers. */
@@ -58,29 +98,22 @@ export class EvmRpc {
 
   /** Several calls in batch requests, all on one endpoint. Each result is the call's value,
    *  or a `ChainError` for a call the chain refused (a revert, say): one bad call doesn't
-   *  sink the others. */
+   *  sink the others. A call a node that is behind answered is asked again once; still
+   *  behind, the whole batch moves to the next endpoint, so a refusal is always the chain's. */
   async batch(calls: readonly Call[]): Promise<(unknown | ChainError)[]> {
     return (await this.pool.run(async (base) => {
       const out: (unknown | ChainError)[] = [];
       for (let i = 0; i < calls.length; i += BATCH) {
-        const chunk = calls.slice(i, i + BATCH).map((c) => ({ jsonrpc: "2.0", id: this.#id++, ...c }));
-        const { status, body } = await this.pool.json(base, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(chunk),
-        });
-        if (status !== 200 || !Array.isArray(body)) throw new Down(`batch: HTTP ${status}`);
-        const byId = new Map(body.filter(isObject).map((r) => [r["id"], r]));
-        for (const c of chunk) {
-          const r = byId.get(c.id);
-          if (!r) throw new Down("batch: an answer is missing");
-          try {
-            out.push(answer(200, r));
-          } catch (e) {
-            if (e instanceof ChainError) out.push(e);
-            else throw e;
-          }
+        const chunk = calls.slice(i, i + BATCH);
+        const got = await this.#sendBatch(base, chunk);
+        const again = got.flatMap((r, j) => (behind(r) ? [j] : []));
+        if (again.length > 0) {
+          const retried = await this.#sendBatch(base, again.map((j) => chunk[j]!));
+          const still = retried.find(behind);
+          if (still) throw new Down(`batch: node behind: ${still.message}`);
+          again.forEach((j, k) => (got[j] = retried[k]));
         }
+        out.push(...got);
       }
       return out;
     })) as (unknown | ChainError)[];

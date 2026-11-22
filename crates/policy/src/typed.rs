@@ -4,7 +4,9 @@
 
 use choice_wallet_core::EthAddress;
 use choice_wallet_evm::eip712::TypedData;
+use choice_wallet_injective::chain::NETWORKS;
 use choice_wallet_injective::eip712::Web3Tx;
+use choice_wallet_injective::talis;
 use serde_json::{Value, json};
 
 use crate::amounts::{UNLIMITED, parse};
@@ -36,7 +38,7 @@ pub fn typed_data(td: &TypedData, injective_tx: Option<&Web3Tx>, signer: &EthAdd
     let mut out = site(ctx);
     let app = td.domain().get("name").and_then(Value::as_str).unwrap_or("");
     if app == "Seaport" && td.primary_type() == "OrderComponents" {
-        out.extend(seaport_order(td.message(), signer, ctx));
+        out.extend(seaport_order(td.message(), signer, ctx, on_talis(td)));
     } else {
         out.push(rule(td));
     }
@@ -53,12 +55,26 @@ pub fn typed_data(td: &TypedData, injective_tx: Option<&Web3Tx>, signer: &EthAdd
     Assessment::from(out)
 }
 
+/// A listing on Talis: an order for Seaport 1.6 on an Injective network's EVM chain that names
+/// that network's Talis zone. Named only; what it gives and gets is graded as any order.
+fn on_talis(td: &TypedData) -> bool {
+    let addr = |v: Option<&Value>| v.and_then(Value::as_str).and_then(|s| EthAddress::parse_hex(s).ok());
+    let Some(chain) = td.chain_id().and_then(|c| c.to_u64()) else {
+        return false;
+    };
+    let zone = addr(td.message().get("zone"));
+    addr(td.domain().get("verifyingContract")) == Some(talis::seaport())
+        && NETWORKS
+            .iter()
+            .any(|n| n.evm_chain_id == chain && zone == Some(n.talis.zone()))
+}
+
 /// A Seaport order (OpenSea's protocol, which Talis runs on Injective EVM), read item by item:
 /// what the signer gives (`offer`), what comes back to them, and what goes to others
 /// (`consideration`). Signing one lets anyone fulfil it until it ends, so it is never below
 /// Amber; it is Red when the signer's items leave and nothing comes back to them (how a fake
 /// "listing" drains a wallet), or when it gives away any NFT of a collection (criteria).
-fn seaport_order(msg: &Value, signer: &EthAddress, ctx: &Context) -> Vec<Finding> {
+fn seaport_order(msg: &Value, signer: &EthAddress, ctx: &Context, talis: bool) -> Vec<Finding> {
     let unreadable = || {
         vec![finding(
             "marketplace_listing",
@@ -112,6 +128,7 @@ fn seaport_order(msg: &Value, signer: &EthAddress, ctx: &Context) -> Vec<Finding
     let list = |xs: &[&SeaportItem]| xs.iter().map(|x| x.describe(coin)).collect::<Vec<_>>().join(", ");
     let give_text = list(&gives.iter().collect::<Vec<_>>());
     let params = json!({
+        "talis": talis,
         "gives": gives.iter().map(|g| g.describe(coin)).collect::<Vec<_>>(),
         "you_get": back.iter().map(|g| g.describe(coin)).collect::<Vec<_>>(),
         "others_get": others.iter().map(|g| json!({ "item": g.describe(coin), "to": g.recipient })).collect::<Vec<_>>(),
@@ -145,7 +162,8 @@ fn seaport_order(msg: &Value, signer: &EthAddress, ctx: &Context) -> Vec<Finding
         "marketplace_order",
         Level::Amber,
         format!(
-            "Offers {give_text} for {} to you.{fees} Anyone can take it until it ends.",
+            "{} {give_text} for {} to you.{fees} Anyone can take it until it ends.",
+            if talis { "On Talis: offers" } else { "Offers" },
             list(&back)
         ),
         params,
@@ -299,12 +317,12 @@ mod tests {
     use super::*;
 
     fn td(domain: Value, primary: &str, types: Value, message: Value) -> TypedData {
-        let mut all = json!({
-            "EIP712Domain": [
-                { "name": "name", "type": "string" },
-                { "name": "verifyingContract", "type": "address" }
-            ]
-        });
+        let mut fields = vec![json!({ "name": "name", "type": "string" })];
+        if domain.get("chainId").is_some() {
+            fields.push(json!({ "name": "chainId", "type": "uint256" }));
+        }
+        fields.push(json!({ "name": "verifyingContract", "type": "address" }));
+        let mut all = json!({ "EIP712Domain": fields });
         all.as_object_mut().unwrap().extend(types.as_object().unwrap().clone());
         TypedData::parse(
             &json!({ "types": all, "primaryType": primary, "domain": domain, "message": message }).to_string(),
@@ -551,5 +569,47 @@ mod tests {
             json!([]),
         ));
         assert_eq!(a.level, Level::Red);
+
+        // On Talis: Seaport 1.6 on chain 1776, restricted to mainnet's Talis zone. Named, and
+        // graded the same; the zone alone, on another chain or for another contract, isn't Talis.
+        let talis_zone = choice_wallet_injective::talis::MAINNET.zone;
+        let on = |chain: u64, contract: &str, o: Value| {
+            let mut o = o;
+            o["zone"] = json!(talis_zone);
+            typed_data(
+                &td(
+                    json!({ "name": "Seaport", "chainId": chain, "verifyingContract": contract }),
+                    "OrderComponents",
+                    types.clone(),
+                    o,
+                ),
+                None,
+                &signer,
+                &ctx,
+            )
+        };
+        let seaport = choice_wallet_injective::talis::SEAPORT;
+        let listing = || {
+            order(
+                json!([nft_item(2, "7")]),
+                json!([pay("9700000000000000000", me), pay("300000000000000000", fee)]),
+            )
+        };
+        let a = on(1776, seaport, listing());
+        assert_eq!(a.level, Level::Amber);
+        let f = a.findings.iter().find(|f| f.rule == "marketplace_order").expect("read");
+        assert!(f.message.starts_with("On Talis: offers NFT #7"), "{}", f.message);
+        assert_eq!(f.params["talis"], json!(true));
+        for (chain, contract) in [(1439, seaport), (1, seaport), (1776, nft)] {
+            let a = on(chain, contract, listing());
+            let f = a.findings.iter().find(|f| f.rule == "marketplace_order").expect("read");
+            assert!(
+                f.message.starts_with("Offers NFT #7"),
+                "{chain} {contract}: {}",
+                f.message
+            );
+        }
+        let a = on(1776, seaport, order(json!([nft_item(2, "7")]), json!([pay("1", fee)])));
+        assert_eq!(a.level, Level::Red, "a drain through Talis's zone is still a drain");
     }
 }

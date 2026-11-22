@@ -7,7 +7,7 @@ use choice_wallet_evm::request::{Call, TxRequest};
 use choice_wallet_evm::{abi, erc20};
 use choice_wallet_injective::cctp::{self, Cctp};
 use choice_wallet_injective::chain::Network;
-use choice_wallet_injective::choice;
+use choice_wallet_injective::{choice, talis};
 use serde_json::json;
 
 use crate::addresses::{known_contract, recipient};
@@ -330,6 +330,15 @@ fn chain_system_contract(chain_id: u64, to: &EthAddress) -> Option<&'static str>
     }
 }
 
+/// A name at the start of a sentence ("the Talis auction" → "The Talis auction").
+fn capitalized(s: &str) -> String {
+    let mut out = s.to_owned();
+    if let Some(first) = out.get_mut(0..1) {
+        first.make_ascii_uppercase();
+    }
+    out
+}
+
 /// 20 bytes from 40 hex digits (a constant written in source).
 fn hex20(h: &str) -> [u8; 20] {
     let mut out = [0u8; 20];
@@ -361,6 +370,17 @@ impl<'a> EvmSide<'a> {
             injective: Some(n),
             cctp: Some((&n.cctp, &n.cctp.evm[0])),
         }
+    }
+
+    /// The name of a contract the wallet pins on this chain (Talis's on Injective EVM).
+    fn name(&self, a: &EthAddress) -> Option<&'static str> {
+        self.injective.and_then(|n| n.talis.name(a))
+    }
+
+    /// A contract as a sentence names it: by name when pinned, else "contract 0x12…cdef".
+    fn contract(&self, a: &EthAddress) -> String {
+        self.name(a)
+            .map_or_else(|| format!("contract {}", short(&a.to_checksum_hex())), str::to_owned)
     }
 }
 
@@ -409,7 +429,7 @@ pub fn evm_transaction(req: &TxRequest, chain: &EvmSide<'_>, ctx: &Context) -> A
             if token_call {
                 format!("Also sends {amount} to {}, besides the token call.", short(&to))
             } else {
-                format!("Sends {amount} to contract {}.", short(&to))
+                format!("Sends {amount} to {}.", chain.contract(&tx.to))
             },
             json!({ "value": tx.value.to_string(), "to": to }),
         ));
@@ -542,7 +562,9 @@ fn contract_call(
                 }
                 let named = network
                     .and_then(|n| swap::known_name(&n.choice, &spender))
-                    .or_else(|| chain.cctp.and_then(|(c, _)| bridge::known_name(c, &spender)));
+                    .or_else(|| chain.cctp.and_then(|(c, _)| bridge::known_name(c, &spender)))
+                    .or_else(|| (spender == talis::seaport()).then_some("Seaport"))
+                    .or_else(|| chain.name(&spender));
                 out.push(erc20_allowance(
                     ctx,
                     &to,
@@ -687,20 +709,40 @@ fn contract_call(
         }
         SET_APPROVAL_FOR_ALL if data.len() == 68 => {
             if let (Some(operator), Some(flag)) = (address_arg(data, 0), uint_arg(data, 1)) {
+                let seaport = operator == talis::seaport();
+                let who = if seaport {
+                    "Seaport".to_owned()
+                } else {
+                    chain
+                        .name(&operator)
+                        .map_or_else(|| short(&operator.to_checksum_hex()), str::to_owned)
+                };
                 let operator = operator.to_checksum_hex();
                 let params = json!({ "collection": to, "operator": operator });
                 out.push(if flag.is_zero() {
                     finding(
                         "nft_approval_revoke",
                         Level::Info,
-                        format!("Removes {}'s access to your NFTs in this collection.", short(&operator)),
+                        format!("Removes {who}'s access to your NFTs in this collection."),
+                        params,
+                    )
+                } else if seaport {
+                    // Listing on Talis (or any market on Seaport 1.6) starts here. Seaport has no
+                    // owner and moves an approved NFT only for an order its owner signed or sent,
+                    // and the wallet reads every Seaport order before it is signed.
+                    finding(
+                        "nft_approval_seaport",
+                        Level::Amber,
+                        "Lets Seaport move NFTs in this collection, only for listings you sign.".into(),
                         params,
                     )
                 } else {
                     finding(
                         "nft_approval_all",
                         Level::Red,
-                        format!("{} could take ALL your NFTs in this collection.", short(&operator)),
+                        // Talis's auction escrows a listed NFT this way, and it is upgradeable:
+                        // named, still red.
+                        format!("{} could take ALL your NFTs in this collection.", capitalized(&who)),
                         params,
                     )
                 });
@@ -735,21 +777,20 @@ fn contract_call(
             json!({ "contract": to, "bytes": data.len() }),
         ));
     } else {
+        // A pinned name says whose contract this is, not what the call does: still amber.
+        let who = chain.name(&tx.to).map_or_else(|| short(&to), str::to_owned);
         out.push(finding(
             "contract_call_unread",
             Level::Amber,
-            format!(
-                "The wallet can't read what this call to {} does. It can move tokens you approved or deposited there.",
-                short(&to)
-            ),
-            json!({ "contract": to, "selector": format!("0x{:08x}", u32::from_be_bytes(sel)) }),
+            format!("The wallet can't read what this call to {who} does. It can move tokens you approved or deposited there."),
+            json!({ "contract": to, "name": chain.name(&tx.to), "selector": format!("0x{:08x}", u32::from_be_bytes(sel)) }),
         ));
     }
     if !known_contract(ctx, &to) {
         out.push(finding(
             "new_contract",
             Level::Info,
-            format!("First interaction with contract {}.", short(&to)),
+            format!("First interaction with {}.", chain.contract(&tx.to)),
             json!({ "contract": to }),
         ));
     }
@@ -776,21 +817,21 @@ pub(crate) fn erc20_allowance(
         finding(
             "unlimited_allowance",
             Level::Red,
-            format!("{s} could take ALL of this token, now and later."),
+            format!("{} could take ALL of this token, now and later.", capitalized(&s)),
             params,
         )
     } else if balance(ctx, token).is_some_and(|b| amount > b) {
         finding(
             "allowance_over_balance",
             Level::Red,
-            format!("{s} could take more of this token than you hold now."),
+            format!("{} could take more of this token than you hold now.", capitalized(&s)),
             params,
         )
     } else {
         finding(
             "allowance",
             Level::Amber,
-            format!("{s} could spend this token up to the amount shown."),
+            format!("{} could spend this token up to the amount shown.", capitalized(&s)),
             params,
         )
     }
@@ -1339,6 +1380,91 @@ mod tests {
 
     fn grade(r: &TxRequest) -> Assessment {
         evm_transaction(r, &EvmSide::injective(&MAINNET), &Context::default())
+    }
+
+    /// Talis on Injective EVM: its contracts named on their own network only, never graded
+    /// lower for it; NFTs approved to Seaport (how a Talis listing starts) amber, on any chain.
+    #[test]
+    fn talis_contracts_are_named() {
+        let pinned = |s: &str| EthAddress::parse_hex(s).unwrap();
+        let auction = pinned("0xa4174A3aA35a04Fc6fA53817E74416B61CcC2C5F");
+        let seaport = talis::seaport();
+        let collection = EthAddress::from_bytes([0x44; 20]);
+        let mut yes = [0u8; 32];
+        yes[31] = 1;
+
+        // A bid: an unread call carrying INJ, to the auction by name, still amber.
+        let mut bid = req(auction, call([0x45, 0x4a, 0x2a, 0xb3], &[[0u8; 32]]));
+        bid.tx.value = U256::from_u128(10u128.pow(18));
+        let inj = Context {
+            symbols: [("native".to_owned(), "INJ".to_owned())].into(),
+            ..Context::default()
+        };
+        let a = evm_transaction(&bid, &EvmSide::injective(&MAINNET), &inj);
+        assert_eq!(a.level, Level::Amber);
+        let msg = |a: &Assessment, rule: &str| a.findings.iter().find(|f| f.rule == rule).unwrap().message.clone();
+        assert_eq!(
+            msg(&a, "contract_call_unread"),
+            "The wallet can't read what this call to the Talis auction does. It can move tokens you approved or deposited there."
+        );
+        assert_eq!(msg(&a, "value_with_call"), "Sends 1 INJ to the Talis auction.");
+        assert_eq!(msg(&a, "new_contract"), "First interaction with the Talis auction.");
+        // Mainnet's address on testnet is someone else's.
+        let t = evm_transaction(&bid, &EvmSide::injective(&TESTNET), &Context::default());
+        assert!(
+            msg(&t, "contract_call_unread").contains("0xa417"),
+            "{}",
+            msg(&t, "contract_call_unread")
+        );
+
+        // Escrowing NFTs with the auction (upgradeable): named, still red.
+        let a = grade(&req(
+            collection,
+            call(SET_APPROVAL_FOR_ALL, &[addr_word(*auction.as_bytes()), yes]),
+        ));
+        assert_eq!((a.level, a.findings[0].rule), (Level::Red, "nft_approval_all"));
+        assert_eq!(
+            a.findings[0].message,
+            "The Talis auction could take ALL your NFTs in this collection."
+        );
+
+        // Seaport: amber here and on a chain the wallet pins nothing for; its revoke is named.
+        let to_seaport = req(
+            collection,
+            call(SET_APPROVAL_FOR_ALL, &[addr_word(*seaport.as_bytes()), yes]),
+        );
+        let elsewhere = EvmSide {
+            injective: None,
+            cctp: None,
+        };
+        for a in [
+            grade(&to_seaport),
+            evm_transaction(&to_seaport, &elsewhere, &Context::default()),
+        ] {
+            assert_eq!((a.level, a.findings[0].rule), (Level::Amber, "nft_approval_seaport"));
+            assert_eq!(
+                a.findings[0].message,
+                "Lets Seaport move NFTs in this collection, only for listings you sign."
+            );
+        }
+        let off = grade(&req(
+            collection,
+            call(SET_APPROVAL_FOR_ALL, &[addr_word(*seaport.as_bytes()), [0u8; 32]]),
+        ));
+        assert_eq!(
+            off.findings[0].message,
+            "Removes Seaport's access to your NFTs in this collection."
+        );
+        // An ERC20 allowance to Seaport (an offer in WINJ) is named, and unlimited is still red.
+        let a = grade(&req(
+            collection,
+            call(APPROVE, &[addr_word(*seaport.as_bytes()), U256::MAX.to_be_bytes()]),
+        ));
+        assert_eq!((a.level, a.findings[0].rule), (Level::Red, "unlimited_allowance"));
+        assert_eq!(
+            a.findings[0].message,
+            "Seaport could take ALL of this token, now and later."
+        );
     }
 
     fn precompile(n: u8) -> EthAddress {

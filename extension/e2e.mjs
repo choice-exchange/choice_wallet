@@ -69,6 +69,9 @@ const indexed = (hash, height, time, from, to, amount) => ({
 // USDT "transfer" out of the wallet to a look-alike (address poisoning), which must not show.
 let me0x = ""; // the wallet's 0x address, once the e2e has read it
 const ROUTER = "0x4444444444444444444444444444444444444444";
+/** Seaport 1.6, and a Talis collection approved to it (Approvals names it). */
+const SEAPORT = "0x0000000000000068F116a894984e2DB1123eB395";
+const TALIS_NFT = "0x7777777777777777777777777777777777777777";
 const VAL_A = "injvaloper1qyqszqgpqyqszqgpqyqszqgpqyqszqgp0url7q";
 const VAL_B = "injvaloper1qgpqyqszqgpqyqszqgpqyqszqgpqyqsz7c964k";
 const LUMA = "0xb0d94f200998997cf8175ae7ddf039927a8b3ef4";
@@ -162,6 +165,8 @@ const lcd = createServer((req, res) => {
             const data = String(r.params[0].data);
             if (data.startsWith("0xdd62ed3e") && data.toLowerCase().includes("28b5a0e9c621a5badaa536219b3a228c8168cf5d")) return ok(`0x${w(sent.includes(CCTP_APPROVED) ? 10n ** 30n : 0n)}`);
             if (data.startsWith("0xdd62ed3e")) return ok(`0x${w(sent.includes(PERMIT2_APPROVED) ? 10n ** 30n : 0n)}`);
+            // isApprovedForAll(me, Seaport) on the Talis collection.
+            if (data.startsWith("0xe985e9c5") && data.toLowerCase().endsWith(SEAPORT.slice(2).toLowerCase())) return ok(`0x${w(1)}`);
             if (data.startsWith("0x927da105")) return ok(sent.includes("87517c45") ? `0x${w(10n ** 30n)}${w(Math.floor(Date.now() / 1000) + 1800)}${w(0)}` : `0x${w(0)}${w(0)}${w(0)}`);
             return ok(`0x${w(0)}`);
           }
@@ -257,7 +262,15 @@ const lcd = createServer((req, res) => {
       return reply(200, { allowances: [{ granter: tail, grantee: FRIEND, allowance: { "@type": "/cosmos.feegrant.v1beta1.BasicAllowance", spend_limit: [], expiration: null } }], pagination: { next_key: null } });
     }
     if (p.endsWith("/withdraw_address")) return reply(200, { withdraw_address: FRIEND });
-    if (p === "/api" && url.searchParams.get("action") === "getLogs") return reply(200, { message: "No logs found", result: [], status: "0" });
+    if (p === "/api" && url.searchParams.get("action") === "getLogs") {
+      // One NFT collection approved to Seaport, as listing on Talis leaves it.
+      const topic = (a) => `0x${"0".repeat(24)}${a.slice(2).toLowerCase()}`;
+      const approvalForAll = "0x17307eab39ab6107e8899845ad3d59bd9653f200f220920489ca2b5937696c31";
+      if (url.searchParams.get("topic0") === approvalForAll && url.searchParams.get("topic1")?.toLowerCase() === topic(me0x) && url.searchParams.get("page") === "1") {
+        return reply(200, { message: "OK", status: "1", result: [{ address: TALIS_NFT, topics: [approvalForAll, topic(me0x), topic(SEAPORT)], data: `0x${"0".repeat(63)}1` }] });
+      }
+      return reply(200, { message: "No logs found", result: [], status: "0" });
+    }
     if (p === "/cosmos/tx/v1beta1/simulate") return reply(200, { gas_info: { gas_wanted: "150000000", gas_used: "82771" } });
     if (p === "/cosmos/tx/v1beta1/txs" && req.method === "POST") {
       const { tx_bytes } = JSON.parse(body);
@@ -1023,6 +1036,14 @@ try {
   await p.fill("textarea", 1, lcdUrl);
   await p.click("Save");
   await p.waitText("Manage", 15000);
+  // Approvals again, now on the mock EVM endpoint: an NFT collection approved to Seaport (as
+  // listing on Talis leaves it) is listed by name.
+  await settings(p);
+  await p.click("Approvals and grants");
+  await p.waitText("Seaport may move every one", 20000);
+  await p.shot("16h2-approvals-seaport");
+  await toWallet(p);
+  console.log("approvals: an NFT collection's operator named Seaport");
   /** Pick a token in the swap picker once its row is there (the list loads with the screen). */
   const pickToken = async (denom) => {
     const sel = JSON.stringify(`.token[title="${denom}"]`);

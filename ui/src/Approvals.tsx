@@ -90,6 +90,8 @@ export function ApprovalsView({ canSign, onReview, onBack }: { canSign: boolean;
     s.nftApprovals.length === 0 &&
     s.permit2.length === 0;
   const date = (t: number) => new Date(t * 1000).toLocaleDateString();
+  // A contract the wallet knows by name (Seaport, Permit2, Choice's, Talis's), else its address.
+  const who = (a: string) => s.names?.[a.toLowerCase()] ?? shortAddress(a);
   const pill = (label: string, onClick: () => void) =>
     canSign && (
       <button type="button" className="pill" disabled={busy} aria-label={label} onClick={onClick}>
@@ -190,7 +192,7 @@ export function ApprovalsView({ canSign, onReview, onBack }: { canSign: boolean;
                 <span className="name">
                   <span className={BigInt(a.amount) >= UNLIMITED ? "symbol danger-text" : "symbol"}>{symbol(a.token)}</span>
                   <span className="sub">
-                    {shortAddress(a.spender)} may take {amount(a.token, a.amount)}
+                    {who(a.spender)} may take {amount(a.token, a.amount)}
                   </span>
                 </span>
                 {pill(`Revoke ${symbol(a.token)} allowance for ${a.spender}`, () => void revokeErc20(a.token, a.spender))}
@@ -230,7 +232,7 @@ export function ApprovalsView({ canSign, onReview, onBack }: { canSign: boolean;
               <div key={`o${i}`} className="token approval-row" title={o.collection}>
                 <span className="name">
                   <span className="symbol danger-text">All NFTs in {shortAddress(o.collection)}</span>
-                  <span className="sub">{shortAddress(o.operator)} may move every one</span>
+                  <span className="sub">{who(o.operator)} may move every one</span>
                 </span>
                 {pill(`Revoke ${o.operator}'s access to ${o.collection}`, () => void revokeEvm("nft_all", o.collection, { spender: o.operator }))}
               </div>
@@ -240,7 +242,7 @@ export function ApprovalsView({ canSign, onReview, onBack }: { canSign: boolean;
                 <span className="name">
                   <span className="symbol">NFT #{t.tokenId.length > 12 ? `${t.tokenId.slice(0, 10)}…` : t.tokenId}</span>
                   <span className="sub">
-                    {shortAddress(t.approved)} may move it · {shortAddress(t.collection)}
+                    {who(t.approved)} may move it · {shortAddress(t.collection)}
                   </span>
                 </span>
                 {pill(`Clear the approval on NFT ${t.tokenId} of ${t.collection}`, () => void revokeEvm("nft_token", t.collection, { token_id: t.tokenId }))}
@@ -261,7 +263,7 @@ export function ApprovalsView({ canSign, onReview, onBack }: { canSign: boolean;
                 <span className="name">
                   <span className={BigInt(p.amount) >= UNLIMITED ? "symbol danger-text" : "symbol"}>{symbol(p.token)}</span>
                   <span className="sub">
-                    {shortAddress(p.spender)} may take {amount(p.token, p.amount)} until {date(p.expiration)}
+                    {who(p.spender)} may take {amount(p.token, p.amount)} until {date(p.expiration)}
                   </span>
                 </span>
                 {pill(`Revoke ${symbol(p.token)} Permit2 allowance for ${p.spender}`, () => void revokeEvm("permit2", PERMIT2, { token: p.token.slice(4), spender: p.spender }))}

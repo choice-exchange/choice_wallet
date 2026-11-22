@@ -691,6 +691,9 @@ export type ApprovalsSummary = {
   /** By the token's `evm:` key; what is left of each, from the token. */
   erc20: { token: string; spender: string; amount: string }[];
   tokens: Record<string, TokenInfo>;
+  /** Contracts the screen names instead of showing the address, by lowercase `0x` address:
+   *  Seaport and Permit2, and on Injective Choice's and Talis's contracts. */
+  names?: Record<string, string>;
   /** What wasn't read (no reader yet, a source off or failing): named on the screen, which
    *  then never says nothing stands. */
   unchecked: string[];

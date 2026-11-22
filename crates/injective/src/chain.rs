@@ -43,6 +43,8 @@ pub struct Network {
     pub choice: crate::choice::Choice,
     /// Circle's CCTP V2: native USDC to other chains.
     pub cctp: crate::cctp::Cctp,
+    /// Talis's NFT marketplace on the EVM side.
+    pub talis: crate::talis::Talis,
 }
 
 impl Network {
@@ -60,6 +62,7 @@ pub const MAINNET: Network = Network {
     eip712_chain_ids: &[1776, 1],
     choice: crate::choice::MAINNET,
     cctp: crate::cctp::MAINNET,
+    talis: crate::talis::MAINNET,
 };
 
 /// Injective testnet. Its adapter (Injective's, label "Cw20Adapter") was checked with a
@@ -71,6 +74,7 @@ pub const TESTNET: Network = Network {
     eip712_chain_ids: &[1439, 11155111],
     choice: crate::choice::TESTNET,
     cctp: crate::cctp::TESTNET,
+    talis: crate::talis::TESTNET,
 };
 
 /// Every Injective network the wallet knows.

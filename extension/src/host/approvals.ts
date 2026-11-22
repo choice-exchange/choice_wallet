@@ -12,7 +12,7 @@
 // send, decoded and graded by the vault. Cosmos revokes go in one transaction; each ERC20
 // revoke is its own (an `approve(spender, 0)` on that token).
 
-import { chainByKey, cw20Address, cw721Candidates, cw721Tokens, evmAddress, evmDenom, EvmIndex, isObject, isTokenId, NETWORKS, type EvmRpc, type Fetch, type Lcd, type NetworkId } from "@choice-wallet/chain";
+import { chainByKey, contractNames, cw20Address, cw721Candidates, cw721Tokens, evmAddress, evmDenom, EvmIndex, isObject, isTokenId, NETWORKS, type EvmRpc, type Fetch, type Lcd, type NetworkId } from "@choice-wallet/chain";
 import type { AccountInfo, ApprovalsSummary, EvmRevokeKind, Result, RevokeItem, SendReview, TokenInfo } from "@choice-wallet/ui/protocol";
 
 import { evmChains } from "./evmchains";
@@ -222,6 +222,7 @@ export function createApprovals(sender: Sender, chains: ApprovalChains) {
           permit2,
           chains: await checkable(network),
           tokens,
+          names: contractNames(net, true),
           unchecked,
           ...(perms.indexDown ? { evmIndexDown: true as const } : {}),
           ...(perms.rpcDown ? { evmDown: true as const } : {}),
@@ -271,6 +272,7 @@ export function createApprovals(sender: Sender, chains: ApprovalChains) {
           nftApprovals: perms.nftApprovals,
           permit2: perms.permit2.map((p) => ({ ...p, token: evmDenom(p.token) })),
           tokens,
+          names: contractNames(NETWORKS[network], false),
           unchecked,
           ...(perms.indexDown ? { evmIndexDown: true as const } : {}),
           ...(perms.rpcDown ? { evmDown: true as const } : {}),

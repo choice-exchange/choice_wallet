@@ -45,6 +45,10 @@ export interface Network {
    *  in (or Choice's BridgeReceiver, for a transfer that also buys INJ for gas). The vault
    *  pins the same addresses (`choice_wallet_injective::cctp`), as does injective-usdc-bridge. */
   cctp: { usdc: string; tokenMessenger: string; messageTransmitter: string; bridgeReceiver: string | null };
+  /** Talis's NFT marketplace on the EVM side, each contract by the name the screens give it.
+   *  The vault pins the same addresses (`choice_wallet_injective::talis`) and names them in
+   *  its review; these name them on the Approvals screen. */
+  talis: { zone: string; contracts: readonly (readonly [name: string, address: string])[] };
   /** Solana beside this network: where each account's Solana key (its address is in the
    *  account's `addresses` under `caip2`) holds SOL and tokens, and where USDC bridges with
    *  Injective over CCTP (domain 5). The vault pins the same mint and Circle's programs
@@ -102,6 +106,20 @@ export const NETWORKS: Readonly<Record<NetworkId, Network>> = {
       messageTransmitter: "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",
       bridgeReceiver: "0xcA5A96ECF72B3656eF7cF60BDAA42FCdb218cd4A",
     },
+    // Read off chain 2026-11-23 (see choice_wallet_injective::talis for how).
+    talis: {
+      zone: "0x4669c6ebB602a1f7E8F0E7a0862ad45d813e9029",
+      contracts: [
+        ["Talis listing zone", "0x4669c6ebB602a1f7E8F0E7a0862ad45d813e9029"],
+        ["Talis auction", "0xa4174A3aA35a04Fc6fA53817E74416B61CcC2C5F"],
+        ["Talis drop minter", "0xcF29d983D2b96dfAcC1be8546D8F60bB74d6BC4F"],
+        ["Talis collection factory", "0xf7025e41677037D82f090Bd944704B8fE3f08B2f"],
+        ["Talis editions factory", "0xD0602659535d430105Dc82f92336066EFab38D18"],
+        ["Talis royalty registry", "0x73e57544c006c665C4B86A226891AbbD9ee978d4"],
+        ["Talis restore contract", "0x0E728ab3CdeB98C6a9cAb810E93De465D8f43cC0"],
+        ["Talis restore contract", "0xb909F629793916ad377507EA1386B1053d43071f"],
+      ],
+    },
     // Checked 2026-11-10: publicnode answers extension origins (but refuses
     // getTokenAccountsByOwner); Solana's own mainnet endpoint refuses browser origins.
     solana: {
@@ -143,6 +161,19 @@ export const NETWORKS: Readonly<Record<NetworkId, Network>> = {
       messageTransmitter: "0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275",
       bridgeReceiver: null,
     },
+    talis: {
+      zone: "0xA2939D38f463304BbffB479d08C8d263C81e02E8",
+      contracts: [
+        ["Talis listing zone", "0xA2939D38f463304BbffB479d08C8d263C81e02E8"],
+        ["Talis auction", "0xE081a2a5521e7eC96A0DB8f94a1910eA4f127595"],
+        ["Talis drop minter", "0x286B5baA1663cDa19ebe80E25aE06B3ACE1E5eA3"],
+        ["Talis collection factory", "0x51d9fee048FD0d52c98c9A273a8690E0D3C99606"],
+        ["Talis editions factory", "0x49fe97e6Ce491C59270c8b77508DcB761F248AbF"],
+        ["Talis royalty registry", "0x1F263E28399cA8DFF8aEFA86050349D3554a3AcB"],
+        ["Talis restore contract", "0x06D54D49b1812Cd39Ef0Ff24E8d0EBF15e5B0F25"],
+        ["Talis restore contract", "0x640d2D843d7a5AC16AA1834c94b2b9c4B534c66F"],
+      ],
+    },
     // Devnet's own endpoint answers extension origins and every method (2026-11-10).
     solana: {
       caip2: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
@@ -163,6 +194,22 @@ export function isNetworkId(v: unknown): v is NetworkId {
  *  Blockscout. */
 export function explorerTxUrl(network: Network, hash: string): string {
   return (hash.startsWith("0x") ? network.evmExplorerTx : network.explorerTx).replace("{hash}", hash);
+}
+
+/** Seaport 1.6, at its canonical address on every chain: Talis lists through it, and an NFT
+ *  approved to it moves only for an order its owner signed. */
+export const SEAPORT = "0x0000000000000068F116a894984e2DB1123eB395";
+
+/** Contracts the screens name instead of showing their address, by lowercase address: Seaport
+ *  and Permit2 on every chain; on Injective's own EVM side (`injective`), Choice's swap
+ *  contracts and Talis's too. */
+export function contractNames(network: Network, injective: boolean): Record<string, string> {
+  const out: Record<string, string> = { [SEAPORT.toLowerCase()]: "Seaport", [network.choice.permit2.toLowerCase()]: "Permit2" };
+  if (!injective) return out;
+  if (network.choice.aggregator) out[network.choice.aggregator.toLowerCase()] = "Choice aggregator";
+  out[network.choice.universalRouter.toLowerCase()] = "Choice router";
+  for (const [name, address] of network.talis.contracts) out[address.toLowerCase()] = name;
+  return out;
 }
 
 /** Injective's minimum gas price (txfees `min_gas_price`), used if the chain can't say. */
