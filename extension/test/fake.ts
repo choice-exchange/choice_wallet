@@ -309,6 +309,13 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
     rewardsTo: null as string | null,
     cw20Allowances: {} as Record<string, { spender: string; allowance: string }[]>,
     approvalLogs: [] as { token: string; spender: string }[],
+    /** ERC721 single-token approvals, operators and Permit2 allowances ME logged, and what
+     *  each collection says now. */
+    nftApprovalLogs: [] as { collection: string; tokenId: string; approved: string }[],
+    operatorLogs: [] as { collection: string; operator: string }[],
+    permit2Logs: [] as { token: string; spender: string }[],
+    nftOperatorOn: {} as Record<string, boolean>,
+    nftApproved: {} as Record<string, string>,
     erc20Allowance: {} as Record<string, bigint>,
     /** What other accounts (inj1…) received, newest first (indexed txs), and whose were asked. */
     deposits: {} as Record<string, unknown[]>,
@@ -387,6 +394,8 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
       const tx = r.params[0] as unknown as { from: string; to: string; data: string };
       assert.equal(tx.from.toLowerCase(), ME_EVM.toLowerCase());
       if (tx.data.startsWith("0x095ea7b3")) return answer("0xb3b0");
+      // Revokes: an NFT operator's, a Permit2 allowance.
+      if (/^0x(a22cb465|87517c45)/.test(tx.data)) return answer("0xb3b0");
       // A UniversalRouter execute, to any router.
       if (tx.data.startsWith("0x3593564c")) return answer("0x30000");
       if (/^0x(779b432d|8e0250ee)/.test(tx.data)) return BigInt(`0x${tx.data.slice(10, 74)}`) > state.base.allowance ? reverted : answer("0x29810");
@@ -469,6 +478,16 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
       const a = data.slice(34, 74) === ME_EVM.slice(2).toLowerCase() ? state.permit2[`${token} ${spender}`] : undefined;
       const w = (n: bigint | number) => BigInt(n).toString(16).padStart(64, "0");
       return { jsonrpc: "2.0", id: r.id, result: `0x${w(a?.amount ?? 0n)}${w(a?.expiration ?? 0)}${w(0)}` };
+    }
+    if (r.method === "eth_call" && data.startsWith("0xe985e9c5")) {
+      // isApprovedForAll(owner, operator)
+      const on = data.slice(34, 74) === ME_EVM.slice(2).toLowerCase() && state.nftOperatorOn[`${to.toLowerCase()} 0x${data.slice(98, 138)}`];
+      return answer(word(on ? 1n : 0n));
+    }
+    if (r.method === "eth_call" && data.startsWith("0x081812fc")) {
+      // getApproved(tokenId)
+      const who = state.nftApproved[`${to.toLowerCase()} ${BigInt(`0x${data.slice(10)}`)}`];
+      return answer(who ? `0x${who.slice(2).toLowerCase().padStart(64, "0")}` : word(0n));
     }
     if (r.method === "eth_call" && to.toLowerCase() === MESSAGE_TRANSMITTER.toLowerCase() && data.startsWith("0xfeb61724")) {
       return answer(word(state.usedNonces.has(`0x${data.slice(10)}`) ? 1n : 0n));
@@ -596,11 +615,22 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
       if (url.searchParams.get("action") === "getLogs") {
         const pad = (a: string) => `0x${a.slice(2).toLowerCase().padStart(64, "0")}`;
         const mine = url.searchParams.get("topic1") === pad(ME_EVM);
-        const logs = (mine ? state.approvalLogs : []).map((l) => ({
-          address: l.token,
-          topics: ["0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925", pad(ME_EVM), pad(l.spender), null],
-          data: `0x${"f".repeat(64)}`,
-        }));
+        const topic0 = url.searchParams.get("topic0");
+        const APPROVAL = "0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925";
+        const FOR_ALL = "0x17307eab39ab6107e8899845ad3d59bd9653f200f220920489ca2b5937696c31";
+        const P2 = "0xda9fa7c1b00402c17d0161b249b1ab8bbec047c5a52207b9c112deffd817036b";
+        const logs = !mine
+          ? []
+          : topic0 === APPROVAL
+            ? [
+                ...state.approvalLogs.map((l) => ({ address: l.token, topics: [APPROVAL, pad(ME_EVM), pad(l.spender), null], data: `0x${"f".repeat(64)}` })),
+                ...state.nftApprovalLogs.map((l) => ({ address: l.collection, topics: [APPROVAL, pad(ME_EVM), pad(l.approved), `0x${BigInt(l.tokenId).toString(16).padStart(64, "0")}`], data: "0x" })),
+              ]
+            : topic0 === FOR_ALL
+              ? state.operatorLogs.map((l) => ({ address: l.collection, topics: [FOR_ALL, pad(ME_EVM), pad(l.operator)], data: pad("0x01") }))
+              : topic0 === P2
+                ? state.permit2Logs.map((l) => ({ address: PERMIT2, topics: [P2, pad(ME_EVM), pad(l.token), pad(l.spender)], data: "0x" }))
+                : [];
         return json(200, logs.length ? { message: "OK", result: logs, status: "1" } : { message: "No logs found", result: [], status: "0" });
       }
       const rows = state.blockscout.map((t) => ({ blockNumber: String(t.blockNumber), hash: t.hash, from: THEM_EVM.toLowerCase(), to: ME_EVM.toLowerCase(), value: "1" }));

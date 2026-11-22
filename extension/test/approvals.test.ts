@@ -45,7 +45,7 @@ test("approvals: grants, fee grants, rewards address, CW20 and ERC20 allowances"
   ok(await service.handle({ type: "add_token", address: CW }));
   const s = ok<Summary>(await service.handle({ type: "approvals" }));
   // What the wallet can't read yet is named, so the screen never says nothing stands (run-3).
-  assert.deepEqual(s.unchecked, ["NFT approvals", "Permit2 allowances", "allowances on other EVM chains"]);
+  assert.deepEqual(s.unchecked, ["CW721 approvals", "other EVM chains (pick one above)"]);
   assert.deepEqual(
     s.grants.map((g) => [g.grantee, g.msgTypeUrl]),
     [
@@ -129,4 +129,60 @@ test("a watched account sees its approvals but can't revoke", async () => {
   ok(await service.handle({ type: "approvals" }));
   assert.equal(code(await service.handle({ type: "prepare_revoke", items: [{ type: "rewards" }] })), "watch_only");
   assert.equal(code(await service.handle({ type: "prepare_revoke_erc20", token: `evm:${LUMA}`, spender: SPENDER })), "watch_only");
+});
+
+// Run-3 follow-up: NFT operators, single-NFT approvals and Permit2 allowances are read and
+// can be taken back, each graded as a revoke.
+test("approvals: NFT operators, NFT approvals and Permit2 allowances, read and revoked", async () => {
+  const net = chain();
+  const NFT = "0x7777777777777777777777777777777777777777";
+  const OP = "0x8888888888888888888888888888888888888888";
+  const GONE = "0x9999999999999999999999999999999999999999";
+  net.state.operatorLogs = [
+    { collection: NFT, operator: OP },
+    { collection: NFT, operator: GONE },
+  ];
+  net.state.nftOperatorOn = { [`${NFT} ${OP}`]: true };
+  net.state.nftApprovalLogs = [
+    { collection: NFT, tokenId: "7", approved: OP },
+    { collection: NFT, tokenId: "8", approved: OP },
+  ];
+  net.state.nftApproved = { [`${NFT} 7`]: OP };
+  net.state.permit2Logs = [{ token: LUMA, spender: SPENDER }];
+  net.state.permit2 = { [`${LUMA.toLowerCase()} ${SPENDER}`]: { amount: 2n ** 160n - 1n, expiration: 4_000_000_000 } };
+  const { service } = await wallet(net);
+  type Full = Summary & { nftOperators: { collection: string; operator: string }[]; nftApprovals: { collection: string; tokenId: string; approved: string }[]; permit2: { token: string; spender: string; amount: string }[]; chains: { key: string }[] };
+  const s = ok<Full>(await service.handle({ type: "approvals" }));
+  assert.deepEqual(s.nftOperators, [{ collection: NFT, operator: OP }], "a revoked operator isn't listed");
+  assert.deepEqual(s.nftApprovals, [{ collection: NFT, tokenId: "7", approved: OP }], "an approval since cleared isn't listed");
+  assert.deepEqual(s.permit2.map((p) => [p.token, p.spender]), [[`evm:${LUMA.toLowerCase()}`, SPENDER]]);
+  assert.ok(!s.unchecked.includes("NFT approvals") && !s.unchecked.includes("Permit2 allowances"));
+  assert.ok(s.chains.some((c) => c.key === "ethereum"), "other chains with a history index can be picked");
+
+  type Rev = { risk: { level: string; findings: { rule: string }[] }; display: { to: string } };
+  const all = ok<Rev>(await service.handle({ type: "prepare_revoke_evm", kind: "nft_all", contract: NFT, spender: OP }));
+  assert.deepEqual([all.risk.level, all.risk.findings.map((f) => f.rule)], ["info", ["nft_approval_revoke"]]);
+  const one = ok<Rev>(await service.handle({ type: "prepare_revoke_evm", kind: "nft_token", contract: NFT, token_id: "7" }));
+  assert.deepEqual([one.risk.level, one.risk.findings.map((f) => f.rule)], ["info", ["approval_clear"]]);
+  const p2 = ok<Rev>(await service.handle({ type: "prepare_revoke_evm", kind: "permit2", contract: "0x000000000022D473030F116dDEE9F6B43aC78BA3", token: LUMA, spender: SPENDER }));
+  assert.deepEqual([p2.risk.level, p2.risk.findings.map((f) => f.rule)], ["info", ["allowance_revoke"]]);
+  // A Permit2 revoke goes only to Permit2.
+  assert.equal((await service.handle({ type: "prepare_revoke_evm", kind: "permit2", contract: NFT, token: LUMA, spender: SPENDER })).ok, false);
+});
+
+test("approvals on another EVM chain: only where the user looks, revoked there", async () => {
+  const net = chain();
+  const { service } = await wallet(net);
+  // Base has no history index by default: nothing is asked, and the screen says so.
+  const base = ok<{ chain?: string; erc20: unknown[]; unchecked: string[] }>(await service.handle({ type: "approvals", chain: "base" }));
+  assert.equal(base.chain, "base");
+  assert.deepEqual(base.erc20, []);
+  assert.ok(base.unchecked.some((u) => /EVM history is off/.test(u)), base.unchecked.join());
+  assert.equal((await service.handle({ type: "approvals", chain: "nowhere" })).ok, false);
+  // A revoke there is built and graded on that chain.
+  const NFT = "0x7777777777777777777777777777777777777777";
+  const r = ok<{ risk: { level: string; findings: { rule: string }[] }; display: { chain: string } }>(
+    await service.handle({ type: "prepare_revoke_evm", chain: "base", kind: "nft_all", contract: NFT, spender: "0x8888888888888888888888888888888888888888" }),
+  );
+  assert.deepEqual([r.display.chain, r.risk.level, r.risk.findings.map((f) => f.rule)], ["eip155:8453", "info", ["nft_approval_revoke"]]);
 });

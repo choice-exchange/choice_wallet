@@ -173,9 +173,10 @@ export type UiRequest =
   /** Proposals in voting and the newest finished ones, and this account's votes. */
   | { type: "governance" }
   | { type: "prepare_vote"; proposal: string; option: VoteOptionName }
-  | { type: "approvals" }
+  | { type: "approvals"; chain?: string }
   | { type: "prepare_revoke"; items: RevokeItem[] }
   | { type: "prepare_revoke_erc20"; token: string; spender: string }
+  | { type: "prepare_revoke_evm"; chain?: string; kind: EvmRevokeKind; contract: string; spender?: string; token?: string; token_id?: string }
   /** The rescue address: what's set, set or clear it, the rescue account's gas for this
    *  one, and the rescue itself. */
   | { type: "rescue" }
@@ -693,11 +694,26 @@ export type ApprovalsSummary = {
   /** What wasn't read (no reader yet, a source off or failing): named on the screen, which
    *  then never says nothing stands. */
   unchecked: string[];
+  /** The EVM chain checked, by key, when it isn't Injective's own EVM side (then only its EVM
+   *  permissions are listed). */
+  chain?: string;
+  /** The other EVM chains whose permissions can be checked (each has a history index). */
+  chains: { key: string; name: string }[];
+  /** ERC721 and ERC1155 operators: each may move every NFT the account holds there. */
+  nftOperators: { collection: string; operator: string }[];
+  /** ERC721 tokens approved for someone: each may move that one NFT. */
+  nftApprovals: { collection: string; tokenId: string; approved: string }[];
+  /** Permit2 allowances: what each spender may take through Permit2, and until when (unix s). */
+  permit2: { token: string; spender: string; amount: string; expiration: number }[];
   /** Blockscout didn't answer: ERC20 allowances may be missing. */
   evmIndexDown?: true;
   /** No EVM endpoint answered: ERC20 allowances couldn't be checked. */
   evmDown?: true;
 };
+
+/** An EVM permission to take back: an ERC20 allowance, an NFT operator, one NFT's approval,
+ *  or a Permit2 allowance. */
+export type EvmRevokeKind = "erc20" | "nft_all" | "nft_token" | "permit2";
 
 /** One Cosmos-side permission to take back. */
 export type RevokeItem =
@@ -973,6 +989,7 @@ export type Replies = {
   approvals: ApprovalsSummary;
   prepare_revoke: SendReview;
   prepare_revoke_erc20: SendReview;
+  prepare_revoke_evm: SendReview;
   inventory: InventoryView;
   prepare_subaccount_withdraw: SendReview;
   rescue: RescueSummary;

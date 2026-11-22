@@ -529,6 +529,17 @@ fn contract_call(
                     && args(data, &[abi::Ty::Word, abi::Ty::Word, abi::Ty::Bytes]).is_some()) =>
         {
             if let (Some(spender), Some(amount)) = (address_arg(data, 0), uint_arg(data, 1)) {
+                // approve(address(0), id) clears an ERC721 token's approval (no ERC20 spends for
+                // the zero address).
+                if sel == APPROVE && spender == EthAddress::from_bytes([0; 20]) {
+                    out.push(finding(
+                        "approval_clear",
+                        Level::Info,
+                        format!("Clears the approval on NFT #{amount} of this collection."),
+                        json!({ "collection": to, "token_id": amount.to_string() }),
+                    ));
+                    return;
+                }
                 let named = network
                     .and_then(|n| swap::known_name(&n.choice, &spender))
                     .or_else(|| chain.cctp.and_then(|(c, _)| bridge::known_name(c, &spender)));

@@ -298,7 +298,25 @@ pub(crate) enum OwnCall {
     /// anyone may submit (the review says when it pays someone else). `amount` is "0". Both
     /// are hex.
     BridgeReceive { message: String, attestation: String },
+    /// `approve(spender, 0)` on the ERC20 at `to`, on any EVM chain the vault signs for: takes
+    /// back an allowance. `amount` is "0".
+    Erc20Revoke { spender: String },
+    /// `setApprovalForAll(operator, false)` on the ERC721 or ERC1155 collection at `to`: takes
+    /// back an operator's access to every NFT there. `amount` is "0".
+    NftRevokeAll { operator: String },
+    /// `approve(address(0), token_id)` on the ERC721 collection at `to`: clears that one NFT's
+    /// approval. `amount` is "0".
+    NftRevoke { token_id: String },
+    /// `Permit2.approve(token, spender, 0, 0)` at Permit2 (`to`, its one address on every
+    /// chain): takes back a Permit2 allowance. `amount` is "0".
+    Permit2Revoke { token: String, spender: String },
 }
+
+/// Permit2: one address on every chain (a deterministic deployment).
+const PERMIT2: [u8; 20] = [
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x22, 0xd4, 0x73, 0x03, 0x0f, 0x11, 0x6d, 0xde, 0xe9, 0xf6, 0xb4, 0x3a, 0xc7, 0x8b,
+    0xa3,
+];
 
 fn own_call(
     entry: &chains::Entry,
@@ -432,6 +450,40 @@ fn own_call(
             if !m.permissionless() || m.paid().is_none() || m.amount.is_zero() {
                 return refuse("it isn't one this account can complete");
             }
+            Ok(Eip1559Tx::contract_call(chain_id, to, U256::ZERO, data))
+        }
+        OwnCall::Erc20Revoke { .. }
+        | OwnCall::NftRevokeAll { .. }
+        | OwnCall::NftRevoke { .. }
+        | OwnCall::Permit2Revoke { .. }
+            if !amount.is_zero() =>
+        {
+            Err(VaultError::bad(format!("a revoke sends no {coin}")))
+        }
+        OwnCall::Erc20Revoke { spender } => Ok(Eip1559Tx::erc20_revoke(chain_id, to, &parse(spender)?)),
+        OwnCall::NftRevokeAll { operator } => {
+            let mut data = vec![0xa2, 0x2c, 0xb4, 0x65]; // setApprovalForAll(address,bool)
+            data.extend_from_slice(&[0u8; 12]);
+            data.extend_from_slice(parse(operator)?.as_bytes());
+            data.extend_from_slice(&[0u8; 32]);
+            Ok(Eip1559Tx::contract_call(chain_id, to, U256::ZERO, data))
+        }
+        OwnCall::NftRevoke { token_id } => {
+            let id = U256::from_dec_str(token_id)?;
+            let zero = choice_wallet_core::EthAddress::from_bytes([0; 20]);
+            Ok(Eip1559Tx::contract_call(
+                chain_id,
+                to,
+                U256::ZERO,
+                choice_wallet_evm::erc20::approve_calldata(&zero, &id),
+            ))
+        }
+        OwnCall::Permit2Revoke { token, spender } => {
+            if to != choice_wallet_core::EthAddress::from_bytes(PERMIT2) {
+                return Err(VaultError::bad("a Permit2 revoke goes to Permit2"));
+            }
+            let data = choice::permit2_approve_calldata(&parse(token)?, &parse(spender)?, U256::ZERO, 0)
+                .ok_or_else(|| VaultError::bad("out of range for Permit2"))?;
             Ok(Eip1559Tx::contract_call(chain_id, to, U256::ZERO, data))
         }
         OwnCall::Permit2Approve {

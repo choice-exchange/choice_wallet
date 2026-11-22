@@ -100,6 +100,27 @@ export class EvmRpc {
     return results.map((r) => (typeof r === "string" && /^0x[0-9a-fA-F]{1,64}$/.test(r) ? BigInt(r) : null));
   }
 
+  /** Whether each operator may still move all of `owner`'s NFTs in its collection (null: the
+   *  collection didn't answer). */
+  async nftOperators(pairs: readonly { collection: string; operator: string }[], owner: string): Promise<(boolean | null)[]> {
+    const results = await this.batch(pairs.map((p) => ({ method: "eth_call", params: [{ to: p.collection, data: `0xe985e9c5${word(owner)}${word(p.operator)}` }, "latest"] })));
+    return results.map((r) => (typeof r === "string" && /^0x[0-9a-fA-F]{64}$/.test(r) ? BigInt(r) !== 0n : null));
+  }
+
+  /** Who each ERC721 token is approved for now: an address, "" for no one, or null when the
+   *  collection didn't answer (a token burned or sent away reverts). */
+  async nftApproved(items: readonly { collection: string; tokenId: string }[]): Promise<(string | null)[]> {
+    const results = await this.batch(items.map((t) => ({ method: "eth_call", params: [{ to: t.collection, data: `0x081812fc${BigInt(t.tokenId).toString(16).padStart(64, "0")}` }, "latest"] })));
+    return results.map((r) => (typeof r === "string" && /^0x0{64}$/.test(r) ? "" : typeof r === "string" && /^0x0{24}[0-9a-fA-F]{40}$/.test(r) ? `0x${r.slice(26).toLowerCase()}` : null));
+  }
+
+  /** What Permit2 lets each spender take of `owner`'s token, and when that ends (null: no
+   *  answer). */
+  async permit2Allowances(permit2: string, pairs: readonly { token: string; spender: string }[], owner: string): Promise<({ amount: bigint; expiration: number } | null)[]> {
+    const results = await this.batch(pairs.map((p) => ({ method: "eth_call", params: [{ to: permit2, data: `0x927da105${word(owner)}${word(p.token)}${word(p.spender)}` }, "latest"] })));
+    return results.map((r) => (typeof r === "string" && /^0x[0-9a-fA-F]{192}$/.test(r) ? { amount: BigInt(`0x${r.slice(2, 66)}`), expiration: Number(BigInt(`0x${r.slice(66, 130)}`)) } : null));
+  }
+
   /** What Permit2 lets `spender` take of `owner`'s `token`: the amount and when it ends
    *  (unix seconds). */
   async permit2Allowance(permit2: string, owner: string, token: string, spender: string): Promise<{ amount: bigint; expiration: number }> {

@@ -415,3 +415,66 @@ fn an_added_chain_is_known_by_its_id_alone() {
     on56["domain"]["chainId"] = 56.into();
     ok("decode", json!({ "request": typed(&on56) }));
 }
+
+#[test]
+fn own_revokes_build_on_any_evm_chain_and_read_as_revokes() {
+    let me = "0x9858EfFD232B4033E47d90003D41EC34EcaEda94";
+    let permit2 = "0x000000000022D473030F116dDEE9F6B43aC78BA3";
+    let token = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
+    let nft = "0x4444444444444444444444444444444444444444";
+    let spender = "0xbBbBBBBbbBBBbbbBbbBbbbbBBbBbbbbBbBbbBBbB";
+    let cases = [
+        (
+            token,
+            json!({ "type": "erc20_revoke", "spender": spender }),
+            "allowance_revoke",
+        ),
+        (
+            nft,
+            json!({ "type": "nft_revoke_all", "operator": spender }),
+            "nft_approval_revoke",
+        ),
+        (nft, json!({ "type": "nft_revoke", "token_id": "7" }), "approval_clear"),
+        (
+            permit2,
+            json!({ "type": "permit2_revoke", "token": token, "spender": spender }),
+            "allowance_revoke",
+        ),
+    ];
+    for chain in ["eip155:1776", "eip155:8453"] {
+        for (to, call, rule) in &cases {
+            let r = ok("build_evm", evm_params(chain, me, to, "0", call.clone()))["request"].clone();
+            let d = ok("decode", json!({ "request": r }));
+            assert_eq!(d["risk"]["level"], "info", "{chain} {call}");
+            assert_eq!(rules_of(&d), [*rule], "{chain} {call}");
+            assert!(approve_and_sign(&r, account(0))["raw"].is_string());
+        }
+    }
+    // A revoke sends nothing, and a Permit2 revoke goes only to Permit2.
+    assert!(
+        call(
+            "build_evm",
+            evm_params(
+                "eip155:8453",
+                me,
+                nft,
+                "1",
+                json!({ "type": "nft_revoke", "token_id": "7" })
+            )
+        )
+        .is_err()
+    );
+    assert!(
+        call(
+            "build_evm",
+            evm_params(
+                "eip155:8453",
+                me,
+                nft,
+                "0",
+                json!({ "type": "permit2_revoke", "token": token, "spender": spender })
+            )
+        )
+        .is_err()
+    );
+}

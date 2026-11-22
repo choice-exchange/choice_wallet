@@ -219,7 +219,7 @@ export function createService(d: Deps) {
   const gov = createGov({ sender, local: d.local, owned, turn: records });
   const swaps = createSwaps(sender, d.session, d.fetch, async (net) => (await tokenFilter(net)).shown);
   const bridge = createBridge(sender, d.session, d.local, d.fetch, Date.now, solana, { turn: records, owned });
-  const approvals = createApprovals(sender);
+  const approvals = createApprovals(sender, { historyEndpoints: (n, key) => evmChains.historyEndpoints(n, key), fetch: d.fetch });
 
   const wallets = createWallets({
     vault: d.vault,
@@ -717,6 +717,7 @@ export function createService(d: Deps) {
       case "prepare_bridge_reclaim":
       case "prepare_revoke":
       case "prepare_revoke_erc20":
+      case "prepare_revoke_evm":
       case "inventory":
       case "prepare_subaccount_withdraw":
       case "rescue":
@@ -731,7 +732,7 @@ export function createService(d: Deps) {
       case "tx_status": {
         const a = await active((r as { poll?: unknown }).poll === true);
         if ("ok" in a) return a;
-        if ((r.type === "prepare_send" || r.type === "prepare_convert" || r.type === "prepare_stake" || r.type === "prepare_vote" || r.type === "prepare_revoke" || r.type === "prepare_revoke_erc20" || r.type === "prepare_swap" || r.type === "prepare_bridge" || r.type === "prepare_bridge_receive" || r.type === "prepare_bridge_reclaim" || r.type === "prepare_nft_send" || r.type === "prepare_rescue" || r.type === "prepare_rescue_grant" || r.type === "prepare_subaccount_withdraw") && isWatch(a.account)) {
+        if ((r.type === "prepare_send" || r.type === "prepare_convert" || r.type === "prepare_stake" || r.type === "prepare_vote" || r.type === "prepare_revoke" || r.type === "prepare_revoke_erc20" || r.type === "prepare_revoke_evm" || r.type === "prepare_swap" || r.type === "prepare_bridge" || r.type === "prepare_bridge_receive" || r.type === "prepare_bridge_reclaim" || r.type === "prepare_nft_send" || r.type === "prepare_rescue" || r.type === "prepare_rescue_grant" || r.type === "prepare_subaccount_withdraw") && isWatch(a.account)) {
           return err("watch_only", "This account is watch-only. Switch to one that can sign.");
         }
         if (r.type === "snapshot") return { ok: true, result: await snapshot(a.net, a.account) };
@@ -777,7 +778,7 @@ export function createService(d: Deps) {
         if (r.type === "prepare_stake") return staking.prepare(a.net, a.account, r);
         if (r.type === "governance") return gov.summary(a.net, a.account);
         if (r.type === "prepare_vote") return gov.prepareVote(a.net, a.account, r);
-        if (r.type === "approvals") return approvals.summary(a.net, a.account);
+        if (r.type === "approvals") return approvals.summary(a.net, a.account, r.chain);
         if (r.type === "swap_tokens") return swaps.tokens(a.net, a.account);
         if (r.type === "swap_quote") return swaps.quote(a.net, a.account, r);
         if (r.type === "prepare_swap") return swaps.prepare(a.net, a.account, r.quote);
@@ -791,6 +792,7 @@ export function createService(d: Deps) {
         if (r.type === "prepare_bridge_reclaim") return bridge.prepareReclaim(a.net, a.account, r.hash);
         if (r.type === "prepare_revoke") return approvals.prepare(a.net, a.account, r.items);
         if (r.type === "prepare_revoke_erc20") return approvals.prepareErc20(a.net, a.account, r.token, r.spender);
+        if (r.type === "prepare_revoke_evm") return approvals.prepareEvmRevoke(a.net, a.account, r);
         if (r.type === "inventory") return inventory.summary(a.net, a.account);
         if (r.type === "prepare_subaccount_withdraw") return inventory.prepareWithdraw(a.net, a.account, r.nonce);
         if (r.type === "rescue") return rescue.summary(a.net, a.account);

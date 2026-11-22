@@ -195,6 +195,7 @@ button.pill:hover { color: var(--text); border-color: #2a2b33; }
 .pill-gold { color: var(--gold); background: rgba(253, 199, 12, 0.1); border-color: rgba(253, 199, 12, 0.3); }
 .pill-tabs { display: flex; gap: 6px; margin: 16px 0 2px; overflow-x: auto; scrollbar-width: none; }
 .pill-tabs::-webkit-scrollbar { display: none; }
+.pill-tabs.chain-tabs .pill { flex: 0 0 auto; padding: 0 12px; white-space: nowrap; }
 .pill-tabs .pill { height: 32px; padding: 0 6px; font-size: 13px; flex: 1 1 0; justify-content: center; min-width: 0; }
 .vote-choice { font-size: 28px; margin-top: 4px; }
 .vote-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }

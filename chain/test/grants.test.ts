@@ -136,7 +136,8 @@ test("Blockscout's Approval logs: ERC20 shapes only, each (token, spender) once"
     );
   };
   const found = await new EvmIndex(["https://blockscout.example"], fetch, 1000).approvals(OWNER);
-  assert.deepEqual(found, { pairs: [{ token: T1, spender: S }], complete: true });
+  // The ERC721 log (4 topics) is an approval of token #1.
+  assert.deepEqual(found, { pairs: [{ token: T1, spender: S }], nfts: [{ collection: T1, tokenId: "1" }], complete: true });
   const q = new URL(asked).searchParams;
   assert.equal(q.get("action"), "getLogs");
   assert.equal(q.get("topic1"), pad(OWNER));
@@ -151,4 +152,44 @@ test("Blockscout's Approval logs: ERC20 shapes only, each (token, spender) once"
   const capped = await new EvmIndex(["https://blockscout.example"], flood, 1000).approvals(OWNER);
   assert.equal(capped.complete, false);
   assert.equal(pages, 5);
+});
+
+test("operators and Permit2 allowances are found from their own logs", async () => {
+  const OWNER = "0x1111111111111111111111111111111111111111";
+  const pad = (a: string) => `0x${a.slice(2).toLowerCase().padStart(64, "0")}`;
+  const FOR_ALL = "0x17307eab39ab6107e8899845ad3d59bd9653f200f220920489ca2b5937696c31";
+  const P2_APPROVAL = "0xda9fa7c1b00402c17d0161b249b1ab8bbec047c5a52207b9c112deffd817036b";
+  const P2_PERMIT = "0xc6a377bfc4eb120024a8ac08eef205be16b817020812c73223e81d1bdb9708ec";
+  const PERMIT2 = "0x000000000022d473030f116ddee9f6b43ac78ba3";
+  const NFT = "0x4444444444444444444444444444444444444444";
+  const OP = "0x5555555555555555555555555555555555555555";
+  const TOKEN = "0x6666666666666666666666666666666666666666";
+  const asked: URLSearchParams[] = [];
+  const fetch: Fetch = async (input) => {
+    const q = new URL(String(input)).searchParams;
+    asked.push(q);
+    const topic0 = q.get("topic0");
+    const result =
+      topic0 === FOR_ALL
+        ? [{ address: NFT, topics: [FOR_ALL, pad(OWNER), pad(OP)], data: pad("0x01") }, { address: NFT, topics: [FOR_ALL, pad(OWNER), pad(OP)], data: pad("0x00") }]
+        : topic0 === P2_APPROVAL
+          ? [{ address: PERMIT2, topics: [P2_APPROVAL, pad(OWNER), pad(TOKEN), pad(OP)], data: "0x" }, { address: NFT, topics: [P2_APPROVAL, pad(OWNER), pad(TOKEN), pad(NFT)], data: "0x" }]
+          : topic0 === P2_PERMIT
+            ? [{ address: PERMIT2, topics: [P2_PERMIT, pad(OWNER), pad(TOKEN), pad(NFT)], data: "0x" }]
+            : [];
+    // An Etherscan-style index says "No records found" for none.
+    return new Response(JSON.stringify(result.length ? { status: "1", message: "OK", result } : { status: "0", message: "No records found", result: "No records found" }), { status: 200 });
+  };
+  const index = new EvmIndex(["https://blockscout.example"], fetch, 1000);
+  assert.deepEqual(await index.operators(OWNER), { pairs: [{ collection: NFT, operator: OP }], complete: true });
+  // Only Permit2's own logs count: the look-alike from another contract is dropped.
+  assert.deepEqual(await index.permit2Approvals(OWNER, PERMIT2), {
+    pairs: [
+      { token: TOKEN, spender: OP },
+      { token: TOKEN, spender: NFT },
+    ],
+    complete: true,
+  });
+  assert.ok(asked.some((q) => q.get("address") === PERMIT2));
+  assert.deepEqual(await index.approvals(OWNER), { pairs: [], nfts: [], complete: true });
 });
