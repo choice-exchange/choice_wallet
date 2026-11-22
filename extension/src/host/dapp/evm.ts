@@ -19,6 +19,17 @@ const NATIVE_MOVES = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 const MAX_SIMULATED_LOGS = 512;
 type EvmMove = { token: string; from: string; to: string; amount: string; nft: boolean };
 
+/** An https URL that parses, with a host: a site's "https://" alone would leave the window
+ *  that names its endpoints unable to draw. */
+function isHttpsUrl(u: string): boolean {
+  try {
+    const url = new URL(u);
+    return url.protocol === "https:" && url.hostname !== "";
+  } catch {
+    return false;
+  }
+}
+
 /** Read-only JSON-RPC methods passed to the user's own EVM endpoints. */
 const READS = new Set([
   "eth_blockNumber",
@@ -149,14 +160,14 @@ export function createEvmSite(core: SiteCore) {
     const listed = await h.chains.listed(chainId);
     if (listed && listed.decimals !== 18) return no(INVALID_PARAMS, "Choice Wallet adds chains whose coin has 18 decimals.");
     const net = await h.network();
-    const siteExplorer = strings(p["blockExplorerUrls"]).find((u) => /^https:\/\//.test(u));
+    const siteExplorer = strings(p["blockExplorerUrls"]).find(isHttpsUrl);
     const chain: NewChain = listed
       ? { chainId, name: listed.name, symbol: listed.symbol, rpc: listed.rpc.slice(0, 4), ...(listed.explorer ? { explorer: listed.explorer } : {}), testnet: listed.testnet }
       : {
           chainId,
           name: siteName,
           symbol: typeof coin["symbol"] === "string" ? coin["symbol"] : "",
-          rpc: strings(p["rpcUrls"]).filter((u) => /^https:\/\//.test(u)).slice(0, 4),
+          rpc: strings(p["rpcUrls"]).filter(isHttpsUrl).slice(0, 4),
           ...(siteExplorer ? { explorer: siteExplorer } : {}),
           testnet: net === "testnet",
         };

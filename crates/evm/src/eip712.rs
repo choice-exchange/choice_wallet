@@ -99,6 +99,13 @@ impl TypedData {
             return Err(malformed("missing domain"));
         };
         let message = obj.remove("message").ok_or_else(|| malformed("missing message"))?;
+        // With primaryType EIP712Domain the digest covers the domain only, so a message beside
+        // it would be shown but never signed.
+        if primary_type == "EIP712Domain" && !matches!(&message, Value::Object(m) if m.is_empty()) {
+            return Err(malformed(
+                "an EIP712Domain request signs no message; its message must be empty",
+            ));
+        }
 
         // Bounded here, whatever the host lets through: every type's encodeType walks its
         // dependencies, so many types over many fields would hold the worker for seconds.
@@ -662,5 +669,17 @@ mod tests {
         assert!(parse_int(&"128".into(), 8).is_err());
         assert!(parse_int(&"--1".into(), 8).is_err());
         assert!(int_bits("").is_err() && int_bits("7").is_err() && int_bits("264").is_err());
+    }
+    #[test]
+    fn a_domain_only_request_carries_no_message() {
+        let with = |message: &str| {
+            format!(
+                r#"{{"types":{{"EIP712Domain":[{{"name":"name","type":"string"}}]}},"primaryType":"EIP712Domain","domain":{{"name":"Site"}},"message":{message}}}"#
+            )
+        };
+        // The digest covers the domain only: a message there would be shown, not signed.
+        assert!(TypedData::parse(&with(r#"{"to":"0xbb","amount":"1"}"#)).is_err());
+        assert!(TypedData::parse(&with("null")).is_err());
+        assert!(TypedData::parse(&with("{}")).is_ok());
     }
 }

@@ -444,7 +444,14 @@ export function SignBody({ review, network, typed, onTyped, account }: { review:
 
 /** A site's chain to add: as it would be added, and what chainlist.org's list says of it. */
 function AddChainBody({ chain, listed, siteName, from }: { chain: NewChain; listed: ListedChain | undefined; siteName: string | undefined; from: string }) {
-  const host = (u: string | undefined) => (u ? new URL(u).host : "None");
+  const host = (u: string | undefined) => {
+    if (!u) return "None";
+    try {
+      return new URL(u).host || u;
+    } catch {
+      return u;
+    }
+  };
   return (
     <>
       <div className="surface-hero">

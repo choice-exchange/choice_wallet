@@ -122,6 +122,8 @@ test("a site adds a chain: reviewed with the list's details, kept, and the site 
   ok(await w.service.handle({ type: "dapp_answer", id: (await window()).id, approve: true }));
   await connect;
   assert.equal((await site("wallet_addEthereumChain", [{ ...params, nativeCurrency: { symbol: "BNB", decimals: 9 } }])).error?.code, -32602);
+  // An endpoint that only looks like https (no host) isn't one: the window would fail to draw it.
+  assert.equal((await site("wallet_addEthereumChain", [{ ...params, chainId: "0x7a69a", chainName: "Unlisted", rpcUrls: ["https://", "https://:443", "https:// x"] }])).error?.code, -32602);
 
   // The list has chain 56: its name and endpoints, the site's name beside them.
   const asked = site("wallet_addEthereumChain", [params]);

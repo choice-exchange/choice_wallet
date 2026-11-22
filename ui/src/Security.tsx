@@ -2,7 +2,7 @@
 // key) or an account's private key, set a new password, take one wallet off this device,
 // or everything. What's shown lives only in this screen's state.
 
-import { useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 
 import { useBackend } from "./backend";
 import { CheckIcon, CopyIcon } from "./icons";
@@ -71,11 +71,24 @@ function PasswordStep({
 }
 
 /** A wallet's recovery phrase (or its key), or the account in use's private key. */
+/** How long a copied private key stays on the clipboard. */
+const CLEAR_MS = 30_000;
+
 export function RevealView({ what, wallet, status, onBack }: { what: "phrase" | "key"; wallet?: WalletInfo | undefined; status: Status; onBack: () => void }) {
   const { run, error, busy } = useRequest();
   const backend = useBackend();
   const [shown, setShown] = useState<{ phrase?: string; private_key?: string } | null>(null);
   const [copied, setCopied] = useState(false);
+  // A copied key is taken off the clipboard after a while, or when this screen goes, while the
+  // wallet page is still open (a popup that closes can't do it).
+  const clearing = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clear = () => {
+    if (clearing.current === null) return;
+    clearTimeout(clearing.current);
+    clearing.current = null;
+    void backend.copy("").catch(() => {});
+  };
+  useEffect(() => clear, []);
   const account = status.accounts[status.active];
   const phrase = wallet?.type === "mnemonic";
   const title = what === "phrase" ? (phrase ? "Recovery phrase" : "Private key") : "Account key";
@@ -113,12 +126,16 @@ export function RevealView({ what, wallet, status, onBack }: { what: "phrase" | 
             onClick={() =>
               void backend.copy(key).then(() => {
                 setCopied(true);
-                setTimeout(() => setCopied(false), 1500);
+                if (clearing.current !== null) clearTimeout(clearing.current);
+                clearing.current = setTimeout(() => {
+                  clear();
+                  setCopied(false);
+                }, CLEAR_MS);
               })
             }
           >
             {copied ? <CheckIcon /> : <CopyIcon />}
-            {copied ? "Copied" : "Copy key"}
+            {copied ? "Copied. Cleared in 30 s" : "Copy key"}
           </button>
         ) : (
           <button className="btn" onClick={onBack}>

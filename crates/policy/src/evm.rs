@@ -274,6 +274,11 @@ fn address_arg(data: &[u8], i: usize) -> Option<EthAddress> {
         .then(|| EthAddress::from_bytes(w[12..].try_into().expect("20 bytes")))
 }
 
+/// An address argument as a precompile unpacks it: the word's low 20 bytes.
+fn low_address_arg(data: &[u8], i: usize) -> Option<EthAddress> {
+    Some(EthAddress::from_bytes(word(data, i)?[12..].try_into().ok()?))
+}
+
 fn uint_arg(data: &[u8], i: usize) -> Option<U256> {
     Some(U256::from_be_bytes(word(data, i)?.try_into().ok()?))
 }
@@ -932,12 +937,13 @@ fn system_call(req: &TxRequest, n: u8, selector: Option<[u8; 4]>, injective: boo
         };
     }
     // Exchange methods name the account they act for first. Anything but the sender means
-    // using a grant that account gave.
+    // using a grant that account gave. The precompile takes the word's low 20 bytes whatever
+    // the high ones hold (go-ethereum's BytesToAddress), so that is what is read here.
     if n == EXCHANGE
         && method.selector != 0x3f79e2b1u32.to_be_bytes()
-        && address_arg(data, 0).is_some_and(|a| a != req.from)
+        && low_address_arg(data, 0).is_some_and(|a| a != req.from)
     {
-        let acting_for = address_arg(data, 0).expect("checked").to_checksum_hex();
+        let acting_for = low_address_arg(data, 0).expect("checked").to_checksum_hex();
         return finding(
             "exchange_for_other",
             Level::Amber,
@@ -1509,6 +1515,15 @@ mod tests {
         assert_eq!((a.level, a.findings[0].rule), (Level::Info, "precompile_call"));
         let a = grade(&req(precompile(EXCHANGE), call(deposit, &[addr_word([0x44; 20])])));
         assert_eq!(a.findings[0].rule, "exchange_for_other");
+        // Dirty high bytes: the precompile still acts for the low 20 bytes' account.
+        let mut dirty = addr_word([0x44; 20]);
+        dirty[0] = 0xff;
+        let a = grade(&req(precompile(EXCHANGE), call(deposit, &[dirty])));
+        assert_eq!(a.findings[0].rule, "exchange_for_other");
+        let mut mine = addr_word(FROM);
+        mine[0] = 0xff;
+        let a = grade(&req(precompile(EXCHANGE), call(deposit, &[mine])));
+        assert_eq!(a.findings[0].rule, "precompile_call");
 
         // Unknown methods on a precompile are red; staking is readable.
         assert_eq!(grade(&req(precompile(EXCHANGE), vec![1, 2, 3, 4])).level, Level::Red);

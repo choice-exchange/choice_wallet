@@ -643,10 +643,17 @@ pub fn read_hook(h: &[u8]) -> Hook {
         };
     }
     // abi.encode(bytes4, address, uint256): the magic left-aligned, the address right-aligned.
-    if h.len() == 96 && h[..4] == GAS_DROP_MAGIC && h[4..44].iter().all(|&b| b == 0) {
+    // Read as Choice's BridgeReceiver._parseHook reads it, which decides who is paid: at least
+    // 96 bytes, the magic, a non-zero address word with clean high bytes, the fee word; bytes
+    // 4..32 and anything after 96 are ignored there, so they are here too.
+    if h.len() >= 96
+        && h[..4] == GAS_DROP_MAGIC
+        && h[32..44].iter().all(|&b| b == 0)
+        && h[44..64].iter().any(|&b| b != 0)
+    {
         return Hook::GasDrop {
             recipient: EthAddress::from_bytes(h[44..64].try_into().expect("20 bytes")),
-            max_drop_fee: U256::from_be_bytes(h[64..].try_into().expect("32 bytes")),
+            max_drop_fee: U256::from_be_bytes(h[64..96].try_into().expect("32 bytes")),
         };
     }
     Hook::Other(h.to_vec())
@@ -1303,10 +1310,11 @@ mod tests {
         let bytes = hook_bytes(&hook).unwrap();
         assert_eq!(bytes.len(), 96);
         assert_eq!(read_hook(&bytes), hook);
-        // Anything in the padding makes it someone else's hook.
+        // BridgeReceiver ignores bytes 4..32, so the same payee is read; a dirty address word
+        // is refused there, so it is someone else's hook here.
         let mut odd = bytes.clone();
         odd[10] = 1;
-        assert!(matches!(read_hook(&odd), Hook::Other(_)));
+        assert_eq!(read_hook(&odd), hook);
         let mut odd = bytes;
         odd[33] = 1;
         assert!(matches!(read_hook(&odd), Hook::Other(_)));
@@ -1325,5 +1333,38 @@ mod tests {
         // Solana's USDC mint.
         let usdc = h("c6fa7af3bedbad3a3d65f36aabc97431b1bbe4c2d2f6e0e47ca60203452f5d61");
         assert_eq!(base58(&usdc), "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
+    }
+    #[test]
+    fn gas_drop_hooks_are_read_as_the_bridge_receiver_reads_them() {
+        let mut h = vec![0u8; 96];
+        h[..4].copy_from_slice(&GAS_DROP_MAGIC);
+        h[44..64].copy_from_slice(&[0xbb; 20]);
+        h[95] = 7;
+        let payee = EthAddress::from_bytes([0xbb; 20]);
+        let want = Hook::GasDrop {
+            recipient: payee,
+            max_drop_fee: U256::from_be_bytes({
+                let mut w = [0u8; 32];
+                w[31] = 7;
+                w
+            }),
+        };
+        assert_eq!(read_hook(&h), want);
+        // BridgeReceiver ignores bytes 4..32 and anything after 96: it still pays 0xbb..bb.
+        let mut dirty = h.clone();
+        dirty[10] = 0xff;
+        assert_eq!(read_hook(&dirty), want);
+        let mut long = h.clone();
+        long.extend_from_slice(&[0xee; 40]);
+        assert_eq!(read_hook(&long), want);
+        // It refuses dirty high bytes in the address word and a zero address (the coins are
+        // escrowed for the sender), so those stay unread.
+        let mut high = h.clone();
+        high[40] = 1;
+        assert!(matches!(read_hook(&high), Hook::Other(_)));
+        let mut zero = h.clone();
+        zero[44..64].fill(0);
+        assert!(matches!(read_hook(&zero), Hook::Other(_)));
+        assert!(matches!(read_hook(&h[..95]), Hook::Other(_)));
     }
 }
