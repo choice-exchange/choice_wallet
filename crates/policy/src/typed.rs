@@ -11,6 +11,7 @@ use crate::amounts::{UNLIMITED, parse};
 use crate::cosmos::{CosmosFee, cosmos};
 use crate::text::{clip, short};
 use crate::{Assessment, Context, Finding, Level, finding, site};
+use choice_wallet_evm::U256;
 
 const PERMIT2_TYPES: &[&str] = &[
     "PermitSingle",
@@ -33,7 +34,12 @@ pub fn typed_data(td: &TypedData, injective_tx: Option<&Web3Tx>, signer: &EthAdd
         return cosmos(&tx.messages, &signer.to_inj(), &tx.memo, fee, ctx);
     }
     let mut out = site(ctx);
-    out.push(rule(td));
+    let app = td.domain().get("name").and_then(Value::as_str).unwrap_or("");
+    if app == "Seaport" && td.primary_type() == "OrderComponents" {
+        out.extend(seaport_order(td.message(), signer, ctx));
+    } else {
+        out.push(rule(td));
+    }
     // A domain without a chainId binds the signature to no chain: it is good on every chain
     // where the verifying contract (or a copy at the same address) accepts it.
     if td.chain_id().is_none() {
@@ -45,6 +51,154 @@ pub fn typed_data(td: &TypedData, injective_tx: Option<&Web3Tx>, signer: &EthAdd
         ));
     }
     Assessment::from(out)
+}
+
+/// A Seaport order (OpenSea's protocol, which Talis runs on Injective EVM), read item by item:
+/// what the signer gives (`offer`), what comes back to them, and what goes to others
+/// (`consideration`). Signing one lets anyone fulfil it until it ends, so it is never below
+/// Amber; it is Red when the signer's items leave and nothing comes back to them (how a fake
+/// "listing" drains a wallet), or when it gives away any NFT of a collection (criteria).
+fn seaport_order(msg: &Value, signer: &EthAddress, ctx: &Context) -> Vec<Finding> {
+    let unreadable = || {
+        vec![finding(
+            "marketplace_listing",
+            Level::Red,
+            "Signs a Seaport order the wallet can't read. Check every item and price.".into(),
+            json!({}),
+        )]
+    };
+    let (Some(offer), Some(consideration)) = (
+        msg.get("offer").and_then(Value::as_array),
+        msg.get("consideration").and_then(Value::as_array),
+    ) else {
+        return unreadable();
+    };
+    let me = signer.to_checksum_hex().to_lowercase();
+    let coin = ctx.symbols.get("native").map_or("coin", String::as_str);
+    let Some(gives) = offer
+        .iter()
+        .map(|i| SeaportItem::read(i, false))
+        .collect::<Option<Vec<_>>>()
+    else {
+        return unreadable();
+    };
+    let Some(wants) = consideration
+        .iter()
+        .map(|i| SeaportItem::read(i, true))
+        .collect::<Option<Vec<_>>>()
+    else {
+        return unreadable();
+    };
+    let mut out = Vec::new();
+    if text(msg, "offerer").is_some_and(|o| o.to_lowercase() != me) {
+        out.push(finding(
+            "seaport_other_offerer",
+            Level::Amber,
+            format!(
+                "The order is for {}, not this account.",
+                short(text(msg, "offerer").unwrap_or(""))
+            ),
+            json!({ "offerer": msg.get("offerer") }),
+        ));
+    }
+    let back: Vec<&SeaportItem> = wants
+        .iter()
+        .filter(|w| w.recipient.as_deref() == Some(me.as_str()))
+        .collect();
+    let others: Vec<&SeaportItem> = wants
+        .iter()
+        .filter(|w| w.recipient.as_deref() != Some(me.as_str()))
+        .collect();
+    let list = |xs: &[&SeaportItem]| xs.iter().map(|x| x.describe(coin)).collect::<Vec<_>>().join(", ");
+    let give_text = list(&gives.iter().collect::<Vec<_>>());
+    let params = json!({
+        "gives": gives.iter().map(|g| g.describe(coin)).collect::<Vec<_>>(),
+        "you_get": back.iter().map(|g| g.describe(coin)).collect::<Vec<_>>(),
+        "others_get": others.iter().map(|g| json!({ "item": g.describe(coin), "to": g.recipient })).collect::<Vec<_>>(),
+    });
+    if let Some(c) = gives.iter().find(|g| g.criteria) {
+        out.push(finding(
+            "seaport_criteria",
+            Level::Red,
+            format!(
+                "Gives any NFT of collection {} the buyer picks, not one named NFT.",
+                short(&c.token)
+            ),
+            params.clone(),
+        ));
+    }
+    if !gives.is_empty() && back.is_empty() {
+        out.push(finding(
+            "seaport_nothing_back",
+            Level::Red,
+            format!("Gives {give_text}, and nothing comes back to you."),
+            params,
+        ));
+        return out;
+    }
+    let fees = if others.is_empty() {
+        String::new()
+    } else {
+        format!(" Others get {}.", list(&others))
+    };
+    out.push(finding(
+        "marketplace_order",
+        Level::Amber,
+        format!(
+            "Offers {give_text} for {} to you.{fees} Anyone can take it until it ends.",
+            list(&back)
+        ),
+        params,
+    ));
+    out
+}
+
+/// One Seaport offer or consideration item.
+struct SeaportItem {
+    /// 0 coin, 1 ERC20, 2 ERC721, 3 ERC1155; 4 and 5 are those NFTs by criteria (any of a set).
+    kind: u8,
+    token: String,
+    id: U256,
+    /// The larger of the start and end amounts for what is given, the smaller for what is
+    /// received (a Dutch auction moves between them).
+    amount: U256,
+    recipient: Option<String>,
+    criteria: bool,
+}
+
+impl SeaportItem {
+    fn read(v: &Value, consideration: bool) -> Option<Self> {
+        let kind = u8::try_from(parse(v.get("itemType")?)?.to_u64()?)
+            .ok()
+            .filter(|k| *k <= 5)?;
+        let token = text(v, "token")?.to_lowercase();
+        let id = parse(v.get("identifierOrCriteria")?)?;
+        let (start, end) = (parse(v.get("startAmount")?)?, parse(v.get("endAmount")?)?);
+        let amount = if consideration { start.min(end) } else { start.max(end) };
+        let recipient = if consideration {
+            Some(text(v, "recipient")?.to_lowercase())
+        } else {
+            None
+        };
+        Some(Self {
+            kind,
+            token,
+            id,
+            amount,
+            recipient,
+            criteria: kind >= 4,
+        })
+    }
+
+    fn describe(&self, coin: &str) -> String {
+        match self.kind {
+            0 => format!("{} {coin}", crate::evm::coin_units(&self.amount)),
+            1 => format!("{} base units of token {}", self.amount, short(&self.token)),
+            2 => format!("NFT #{} of {}", self.id, short(&self.token)),
+            3 => format!("{} of NFT #{} of {}", self.amount, self.id, short(&self.token)),
+            _ => format!("any NFT of {}", short(&self.token)),
+        }
+    }
 }
 
 fn text<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
@@ -317,5 +471,85 @@ mod tests {
                 .iter()
                 .any(|f| f.message == "Signs a structured message for Some Dapp.")
         );
+    }
+
+    /// Seaport (Talis on Injective EVM): a listing is read item by item; giving items away
+    /// with nothing back, or any NFT of a collection, is red.
+    #[test]
+    fn seaport_orders_are_read() {
+        let me = "0x1111111111111111111111111111111111111111";
+        let nft = "0x4444444444444444444444444444444444444444";
+        let fee = "0x5555555555555555555555555555555555555555";
+        let types = json!({
+            "OrderComponents": [
+                { "name": "offerer", "type": "address" }, { "name": "zone", "type": "address" },
+                { "name": "offer", "type": "OfferItem[]" }, { "name": "consideration", "type": "ConsiderationItem[]" },
+                { "name": "orderType", "type": "uint8" }, { "name": "startTime", "type": "uint256" }, { "name": "endTime", "type": "uint256" },
+                { "name": "zoneHash", "type": "bytes32" }, { "name": "salt", "type": "uint256" }, { "name": "conduitKey", "type": "bytes32" },
+                { "name": "counter", "type": "uint256" }
+            ],
+            "OfferItem": [
+                { "name": "itemType", "type": "uint8" }, { "name": "token", "type": "address" }, { "name": "identifierOrCriteria", "type": "uint256" },
+                { "name": "startAmount", "type": "uint256" }, { "name": "endAmount", "type": "uint256" }
+            ],
+            "ConsiderationItem": [
+                { "name": "itemType", "type": "uint8" }, { "name": "token", "type": "address" }, { "name": "identifierOrCriteria", "type": "uint256" },
+                { "name": "startAmount", "type": "uint256" }, { "name": "endAmount", "type": "uint256" }, { "name": "recipient", "type": "address" }
+            ]
+        });
+        let zero = format!("0x{}", "00".repeat(20));
+        let word = format!("0x{}", "00".repeat(32));
+        let order = |offer: Value, consideration: Value| {
+            json!({ "offerer": me, "zone": zero, "offer": offer, "consideration": consideration, "orderType": 2, "startTime": "0", "endTime": "9999999999",
+                    "zoneHash": word, "salt": "1", "conduitKey": word, "counter": "0" })
+        };
+        let nft_item = |kind: u8, id: &str| json!({ "itemType": kind, "token": nft, "identifierOrCriteria": id, "startAmount": "1", "endAmount": "1" });
+        let pay = |amount: &str, to: &str| json!({ "itemType": 0, "token": zero, "identifierOrCriteria": "0", "startAmount": amount, "endAmount": amount, "recipient": to });
+        let domain = json!({ "name": "Seaport", "verifyingContract": "0x0000000000000068F116a894984e2DB1123eB395" });
+        let signer = EthAddress::parse_hex(me).unwrap();
+        let ctx = Context {
+            symbols: [("native".to_owned(), "INJ".to_owned())].into(),
+            ..Context::default()
+        };
+        let grade = |o: Value| {
+            typed_data(
+                &td(domain.clone(), "OrderComponents", types.clone(), o),
+                None,
+                &signer,
+                &ctx,
+            )
+        };
+        // A listing: NFT #7 for 10 INJ, 9.7 to the seller and 0.3 in fees.
+        let a = grade(order(
+            json!([nft_item(2, "7")]),
+            json!([pay("9700000000000000000", me), pay("300000000000000000", fee)]),
+        ));
+        assert_eq!(a.level, Level::Amber);
+        let f = a.findings.iter().find(|f| f.rule == "marketplace_order").expect("read");
+        assert!(
+            f.message.contains("NFT #7") && f.message.contains("9.7 INJ") && f.message.contains("0.3 INJ"),
+            "{}",
+            f.message
+        );
+        // The drainer's "listing": the NFT goes, everything is paid to someone else.
+        let a = grade(order(
+            json!([nft_item(2, "7")]),
+            json!([pay("10000000000000000000", fee)]),
+        ));
+        assert_eq!(a.level, Level::Red);
+        assert!(a.findings.iter().any(|f| f.rule == "seaport_nothing_back"));
+        // Any NFT of the collection, by criteria.
+        let a = grade(order(json!([nft_item(4, "0")]), json!([pay("1", me)])));
+        assert!(
+            a.findings
+                .iter()
+                .any(|f| f.rule == "seaport_criteria" && f.level == Level::Red)
+        );
+        // An item the wallet can't read.
+        let a = grade(order(
+            json!([{ "itemType": 9, "token": nft, "identifierOrCriteria": "1", "startAmount": "1", "endAmount": "1" }]),
+            json!([]),
+        ));
+        assert_eq!(a.level, Level::Red);
     }
 }

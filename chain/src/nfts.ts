@@ -15,10 +15,11 @@ import type { IndexedTx, Lcd } from "./lcd.ts";
 import { ChainError, Down, isObject, Unreachable } from "./pool.ts";
 import { cleanText } from "./tokens.ts";
 
-export type NftStandard = "cw721" | "erc721";
-export type Nft = { tokenId: string; name: string; uri: string | null };
+export type NftStandard = "cw721" | "erc721" | "erc1155";
+/** `amount`: how many of it are held (ERC1155 only). */
+export type Nft = { tokenId: string; name: string; uri: string | null; amount?: string };
 export type NftCollection = {
-  /** `inj1…` (CW721) or checksumless lowercase `0x…` (ERC721). */
+  /** `inj1…` (CW721) or checksumless lowercase `0x…` (ERC721, ERC1155). */
   address: string;
   standard: NftStandard;
   name: string;
@@ -179,6 +180,42 @@ export async function erc721Collections(rpc: EvmRpc, index: EvmIndex | null, own
       symbol: abiText(symbol, 12),
       items: held.map((tokenId, i) => ({ tokenId, name: "", uri: i < uris.length ? safeUri(abiText(uris[i], 2048)) : null })),
       more: count > BigInt(held.length) && count > BigInt(MAX_PER_COLLECTION),
+    });
+  }
+  return out;
+}
+
+/** The ERC1155 tokens `owner` holds on an EVM chain: the index names what was ever sent to it,
+ *  `balanceOf` says what is held now, `uri` (with its `{id}`) where the metadata is. */
+export async function erc1155Collections(rpc: EvmRpc, index: EvmIndex | null, owner: string): Promise<NftCollection[]> {
+  if (!index) return [];
+  const byCollection = new Map<string, Set<string>>();
+  for (const t of await index.nft1155Transfers(owner)) {
+    if (!byCollection.has(t.contract) && byCollection.size >= MAX_COLLECTIONS) continue;
+    byCollection.set(t.contract, (byCollection.get(t.contract) ?? new Set()).add(t.tokenId));
+  }
+  const out: NftCollection[] = [];
+  for (const [address, named] of byCollection) {
+    const ids = [...named].filter((id) => UINT.test(id)).slice(0, MAX_PER_COLLECTION);
+    const balances = await rpc.batch(ids.map((id) => call(address, `0x00fdd58e${word(owner)}${u256(BigInt(id))}`)));
+    const held = ids.flatMap((id, i) => {
+      const b = balances[i];
+      const n = typeof b === "string" && /^0x[0-9a-fA-F]{1,64}$/.test(b) ? BigInt(b) : 0n;
+      return n > 0n ? [{ id, n }] : [];
+    });
+    if (held.length === 0) continue;
+    const [name, symbol, ...uris] = await rpc.batch([call(address, "0x06fdde03"), call(address, "0x95d89b41"), ...held.slice(0, MAX_INFO).map((h) => call(address, `0x0e89341c${u256(BigInt(h.id))}`))]);
+    out.push({
+      address,
+      standard: "erc1155",
+      name: abiText(name, 40),
+      symbol: abiText(symbol, 12),
+      items: held.map((h, i) => {
+        // ERC1155's metadata URI names the token as {id}: 64 lowercase hex digits.
+        const raw = i < uris.length ? abiText(uris[i], 2048).replace("{id}", BigInt(h.id).toString(16).padStart(64, "0")) : "";
+        return { tokenId: h.id, name: "", uri: raw ? safeUri(raw) : null, amount: h.n.toString() };
+      }),
+      more: false,
     });
   }
   return out;

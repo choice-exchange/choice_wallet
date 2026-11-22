@@ -601,6 +601,13 @@ fn contract_display(entry: &Entry, r: &TxRequest, selector: Option<[u8; 4]>) -> 
     {
         return json!({ "type": "nft_transfer", "from": hex_addr(&from), "to": hex_addr(&to), "token_id": id.to_string() });
     }
+    // ERC1155 safeTransferFrom(from, to, id, amount, data).
+    if selector == Some([0xf2, 0x42, 0x43, 0x2a])
+        && let Ok(v) = abi::decode(&[Ty::Word, Ty::Word, Ty::Word, Ty::Word, Ty::Bytes], args)
+        && let (Ok(from), Ok(to), Ok(id), Ok(amount)) = (v[0].address(), v[1].address(), v[2].uint(), v[3].uint())
+    {
+        return json!({ "type": "nft_transfer", "from": hex_addr(&from), "to": hex_addr(&to), "token_id": id.to_string(), "amount": amount.to_string() });
+    }
     match selector {
         Some(choice_wallet_evm::erc20::APPROVE_SELECTOR) => {
             if let Ok(v) = abi::decode(&[Ty::Word, Ty::Word], args)

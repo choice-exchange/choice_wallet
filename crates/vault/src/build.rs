@@ -87,6 +87,14 @@ pub(crate) enum OwnMsg {
         spender: String,
         amount: String,
     },
+    /// CW721 `revoke_all` of `operator` on the collection at `contract`.
+    Cw721RevokeAll { contract: String, operator: String },
+    /// CW721 `revoke` of `spender`'s approval for NFT `token_id` on `contract`.
+    Cw721Revoke {
+        contract: String,
+        spender: String,
+        token_id: String,
+    },
 }
 
 #[derive(Deserialize)]
@@ -207,6 +215,14 @@ pub(crate) fn cosmos(p: CosmosParams) -> Result<Value, VaultError> {
                 spender,
                 amount,
             } => builder::cw20_decrease_allowance(chain, &from, &addr(&contract)?, &addr(&spender)?, &amount)?,
+            OwnMsg::Cw721RevokeAll { contract, operator } => {
+                builder::cw721_revoke_all(chain, &from, &addr(&contract)?, &addr(&operator)?)?
+            }
+            OwnMsg::Cw721Revoke {
+                contract,
+                spender,
+                token_id,
+            } => builder::cw721_revoke(chain, &from, &addr(&contract)?, &addr(&spender)?, &token_id)?,
         });
     }
     let opts = TxOptions {
@@ -284,6 +300,14 @@ pub(crate) enum OwnCall {
     /// ERC721 `safeTransferFrom(from, to, token_id)` on `collection`, to the recipient `to`.
     /// `amount` is "0".
     NftTransfer { collection: String, token_id: String },
+    /// ERC1155 `safeTransferFrom(from, to, token_id, amount, "")` on `collection`, to the
+    /// recipient `to`. The call's `amount` is how many; the coin `amount` is "0".
+    #[serde(rename = "nft_transfer_1155")]
+    NftTransfer1155 {
+        collection: String,
+        token_id: String,
+        amount: String,
+    },
     /// `approve(TokenMessengerV2, amount)` on the chain's USDC (`to`): exactly what one
     /// bridge transfer burns. On any chain on CCTP.
     BridgeApprove,
@@ -387,7 +411,7 @@ fn own_call(
                 choice_wallet_evm::erc20::approve_calldata(&c.permit2(), &amount),
             ))
         }
-        OwnCall::NftTransfer { .. } => unreachable!("built in evm()"),
+        OwnCall::NftTransfer { .. } | OwnCall::NftTransfer1155 { .. } => unreachable!("built in evm()"),
         OwnCall::BridgeApprove => {
             let (network, local) = bridge()?;
             if to != local.usdc() {
@@ -532,6 +556,39 @@ pub(crate) fn evm(p: EvmParams) -> Result<Value, VaultError> {
                 U256::ZERO,
                 choice_wallet_evm::erc20::nft_transfer_calldata(&from, &to, &id),
             )
+        }
+        (
+            None,
+            None,
+            Some(OwnCall::NftTransfer1155 {
+                collection,
+                token_id,
+                amount: count,
+            }),
+        ) => {
+            if !amount.is_zero() {
+                return Err(VaultError::bad(format!("an NFT transfer sends no {}", entry.native.0)));
+            }
+            if to == from {
+                return Err(VaultError::bad("that NFT is already this account's"));
+            }
+            let (id, count) = (U256::from_dec_str(token_id)?, U256::from_dec_str(count)?);
+            if count.is_zero() {
+                return Err(VaultError::bad("send at least one"));
+            }
+            // safeTransferFrom(address,address,uint256,uint256,bytes) with empty data.
+            let mut data = vec![0xf2, 0x42, 0x43, 0x2a];
+            for w in [from.as_bytes().as_slice(), to.as_bytes().as_slice()] {
+                data.extend_from_slice(&[0u8; 12]);
+                data.extend_from_slice(w);
+            }
+            data.extend_from_slice(&id.to_be_bytes());
+            data.extend_from_slice(&count.to_be_bytes());
+            let mut offset = [0u8; 32];
+            offset[31] = 0xa0;
+            data.extend_from_slice(&offset);
+            data.extend_from_slice(&[0u8; 32]);
+            Eip1559Tx::contract_call(chain_id, address(collection)?, U256::ZERO, data)
         }
         (None, None, Some(call)) => own_call(entry, chain_id, &from, to, amount, call)?,
         (_, _, Some(_)) => return Err(VaultError::bad("a call takes no token or revoke")),

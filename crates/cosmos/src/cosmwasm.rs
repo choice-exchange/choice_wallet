@@ -597,6 +597,21 @@ pub fn transfer_nft(recipient: &str, token_id: &str) -> Vec<u8> {
     })
 }
 
+/// CW721 `{"revoke_all": {"operator"}}`: takes back an operator's access to every NFT.
+pub fn revoke_all(operator: &str) -> Vec<u8> {
+    to_json(&Known::RevokeAll {
+        operator: operator.into(),
+    })
+}
+
+/// CW721 `{"revoke": {"spender", "token_id"}}`: takes back one NFT's approval.
+pub fn revoke(spender: &str, token_id: &str) -> Vec<u8> {
+    to_json(&Known::Revoke {
+        spender: spender.into(),
+        token_id: token_id.into(),
+    })
+}
+
 fn to_json(k: &Known) -> Vec<u8> {
     serde_json::to_vec(k).expect("plain strings always serialize")
 }

@@ -45,7 +45,7 @@ test("approvals: grants, fee grants, rewards address, CW20 and ERC20 allowances"
   ok(await service.handle({ type: "add_token", address: CW }));
   const s = ok<Summary>(await service.handle({ type: "approvals" }));
   // What the wallet can't read yet is named, so the screen never says nothing stands (run-3).
-  assert.deepEqual(s.unchecked, ["CW721 approvals", "other EVM chains (pick one above)"]);
+  assert.deepEqual(s.unchecked, ["other EVM chains (pick one above)"]);
   assert.deepEqual(
     s.grants.map((g) => [g.grantee, g.msgTypeUrl]),
     [
@@ -185,4 +185,29 @@ test("approvals on another EVM chain: only where the user looks, revoked there",
     await service.handle({ type: "prepare_revoke_evm", chain: "base", kind: "nft_all", contract: NFT, spender: "0x8888888888888888888888888888888888888888" }),
   );
   assert.deepEqual([r.display.chain, r.risk.level, r.risk.findings.map((f) => f.rule)], ["eip155:8453", "info", ["nft_approval_revoke"]]);
+});
+
+test("approvals: CW721 operators and NFT approvals, read and revoked in one transaction", async () => {
+  const net = chain();
+  const NFT = "inj10el8uln70el8uln70el8uln70el8uln70el8uln70el8uln70elqdgup33";
+  net.state.cw721 = { [NFT]: { tokens: ["7", "8"], operators: [THEM], approvals: { "7": [THEM] } } };
+  const { service, local } = await wallet(net);
+  await local.set({ custom_nfts: { mainnet: [NFT] } });
+  type Cw = { cw721Operators: { collection: string; operator: string }[]; cw721Approvals: { collection: string; tokenId: string; spender: string }[]; unchecked: string[] };
+  const s = ok<Cw>(await service.handle({ type: "approvals" }));
+  assert.deepEqual(s.cw721Operators, [{ collection: NFT, operator: THEM }]);
+  assert.deepEqual(s.cw721Approvals, [{ collection: NFT, tokenId: "7", spender: THEM }]);
+  assert.ok(!s.unchecked.some((u) => /CW721/.test(u)), s.unchecked.join());
+  type Rev = { risk: { level: string; findings: { rule: string }[] } };
+  const r = ok<Rev>(
+    await service.handle({
+      type: "prepare_revoke",
+      items: [
+        { type: "cw721_all", contract: NFT, operator: THEM },
+        { type: "cw721_token", contract: NFT, spender: THEM, token_id: "7" },
+      ],
+    }),
+  );
+  assert.equal(r.risk.level, "info");
+  assert.deepEqual(r.risk.findings.map((f) => f.rule).filter((x) => x === "nft_approval_revoke"), ["nft_approval_revoke", "nft_approval_revoke"]);
 });

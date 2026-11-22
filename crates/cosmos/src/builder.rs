@@ -340,6 +340,21 @@ pub fn cw20_decrease_allowance(
     execute_contract(chain, owner, cw20, cosmwasm::decrease_allowance(spender, amount), &[])
 }
 
+/// CW721 `revoke_all` of `operator` on the collection at `cw721`.
+pub fn cw721_revoke_all(chain: &Chain, owner: &str, cw721: &str, operator: &str) -> Result<Any, Error> {
+    chain.check_address(operator)?;
+    execute_contract(chain, owner, cw721, cosmwasm::revoke_all(operator), &[])
+}
+
+/// CW721 `revoke` of `spender`'s approval for NFT `token_id` on the collection at `cw721`.
+pub fn cw721_revoke(chain: &Chain, owner: &str, cw721: &str, spender: &str, token_id: &str) -> Result<Any, Error> {
+    if !cosmwasm::is_token_id(token_id) {
+        return Err(Error::ContractJson);
+    }
+    chain.check_address(spender)?;
+    execute_contract(chain, owner, cw721, cosmwasm::revoke(spender, token_id), &[])
+}
+
 /// `MsgExecuteContract` calling `contract` with the JSON `msg`, attaching `funds`.
 pub fn execute_contract(
     chain: &Chain,

@@ -71,7 +71,8 @@ export type MoveLine = { nonce: number; coin: Coin };
 export type VoteLine = { proposal: string; option: "yes" | "no" | "abstain" | "no_with_veto" };
 
 /** One NFT the signer gives away. */
-export type NftLine = { collection: string; tokenId: string; to: string };
+/** `amount`: how many of an ERC1155 token. */
+export type NftLine = { collection: string; tokenId: string; to: string; amount?: string };
 
 export type Shown = {
   sends: { coins: Coin[]; to: string }[];
@@ -198,7 +199,8 @@ export function shown(display: SendReview["display"], network: NetworkId, swap?:
     }
     const call = d.call as Record<string, unknown>;
     if (call["type"] === "nft_transfer" && text(call["from"])?.toLowerCase() === d.from.toLowerCase() && text(call["to"]) && text(call["token_id"])) {
-      return { ...base, sends: attached, others: [], nfts: [{ collection: d.to, tokenId: text(call["token_id"])!, to: text(call["to"])! }] };
+      const amount = text(call["amount"]);
+      return { ...base, sends: attached, others: [], nfts: [{ collection: d.to, tokenId: text(call["token_id"])!, to: text(call["to"])!, ...(amount ? { amount } : {}) }] };
     }
     if (d.call.type === "erc20_transfer") return { ...base, sends: [{ coins: [{ denom: key(d.to), amount: d.call.amount }], to: d.call.to }, ...attached], others: [] };
     if (d.call.type === "transfer") return { ...base, sends: [{ coins: [{ denom: coin, amount: d.value }], to: d.to }], others: [] };

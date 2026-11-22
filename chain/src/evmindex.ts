@@ -170,6 +170,36 @@ export class EvmIndex {
 
   /** ERC721 tokens Blockscout says came to `holder` (its latest `limit` NFT transfers):
    *  places to look. Whether each is still held is for `ownerOf` to say. */
+  /** ERC1155 tokens `holder` was sent, newest first, each (contract, id) once; what is held
+   *  now comes from the contract. */
+  async nft1155Transfers(holder: string, limit = 200): Promise<{ contract: string; tokenId: string }[]> {
+    if (!/^0x[0-9a-fA-F]{40}$/.test(holder)) throw new RangeError(`not an address: ${holder}`);
+    const q = new URLSearchParams({ module: "account", action: "token1155tx", address: holder, page: "1", offset: String(limit), sort: "desc" });
+    try {
+      return (await this.pool.run(async (base) => {
+        const { status, body } = await this.pool.json(`${base}/api?${q}`);
+        if (status !== 200 || !isObject(body)) throw new Down(`HTTP ${status}`);
+        const result = body["result"];
+        if (!Array.isArray(result)) {
+          if (/no (token )?transfers found|no records found/i.test(String(body["message"] ?? ""))) return [];
+          throw new Down(`index: ${String(body["message"] ?? "no result").slice(0, 80)}`);
+        }
+        const me = holder.toLowerCase();
+        const out = new Map<string, { contract: string; tokenId: string }>();
+        for (const t of result.slice(0, limit)) {
+          if (!isObject(t) || typeof t["contractAddress"] !== "string" || typeof t["tokenID"] !== "string" || typeof t["to"] !== "string") continue;
+          if (t["to"].toLowerCase() !== me || !/^0x[0-9a-fA-F]{40}$/.test(t["contractAddress"]) || !/^[0-9]{1,78}$/.test(t["tokenID"])) continue;
+          const key = `${t["contractAddress"].toLowerCase()} ${t["tokenID"]}`;
+          if (!out.has(key)) out.set(key, { contract: t["contractAddress"].toLowerCase(), tokenId: t["tokenID"] });
+        }
+        return [...out.values()];
+      })) as { contract: string; tokenId: string }[];
+    } catch (e) {
+      if (e instanceof Down || e instanceof ChainError || e instanceof Unreachable) return [];
+      throw e;
+    }
+  }
+
   async nftTransfers(holder: string, limit = 200): Promise<{ contract: string; tokenId: string }[]> {
     if (!/^0x[0-9a-fA-F]{40}$/.test(holder)) throw new RangeError(`not an address: ${holder}`);
     const q = new URLSearchParams({ module: "account", action: "tokennfttx", address: holder, page: "1", offset: String(limit), sort: "desc" });

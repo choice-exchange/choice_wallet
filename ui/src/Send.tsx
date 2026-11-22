@@ -466,7 +466,7 @@ export function Review({
         <div className="surface-hero" key={`n${i}`}>
           <div className="eyebrow">You send an NFT</div>
           <div className="hero num" style={{ fontSize: 24, wordBreak: "break-all" }}>
-            #{n.tokenId}
+            {n.amount && n.amount !== "1" ? `${n.amount} × ` : ""}#{n.tokenId}
           </div>
           <div className="meta mono" style={{ marginTop: 4, wordBreak: "break-all" }}>
             Collection {n.collection}

@@ -308,6 +308,8 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
     issuedBy: {} as Record<string, Record<string, unknown>[]>,
     rewardsTo: null as string | null,
     cw20Allowances: {} as Record<string, { spender: string; allowance: string }[]>,
+    /** CW721 collections: the tokens ME holds, its operators, and each token's approvals. */
+    cw721: {} as Record<string, { tokens: string[]; operators: string[]; approvals: Record<string, string[]> }>,
     approvalLogs: [] as { token: string; spender: string }[],
     /** ERC721 single-token approvals, operators and Permit2 allowances ME logged, and what
      *  each collection says now. */
@@ -316,6 +318,8 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
     permit2Logs: [] as { token: string; spender: string }[],
     nftOperatorOn: {} as Record<string, boolean>,
     nftApproved: {} as Record<string, string>,
+    /** ERC1155 balances ME holds, by "collection id". */
+    erc1155: {} as Record<string, bigint>,
     erc20Allowance: {} as Record<string, bigint>,
     /** What other accounts (inj1…) received, newest first (indexed txs), and whose were asked. */
     deposits: {} as Record<string, unknown[]>,
@@ -484,6 +488,11 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
       const on = data.slice(34, 74) === ME_EVM.slice(2).toLowerCase() && state.nftOperatorOn[`${to.toLowerCase()} 0x${data.slice(98, 138)}`];
       return answer(word(on ? 1n : 0n));
     }
+    if (r.method === "eth_call" && data.startsWith("0x00fdd58e")) {
+      // ERC1155 balanceOf(owner, id)
+      const mine = data.slice(34, 74) === ME_EVM.slice(2).toLowerCase();
+      return answer(word(mine ? (state.erc1155[`${to.toLowerCase()} ${BigInt(`0x${data.slice(74)}`)}`] ?? 0n) : 0n));
+    }
     if (r.method === "eth_call" && data.startsWith("0x081812fc")) {
       // getApproved(tokenId)
       const who = state.nftApproved[`${to.toLowerCase()} ${BigInt(`0x${data.slice(10)}`)}`];
@@ -593,6 +602,15 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
     }
     const smart = /^\/cosmwasm\/wasm\/v1\/contract\/([^/]+)\/smart\/([^/]+)$/.exec(p);
     if (smart) {
+      const nft = state.cw721[smart[1]!];
+      if (nft) {
+        const q = JSON.parse(atob(decodeURIComponent(smart[2]!))) as { tokens?: { owner: string }; all_operators?: { owner: string }; approvals?: { token_id: string } };
+        const approval = (spender: string) => ({ spender, expires: { never: {} } });
+        if (q.tokens) return json(200, { data: { tokens: q.tokens.owner === ME ? nft.tokens : [] } });
+        if (q.all_operators) return json(200, { data: { operators: q.all_operators.owner === ME ? nft.operators.map(approval) : [] } });
+        if (q.approvals) return json(200, { data: { approvals: (nft.approvals[q.approvals.token_id] ?? []).map(approval) } });
+        return json(500, { code: 2, message: "query wasm contract failed: unknown variant", details: [] });
+      }
       // CW20 queries as wasmd answers them; any other contract refuses.
       const t = CW20[smart[1]!];
       const q = JSON.parse(atob(decodeURIComponent(smart[2]!))) as { balance?: { address: string }; token_info?: object; all_allowances?: { owner: string } };

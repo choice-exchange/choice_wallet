@@ -189,7 +189,7 @@ export type UiRequest =
   /** NFTs the account holds; a collection added by its contract; one NFT sent. */
   | { type: "nfts" }
   | { type: "add_nft_collection"; address: string }
-  | { type: "prepare_nft_send"; standard: NftStandard; collection: string; tokenId: string; to: string }
+  | { type: "prepare_nft_send"; standard: NftStandard; collection: string; tokenId: string; to: string; amount?: string }
   | ({ type: "prepare_stake" } & StakeRequest)
   /** Sign and broadcast the prepared send whose review showed `digest`. `confirm` is the
    *  word the review asked for, if any. */
@@ -699,6 +699,9 @@ export type ApprovalsSummary = {
   chain?: string;
   /** The other EVM chains whose permissions can be checked (each has a history index). */
   chains: { key: string; name: string }[];
+  /** CW721 operators (`approve_all`) and single NFT approvals, on Injective's Cosmos side. */
+  cw721Operators: { collection: string; operator: string }[];
+  cw721Approvals: { collection: string; tokenId: string; spender: string }[];
   /** ERC721 and ERC1155 operators: each may move every NFT the account holds there. */
   nftOperators: { collection: string; operator: string }[];
   /** ERC721 tokens approved for someone: each may move that one NFT. */
@@ -720,7 +723,9 @@ export type RevokeItem =
   | { type: "authz"; grantee: string; msg_type_url: string }
   | { type: "fee"; grantee: string }
   | { type: "rewards" }
-  | { type: "cw20"; contract: string; spender: string };
+  | { type: "cw20"; contract: string; spender: string }
+  | { type: "cw721_all"; contract: string; operator: string }
+  | { type: "cw721_token"; contract: string; spender: string; token_id: string };
 
 export type ValidatorInfo = {
   address: string;

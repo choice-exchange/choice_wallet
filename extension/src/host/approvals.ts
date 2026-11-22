@@ -12,7 +12,7 @@
 // send, decoded and graded by the vault. Cosmos revokes go in one transaction; each ERC20
 // revoke is its own (an `approve(spender, 0)` on that token).
 
-import { chainByKey, cw20Address, evmAddress, evmDenom, EvmIndex, NETWORKS, type EvmRpc, type Fetch, type NetworkId } from "@choice-wallet/chain";
+import { chainByKey, cw20Address, cw721Candidates, cw721Tokens, evmAddress, evmDenom, EvmIndex, isObject, isTokenId, NETWORKS, type EvmRpc, type Fetch, type Lcd, type NetworkId } from "@choice-wallet/chain";
 import type { AccountInfo, ApprovalsSummary, EvmRevokeKind, Result, RevokeItem, SendReview, TokenInfo } from "@choice-wallet/ui/protocol";
 
 import { evmChains } from "./evmchains";
@@ -31,7 +31,10 @@ const CW20_MAX = "340282366920938463463374607431768211455";
 const TYPE_URL = /^\/[A-Za-z0-9._]{1,127}$/;
 
 /** Standing permissions the wallet has no reader for yet: always named as not checked. */
-const NOT_READ = ["CW721 approvals"];
+const NOT_READ: string[] = [];
+/** CW721 collections, and their NFTs, whose approvals are asked. */
+const CW721_COLLECTIONS = 20;
+const CW721_TOKENS = 60;
 /** Candidates of each EVM kind checked on chain (each is an eth_call). */
 const MAX_CHECKS = 100;
 /** Permit2: one address on every chain. */
@@ -109,9 +112,49 @@ async function evmPermissions(index: EvmIndex | null, rpc: () => Promise<EvmRpc>
   return out;
 }
 
+/** CW721 operators and single NFT approvals `owner` gave, in the collections it holds NFTs in
+ *  (found from its transactions) or added by hand. Expired ones are left out by the query. */
+async function cw721Permissions(lcd: Lcd, owner: string, added: readonly string[], unchecked: string[]): Promise<Pick<ApprovalsSummary, "cw721Operators" | "cw721Approvals">> {
+  const out: Pick<ApprovalsSummary, "cw721Operators" | "cw721Approvals"> = { cw721Operators: [], cw721Approvals: [] };
+  const missing = (what: string) => {
+    if (!unchecked.includes(what)) unchecked.push(what);
+  };
+  let collections: string[];
+  try {
+    collections = [...new Set([...added, ...(await cw721Candidates(lcd, owner))])];
+  } catch {
+    missing("CW721 approvals");
+    return out;
+  }
+  if (collections.length > CW721_COLLECTIONS) missing(`CW721 approvals past the first ${CW721_COLLECTIONS} collections`);
+  const spenders = (r: unknown, key: string) =>
+    isObject(r) && Array.isArray(r[key]) ? (r[key] as unknown[]).flatMap((a) => (isObject(a) && typeof a["spender"] === "string" ? [a["spender"]] : [])) : null;
+  let budget = CW721_TOKENS;
+  for (const collection of collections.slice(0, CW721_COLLECTIONS)) {
+    try {
+      const ops = spenders(await lcd.smart(collection, { all_operators: { owner, include_expired: false, limit: 100 } }), "operators");
+      if (ops === null) missing("some CW721 operators");
+      for (const operator of ops ?? []) out.cw721Operators.push({ collection, operator });
+      const held = await cw721Tokens(lcd, collection, owner, budget);
+      for (const tokenId of held?.ids ?? []) {
+        if (budget-- <= 0) break;
+        const who = spenders(await lcd.smart(collection, { approvals: { token_id: tokenId, include_expired: false } }), "approvals");
+        if (who === null) missing("some CW721 approvals");
+        for (const spender of who ?? []) out.cw721Approvals.push({ collection, tokenId, spender });
+      }
+      if (budget <= 0 || held?.more) missing("some CW721 approvals");
+    } catch {
+      missing("some CW721 approvals");
+    }
+  }
+  return out;
+}
+
 export interface ApprovalChains {
   /** The user's history indexes for an EVM chain (empty: off), or its defaults. */
   historyEndpoints(network: NetworkId, key: string): Promise<readonly string[]>;
+  /** The NFT collections added by hand on a network. */
+  addedNfts?(network: NetworkId): Promise<string[]>;
   fetch: Fetch;
   now?: () => number;
 }
@@ -156,6 +199,8 @@ export function createApprovals(sender: Sender, chains: ApprovalChains) {
         });
       }
 
+      const cw721 = await cw721Permissions(client, address, ((await chains.addedNfts?.(network)) ?? []).filter((a) => a.startsWith("inj1")), unchecked);
+
       // EVM permissions on Injective's EVM side: Blockscout finds, the contracts answer.
       unchecked.push("other EVM chains (pick one above)");
       const perms = await evmPermissions(await sender.evmIndex(network), () => sender.evm(network), evm0x, unchecked, now());
@@ -171,6 +216,7 @@ export function createApprovals(sender: Sender, chains: ApprovalChains) {
           rewardsTo: rewardsTo === address ? null : rewardsTo,
           cw20,
           erc20,
+          ...cw721,
           nftOperators: perms.nftOperators,
           nftApprovals: perms.nftApprovals,
           permit2,
@@ -218,6 +264,8 @@ export function createApprovals(sender: Sender, chains: ApprovalChains) {
           feeGrants: [],
           rewardsTo: null,
           cw20: [],
+          cw721Operators: [],
+          cw721Approvals: [],
           erc20: perms.erc20.map((e) => ({ ...e, token: evmDenom(e.token) })),
           nftOperators: perms.nftOperators,
           nftApprovals: perms.nftApprovals,
@@ -258,6 +306,14 @@ export function createApprovals(sender: Sender, chains: ApprovalChains) {
           // contract clears the allowance whatever it really is.
           if (!str(raw.contract) || !str(raw.spender)) return fail("bad_request", "Not an allowance.");
           messages.push({ type: "cw20_decrease_allowance", contract: raw.contract, spender: raw.spender, amount: CW20_MAX });
+          break;
+        case "cw721_all":
+          if (!str(raw.contract) || !str(raw.operator)) return fail("bad_request", "Not an operator.");
+          messages.push({ type: "cw721_revoke_all", contract: raw.contract, operator: raw.operator });
+          break;
+        case "cw721_token":
+          if (!str(raw.contract) || !str(raw.spender) || !isTokenId(raw.token_id)) return fail("bad_request", "Not an NFT approval.");
+          messages.push({ type: "cw721_revoke", contract: raw.contract, spender: raw.spender, token_id: raw.token_id });
           break;
         default:
           return fail("bad_request", "Unknown revoke.");

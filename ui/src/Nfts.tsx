@@ -24,6 +24,7 @@ function Tile({ text, small }: { text: string; small?: boolean }) {
 }
 
 export const nftLabel = (n: Nft) => n.name || `#${n.tokenId}`;
+const standardName = { cw721: "CW721", erc721: "ERC721", erc1155: "ERC1155" } as const;
 
 export function NftsView({ canSign, onOpen, onBack }: { canSign: boolean; onOpen: (c: NftCollection, n: Nft) => void; onBack: () => void }) {
   const { run, error, busy } = useRequest();
@@ -54,7 +55,7 @@ export function NftsView({ canSign, onOpen, onBack }: { canSign: boolean; onOpen
               {c.name || shortAddress(c.address)}
               {c.symbol ? ` · ${c.symbol}` : ""}
             </span>
-            <span className="meta">{c.standard === "cw721" ? "CW721" : "ERC721"}</span>
+            <span className="meta">{standardName[c.standard]}</span>
           </div>
           <div className="token-list">
             {c.items.map((n) => (
@@ -62,7 +63,10 @@ export function NftsView({ canSign, onOpen, onBack }: { canSign: boolean; onOpen
                 <Tile text={nftLabel(n)} />
                 <span className="name">
                   <span className="symbol">{nftLabel(n)}</span>
-                  <span className="sub denom">{n.name ? `#${n.tokenId}` : shortAddress(c.address)}</span>
+                  <span className="sub denom">
+                    {n.name ? `#${n.tokenId}` : shortAddress(c.address)}
+                    {n.amount && n.amount !== "1" ? ` · ${n.amount} held` : ""}
+                  </span>
                 </span>
               </button>
             ))}
@@ -124,6 +128,10 @@ export function NftView({
   const backend = useBackend();
   const { run, error, busy } = useRequest();
   const [to, setTo] = useState("");
+  // How many of an ERC1155 token to send: one by default.
+  const [count, setCount] = useState("1");
+  const many = collection.standard === "erc1155" && (nft.amount ?? "1") !== "1";
+  const countOk = !many || (/^[1-9][0-9]{0,77}$/.test(count) && BigInt(count) <= BigInt(nft.amount ?? "1"));
   const [choosing, setChoosing] = useState(false);
   const [contacts, setContacts] = useState<Contact[] | null>(null);
 
@@ -147,7 +155,7 @@ export function NftView({
 
   async function review(e: FormEvent) {
     e.preventDefault();
-    const r = await run({ type: "prepare_nft_send", standard: collection.standard, collection: collection.address, tokenId: nft.tokenId, to: to.trim() });
+    const r = await run({ type: "prepare_nft_send", standard: collection.standard, collection: collection.address, tokenId: nft.tokenId, to: to.trim(), ...(collection.standard === "erc1155" ? { amount: many ? count : "1" } : {}) });
     if (r) onReview(r, to.trim());
   }
 
@@ -170,7 +178,7 @@ export function NftView({
         <div className="row">
           <span>Collection</span>
           <span className="mono" title={collection.address}>
-            {shortAddress(collection.address)} · {collection.standard === "cw721" ? "CW721" : "ERC721"}
+            {shortAddress(collection.address)} · {standardName[collection.standard]}
           </span>
         </div>
         {nft.uri && (
@@ -206,8 +214,11 @@ export function NftView({
               Contacts
             </button>
           </div>
+          {many && (
+            <input className="input mono" inputMode="numeric" aria-label={`How many, up to ${nft.amount}`} placeholder={`How many, up to ${nft.amount}`} value={count} onChange={(e) => setCount(e.target.value.trim())} />
+          )}
           {error && <p className="error">{error}</p>}
-          <button className="btn btn-gold" disabled={busy || !to.trim()}>
+          <button className="btn btn-gold" disabled={busy || !to.trim() || !countOk}>
             {busy ? "Checking…" : "Review"}
           </button>
         </form>

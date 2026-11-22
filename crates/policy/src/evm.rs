@@ -472,7 +472,7 @@ fn simulated(moves: &[crate::EvmTransfer], req: &TxRequest, out: &mut Vec<Findin
     }
 }
 
-fn coin_units(v: &U256) -> String {
+pub(crate) fn coin_units(v: &U256) -> String {
     let s = format!("{:0>19}", v.to_string());
     let (whole, frac) = s.split_at(s.len() - 18);
     match frac.trim_end_matches('0') {

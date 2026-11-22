@@ -75,9 +75,20 @@ export function ApprovalsView({ canSign, onReview, onBack }: { canSign: boolean;
     ...s.grants.filter((g) => g.msgTypeUrl).map((g) => ({ type: "authz" as const, grantee: g.grantee, msg_type_url: g.msgTypeUrl! })),
     ...s.feeGrants.map((g) => ({ type: "fee" as const, grantee: g.grantee })),
     ...s.cw20.map((a) => ({ type: "cw20" as const, contract: a.token.slice(5), spender: a.spender })),
+    ...s.cw721Operators.map((o) => ({ type: "cw721_all" as const, contract: o.collection, operator: o.operator })),
+    ...s.cw721Approvals.map((a) => ({ type: "cw721_token" as const, contract: a.collection, spender: a.spender, token_id: a.tokenId })),
   ].slice(0, 30);
   const nothing =
-    !s.rewardsTo && s.grants.length === 0 && s.feeGrants.length === 0 && s.cw20.length === 0 && s.erc20.length === 0 && s.nftOperators.length === 0 && s.nftApprovals.length === 0 && s.permit2.length === 0;
+    !s.rewardsTo &&
+    s.grants.length === 0 &&
+    s.feeGrants.length === 0 &&
+    s.cw20.length === 0 &&
+    s.erc20.length === 0 &&
+    s.cw721Operators.length === 0 &&
+    s.cw721Approvals.length === 0 &&
+    s.nftOperators.length === 0 &&
+    s.nftApprovals.length === 0 &&
+    s.permit2.length === 0;
   const date = (t: number) => new Date(t * 1000).toLocaleDateString();
   const pill = (label: string, onClick: () => void) =>
     canSign && (
@@ -189,12 +200,32 @@ export function ApprovalsView({ canSign, onReview, onBack }: { canSign: boolean;
         </>
       )}
 
-      {(s.nftOperators.length > 0 || s.nftApprovals.length > 0) && (
+      {(s.nftOperators.length > 0 || s.nftApprovals.length > 0 || s.cw721Operators.length > 0 || s.cw721Approvals.length > 0) && (
         <>
           <div className="section-head">
             <span className="eyebrow">NFT approvals</span>
           </div>
           <div className="token-list">
+            {s.cw721Operators.map((o, i) => (
+              <div key={`co${i}`} className="token approval-row" title={o.collection}>
+                <span className="name">
+                  <span className="symbol danger-text">All NFTs in {shortAddress(o.collection)}</span>
+                  <span className="sub">{shortAddress(o.operator)} may move every one</span>
+                </span>
+                {pill(`Revoke ${o.operator}'s access to ${o.collection}`, () => void revoke([{ type: "cw721_all", contract: o.collection, operator: o.operator }]))}
+              </div>
+            ))}
+            {s.cw721Approvals.map((a, i) => (
+              <div key={`ca${i}`} className="token approval-row" title={a.collection}>
+                <span className="name">
+                  <span className="symbol">NFT #{a.tokenId.length > 12 ? `${a.tokenId.slice(0, 10)}…` : a.tokenId}</span>
+                  <span className="sub">
+                    {shortAddress(a.spender)} may move it · {shortAddress(a.collection)}
+                  </span>
+                </span>
+                {pill(`Clear the approval on NFT ${a.tokenId} of ${a.collection}`, () => void revoke([{ type: "cw721_token", contract: a.collection, spender: a.spender, token_id: a.tokenId }]))}
+              </div>
+            ))}
             {s.nftOperators.map((o, i) => (
               <div key={`o${i}`} className="token approval-row" title={o.collection}>
                 <span className="name">

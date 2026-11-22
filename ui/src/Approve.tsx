@@ -513,7 +513,7 @@ function EvmCall({ d, coin }: { d: Record<string, unknown>; coin: TokenInfo | un
       )}
       {call.type === "nft_transfer" ? (
         <div className="meta" style={{ marginTop: 8 }}>
-          Sends NFT #{String((call as Record<string, unknown>)["token_id"])} to <code className="mono">{String((call as Record<string, unknown>)["to"])}</code>
+          Sends {(call as Record<string, unknown>)["amount"] ? `${String((call as Record<string, unknown>)["amount"])} of ` : ""}NFT #{String((call as Record<string, unknown>)["token_id"])} to <code className="mono">{String((call as Record<string, unknown>)["to"])}</code>
         </div>
       ) : (
         <div className="meta mono" style={{ marginTop: 8 }}>

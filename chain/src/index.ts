@@ -72,7 +72,7 @@ export { explorerTxUrl, isNetworkId, MIN_GAS_PRICE, NETWORKS, type Network, type
 export { ChainError, Down, isObject, Pool, Unreachable, type Fetch } from "./pool.ts";
 export { CHOICE_PRICES, CLIENT, fetchJupiterPrices, fetchLlamaPrices, fetchPrices, JUPITER_PRICES, LLAMA_PRICES, priceAddress, usdValue, valueLost, type PriceList } from "./prices.ts";
 export { clmmAmounts, clmmPositions, decFloor, subaccountId, subaccounts, SUBACCOUNTS, xykPositions, type ClmmPosition, type Deposit, type Position, type Subaccount, type XykPosition } from "./inventory.ts";
-export { cw721Collections, cw721Info, cw721Tokens, CW721_PAGE, erc721Collections, isTokenId, MAX_PER_COLLECTION, type Nft, type NftCollection, type NftStandard } from "./nfts.ts";
+export { cw721Candidates, cw721Collections, cw721Info, cw721Tokens, CW721_PAGE, erc1155Collections, erc721Collections, isTokenId, MAX_PER_COLLECTION, type Nft, type NftCollection, type NftStandard } from "./nfts.ts";
 export { grantedMsg, type AuthzGrant, type Cw20Allowance, type FeeGrant } from "./grants.ts";
 export { floorDecimal, type Delegation, type Unbonding, type Validator } from "./staking.ts";
 export { bondedTokens, currentTally, proposal, proposalOf, proposals, voteOf, VOTE_OPTIONS, type Proposal, type ProposalStatus, type Tally, type VoteCast, type VoteOptionName } from "./gov.ts";

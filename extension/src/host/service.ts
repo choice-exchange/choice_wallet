@@ -219,7 +219,15 @@ export function createService(d: Deps) {
   const gov = createGov({ sender, local: d.local, owned, turn: records });
   const swaps = createSwaps(sender, d.session, d.fetch, async (net) => (await tokenFilter(net)).shown);
   const bridge = createBridge(sender, d.session, d.local, d.fetch, Date.now, solana, { turn: records, owned });
-  const approvals = createApprovals(sender, { historyEndpoints: (n, key) => evmChains.historyEndpoints(n, key), fetch: d.fetch });
+  const approvals = createApprovals(sender, {
+    historyEndpoints: (n, key) => evmChains.historyEndpoints(n, key),
+    addedNfts: async (n) => {
+      const { custom_nfts } = (await d.local.get(["custom_nfts"])) as { custom_nfts?: Partial<Record<NetworkId, unknown>> };
+      const list = custom_nfts?.[n];
+      return Array.isArray(list) ? list.filter((a): a is string => typeof a === "string") : [];
+    },
+    fetch: d.fetch,
+  });
 
   const wallets = createWallets({
     vault: d.vault,

@@ -478,3 +478,45 @@ fn own_revokes_build_on_any_evm_chain_and_read_as_revokes() {
         .is_err()
     );
 }
+
+#[test]
+fn own_erc1155_sends_build_and_read_as_sends() {
+    let me = "0x9858EfFD232B4033E47d90003D41EC34EcaEda94";
+    let them = "0xbBbBBBBbbBBBbbbBbbBbbbbBBbBbbbbBbBbbBBbB";
+    let nft = "0x4444444444444444444444444444444444444444";
+    let r = ok(
+        "build_evm",
+        evm_params(
+            "eip155:1776",
+            me,
+            them,
+            "0",
+            json!({ "type": "nft_transfer_1155", "collection": nft, "token_id": "7", "amount": "3" }),
+        ),
+    )["request"]
+        .clone();
+    let d = ok("decode", json!({ "request": r }));
+    assert_eq!(
+        d["display"]["call"],
+        json!({ "type": "nft_transfer", "from": me, "to": them, "token_id": "7", "amount": "3" })
+    );
+    assert_eq!(d["display"]["to"], nft);
+    assert_eq!(d["risk"]["level"], "info");
+    assert_eq!(rules_of(&d), ["nft_send"]);
+    assert!(approve_and_sign(&r, account(0))["raw"].is_string());
+    // None of it, or to this account itself, isn't a send.
+    let bad = |to: &str, amount: &str| {
+        call(
+            "build_evm",
+            evm_params(
+                "eip155:1776",
+                me,
+                to,
+                "0",
+                json!({ "type": "nft_transfer_1155", "collection": nft, "token_id": "7", "amount": amount }),
+            ),
+        )
+        .is_err()
+    };
+    assert!(bad(them, "0") && bad(me, "1"));
+}

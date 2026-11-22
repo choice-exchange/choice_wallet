@@ -8,7 +8,7 @@ import { EvmRpc } from "../src/evm.ts";
 import { EvmIndex } from "../src/evmindex.ts";
 import { Lcd } from "../src/lcd.ts";
 import { NETWORKS } from "../src/networks.ts";
-import { cw721Collections, CW721_PAGE, erc721Collections, isTokenId } from "../src/nfts.ts";
+import { cw721Collections, CW721_PAGE, erc1155Collections, erc721Collections, isTokenId } from "../src/nfts.ts";
 import type { Fetch } from "../src/pool.ts";
 
 const ME = "inj1npvwllfr9dqr8erajqqr6s0vxnk2ak55re90dz";
@@ -128,4 +128,51 @@ test("ERC721: Blockscout names tokens, ownerOf says which are still held", async
   assert.deepEqual(found, [
     { address: COLLECTION, standard: "erc721", name: "Test Cats", symbol: "CAT", items: [{ tokenId: "7", name: "", uri: "https://cats.example/7.json" }], more: false },
   ]);
+});
+
+test("ERC1155: Blockscout names tokens, balanceOf says how many are held, uri fills in {id}", async () => {
+  const COLLECTION = "0x1111111111111111111111111111111111111111";
+  const word = (hex: string) => hex.replace(/^0x/, "").padStart(64, "0");
+  const str = (s: string) => `0x${word("20")}${word(Buffer.from(s).length.toString(16))}${Buffer.from(s).toString("hex").padEnd(64, "0")}`;
+  const fetch: Fetch = async (input, init) => {
+    const url = new URL(String(input));
+    if (url.host === "index.example") {
+      assert.equal(url.searchParams.get("action"), "token1155tx");
+      return json(200, {
+        status: "1",
+        result: [
+          { contractAddress: COLLECTION, tokenID: "7", tokenValue: "5", to: ME_EVM, from: "0x0000000000000000000000000000000000000000" },
+          { contractAddress: COLLECTION, tokenID: "8", tokenValue: "1", to: ME_EVM, from: "0x0000000000000000000000000000000000000000" },
+        ],
+      });
+    }
+    type Req = { id: number; method: string; params: [{ data: string }] };
+    const body = JSON.parse(String(init?.body)) as Req | Req[];
+    const answer = (r: Req) => {
+      if (r.method === "eth_chainId") return { jsonrpc: "2.0", id: r.id, result: "0x6f0" };
+      const d = r.params[0].data;
+      let result = "0x";
+      if (d.startsWith("0x06fdde03")) result = str("Talis Editions");
+      else if (d.startsWith("0x95d89b41")) result = "0x";
+      // balanceOf(owner, id): 3 of #7 left, none of #8.
+      else if (d.startsWith("0x00fdd58e")) result = `0x${word(BigInt(`0x${d.slice(74)}`) === 7n ? "3" : "0")}`;
+      else if (d.startsWith("0x0e89341c")) result = str("https://talis.example/{id}.json");
+      return { jsonrpc: "2.0", id: r.id, result };
+    };
+    return json(200, Array.isArray(body) ? body.map(answer) : answer(body));
+  };
+  const rpc = new EvmRpc(NETWORKS.mainnet, ["https://rpc.example"], fetch, 1000);
+  const index = new EvmIndex(["https://index.example"], fetch, 1000);
+  const found = await erc1155Collections(rpc, index, ME_EVM);
+  assert.deepEqual(found, [
+    {
+      address: COLLECTION,
+      standard: "erc1155",
+      name: "Talis Editions",
+      symbol: "",
+      items: [{ tokenId: "7", name: "", uri: `https://talis.example/${"7".padStart(64, "0")}.json`, amount: "3" }],
+      more: false,
+    },
+  ]);
+  assert.deepEqual(await erc1155Collections(rpc, null, ME_EVM), []);
 });

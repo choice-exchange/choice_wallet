@@ -3,7 +3,7 @@
 // collections the user added by hand, and a send of one NFT, prepared like any other send
 // so the vault decodes and grades it before anything is signed.
 
-import { cw721Collections, cw721Info, erc721Collections, isObject, isTokenId, NETWORKS, type NetworkId, type NftCollection } from "@choice-wallet/chain";
+import { cw721Collections, cw721Info, erc1155Collections, erc721Collections, isObject, isTokenId, NETWORKS, type NetworkId, type NftCollection, type NftStandard } from "@choice-wallet/chain";
 import type { AccountInfo, Result, SendReview } from "@choice-wallet/ui/protocol";
 
 import type { createSender } from "./send";
@@ -34,7 +34,8 @@ export function createNfts(d: { sender: Sender; local: Store; vault<T>(method: s
       let evm: NftCollection[] = [];
       let evmDown = false;
       try {
-        evm = await erc721Collections(await d.sender.evm(network), await d.sender.evmIndex(network), account.addresses[net.evm] ?? "", mine);
+        const [rpc, index, owner] = [await d.sender.evm(network), await d.sender.evmIndex(network), account.addresses[net.evm] ?? ""];
+        evm = [...(await erc721Collections(rpc, index, owner, mine)), ...(await erc1155Collections(rpc, index, owner))];
       } catch {
         evmDown = true;
       }
@@ -73,14 +74,15 @@ export function createNfts(d: { sender: Sender; local: Store; vault<T>(method: s
   }
 
   /** One NFT to `to`, checked as still this account's first. */
-  async function prepare(network: NetworkId, account: AccountInfo, req: { standard?: unknown; collection?: unknown; tokenId?: unknown; to?: unknown }): Promise<Result<SendReview>> {
+  async function prepare(network: NetworkId, account: AccountInfo, req: { standard?: unknown; collection?: unknown; tokenId?: unknown; to?: unknown; amount?: unknown }): Promise<Result<SendReview>> {
     const net = NETWORKS[network];
     const { standard, collection, tokenId, to } = req;
     if (typeof collection !== "string" || !isTokenId(tokenId) || typeof to !== "string" || !to.trim()) return fail("bad_request", "Pick an NFT and a recipient.");
     const r = await d.vault<{ addresses: Record<string, string> }>("addresses", { address: to.trim() });
     if (!r.ok) return fail("invalid_address", "Check the recipient address.");
     const recipient = r.result.addresses;
-    const nft = { collection, tokenId, standard: standard === "erc721" ? ("erc721" as const) : ("cw721" as const) };
+    const kind: NftStandard = standard === "erc721" || standard === "erc1155" ? standard : "cw721";
+    const nft = { collection, tokenId, standard: kind };
     try {
       if (standard === "cw721" && CONTRACT.test(collection)) {
         const owner = await (await d.sender.lcd(network)).smart(collection, { owner_of: { token_id: tokenId } });
@@ -107,6 +109,24 @@ export function createNfts(d: { sender: Sender; local: Store; vault<T>(method: s
           tokens: [],
           expect: (display) =>
             display.call["type"] === "nft_transfer" && display.to.toLowerCase() === collection.toLowerCase() && display.call["token_id"] === tokenId ? null : "The vault didn't read this as that NFT's transfer.",
+        });
+        return review.ok ? { ok: true, result: { ...review.result, nft } } : review;
+      }
+      if (standard === "erc1155" && EVM.test(collection) && /^[0-9]{1,78}$/.test(tokenId)) {
+        const amount = typeof req.amount === "string" && /^[1-9][0-9]{0,77}$/.test(req.amount) ? req.amount : "1";
+        const me = account.addresses[net.evm] ?? "";
+        const rpc = await d.sender.evm(network);
+        const held = await rpc.call("eth_call", [{ to: collection, data: `0x00fdd58e${me.slice(2).toLowerCase().padStart(64, "0")}${BigInt(tokenId).toString(16).padStart(64, "0")}` }, "latest"]);
+        if (typeof held !== "string" || !/^0x[0-9a-fA-F]{1,64}$/.test(held) || BigInt(held) < BigInt(amount)) return fail("not_yours", "This account doesn't hold that many now.");
+        const review = await d.sender.prepareEvmCall(network, account, {
+          to: recipient[net.evm]!,
+          amount: 0n,
+          call: { type: "nft_transfer_1155", collection, token_id: tokenId, amount },
+          tokens: [],
+          expect: (display) =>
+            display.call["type"] === "nft_transfer" && display.to.toLowerCase() === collection.toLowerCase() && display.call["token_id"] === tokenId && display.call["amount"] === amount
+              ? null
+              : "The vault didn't read this as that NFT's transfer.",
         });
         return review.ok ? { ok: true, result: { ...review.result, nft } } : review;
       }
