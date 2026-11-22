@@ -82,6 +82,8 @@ test("CW721: suggested by the index, every page of tokens read, metadata cleaned
   assert.deepEqual(punks.items[0], { tokenId: "punk-000", name: "Punk Zero", uri: "ipfs://bafy/0.json" });
   // A script URI is never offered as a link.
   assert.equal(punks.items[1]!.uri, null);
+  // Every one held is described, not only the first 60.
+  assert.equal(c.smartCalls.filter((s) => s === `${PUNKS.slice(-4)} nft_info`).length, 230);
   // The CW20 named in a "transfer" was never asked about as an NFT.
   assert.ok(!c.smartCalls.some((s) => s.startsWith(CW20.slice(-4))));
 });
@@ -128,6 +130,38 @@ test("ERC721: Blockscout names tokens, ownerOf says which are still held", async
   assert.deepEqual(found, [
     { address: COLLECTION, standard: "erc721", name: "Test Cats", symbol: "CAT", items: [{ tokenId: "7", name: "", uri: "https://cats.example/7.json" }], more: false },
   ]);
+});
+
+// A live wallet held 82 NFTs of one collection; with metadata read for 60, the last 22 had no
+// link. Every NFT held gets its link.
+test("ERC721: every NFT held gets its metadata link, past 60 in a collection", async () => {
+  const COLLECTION = "0x1111111111111111111111111111111111111111";
+  const word = (hex: string) => hex.replace(/^0x/, "").padStart(64, "0");
+  const str = (s: string) => `0x${word("20")}${word(Buffer.from(s).length.toString(16))}${Buffer.from(s).toString("hex").padEnd(64 * Math.ceil(Buffer.from(s).length / 32), "0")}`;
+  const ids = Array.from({ length: 82 }, (_, i) => String(1000 + i));
+  const fetch: Fetch = async (input, init) => {
+    const url = new URL(String(input));
+    if (url.host === "index.example") {
+      return json(200, { status: "1", result: ids.map((tokenID) => ({ contractAddress: COLLECTION, tokenID, to: ME_EVM, from: "0x0000000000000000000000000000000000000000" })) });
+    }
+    type Req = { id: number; method: string; params: [{ data: string }] };
+    const body = JSON.parse(String(init?.body)) as Req | Req[];
+    const answer = (r: Req) => {
+      if (r.method === "eth_chainId") return { jsonrpc: "2.0", id: r.id, result: "0x6f0" };
+      const d = r.params[0].data;
+      let result = `0x${word("0")}`;
+      if (d.startsWith("0x06fdde03")) result = str("MASKED");
+      else if (d.startsWith("0x6352211e")) result = `0x${word(ME_EVM)}`;
+      else if (d.startsWith("0xc87b56dd")) result = str(`https://masks.example/${BigInt(`0x${d.slice(10)}`)}.json`);
+      return { jsonrpc: "2.0", id: r.id, result };
+    };
+    return json(200, Array.isArray(body) ? body.map(answer) : answer(body));
+  };
+  const rpc = new EvmRpc(NETWORKS.mainnet, ["https://rpc.example"], fetch, 1000);
+  const index = new EvmIndex(["https://index.example"], fetch, 1000);
+  const [masks] = await erc721Collections(rpc, index, ME_EVM, []);
+  assert.equal(masks?.items.length, 82);
+  for (const n of masks!.items) assert.equal(n.uri, `https://masks.example/${n.tokenId}.json`, n.tokenId);
 });
 
 test("ERC1155: Blockscout names tokens, balanceOf says how many are held, uri fills in {id}", async () => {

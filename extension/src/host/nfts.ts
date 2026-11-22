@@ -29,16 +29,20 @@ export function createNfts(d: { sender: Sender; local: Store; vault<T>(method: s
   async function list(network: NetworkId, account: AccountInfo): Promise<Result<{ collections: NftCollection[]; evmDown?: true }>> {
     const net = NETWORKS[network];
     const mine = await added(network);
-    try {
-      const cw = await cw721Collections(await d.sender.lcd(network), account.addresses[net.cosmos] ?? "", mine);
-      let evm: NftCollection[] = [];
-      let evmDown = false;
+    // The three readers at once: each waits on its own index and endpoints, and one after
+    // another they took 20 s for a wallet of 100 NFTs. The EVM side never rejects.
+    const evmSide = (async (): Promise<{ evm: NftCollection[]; evmDown: boolean }> => {
       try {
         const [rpc, index, owner] = [await d.sender.evm(network), await d.sender.evmIndex(network), account.addresses[net.evm] ?? ""];
-        evm = [...(await erc721Collections(rpc, index, owner, mine)), ...(await erc1155Collections(rpc, index, owner))];
+        const [erc721, erc1155] = await Promise.all([erc721Collections(rpc, index, owner, mine), erc1155Collections(rpc, index, owner)]);
+        return { evm: [...erc721, ...erc1155], evmDown: false };
       } catch {
-        evmDown = true;
+        return { evm: [], evmDown: true };
       }
+    })();
+    try {
+      const cw = await cw721Collections(await d.sender.lcd(network), account.addresses[net.cosmos] ?? "", mine);
+      const { evm, evmDown } = await evmSide;
       return { ok: true, result: { collections: [...cw, ...evm], ...(evmDown ? { evmDown: true as const } : {}) } };
     } catch (e) {
       return d.sender.chainFailure(e);
