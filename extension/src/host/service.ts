@@ -225,6 +225,7 @@ export function createService(d: Deps) {
   const bridge = createBridge(sender, d.session, d.local, d.fetch, Date.now, solana, { turn: records, owned });
   const approvals = createApprovals(sender, {
     historyEndpoints: (n, key) => evmChains.historyEndpoints(n, key),
+    session: d.session,
     addedNfts: async (n) => {
       const { custom_nfts } = (await d.local.get(["custom_nfts"])) as { custom_nfts?: Partial<Record<NetworkId, unknown>> };
       const list = custom_nfts?.[n];

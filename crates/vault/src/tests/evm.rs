@@ -440,6 +440,17 @@ fn own_revokes_build_on_any_evm_chain_and_read_as_revokes() {
             json!({ "type": "permit2_revoke", "token": token, "spender": spender }),
             "allowance_revoke",
         ),
+        // Run-4: permits signed before a revoke, cancelled; every Seaport order, cancelled.
+        (
+            permit2,
+            json!({ "type": "permit2_cancel_permits", "token": token, "spender": spender, "nonce": "65535" }),
+            "permit2_cancel",
+        ),
+        (
+            "0x0000000000000068F116a894984e2DB1123eB395",
+            json!({ "type": "seaport_cancel_all" }),
+            "seaport_cancel",
+        ),
     ];
     for chain in ["eip155:1776", "eip155:8453"] {
         for (to, call, rule) in &cases {
@@ -481,6 +492,13 @@ fn own_revokes_build_on_any_evm_chain_and_read_as_revokes() {
         )
         .is_err()
     );
+    // Each cancel goes only to its own contract.
+    for c in [
+        json!({ "type": "permit2_cancel_permits", "token": token, "spender": spender, "nonce": "1" }),
+        json!({ "type": "seaport_cancel_all" }),
+    ] {
+        assert!(call("build_evm", evm_params("eip155:8453", me, nft, "0", c.clone())).is_err(), "{c}");
+    }
 }
 
 #[test]

@@ -12,8 +12,9 @@ import { canMoveFunds, permissionName } from "./permissions";
 import type { Coin, EvmRevokeKind, RevokeItem, SendReview } from "./protocol";
 import { useRequest } from "./request";
 
-/** Permit2: one address on every chain. */
+/** Permit2 and Seaport 1.6: one address each on every chain. */
 const PERMIT2 = "0x000000000022D473030F116dDEE9F6B43aC78BA3";
+const SEAPORT = "0x0000000000000068F116a894984e2DB1123eB395";
 
 /** Allowances from 2^128 up read as unlimited, as in Activity. */
 const UNLIMITED = 2n ** 128n;
@@ -92,12 +93,16 @@ export function ApprovalsView({ canSign, onReview, onBack }: { canSign: boolean;
   const date = (t: number) => new Date(t * 1000).toLocaleDateString();
   // A contract the wallet knows by name (Seaport, Permit2, Choice's, Talis's), else its address.
   const who = (a: string) => s.names?.[a.toLowerCase()] ?? shortAddress(a);
-  const pill = (label: string, onClick: () => void) =>
+  const pill = (label: string, onClick: () => void, text = "Revoke") =>
     canSign && (
       <button type="button" className="pill" disabled={busy} aria-label={label} onClick={onClick}>
-        Revoke
+        {text}
       </button>
     );
+  // Listings and offers signed on Seaport stay valid while it can move what they sell; a
+  // revoke only pauses them (run-4).
+  const isSeaport = (a: string) => a.toLowerCase() === SEAPORT.toLowerCase();
+  const seaportHeld = s.nftOperators.some((o) => isSeaport(o.operator)) || s.erc20.some((a) => isSeaport(a.spender));
 
   return (
     <Screen
@@ -252,6 +257,23 @@ export function ApprovalsView({ canSign, onReview, onBack }: { canSign: boolean;
         </>
       )}
 
+      {seaportHeld && (
+        <>
+          <div className="section-head">
+            <span className="eyebrow">Seaport</span>
+          </div>
+          <div className="token-list">
+            <div className="token approval-row">
+              <span className="name">
+                <span className="symbol">Listings you signed</span>
+                <span className="sub">They come back with any new approval</span>
+              </span>
+              {pill("Cancel every Seaport listing you signed", () => void revokeEvm("seaport_cancel", SEAPORT, {}), "Cancel all")}
+            </div>
+          </div>
+        </>
+      )}
+
       {s.permit2.length > 0 && (
         <>
           <div className="section-head">
@@ -264,6 +286,7 @@ export function ApprovalsView({ canSign, onReview, onBack }: { canSign: boolean;
                   <span className={BigInt(p.amount) >= UNLIMITED ? "symbol danger-text" : "symbol"}>{symbol(p.token)}</span>
                   <span className="sub">
                     {who(p.spender)} may take {amount(p.token, p.amount)} until {date(p.expiration)}
+                    {p.permitsCancelled ? " · permits cancelled" : ""}
                   </span>
                 </span>
                 {pill(`Revoke ${symbol(p.token)} Permit2 allowance for ${p.spender}`, () => void revokeEvm("permit2", PERMIT2, { token: p.token.slice(4), spender: p.spender }))}
@@ -275,7 +298,7 @@ export function ApprovalsView({ canSign, onReview, onBack }: { canSign: boolean;
 
       {s.evmIndexDown && <p className="meta warn">The EVM index didn&apos;t answer, so EVM permissions may be missing.</p>}
       {s.evmDown && <p className="meta warn">No EVM endpoint answered, so EVM permissions weren&apos;t checked.</p>}
-      <p className="footnote">EVM permissions are found through the chain&apos;s history index and checked on your endpoint. Each is its own transaction.</p>
+      <p className="footnote">EVM permissions are found through the chain&apos;s history index and checked on your endpoint. Each is its own transaction; a Permit2 revoke is two, its signed permits cancelled first.</p>
     </Screen>
   );
 }

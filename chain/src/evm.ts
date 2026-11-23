@@ -147,19 +147,20 @@ export class EvmRpc {
     return results.map((r) => (typeof r === "string" && /^0x0{64}$/.test(r) ? "" : typeof r === "string" && /^0x0{24}[0-9a-fA-F]{40}$/.test(r) ? `0x${r.slice(26).toLowerCase()}` : null));
   }
 
-  /** What Permit2 lets each spender take of `owner`'s token, and when that ends (null: no
-   *  answer). */
-  async permit2Allowances(permit2: string, pairs: readonly { token: string; spender: string }[], owner: string): Promise<({ amount: bigint; expiration: number } | null)[]> {
+  /** What Permit2 lets each spender take of `owner`'s token, when that ends, and the pair's
+   *  next permit nonce (null: no answer). */
+  async permit2Allowances(permit2: string, pairs: readonly { token: string; spender: string }[], owner: string): Promise<({ amount: bigint; expiration: number; nonce: number } | null)[]> {
     const results = await this.batch(pairs.map((p) => ({ method: "eth_call", params: [{ to: permit2, data: `0x927da105${word(owner)}${word(p.token)}${word(p.spender)}` }, "latest"] })));
-    return results.map((r) => (typeof r === "string" && /^0x[0-9a-fA-F]{192}$/.test(r) ? { amount: BigInt(`0x${r.slice(2, 66)}`), expiration: Number(BigInt(`0x${r.slice(66, 130)}`)) } : null));
+    return results.map((r) => (typeof r === "string" ? permit2Answer(r) : null));
   }
 
-  /** What Permit2 lets `spender` take of `owner`'s `token`: the amount and when it ends
-   *  (unix seconds). */
-  async permit2Allowance(permit2: string, owner: string, token: string, spender: string): Promise<{ amount: bigint; expiration: number }> {
+  /** What Permit2 lets `spender` take of `owner`'s `token`: the amount, when it ends (unix
+   *  seconds), and the pair's next permit nonce. */
+  async permit2Allowance(permit2: string, owner: string, token: string, spender: string): Promise<{ amount: bigint; expiration: number; nonce: number }> {
     const r = await this.call("eth_call", [{ to: permit2, data: `0x927da105${word(owner)}${word(token)}${word(spender)}` }, "latest"]);
-    if (typeof r !== "string" || !/^0x[0-9a-fA-F]{192}$/.test(r)) throw new ChainError(-1, "Permit2 gave no allowance");
-    return { amount: BigInt(`0x${r.slice(2, 66)}`), expiration: Number(BigInt(`0x${r.slice(66, 130)}`)) };
+    const a = typeof r === "string" ? permit2Answer(r) : null;
+    if (!a) throw new ChainError(-1, "Permit2 gave no allowance");
+    return a;
   }
 
   /** An ERC20's symbol, name and decimals, or null if it doesn't answer like one. Symbols
@@ -212,4 +213,11 @@ export function abiString(r: unknown): string {
   const start = offset * 2 + 64;
   if (length > 256 || start + length * 2 > hex.length) return "";
   return utf8(hex.slice(start, start + length * 2));
+}
+
+/** Permit2's `allowance(owner, token, spender)` answer: amount (uint160), expiration and nonce
+ *  (uint48 each). */
+function permit2Answer(r: string): { amount: bigint; expiration: number; nonce: number } | null {
+  if (!/^0x[0-9a-fA-F]{192}$/.test(r)) return null;
+  return { amount: BigInt(`0x${r.slice(2, 66)}`), expiration: Number(BigInt(`0x${r.slice(66, 130)}`)), nonce: Number(BigInt(`0x${r.slice(130, 194)}`)) };
 }

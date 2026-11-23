@@ -334,6 +334,15 @@ pub(crate) enum OwnCall {
     /// `Permit2.approve(token, spender, 0, 0)` at Permit2 (`to`, its one address on every
     /// chain): takes back a Permit2 allowance. `amount` is "0".
     Permit2Revoke { token: String, spender: String },
+    /// `Permit2.invalidateNonces(token, spender, nonce)` at Permit2 (`to`): cancels every
+    /// permit signed for that spender and token with a lower nonce, which could otherwise set
+    /// the allowance again after its revoke. `nonce` is the pair's next one, at most 65,535
+    /// past its current one (Permit2's limit). `amount` is "0".
+    Permit2CancelPermits { token: String, spender: String, nonce: U64 },
+    /// Seaport's `incrementCounter()` at Seaport 1.6 (`to`): cancels every order the account
+    /// signed there, which would otherwise come back with an approval given again. `amount` is
+    /// "0".
+    SeaportCancelAll,
 }
 
 /// Permit2: one address on every chain (a deterministic deployment).
@@ -480,6 +489,8 @@ fn own_call(
         | OwnCall::NftRevokeAll { .. }
         | OwnCall::NftRevoke { .. }
         | OwnCall::Permit2Revoke { .. }
+        | OwnCall::Permit2CancelPermits { .. }
+        | OwnCall::SeaportCancelAll
             if !amount.is_zero() =>
         {
             Err(VaultError::bad(format!("a revoke sends no {coin}")))
@@ -509,6 +520,27 @@ fn own_call(
             let data = choice::permit2_approve_calldata(&parse(token)?, &parse(spender)?, U256::ZERO, 0)
                 .ok_or_else(|| VaultError::bad("out of range for Permit2"))?;
             Ok(Eip1559Tx::contract_call(chain_id, to, U256::ZERO, data))
+        }
+        OwnCall::Permit2CancelPermits { token, spender, nonce } => {
+            if to != choice_wallet_core::EthAddress::from_bytes(PERMIT2) {
+                return Err(VaultError::bad("cancelling Permit2 permits goes to Permit2"));
+            }
+            if nonce.0 == 0 || nonce.0 >= 1 << 48 {
+                return Err(VaultError::bad("out of range for Permit2"));
+            }
+            let mut data = vec![0x65, 0xd9, 0x72, 0x3c]; // invalidateNonces(address,address,uint48)
+            for a in [parse(token)?, parse(spender)?] {
+                data.extend_from_slice(&[0u8; 12]);
+                data.extend_from_slice(a.as_bytes());
+            }
+            data.extend_from_slice(&U256::from_u128(u128::from(nonce.0)).to_be_bytes());
+            Ok(Eip1559Tx::contract_call(chain_id, to, U256::ZERO, data))
+        }
+        OwnCall::SeaportCancelAll => {
+            if to != choice_wallet_injective::talis::seaport() {
+                return Err(VaultError::bad("cancelling Seaport orders goes to Seaport"));
+            }
+            Ok(Eip1559Tx::contract_call(chain_id, to, U256::ZERO, vec![0x5b, 0x34, 0xb9, 0x66]))
         }
         OwnCall::Permit2Approve {
             token,

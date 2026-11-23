@@ -330,7 +330,7 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
      *  `tokenIn tokenOut amountIn`; the questions asked; and what Permit2 lets each (token spender) take. */
     routes: CHOICE_ROUTES,
     routeAsks: [] as URLSearchParams[],
-    permit2: {} as Record<string, { amount: bigint; expiration: number }>,
+    permit2: {} as Record<string, { amount: bigint; expiration: number; nonce?: number }>,
     /** Circle's Iris: its messages by burn hash, and the requests it saw (with their headers). */
     iris: {} as Record<string, unknown[]>,
     irisAsks: [] as { path: string; headers: Record<string, string> }[],
@@ -483,7 +483,7 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
       const spender = `0x${data.slice(162, 202)}`;
       const a = data.slice(34, 74) === ME_EVM.slice(2).toLowerCase() ? state.permit2[`${token} ${spender}`] : undefined;
       const w = (n: bigint | number) => BigInt(n).toString(16).padStart(64, "0");
-      return { jsonrpc: "2.0", id: r.id, result: `0x${w(a?.amount ?? 0n)}${w(a?.expiration ?? 0)}${w(0)}` };
+      return { jsonrpc: "2.0", id: r.id, result: `0x${w(a?.amount ?? 0n)}${w(a?.expiration ?? 0)}${w(a?.nonce ?? 0)}` };
     }
     if (r.method === "eth_call" && data.startsWith("0xe985e9c5")) {
       // isApprovedForAll(owner, operator)

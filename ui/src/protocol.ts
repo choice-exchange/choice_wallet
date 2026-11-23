@@ -713,7 +713,8 @@ export type ApprovalsSummary = {
   /** ERC721 tokens approved for someone: each may move that one NFT. */
   nftApprovals: { collection: string; tokenId: string; approved: string }[];
   /** Permit2 allowances: what each spender may take through Permit2, and until when (unix s). */
-  permit2: { token: string; spender: string; amount: string; expiration: number }[];
+  /** `permitsCancelled`: the revoke's first step landed; the next takes the allowance back. */
+  permit2: { token: string; spender: string; amount: string; expiration: number; permitsCancelled?: boolean }[];
   /** Blockscout didn't answer: ERC20 allowances may be missing. */
   evmIndexDown?: true;
   /** No EVM endpoint answered: ERC20 allowances couldn't be checked. */
@@ -722,7 +723,9 @@ export type ApprovalsSummary = {
 
 /** An EVM permission to take back: an ERC20 allowance, an NFT operator, one NFT's approval,
  *  or a Permit2 allowance. */
-export type EvmRevokeKind = "erc20" | "nft_all" | "nft_token" | "permit2";
+/** `permit2` takes two steps: its permits cancelled, then its allowance taken back.
+ *  `seaport_cancel` cancels every Seaport order the account signed. */
+export type EvmRevokeKind = "erc20" | "nft_all" | "nft_token" | "permit2" | "seaport_cancel";
 
 /** One Cosmos-side permission to take back. */
 export type RevokeItem =

@@ -171,7 +171,20 @@ test("approvals: NFT operators, NFT approvals and Permit2 allowances, read and r
   assert.deepEqual([all.risk.level, all.risk.findings.map((f) => f.rule)], ["info", ["nft_approval_revoke"]]);
   const one = ok<Rev>(await service.handle({ type: "prepare_revoke_evm", kind: "nft_token", contract: NFT, token_id: "7" }));
   assert.deepEqual([one.risk.level, one.risk.findings.map((f) => f.rule)], ["info", ["approval_clear"]]);
-  const p2 = ok<Rev>(await service.handle({ type: "prepare_revoke_evm", kind: "permit2", contract: "0x000000000022D473030F116dDEE9F6B43aC78BA3", token: LUMA, spender: SPENDER }));
+  // Run-4: two steps. First the permits signed for it are cancelled (its nonce moved past
+  // them, by Permit2's most); once that lands, the allowance is taken back.
+  const P2 = "0x000000000022D473030F116dDEE9F6B43aC78BA3";
+  const pair = `${LUMA.toLowerCase()} ${SPENDER}`;
+  net.state.permit2[pair]!.nonce = 3;
+  const first = ok<Rev & { display: { call: Record<string, unknown> } }>(await service.handle({ type: "prepare_revoke_evm", kind: "permit2", contract: P2, token: LUMA, spender: SPENDER }));
+  assert.deepEqual([first.risk.level, first.risk.findings.map((f) => f.rule)], ["info", ["permit2_cancel"]]);
+  assert.equal(first.display.call["selector"], "0x65d9723c");
+  // Not landed yet: the same first step again, and the screen doesn't say it's done.
+  assert.deepEqual(ok<Rev>(await service.handle({ type: "prepare_revoke_evm", kind: "permit2", contract: P2, token: LUMA, spender: SPENDER })).risk.findings.map((f) => f.rule), ["permit2_cancel"]);
+  assert.equal(ok<Full & { permit2: { permitsCancelled?: boolean }[] }>(await service.handle({ type: "approvals" })).permit2[0]?.permitsCancelled, undefined);
+  net.state.permit2[pair]!.nonce = 3 + 65_535;
+  assert.equal(ok<Full & { permit2: { permitsCancelled?: boolean }[] }>(await service.handle({ type: "approvals" })).permit2[0]?.permitsCancelled, true);
+  const p2 = ok<Rev>(await service.handle({ type: "prepare_revoke_evm", kind: "permit2", contract: P2, token: LUMA, spender: SPENDER }));
   assert.deepEqual([p2.risk.level, p2.risk.findings.map((f) => f.rule)], ["info", ["allowance_revoke"]]);
   // A Permit2 revoke goes only to Permit2.
   assert.equal((await service.handle({ type: "prepare_revoke_evm", kind: "permit2", contract: NFT, token: LUMA, spender: SPENDER })).ok, false);
@@ -201,6 +214,11 @@ test("approvals name Seaport and Talis's contracts; Talis's only on Injective", 
     r.risk.findings.map((f) => [f.rule, f.message]),
     [["nft_approval_revoke", "Removes Seaport's access to your NFTs in this collection."]],
   );
+  // Run-4: a revoke only pauses listings signed before it; they can all be cancelled.
+  const c = ok<Rev & { display: { call: Record<string, unknown> } }>(await service.handle({ type: "prepare_revoke_evm", kind: "seaport_cancel", contract: SEAPORT }));
+  assert.deepEqual([c.risk.level, c.risk.findings.map((f) => [f.rule, f.message])], ["info", [["seaport_cancel", "Cancels every Seaport listing you signed."]]]);
+  assert.equal(c.display.call["selector"], "0x5b34b966");
+  assert.equal((await service.handle({ type: "prepare_revoke_evm", kind: "seaport_cancel", contract: NFT })).ok, false);
 });
 
 test("approvals on another EVM chain: only where the user looks, revoked there", async () => {

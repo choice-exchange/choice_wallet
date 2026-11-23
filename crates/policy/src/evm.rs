@@ -204,6 +204,8 @@ const SAFE_TRANSFER_FROM_DATA: [u8; 4] = 0xb88d4fdeu32.to_be_bytes();
 const TRANSFER_FROM: [u8; 4] = 0x23b872ddu32.to_be_bytes();
 /// Permit2 `approve(address token, address spender, uint160 amount, uint48 expiration)`.
 const PERMIT2_APPROVE: [u8; 4] = 0x87517c45u32.to_be_bytes();
+/// Permit2's `invalidateNonces(address,address,uint48)`.
+const PERMIT2_INVALIDATE: [u8; 4] = 0x65d9723cu32.to_be_bytes();
 /// ERC20 `transfer(address,uint256)`. Its exact form is `Call::Erc20Transfer`; any other form
 /// reaches `contract_call`.
 const TRANSFER: [u8; 4] = erc20::TRANSFER_SELECTOR;
@@ -855,6 +857,22 @@ fn contract_call(
             {
                 let expiration = expiration.to_u64().expect("48 bits");
                 out.push(swap::permit2_approve(choice, &token, &spender, amount, expiration));
+                return;
+            }
+        }
+        // Permit2's own cancel of permits the sender signed for a spender and token: it moves
+        // only the sender's nonce, so it takes nothing.
+        PERMIT2_INVALIDATE if data.len() == 4 + 3 * 32 && tx.to == permit2() => {
+            if let (Some(token), Some(spender), Some(nonce)) = (address_arg(data, 0), address_arg(data, 1), uint_arg(data, 2))
+                && nonce.to_u64().is_some_and(|n| n < 1 << 48)
+            {
+                let spender = spender.to_checksum_hex();
+                out.push(finding(
+                    "permit2_cancel",
+                    Level::Info,
+                    format!("Cancels Permit2 permits you signed for {} on this token.", short(&spender)),
+                    json!({ "token": token.to_checksum_hex(), "spender": spender, "nonce": nonce.to_string() }),
+                ));
                 return;
             }
         }
