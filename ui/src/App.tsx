@@ -68,7 +68,7 @@ export function App() {
     return backend.onRefresh?.(() => {
       backend.send({ type: "status", poll: true }).then(
         (r) => {
-          if (r.ok && r.result.unlocked !== (watching === "home")) show(r.result);
+          if (r.ok && (r.result.unlocked !== (watching === "home") || !r.result.hasWallet)) show(r.result);
         },
         () => {},
       );

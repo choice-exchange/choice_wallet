@@ -194,6 +194,7 @@ export function createService(d: Deps) {
     endpoints: solanaEndpoints,
     riskFacts: (n, recipient) => contacts.facts(n, recipient),
     owned,
+    turn: records,
   });
   const evmChains = createEvmChains({ fetch: d.fetch, local: d.local, prices: showPrices, owned, turn: records });
   const added = createAddedChains({ fetch: d.fetch, local: d.local, turn: records, ...(d.resizeImage ? { resize: d.resizeImage } : {}) });
@@ -304,14 +305,14 @@ export function createService(d: Deps) {
     const left = now.flatMap((a) => Object.values(a.addresses));
     const held = new Set(left.map(addressKey));
     const has = (x: unknown) => typeof x === "string" && held.has(addressKey(x));
-    // A removed account's Solana records go with it.
-    if (before) {
-      const kept = new Set(solanaMintKeys(now));
-      const gone = solanaMintKeys(before).filter((k) => !kept.has(k));
-      if (gone.length > 0) await d.local.remove(gone);
-    }
     // In the records' turn: a writer's read and write never straddle the pruning.
     await records(async () => {
+      // A removed account's Solana records go with it (in the turn, as their writer is).
+      if (before) {
+        const kept = new Set(solanaMintKeys(now));
+        const gone = solanaMintKeys(before).filter((k) => !kept.has(k));
+        if (gone.length > 0) await d.local.remove(gone);
+      }
     const got = (await d.local.get(["votes_cast", "chain_sent", "bridge_transfers", "solana_rent", "rescue"])) as Record<string, unknown>;
     const only = (o: unknown, keep: (k: string) => boolean) => Object.fromEntries(Object.entries(isObject(o) ? o : {}).filter(([k]) => keep(k)));
     const next: Record<string, unknown> = {};
@@ -644,6 +645,9 @@ export function createService(d: Deps) {
         if (out.ok) {
           dapps.rejectAll("The wallet was reset.");
           d.notify(wereConnected);
+          // The wallet's own open pages go back to the welcome screen, and a revealed phrase
+          // or key goes with them, as after a lock (run-4).
+          d.refresh?.();
           // In their own turns too, after anything they had under way (run-2 C14). Not
           // awaited: a check waiting on a slow endpoint doesn't hold up the reset.
           void watcher.clear().catch(() => {});

@@ -57,7 +57,7 @@ import {
 import { diskCache } from "./cache";
 import type { RiskFacts } from "./contacts";
 import type { Store } from "./service";
-import { fail } from "./util";
+import { fail, ownTurn, type Turn } from "./util";
 
 export interface SolanaDeps {
   vault<T>(method: string, params?: unknown): Promise<Result<T>>;
@@ -70,6 +70,9 @@ export interface SolanaDeps {
   /** Whether an account on the list still holds an address: tokens seen for one that went
    *  away while the cluster was asked aren't kept (run-2 C14). */
   owned?(address: string): Promise<boolean>;
+  /** The records' turn (service.ts), shared with Reset: a record written after Reset's
+   *  removal would outlive the wallet (run-4). */
+  turn?: Turn;
 }
 
 /** A Solana transaction between its review and its broadcast (in `pending_send`). */
@@ -147,11 +150,15 @@ export function createSolana(d: SolanaDeps) {
   }
 
   async function remember(network: NetworkId, owner: string, mints: Iterable<string>): Promise<void> {
-    const have = await seen(network, owner);
-    const known = KNOWN[network];
-    const fresh = [...new Set(mints)].filter((m) => !have.includes(m) && !known[m] && isSolanaAddress(m));
-    if (fresh.length === 0 || (d.owned && !(await d.owned(owner)))) return;
-    await d.local.set({ [seenKey(network, owner)]: [...have, ...fresh].slice(-50) });
+    // The check that the account is still on the list and the write are one step in the
+    // records' turn, ordered with Reset's removal.
+    await (d.turn ?? ownTurn)(async () => {
+      const have = await seen(network, owner);
+      const known = KNOWN[network];
+      const fresh = [...new Set(mints)].filter((m) => !have.includes(m) && !known[m] && isSolanaAddress(m));
+      if (fresh.length === 0 || (d.owned && !(await d.owned(owner)))) return;
+      await d.local.set({ [seenKey(network, owner)]: [...have, ...fresh].slice(-50) });
+    });
   }
 
   /** How the wallet names a token: its own list, else the token's Metaplex metadata (which

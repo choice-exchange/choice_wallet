@@ -440,4 +440,12 @@ test("a fee granter isn't the signer", () => {
   assert.deepEqual(p.fee.length > 0, true);
   // No granter: the fee payer is the signer, as before.
   assert.equal(summarize(tx(22, [send(ME, THEM, "1inj")], [...feePaidBy(ME), ...move(ME, THEM, "1inj")]), ME).signed, true);
+  // Run-4: a stranger paying its own fee, with a message that only names this account in a
+  // field that isn't that type's signer (wasmd instantiate's admin), sent junk: not ME's.
+  const instantiate = { "@type": "/cosmwasm.wasm.v1.MsgInstantiateContract", sender: THEM, admin: ME, code_id: "5", label: "x", msg: {}, funds: [] };
+  const stranger = { ...tx(24, [send(THEM, ME, `777${USDT}`), instantiate], [...feePaidBy(THEM), ...move(THEM, ME, `777${USDT}`)]), feePayer: THEM };
+  assert.equal(summarize(stranger, ME).signed, false);
+  // The same type with this account as its sender is its own.
+  const mineInst = { ...tx(25, [{ ...instantiate, sender: ME, admin: THEM }], feePaidBy(THEM)), feePayer: THEM };
+  assert.equal(summarize(mineInst, ME).signed, true);
 });

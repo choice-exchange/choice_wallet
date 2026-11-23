@@ -401,10 +401,18 @@ fn read(msg: &[u8]) -> Result<(ContractCall, Vec<String>), Error> {
         return Ok((unread(), Vec::new()));
     };
     // A burn or mint with both an amount and an NFT ID means one thing to a CW20 and another
-    // to a CW721: which one is the contract's to say.
-    let both = |key: &str| value[key].get("amount").is_some() && value[key].get("token_id").is_some();
-    if matches!(known, Known::Burn(_)) && both("burn") || matches!(known, Known::Mint(_)) && both("mint") {
-        return Ok((unread(), Vec::new()));
+    // to a CW721, and so does one written as a JSON array (serde reads a struct from one by
+    // position): which one is the contract's to say. Unread, named as what it is, never another
+    // contract's call (run-4: a keyed mint fell to Info; ["7"] read as a CW20 amount).
+    let ambiguous =
+        |key: &str| value[key].is_array() || value[key].get("amount").is_some() && value[key].get("token_id").is_some();
+    for (key, is) in [
+        ("burn", matches!(known, Known::Burn(_))),
+        ("mint", matches!(known, Known::Mint(_))),
+    ] {
+        if is && ambiguous(key) {
+            return Ok((ContractCall::Unread { action: key.into() }, Vec::new()));
+        }
     }
     let mut ignored = Vec::new();
     extra_keys(
@@ -924,12 +932,26 @@ mod tests {
             );
         }
         // A mint makes new tokens rather than moving the signer's: any other shape (a
-        // launchpad's own, or one with both an amount and an NFT ID) is another contract's call.
+        // launchpad's own) is another contract's call.
         assert_eq!(parse(br#"{"mint":{}}"#).unwrap(), ContractCall::Other);
         assert_eq!(parse(br#"{"mint":{"amount":2}}"#).unwrap(), ContractCall::Other);
+        // Run-4: one with both an amount and an NFT ID is a CW20 mint to a cw_serde 2 CW20 and
+        // a CW721 mint to a CW721: unread, never another contract's call. So is a burn or
+        // mint written as a JSON array.
+        for json in [
+            r#"{"mint":{"recipient":"inj1a","amount":"5","token_id":"7","owner":"inj1a"}}"#,
+            r#"{"mint":{"recipient":"inj1a","amount":"5","token_id":null}}"#,
+            r#"{"mint":{"token_id":"1","owner":"inj1a","amount":"1"}}"#,
+        ] {
+            assert_eq!(
+                parse(json.as_bytes()).unwrap(),
+                ContractCall::Unread { action: "mint".into() },
+                "{json}"
+            );
+        }
         assert_eq!(
-            parse(br#"{"mint":{"recipient":"inj1a","amount":"5","token_id":"7","owner":"inj1a"}}"#).unwrap(),
-            ContractCall::Other
+            parse(br#"{"burn":["7"]}"#).unwrap(),
+            ContractCall::Unread { action: "burn".into() }
         );
     }
 

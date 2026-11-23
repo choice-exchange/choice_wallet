@@ -531,7 +531,8 @@ fn simulated(moves: &[crate::EvmTransfer], req: &TxRequest, ctx: &Context, out: 
         out.push(finding(
             "simulated_payment",
             Level::Amber,
-            "Simulated: tokens leave your account for this contract and nothing comes back.".into(),
+            "Simulated: tokens leave your account for this contract and nothing the wallet can value comes back."
+                .into(),
             json!({ "contract": called, "tokens": tokens }),
         ));
     }

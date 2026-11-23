@@ -12,7 +12,7 @@
 // send, decoded and graded by the vault. Cosmos revokes go in one transaction; each ERC20
 // revoke is its own (an `approve(spender, 0)` on that token).
 
-import { chainByKey, contractNames, cw20Address, cw721Candidates, cw721Tokens, evmAddress, evmDenom, EvmIndex, isObject, isTokenId, NETWORKS, type EvmRpc, type Fetch, type Lcd, type NetworkId } from "@choice-wallet/chain";
+import { chainByKey, contractNames, cw20Address, cw721CandidatesRead, cw721Tokens, evmAddress, evmDenom, EvmIndex, isObject, isTokenId, NETWORKS, type EvmRpc, type Fetch, type Lcd, type NetworkId } from "@choice-wallet/chain";
 import type { AccountInfo, ApprovalsSummary, EvmRevokeKind, Result, RevokeItem, SendReview, TokenInfo } from "@choice-wallet/ui/protocol";
 
 import { evmChains } from "./evmchains";
@@ -30,8 +30,14 @@ const CW20_MAX = "340282366920938463463374607431768211455";
 
 const TYPE_URL = /^\/[A-Za-z0-9._]{1,127}$/;
 
-/** Standing permissions the wallet has no reader for yet: always named as not checked. */
-const NOT_READ: string[] = [];
+/** Standing permissions the wallet signs for sites but has no reader for yet: always named as
+ *  not checked, so the screen never says nothing stands while one may (run-4). */
+const NOT_READ_EVM = ["ERC-777 operators", "signed but unfilled Seaport orders and Permit2 or token permits"];
+const NOT_READ: string[] = [
+  "Solana token delegates, close and stake authorities",
+  "CW20 allowances on CW20s the wallet doesn't list or you no longer hold",
+  ...NOT_READ_EVM,
+];
 /** CW721 collections, and their NFTs, whose approvals are asked. */
 const CW721_COLLECTIONS = 20;
 const CW721_TOKENS = 60;
@@ -91,10 +97,12 @@ async function evmPermissions(index: EvmIndex | null, rpc: () => Promise<EvmRpc>
       if (a === null || a === undefined) missing("some ERC20 allowances");
       else if (a > 0n) out.erc20.push({ token: p.token, spender: p.spender, amount: a.toString() });
     });
-    // A token burned or sent away no longer answers, and its approval went with it.
+    // A token sent away answers no one. A read that failed is named: a burned token's revert
+    // and a node's error look the same here (run-4).
     nfts.forEach((t, i) => {
       const who = approved[i];
-      if (who) out.nftApprovals.push({ ...t, approved: who });
+      if (who === null || who === undefined) missing("some NFT approvals");
+      else if (who) out.nftApprovals.push({ ...t, approved: who });
     });
     ops.forEach((o, i) => {
       const on = operators[i];
@@ -121,7 +129,11 @@ async function cw721Permissions(lcd: Lcd, owner: string, added: readonly string[
   };
   let collections: string[];
   try {
-    collections = [...new Set([...added, ...(await cw721Candidates(lcd, owner))])];
+    const found = await cw721CandidatesRead(lcd, owner);
+    // The tx index's newest transactions only, or a query that failed: collections may be
+    // missing, and the screen says so (run-4).
+    if (!found.complete) missing("CW721 approvals in collections the tx index couldn't list in full (add a collection by hand)");
+    collections = [...new Set([...added, ...found.contracts])];
   } catch {
     missing("CW721 approvals");
     return out;
@@ -241,7 +253,7 @@ export function createApprovals(sender: Sender, chains: ApprovalChains) {
     if (!owner) return fail("bad_request", "This account has no EVM address.");
     try {
       const urls = await chains.historyEndpoints(network, c.key);
-      const unchecked: string[] = [];
+      const unchecked: string[] = [...NOT_READ_EVM];
       const perms = await evmPermissions(urls.length > 0 ? new EvmIndex(urls, chains.fetch) : null, () => sender.chainRpc(network, c.key), owner, unchecked, now());
       // Token names from the chain itself, for a few.
       const tokens: Record<string, TokenInfo> = {};

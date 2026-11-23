@@ -175,14 +175,44 @@ export function balanceChanges(
 
 const ERC20_DENOM = /^erc20:(0x[0-9a-fA-F]{40})$/;
 
-/** The fields that name each message's signer, by the SDK's first-signer rule. */
-const SIGNER_FIELDS = ["from_address", "sender", "delegator_address", "granter", "voter", "proposer", "depositor", "signer", "authority", "admin"];
+/** Each message type's signer field (its cosmos.msg.v1.signer option). A field of the same
+ *  name on another type need not be a signer: wasmd's instantiate `admin` is any address the
+ *  sender picks (run-4: a stranger's tx read as this account's). A type not listed here makes
+ *  no claim, which at worst hides a junk-only row. */
+const SIGNER_FIELD: Record<string, string> = {
+  "/cosmos.bank.v1beta1.MsgSend": "from_address",
+  "/cosmos.staking.v1beta1.MsgDelegate": "delegator_address",
+  "/cosmos.staking.v1beta1.MsgUndelegate": "delegator_address",
+  "/cosmos.staking.v1beta1.MsgBeginRedelegate": "delegator_address",
+  "/cosmos.staking.v1beta1.MsgCancelUnbondingDelegation": "delegator_address",
+  "/cosmos.distribution.v1beta1.MsgWithdrawDelegatorReward": "delegator_address",
+  "/cosmos.distribution.v1beta1.MsgSetWithdrawAddress": "delegator_address",
+  "/cosmos.distribution.v1beta1.MsgFundCommunityPool": "depositor",
+  "/cosmos.gov.v1beta1.MsgVote": "voter",
+  "/cosmos.gov.v1.MsgVote": "voter",
+  "/cosmos.gov.v1beta1.MsgVoteWeighted": "voter",
+  "/cosmos.gov.v1.MsgVoteWeighted": "voter",
+  "/cosmos.gov.v1beta1.MsgDeposit": "depositor",
+  "/cosmos.gov.v1.MsgDeposit": "depositor",
+  "/cosmos.gov.v1beta1.MsgSubmitProposal": "proposer",
+  "/cosmos.gov.v1.MsgSubmitProposal": "proposer",
+  "/cosmos.authz.v1beta1.MsgGrant": "granter",
+  "/cosmos.authz.v1beta1.MsgRevoke": "granter",
+  "/cosmos.feegrant.v1beta1.MsgGrantAllowance": "granter",
+  "/cosmos.feegrant.v1beta1.MsgRevokeAllowance": "granter",
+  "/ibc.applications.transfer.v1.MsgTransfer": "sender",
+};
 
 function messageSigner(tx: IndexedTx, address: string): boolean {
   return tx.messages.some((m) => {
-    if (m["@type"] === "/cosmos.authz.v1beta1.MsgExec") return m["grantee"] === address;
-    if (m["@type"] === "/cosmos.bank.v1beta1.MsgMultiSend") return Array.isArray(m["inputs"]) && m["inputs"].some((i) => isObject(i) && i["address"] === address);
-    return SIGNER_FIELDS.some((k) => m[k] === address);
+    const type = String(m["@type"] ?? "");
+    if (type === "/cosmos.authz.v1beta1.MsgExec") return m["grantee"] === address;
+    if (type === "/cosmos.bank.v1beta1.MsgMultiSend") return Array.isArray(m["inputs"]) && m["inputs"].some((i) => isObject(i) && i["address"] === address);
+    // CosmWasm's and Injective's own messages are signed by `sender` (their `admin` and
+    // `granter` fields are not signers).
+    if (type.startsWith("/cosmwasm.wasm.v1.") || type.startsWith("/injective.")) return m["sender"] === address;
+    const field = SIGNER_FIELD[type];
+    return field !== undefined && m[field] === address;
   });
 }
 

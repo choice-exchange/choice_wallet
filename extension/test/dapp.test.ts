@@ -314,11 +314,19 @@ test("a site's EVM transaction is simulated: what leaves the account is shown an
   assert.equal(drained.risk.level, "red");
   assert.ok(rules(drained).includes("simulated_loss"), rules(drained).join());
   assert.deepEqual(drained.simulation, { ok: true, changes: [{ denom: `evm:${usdc}`, amount: "-5000000" }] });
-  // A swap: something comes back. Only the unread call is said.
-  const swap = await review([move(ME_EVM, router), { ...move(router, ME_EVM), address: `0x${"42".repeat(20)}` }]);
+  // A swap: the chain's coin comes back. A trade the wallet can't weigh: amber, named.
+  const swap = await review([move(ME_EVM, router), { ...move(router, ME_EVM), address: "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" }]);
   assert.equal(swap.risk.level, "amber");
-  assert.ok(!rules(swap).some((x) => x.startsWith("simulated_")));
+  assert.ok(rules(swap).includes("simulated_trade"), rules(swap).join());
   assert.ok(rules(swap).includes("contract_call_unread"));
+  // Run-4: an unlisted token coming back is nothing the wallet can value. Paid to the
+  // contract called: amber; to anyone else: red.
+  const junk = { ...move(router, ME_EVM), address: `0x${"42".repeat(20)}` };
+  const paid = await review([move(ME_EVM, router), junk]);
+  assert.ok(rules(paid).includes("simulated_payment"), rules(paid).join());
+  const robbed = await review([move(ME_EVM, payee), junk]);
+  assert.equal(robbed.risk.level, "red");
+  assert.ok(rules(robbed).includes("simulated_loss"), rules(robbed).join());
   // A node that can't simulate: no simulation, the unread call still amber.
   const blind = await review(null);
   assert.equal(blind.simulation, undefined);

@@ -74,7 +74,15 @@ export function isTokenId(id: unknown): id is string {
 
 /** CW721 collections the tx index says moved an NFT to `owner` or minted one for it. */
 export async function cw721Candidates(lcd: Lcd, owner: string): Promise<string[]> {
+  return (await cw721CandidatesRead(lcd, owner)).contracts;
+}
+
+/** The same, and whether that is every one the index holds: false when a query failed or
+ *  had more than the newest INDEX_LOOK transactions, which a screen that promises to name
+ *  what it didn't check has to say (run-4). */
+export async function cw721CandidatesRead(lcd: Lcd, owner: string): Promise<{ contracts: string[]; complete: boolean }> {
   const found = new Set<string>();
+  let complete = true;
   const read = (txs: IndexedTx[]) => {
     for (const tx of txs) {
       if (tx.code !== 0) continue;
@@ -88,13 +96,16 @@ export async function cw721Candidates(lcd: Lcd, owner: string): Promise<string[]
   };
   for (const q of [`wasm.recipient='${owner}'`, `wasm.owner='${owner}'`]) {
     try {
-      read((await lcd.searchTxs(q, 1, INDEX_LOOK)).txs);
+      const page = await lcd.searchTxs(q, 1, INDEX_LOOK);
+      read(page.txs);
+      if (!page.done) complete = false;
     } catch (e) {
       // A node whose index can't answer this query isn't a reason to show nothing.
       if (!(e instanceof Down || e instanceof Unreachable || e instanceof ChainError)) throw e;
+      complete = false;
     }
   }
-  return [...found];
+  return { contracts: [...found], complete };
 }
 
 /** A CW721's name and symbol, or null if `contract` doesn't answer like one. */

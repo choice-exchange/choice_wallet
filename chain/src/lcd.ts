@@ -410,7 +410,9 @@ export class Lcd {
       }
       const message = isObject(body) && typeof body["message"] === "string" ? body["message"] : "";
       if (/page should be within/.test(message)) return { txs: [], done: true };
-      if (isObject(body) && typeof body["code"] === "number" && message && !/not available|lowest height|pruned/i.test(message)) {
+      // A node without (all of) the index is this endpoint's limit, not the chain's answer:
+      // the next endpoint is asked (run-4: one LCD with indexing off silenced the search).
+      if (isObject(body) && typeof body["code"] === "number" && message && !/not available|lowest height|pruned|indexing is disabled|tx indexer|indexer is disabled/i.test(message)) {
         throw new ChainError(body["code"], cleanMessage(message));
       }
       throw new Down(`tx search: HTTP ${status}${message ? ` (${message.slice(0, 80)})` : ""}`);
