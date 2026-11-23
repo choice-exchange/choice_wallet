@@ -358,6 +358,10 @@ fn capitalized(s: &str) -> String {
     out
 }
 
+/// Seaport 1.6's `incrementCounter()` and `cancel(OrderComponents[])`.
+const SEAPORT_INCREMENT_COUNTER: [u8; 4] = [0x5b, 0x34, 0xb9, 0x66];
+const SEAPORT_CANCEL: [u8; 4] = [0xfd, 0x9f, 0x1e, 0x10];
+
 /// 20 bytes from 40 hex digits (a constant written in source).
 fn hex20(h: &str) -> [u8; 20] {
     let mut out = [0u8; 20];
@@ -815,12 +819,15 @@ fn contract_call(
                     )
                 } else if seaport {
                     // Listing on Talis (or any market on Seaport 1.6) starts here. Seaport has no
-                    // owner and moves an approved NFT only for an order its owner signed or sent,
-                    // and the wallet reads every Seaport order before it is signed.
+                    // owner and moves an approved NFT only for an order its owner signed or sent.
+                    // The wallet reads every Seaport order before it is signed, and a call to
+                    // Seaport it can't read is red. A listing signed before a revoke comes back
+                    // with this, so it says so (run-4).
                     finding(
                         "nft_approval_seaport",
                         Level::Amber,
-                        "Lets Seaport move NFTs in this collection, only for listings you sign.".into(),
+                        "Lets Seaport move NFTs in this collection for listings you sign, and any you signed before."
+                            .into(),
                         params,
                     )
                 } else {
@@ -851,7 +858,38 @@ fn contract_call(
                 return;
             }
         }
+        // Seaport's own cancels: of some of the sender's orders, or of all it ever signed.
+        // Only an order's offerer or zone may cancel it, so either takes nothing.
+        SEAPORT_INCREMENT_COUNTER if data.len() == 4 && tx.to == talis::seaport() => {
+            out.push(finding(
+                "seaport_cancel",
+                Level::Info,
+                "Cancels every Seaport listing you signed.".into(),
+                json!({ "contract": to }),
+            ));
+            return;
+        }
+        SEAPORT_CANCEL if tx.to == talis::seaport() => {
+            out.push(finding(
+                "seaport_cancel",
+                Level::Info,
+                "Cancels Seaport listings you signed.".into(),
+                json!({ "contract": to }),
+            ));
+            return;
+        }
         _ => {}
+    }
+    // Any other call to Seaport (validate, match, fulfil) can sell what the account approved
+    // to it on an order the calldata carries, which the wallet doesn't read (run-4).
+    if tx.to == talis::seaport() {
+        out.push(finding(
+            "seaport_call",
+            Level::Red,
+            "Calls Seaport in a way the wallet can't read. It can sell NFTs and tokens you approved to it.".into(),
+            json!({ "contract": to, "selector": format!("0x{:08x}", u32::from_be_bytes(sel)) }),
+        ));
+        return;
     }
     // Every arm that read its call has returned. A token call left here has a trailing byte,
     // a dirty address word or the wrong length, and the token may still run it. Any other call
@@ -1775,9 +1813,20 @@ mod tests {
             assert_eq!((a.level, a.findings[0].rule), (Level::Amber, "nft_approval_seaport"));
             assert_eq!(
                 a.findings[0].message,
-                "Lets Seaport move NFTs in this collection, only for listings you sign."
+                "Lets Seaport move NFTs in this collection for listings you sign, and any you signed before."
             );
         }
+        // Run-4: a call to Seaport the wallet can't read (validate, fulfil, match) is red; its
+        // own cancels are info. The selectors are keccak256 of their signatures.
+        let order = "(address,address,(uint8,address,uint256,uint256,uint256)[],(uint8,address,uint256,uint256,uint256,address)[],uint8,uint256,uint256,bytes32,uint256,bytes32,uint256)";
+        let sel = |sig: &str| <[u8; 4]>::try_from(&keccak256(sig.as_bytes())[..4]).unwrap();
+        assert_eq!(sel("incrementCounter()"), SEAPORT_INCREMENT_COUNTER);
+        assert_eq!(sel(&format!("cancel({order}[])")), SEAPORT_CANCEL);
+        let validate = sel(&format!("validate(({order},bytes)[])"));
+        let a = grade(&req(seaport, call(validate, &[[0u8; 32]])));
+        assert_eq!((a.level, a.findings[0].rule), (Level::Red, "seaport_call"));
+        let a = grade(&req(seaport, SEAPORT_INCREMENT_COUNTER.to_vec()));
+        assert_eq!((a.level, a.findings[0].rule), (Level::Info, "seaport_cancel"));
         let off = grade(&req(
             collection,
             call(SET_APPROVAL_FOR_ALL, &[addr_word(*seaport.as_bytes()), [0u8; 32]]),
