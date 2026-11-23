@@ -618,6 +618,77 @@ test("a Solana transaction that hands away a stake account, or takes its SOL, sa
   assert.deepEqual(shownWithdraw.sends, [{ coins: [{ denom: "sol", amount: "100000000000" }], to: THEM_SOL }]);
 });
 
+// Run-4: a Solana message's only tie to a cluster is its blockhash, or its durable nonce's
+// value. One the reviewed cluster doesn't hold could be signed for another (a Devnet review,
+// mainnet funds), so it isn't signed at all. A durable nonce account the account is the
+// authority of is its own SOL, and handing it on is red with GIVE, whatever program does it.
+test("a site's Solana transaction is signed only for the cluster it's reviewed on", async () => {
+  const net = chain();
+  const { page, window, service } = await setup(net);
+  const site = page(SITE);
+  const asked = site("solana_connect", {});
+  ok(await service.handle({ type: "dapp_answer", id: (await window()).id, approve: true }));
+  await asked;
+  const NONCE = bs58(new Uint8Array(32).fill(0x4e));
+  const SYSTEM = "11111111111111111111111111111111";
+  const RECENT = "SysvarRecentB1ockHashes11111111111111111111";
+  const unread = bs58(new Uint8Array(32).fill(0x42));
+  const nonceAccount = (authority: string, value: Uint8Array, lamports = 1_500_000) => {
+    const d = new Uint8Array(80);
+    new DataView(d.buffer).setUint32(0, 1, true);
+    new DataView(d.buffer).setUint32(4, 1, true);
+    d.set(base58Decode(authority), 8);
+    d.set(value, 40);
+    return { lamports, owner: SYSTEM, data: [Buffer.from(d).toString("base64"), "base64"], executable: false, rentEpoch: 0, space: 80 };
+  };
+  /** A legacy message ME_SOL signs: `writable` then `readonly` keys, its blockhash, instructions. */
+  const tx = (writable: string[], readonly: string[], blockhash: Uint8Array, ixs: { program: number; accounts: number[]; data: number[] }[]) => {
+    const keys = [ME_SOL, ...writable, ...readonly].map(base58Decode);
+    const body = ixs.flatMap((i) => [i.program, i.accounts.length, ...i.accounts, i.data.length, ...i.data]);
+    const message = Uint8Array.from([1, 0, readonly.length, keys.length, ...keys.flatMap((k) => [...k]), ...blockhash, ixs.length, ...body]);
+    return hexOf(Uint8Array.from([1, ...new Uint8Array(64), ...message]));
+  };
+  const review = async (transaction: string) => {
+    const signing = site("solana_signTransaction", { account: ME_SOL, transaction });
+    const w = await window();
+    const r = await service.handle({ type: "dapp_review", id: w.id });
+    ok(await service.handle({ type: "dapp_answer", id: w.id, approve: false }));
+    assert.equal(((await signing) as Reply).error?.code, 4001);
+    return r;
+  };
+  net.state.solana.simulateSpend = 5_000n;
+  const nop = { program: 1, accounts: [0], data: [7] };
+
+  // A blockhash this cluster doesn't hold: refused before review, whatever it does.
+  const foreign = await review(tx([], [unread], new Uint8Array(32).fill(8), [nop]));
+  assert.equal(code(foreign), "bad_request", JSON.stringify(foreign));
+  assert.match(JSON.stringify(foreign), /wasn't made on Solana/);
+  // One it holds: reviewed.
+  ok(await review(tx([], [unread], new Uint8Array(32).fill(9), [nop])));
+
+  // A durable nonce: AdvanceNonceAccount first, the message's blockhash its value.
+  const value = new Uint8Array(32).fill(0x33);
+  const advance = { program: 3, accounts: [1, 2, 0], data: [4, 0, 0, 0] };
+  const durable = tx([NONCE], [RECENT, SYSTEM, unread], value, [advance, { program: 4, accounts: [0], data: [7] }]);
+  // No such nonce account here, or one holding another value: refused.
+  assert.equal(code(await review(durable)), "bad_request");
+  net.state.solana.accounts[NONCE] = nonceAccount(ME_SOL, new Uint8Array(32).fill(0x34));
+  assert.equal(code(await review(durable)), "bad_request");
+  // The cluster's nonce account holds it: reviewed.
+  net.state.solana.accounts[NONCE] = nonceAccount(ME_SOL, value);
+  ok(await review(durable));
+
+  // A program the wallet can't read hands the nonce account to THEM: red with GIVE.
+  net.state.solana.simulateAfter = (a: string, r: unknown) => (a === NONCE ? nonceAccount(THEM_SOL, value) : r);
+  const handed = ok<DappReview>(await review(tx([NONCE], [unread], new Uint8Array(32).fill(9), [{ program: 2, accounts: [1, 0], data: [7] }])));
+  assert.deepEqual([handed.risk.level, handed.risk.confirm], ["red", "GIVE"], JSON.stringify(handed.risk));
+  assert.ok(handed.risk.findings.some((f) => f.rule === "solana_nonce_authority"), JSON.stringify(handed.risk));
+  // Or empties it: its SOL is shown leaving.
+  net.state.solana.simulateAfter = (a: string, r: unknown) => (a === NONCE ? null : r);
+  const emptied = ok<DappReview>(await review(tx([NONCE], [unread], new Uint8Array(32).fill(9), [{ program: 2, accounts: [1, 0], data: [7] }])));
+  assert.deepEqual((emptied.simulation as { changes: unknown[] }).changes, [{ denom: "sol", amount: (-(1_500_000n + 5_000n)).toString() }], JSON.stringify(emptied.simulation));
+});
+
 // Run-2 NV2: the review compares what a site's transaction writes before and after a
 // simulation, which reports on at most 100 accounts. A transaction whose lookup table puts the
 // account's USDC account 101st isn't simulated in part: it isn't signed at all.

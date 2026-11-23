@@ -188,12 +188,13 @@ export class SolanaRpc {
 
   /** Simulate a transaction (base64, unsigned or partly signed), with what `addresses` hold
    *  after it (at most `SIMULATE_MAX_ACCOUNTS`: more is refused, never cut short, so no
-   *  caller reads a partial answer as whole). */
+   *  caller reads a partial answer as whole). Its own blockhash is kept, so one this cluster
+   *  doesn't hold fails. */
   async simulateWith(tx: string, addresses: readonly string[]): Promise<{ err: unknown; logs: string[]; after: (RawAccount | null)[] }> {
     if (addresses.length > SIMULATE_MAX_ACCOUNTS) throw new RangeError(`A simulation reports on at most ${SIMULATE_MAX_ACCOUNTS} accounts.`);
     const r = await this.call("simulateTransaction", [
       tx,
-      { encoding: "base64", sigVerify: false, replaceRecentBlockhash: true, commitment: "confirmed", accounts: { encoding: "base64", addresses } },
+      { encoding: "base64", sigVerify: false, replaceRecentBlockhash: false, commitment: "confirmed", accounts: { encoding: "base64", addresses } },
     ]);
     const v = isObject(r) ? r["value"] : undefined;
     if (!isObject(v)) throw new Down("simulateTransaction: no value");
@@ -225,6 +226,14 @@ export class SolanaRpc {
     const addresses = candidates();
     const found = await this.accounts(addresses);
     return found.flatMap((a, i) => tokenAccount(addresses[i]!, a)).filter((t) => t.owner === owner);
+  }
+
+  /** Whether this cluster still takes `blockhash`: one made on another cluster it never does. */
+  async blockhashValid(blockhash: string): Promise<boolean> {
+    const r = await this.call("isBlockhashValid", [blockhash, { commitment: "processed" }]);
+    const v = isObject(r) ? r["value"] : undefined;
+    if (typeof v !== "boolean") throw new Down("isBlockhashValid: no value");
+    return v;
   }
 
   async latestBlockhash(): Promise<{ blockhash: string; lastValidBlockHeight: number }> {

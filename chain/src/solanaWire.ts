@@ -63,7 +63,15 @@ export interface SolanaMessageKeys {
   writable: boolean[];
   /** A v0 message's lookup tables, and which of each one's entries it reads. */
   lookups: { table: string; writable: number[]; readonly: number[] }[];
+  /** Its recent blockhash (base58), or its durable nonce's value: the message's only tie to a
+   *  cluster. */
+  blockhash: string;
+  /** The durable nonce account its first instruction (System's AdvanceNonceAccount) advances;
+   *  null without one. */
+  nonceAccount: string | null;
 }
+
+const SYSTEM_PROGRAM = "11111111111111111111111111111111";
 
 /** The accounts a message names. Throws a RangeError for bytes that aren't a message. */
 export function readSolanaMessage(m: Uint8Array): SolanaMessageKeys {
@@ -83,18 +91,29 @@ export function readSolanaMessage(m: Uint8Array): SolanaMessageKeys {
   at = afterLen;
   if (at + nKeys * 32 + 32 > m.length) throw new RangeError("the message ends early");
   const keys = Array.from({ length: nKeys }, (_, i) => bytesToBase58(m.slice(at + i * 32, at + (i + 1) * 32)));
+  const blockhash = bytesToBase58(m.slice(at + nKeys * 32, at + nKeys * 32 + 32));
   at += nKeys * 32 + 32; // the keys, then the recent blockhash
   if (signers === 0 || signers > nKeys || readonlySigned >= signers || readonlyUnsigned > nKeys - signers) throw new RangeError("the message's header doesn't fit its accounts");
   const writable = keys.map((_, i) => (i < signers ? i < signers - readonlySigned : i < nKeys - readonlyUnsigned));
   const [nIx, afterIx] = shortVec(m, at);
   at = afterIx;
+  let nonceAccount: string | null = null;
   for (let i = 0; i < nIx; i++) {
+    const program = m[at];
     at += 1; // the program's index
     const [nAcc, a1] = shortVec(m, at);
     at = a1 + nAcc;
     const [nData, a2] = shortVec(m, at);
     at = a2 + nData;
     if (at > m.length) throw new RangeError("the message ends early");
+    // A durable nonce, as the runtime finds one: the first instruction is System's
+    // AdvanceNonceAccount (4, as a u32), and its first account is the nonce account. One from a
+    // lookup table isn't read, so it's refused.
+    if (i === 0 && program !== undefined && keys[program] === SYSTEM_PROGRAM && nData >= 4 && m[a2] === 4 && m[a2 + 1] === 0 && m[a2 + 2] === 0 && m[a2 + 3] === 0) {
+      const n = m[a1];
+      if (nAcc < 1 || n === undefined || n >= nKeys) throw new RangeError("its durable nonce account isn't one of its own keys");
+      nonceAccount = keys[n]!;
+    }
   }
   const lookups: SolanaMessageKeys["lookups"] = [];
   if (version === 0) {
@@ -114,7 +133,16 @@ export function readSolanaMessage(m: Uint8Array): SolanaMessageKeys {
     }
   }
   if (at !== m.length) throw new RangeError("the message has bytes after its end");
-  return { version, signers, keys, writable, lookups };
+  return { version, signers, keys, writable, lookups, blockhash, nonceAccount };
+}
+
+/** A System nonce account's authority and the value it holds (base58), from its account; null
+ *  for any other account (its 80 bytes: version u32, state u32 (1 when initialized),
+ *  authority, nonce, fee). */
+export function nonceAccountOf(owner: string, data: Uint8Array): { authority: string; nonce: string } | null {
+  if (owner !== SYSTEM_PROGRAM || data.length !== 80) return null;
+  if (new DataView(data.buffer, data.byteOffset, data.length).getUint32(4, true) !== 1) return null;
+  return { authority: bytesToBase58(data.slice(8, 40)), nonce: bytesToBase58(data.slice(40, 72)) };
 }
 
 /** The addresses an address lookup table holds, from its account's data (they start after

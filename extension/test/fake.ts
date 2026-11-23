@@ -353,6 +353,8 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
       simulateAfter: null as ((address: string, account: unknown) => unknown) | null,
       /** Other accounts on the cluster (a stake account), as base64 `getMultipleAccounts` gives them. */
       accounts: {} as Record<string, unknown>,
+      /** The blockhashes this cluster holds: the tests' (32 bytes of 9) and its latest. */
+      blockhashes: new Set([bs58(new Uint8Array(32).fill(9)), "4wBqpZM9xaSheZzJSMawUKKwhdpChKbZ5eu5ky4Vigw"]),
       down: false,
     },
     /** Base: ME's USDC and ETH there, what TokenMessengerV2 may take, what was broadcast. */
@@ -716,6 +718,8 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
           return ok({ ...ctx, value: (body.params[0] as string[]).map((a) => (a === ME_SOL_USDC && sol.usdc > 0n ? tokenAccount(ME_SOL, SOL_USDC, sol.usdc) : null)) });
         case "getLatestBlockhash":
           return ok({ ...ctx, value: { blockhash: "4wBqpZM9xaSheZzJSMawUKKwhdpChKbZ5eu5ky4Vigw", lastValidBlockHeight: sol.height + 150 } });
+        case "isBlockhashValid":
+          return ok({ ...ctx, value: sol.blockhashes.has(body.params[0] as string) });
         case "getBlockHeight":
           return ok(sol.height);
         case "getRecentPrioritizationFees":

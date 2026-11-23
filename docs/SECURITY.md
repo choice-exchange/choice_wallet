@@ -8,7 +8,7 @@ We build and audit Choice Wallet in house, in the open. This file covers what we
 | --- | --- | --- |
 | Phishing site asks for a harmful signature | Yes | Decode, simulate and risk rules; friction scaled to risk |
 | Dapp or our own UI misdescribes a request | Yes | The vault decodes the exact bytes it signs. Non-canonical bytes are refused |
-| Request for the wrong chain (testnet/mainnet replay) | Yes | Chain ID checked against the connected chain before signing |
+| Request for the wrong chain (testnet/mainnet replay) | Yes | Chain ID checked against the connected chain before signing. On Solana, which has no chain ID, a site's transaction is signed only when its blockhash is one the reviewed cluster holds, or its durable nonce account there holds that value; it is simulated with its own blockhash |
 | Web page sends privileged messages (unlock, approve, export) | Yes | The service worker accepts them only from its own extension pages (`sender.id`, `sender.url`) |
 | Approval reused for a different request | Yes | Approvals are single-use and bound to the request ID. The vault re-decodes at signing and signs only if the digest of the kind, chain, signer and exact signed bytes matches the approved one |
 | Clickjacking or a spoofed approval window | Yes | Buttons disabled until ~800 ms after focus with no press (a click stream started on the page never arms them); no password entry in approval windows; a per-install anti-phishing phrase (three random words) on the unlock screen and in every approval window, which pages can't read |

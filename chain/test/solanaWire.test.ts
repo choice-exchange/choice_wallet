@@ -4,7 +4,7 @@ import { test } from "node:test";
 
 import { base58ToBytes, bytesToBase58 } from "../src/encoding.ts";
 import { STAKE_PROGRAM, stakeAccountOf, TOKEN_PROGRAM, tokenAccountOf } from "../src/solana.ts";
-import { joinSolanaTransaction, lookupTableAddresses, readSolanaMessage, splitSolanaTransaction } from "../src/solanaWire.ts";
+import { joinSolanaTransaction, lookupTableAddresses, nonceAccountOf, readSolanaMessage, splitSolanaTransaction } from "../src/solanaWire.ts";
 
 // Messages compiled by @solana/web3.js (the vault's vectors), signed by the "abandon …
 // about" phrase's Phantom account 0.
@@ -84,4 +84,41 @@ test("a stake account's staker, withdrawer and lockup", () => {
   view.setUint32(0, 2, true);
   assert.equal(stakeAccountOf({ lamports: 1n, owner: TOKEN_PROGRAM, data }), null);
   assert.equal(stakeAccountOf({ lamports: 1n, owner: STAKE_PROGRAM, data: data.slice(0, 123) }), null);
+});
+
+// Run-4: a message's only tie to a cluster is its blockhash, or its durable nonce's value, so
+// the reader gives both: the blockhash, and the nonce account its first instruction advances.
+test("a message's blockhash, and the durable nonce account it advances", () => {
+  const owner = base58ToBytes(V["owner"]!);
+  const nonce = new Uint8Array(32).fill(0x4e);
+  const system = new Uint8Array(32);
+  const blockhash = new Uint8Array(32).fill(0x33);
+  /** ME signs; the nonce account is writable; then the System program. */
+  const message = (first: number[]) => Uint8Array.from([1, 0, 1, 3, ...owner, ...nonce, ...system, ...blockhash, 1, ...first]);
+  const advance = [2, 2, 1, 0, 4, 4, 0, 0, 0];
+  let m = readSolanaMessage(message(advance));
+  assert.deepEqual([m.blockhash, m.nonceAccount], [bytesToBase58(blockhash), bytesToBase58(nonce)]);
+  // A transfer first instead: a plain recent blockhash.
+  m = readSolanaMessage(message([2, 2, 0, 1, 12, 2, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]));
+  assert.deepEqual([m.blockhash, m.nonceAccount], [bytesToBase58(blockhash), null]);
+  assert.equal(readSolanaMessage(hex(V["sol_transfer"]!)).nonceAccount, null);
+  // A nonce account the message doesn't name among its own keys: refused.
+  assert.throws(() => readSolanaMessage(message([2, 2, 9, 0, 4, 4, 0, 0, 0])), RangeError);
+});
+
+test("a nonce account's authority and value", () => {
+  const data = new Uint8Array(80);
+  const view = new DataView(data.buffer);
+  view.setUint32(0, 1, true);
+  view.setUint32(4, 1, true);
+  data.set(base58ToBytes(V["owner"]!), 8);
+  data.fill(0x33, 40, 72);
+  const system = "11111111111111111111111111111111";
+  assert.deepEqual(nonceAccountOf(system, data), { authority: V["owner"], nonce: bytesToBase58(new Uint8Array(32).fill(0x33)) });
+  // Uninitialized, another program's, or another size: none.
+  view.setUint32(4, 0, true);
+  assert.equal(nonceAccountOf(system, data), null);
+  view.setUint32(4, 1, true);
+  assert.equal(nonceAccountOf(TOKEN_PROGRAM, data), null);
+  assert.equal(nonceAccountOf(system, data.slice(0, 79)), null);
 });

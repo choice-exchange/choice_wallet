@@ -610,6 +610,21 @@ fn handovers(ctx: &Context, out: &mut Vec<Finding>) {
                 f.confirm = Some("GIVE");
                 f
             }
+            // A durable nonce account it is the authority of, passing on by whatever program:
+            // its SOL goes with it, as with the System instruction that does it directly.
+            "nonce_authority" => {
+                let mut f = finding(
+                    "solana_nonce_authority",
+                    Level::Red,
+                    format!(
+                        "Gives nonce account {}, and the SOL in it, to {to}.",
+                        short(account.unwrap_or("?"))
+                    ),
+                    json!({ "account": account, "nonce": account, "new_authority": h.to, "simulated": true }),
+                );
+                f.confirm = Some("GIVE");
+                f
+            }
             _ => continue,
         };
         if !out.iter().any(|said| covers(said, &f)) {
@@ -874,6 +889,23 @@ mod tests {
         );
         let a = solana_transaction(&authorize, &ME, &MAINNET, &Context::default());
         assert_eq!((a.level, a.confirm), (Level::Red, Some("GIVE")));
+        // The same handover through a program the wallet can't read, as the simulation shows
+        // it: red with GIVE too (run-4). Beside the instruction that says it, said once.
+        let ctx = Context {
+            solana_handovers: vec![crate::SolanaHandover {
+                kind: "nonce_authority".into(),
+                account: Some(b58(&[5; 32])),
+                to: b58(&THEM),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let unread = tx(&[ME], vec![Instruction::Other { program: [0x42; 32] }]);
+        let a = solana_transaction(&unread, &ME, &MAINNET, &ctx);
+        assert_eq!((a.level, a.confirm), (Level::Red, Some("GIVE")));
+        assert!(a.findings.iter().any(|f| f.rule == "solana_nonce_authority"));
+        let a = solana_transaction(&authorize, &ME, &MAINNET, &ctx);
+        assert_eq!(a.findings.iter().filter(|f| f.rule == "solana_nonce_authority").count(), 1);
     }
 
     fn rules(r: &Read, c: &Cctp, ctx: &Context) -> Vec<&'static str> {

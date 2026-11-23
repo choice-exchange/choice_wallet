@@ -24,6 +24,7 @@ import {
   LOOKUP_TABLE_PROGRAM,
   lookupTableAddresses,
   NETWORKS,
+  nonceAccountOf,
   readSolanaMessage,
   SIMULATE_MAX_ACCOUNTS,
   SOL,
@@ -508,6 +509,15 @@ export function createSolana(d: SolanaDeps) {
     const index = keys.keys.indexOf(owner);
     if (index < 0 || index >= keys.signers) throw new RangeError("This account doesn't sign this transaction.");
     const r = await rpc(network);
+    // A message's only tie to a cluster is its recent blockhash, or its durable nonce's value. It
+    // must be this cluster's, or the signature could be sent on another: a Devnet review signing
+    // for mainnet funds.
+    if (keys.nonceAccount) {
+      const [held] = await r.rawAccounts([keys.nonceAccount]);
+      if (!held || nonceAccountOf(held.owner, held.data)?.nonce !== keys.blockhash) throw new RangeError(`Its durable nonce isn't one ${net.solana.name} holds, so the wallet won't sign it.`);
+    } else if (!(await r.blockhashValid(keys.blockhash))) {
+      throw new RangeError(`It wasn't made on ${net.solana.name}, or it has expired, so the wallet won't sign it.`);
+    }
     const tableAccounts = keys.lookups.length > 0 ? await r.rawAccounts(keys.lookups.map((l) => l.table)) : [];
     const tables = keys.lookups.map((l, i) => {
       const a = tableAccounts[i];
@@ -579,6 +589,18 @@ export function createSolana(d: SolanaDeps) {
             // Its staker before, or (a stake account it opens) the withdrawer's choice of one.
             const staked = s0 ? s0.staker === owner : s1?.withdrawer === owner;
             if (staked && s1 && s1.staker !== owner) handovers.push({ kind: "stake_staker", account: a, to: s1.staker });
+            return;
+          }
+          // A durable nonce account the account is the authority of: its SOL is the account's
+          // (the authority withdraws it), and its authority passing on hands that over, whatever
+          // program does it.
+          const n0 = pre ? nonceAccountOf(pre.owner, pre.data) : null;
+          const n1 = post ? nonceAccountOf(post.owner, post.data) : null;
+          if (n0?.authority === owner || n1?.authority === owner) {
+            const had = n0?.authority === owner ? pre!.lamports : 0n;
+            const has = n1?.authority === owner ? post!.lamports : 0n;
+            if (had !== has) moved.set(SOL, (moved.get(SOL) ?? 0n) + has - had);
+            if (n0?.authority === owner && n1 && n1.authority !== owner) handovers.push({ kind: "nonce_authority", account: a, to: n1.authority });
             return;
           }
           const t0 = pre ? tokenAccountOf(pre) : null;

@@ -52,7 +52,7 @@ export {
   type SolanaTokenAccount,
   type StakeLockup,
 } from "./solana.ts";
-export { joinSolanaTransaction, lookupTableAddresses, LOOKUP_TABLE_PROGRAM, readSolanaMessage, splitSolanaTransaction, type SolanaMessageKeys } from "./solanaWire.ts";
+export { joinSolanaTransaction, lookupTableAddresses, LOOKUP_TABLE_PROGRAM, readSolanaMessage, nonceAccountOf, splitSolanaTransaction, type SolanaMessageKeys } from "./solanaWire.ts";
 export { abiString, EvmRpc, word, type Call } from "./evm.ts";
 export { EvmIndex } from "./evmindex.ts";
 export { erc20Meta, readEvmTxs, summarizeEvmTx, type EvmTxRecord, type HistoryKeys } from "./evmhistory.ts";
