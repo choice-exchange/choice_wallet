@@ -388,7 +388,7 @@ export function createApprovals(sender: Sender, chains: ApprovalChains) {
     if (r.chain === undefined) return sender.prepareEvmCall(network, account, { to: contract, amount: 0n, call, tokens: [], expect });
     const c = typeof r.chain === "string" ? chainByKey(network, r.chain) : undefined;
     if (!c || c.kind !== "evm") return fail("bad_request", "Not an EVM chain on this network.");
-    return sender.prepareSourceCall(network, account, sourceOfChain(c), { to: contract, amount: 0n, call, expect });
+    return sender.prepareSourceCall(network, account, sourceOfChain(c), { to: contract, amount: 0n, call, expect, ...(kind === "erc20" ? { erc20: contract } : {}) });
   }
 
   return { summary, prepare, prepareErc20, prepareEvmRevoke };

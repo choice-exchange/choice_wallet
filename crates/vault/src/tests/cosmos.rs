@@ -445,7 +445,8 @@ fn own_revokes_build_decode_and_sign() {
         request["evm_transaction"]["tx"]["data"],
         format!("0x095ea7b3{:0>64}{}", spender[2..].to_lowercase(), "0".repeat(64))
     );
-    let d = ok("decode", json!({ "request": request }));
+    // The host vouches for the token of its own ERC20 revoke (an allowance it listed).
+    let d = ok("decode", json!({ "request": request, "context": { "erc20_contracts": [token] } }));
     let rules: Vec<&str> = d["risk"]["findings"]
         .as_array()
         .unwrap()

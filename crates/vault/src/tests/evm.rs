@@ -444,7 +444,8 @@ fn own_revokes_build_on_any_evm_chain_and_read_as_revokes() {
     for chain in ["eip155:1776", "eip155:8453"] {
         for (to, call, rule) in &cases {
             let r = ok("build_evm", evm_params(chain, me, to, "0", call.clone()))["request"].clone();
-            let d = ok("decode", json!({ "request": r }));
+            // The host vouches for the token of its own ERC20 revoke (an allowance it listed).
+            let d = ok("decode", json!({ "request": r, "context": { "erc20_contracts": [to] } }));
             assert_eq!(d["risk"]["level"], "info", "{chain} {call}");
             assert_eq!(rules_of(&d), [*rule], "{chain} {call}");
             assert!(approve_and_sign(&r, account(0))["raw"].is_string());

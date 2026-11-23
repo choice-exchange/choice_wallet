@@ -448,6 +448,9 @@ export function createSender(d: SendDeps) {
         context: {
           balances: { native: injHeld.toString(), [to]: tokenHeld.toString() },
           symbols: { [to]: t.known ? t.symbol : shortDenom(req.denom) },
+          // The wallet's own revoke of an ERC20 allowance it listed: only a token vouched for
+          // here reads approve(spender, 0) as a revoke, never an NFT #0 grant.
+          ...(req.revoke ? { erc20_contracts: [to] } : {}),
           ...(await facts),
         },
       });
@@ -586,6 +589,8 @@ export function createSender(d: SendDeps) {
       expect?: (display: EvmDisplayLike) => string | null;
       extra?: Partial<SendReview>;
       deposit?: Omit<DepositSent, "chain" | "hash">;
+      /** The wallet's own revoke of an ERC20 allowance it listed: the token it vouches for. */
+      erc20?: string;
     },
   ): Promise<Result<SendReview>> {
     const net = NETWORKS[network];
@@ -653,7 +658,7 @@ export function createSender(d: SendDeps) {
       const from_site = (await d.endpointFrom?.(network, source.key)) ?? null;
       const decoded = await d.vault<Pick<SendReview, "digest" | "display" | "risk">>("decode", {
         request: built.result.request,
-        context: { ...facts, ...(from_site ? { endpoint_from: from_site } : {}), balances: { native: held.toString(), ...(spec.usdcHeld === undefined || !source.usdc ? {} : { [source.usdc]: spec.usdcHeld.toString() }) } },
+        context: { ...facts, ...(from_site ? { endpoint_from: from_site } : {}), ...(spec.erc20 ? { erc20_contracts: [spec.erc20] } : {}), balances: { native: held.toString(), ...(spec.usdcHeld === undefined || !source.usdc ? {} : { [source.usdc]: spec.usdcHeld.toString() }) } },
       });
       if (!decoded.ok) return decoded;
       const { digest, display, risk } = decoded.result;

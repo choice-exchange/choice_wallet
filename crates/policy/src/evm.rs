@@ -102,19 +102,19 @@ const EXCHANGE_METHODS: &[Method] = &[
     m(
         0xf642485e,
         "createSpotLimitOrder(address,(string,string,string,uint256,uint256,string,string,uint256))",
-        Level::Amber,
+        Level::Red,
         "Places an order on the INJ orderbook.",
     ),
     m(
         0x29d3d0e4,
         "createSpotMarketOrder(address,(string,string,string,uint256,uint256,string,string,uint256))",
-        Level::Amber,
+        Level::Red,
         "Places an order on the INJ orderbook.",
     ),
     m(
         0x4881c7c6,
         "batchCreateSpotLimitOrders(address,(string,string,string,uint256,uint256,string,string,uint256)[])",
-        Level::Amber,
+        Level::Red,
         "Places orders on the INJ orderbook.",
     ),
     m(
@@ -132,19 +132,19 @@ const EXCHANGE_METHODS: &[Method] = &[
     m(
         0x20c69837,
         "createDerivativeLimitOrder(address,(string,string,string,uint256,uint256,string,string,uint256,uint256))",
-        Level::Amber,
+        Level::Red,
         "Places an order on the INJ orderbook.",
     ),
     m(
         0xb84857a1,
         "createDerivativeMarketOrder(address,(string,string,string,uint256,uint256,string,string,uint256,uint256))",
-        Level::Amber,
+        Level::Red,
         "Places an order on the INJ orderbook.",
     ),
     m(
         0x79374eab,
         "batchCreateDerivativeLimitOrders(address,(string,string,string,uint256,uint256,string,string,uint256,uint256)[])",
-        Level::Amber,
+        Level::Red,
         "Places orders on the INJ orderbook.",
     ),
     m(
@@ -162,7 +162,7 @@ const EXCHANGE_METHODS: &[Method] = &[
     m(
         0xcb0b6590,
         "batchUpdateOrders(address,(string,string[],(string,string,string,int32,string)[],(string,string,string,uint256,uint256,string,string,uint256)[],string[],(string,string,string,int32,string)[],(string,string,string,uint256,uint256,string,string,uint256,uint256)[]))",
-        Level::Amber,
+        Level::Red,
         "Places and cancels orders on the INJ orderbook.",
     ),
 ];
@@ -251,6 +251,11 @@ const TOKEN_CALLS: [([u8; 4], &str); 18] = [
     (TRANSFER_FROM_AND_CALL, "transferFromAndCall"),
     (TRANSFER_FROM_AND_CALL_DATA, "transferFromAndCall"),
 ];
+
+/// Permit2: one address on every chain.
+fn permit2() -> EthAddress {
+    EthAddress::parse_hex("0x000000000022D473030F116dDEE9F6B43aC78BA3").expect("pinned")
+}
 
 /// The arguments of a call with a dynamic argument, read only in their canonical encoding.
 fn args(data: &[u8], tys: &[abi::Ty]) -> Option<Vec<abi::Val>> {
@@ -560,6 +565,33 @@ fn contract_call(
                     ));
                     return;
                 }
+                // approve(spender, 0) takes an ERC20 allowance back, but on an ERC721 the same
+                // bytes approve `spender` for NFT #0, which it can then take. Only a token the
+                // wallet itself vouches for (its own revoke) reads as a revoke.
+                if sel == APPROVE
+                    && amount.is_zero()
+                    && !ctx.erc20_contracts.iter().any(|c| c.eq_ignore_ascii_case(&to))
+                {
+                    let s = spender.to_checksum_hex();
+                    out.push(finding(
+                        "approve_zero_ambiguous",
+                        Level::Amber,
+                        format!(
+                            "On a token, removes {0}'s allowance. On an NFT collection, lets {0} take NFT #0.",
+                            short(&s)
+                        ),
+                        json!({ "contract": to, "spender": s }),
+                    ));
+                    if !known_contract(ctx, &to) {
+                        out.push(finding(
+                            "new_contract",
+                            Level::Info,
+                            format!("First interaction with {}.", chain.contract(&tx.to)),
+                            json!({ "contract": to }),
+                        ));
+                    }
+                    return;
+                }
                 let named = network
                     .and_then(|n| swap::known_name(&n.choice, &spender))
                     .or_else(|| chain.cctp.and_then(|(c, _)| bridge::known_name(c, &spender)))
@@ -749,7 +781,9 @@ fn contract_call(
                 return;
             }
         }
-        PERMIT2_APPROVE if data.len() == 4 + 4 * 32 => {
+        // Permit2's approve is read only at Permit2, as the vault's own Permit2 revoke is
+        // built only for it. The same selector anywhere else is a call the wallet can't read.
+        PERMIT2_APPROVE if data.len() == 4 + 4 * 32 && tx.to == permit2() => {
             let typed = |i: usize, bits: u32| {
                 let w: [u8; 32] = word(data, i)?.try_into().ok()?;
                 abi::Val::Word(w).uint_bits(bits).ok()
@@ -769,7 +803,7 @@ fn contract_call(
     // is one the wallet can't read: a contract the account approved, gave a Permit2 allowance
     // or deposited at (a router, a vault, a lending pool) can pay that out to whoever the
     // calldata names, so it is never shown as nothing unusual.
-    if let Some(name) = token_call_name(&sel) {
+    if let Some(name) = token_call_name(&sel).filter(|_| sel != PERMIT2_APPROVE || tx.to == permit2()) {
         out.push(finding(
             "token_call_unreadable",
             Level::Red,
@@ -1003,12 +1037,214 @@ fn system_call(req: &TxRequest, n: u8, selector: Option<[u8; 4]>, injective: boo
             params(json!({ "for": acting_for, "method": method.signature })),
         );
     }
+    let sel = u32::from_be_bytes(method.selector);
+    if n == EXCHANGE && sel == EXCHANGE_DEPOSIT {
+        return deposit(data, &req.from).unwrap_or_else(unreadable);
+    }
+    if n == EXCHANGE && ORDER_METHODS.contains(&sel) {
+        return order(data, sel, method).unwrap_or_else(unreadable);
+    }
     finding(
         "precompile_call",
         method.level,
         method.what.into(),
         params(json!({ "method": method.signature })),
     )
+}
+
+/// `deposit(address sender, string subaccountID, string denom, uint256 amount)`.
+const EXCHANGE_DEPOSIT: u32 = 0xe441dec9;
+
+/// The owner a subaccount ID names, read as the exchange module reads a deposit's
+/// (`GetSubaccountIDOrDeriveFromNonce`): up to 3 characters is a nonce of the sender's own
+/// account; otherwise 64 hex digits, after an optional lowercase "0x", whose first 20 bytes
+/// are the owner. `None` for anything else, which the module refuses.
+fn subaccount_owner(id: &[u8], sender: &EthAddress) -> Option<EthAddress> {
+    if id.len() <= 3 {
+        return Some(*sender);
+    }
+    let hex = id.strip_prefix(b"0x").unwrap_or(id);
+    if hex.len() != 64 || !hex.iter().all(u8::is_ascii_hexdigit) {
+        return None;
+    }
+    let mut owner = [0u8; 20];
+    for (i, b) in owner.iter_mut().enumerate() {
+        *b = u8::from_str_radix(std::str::from_utf8(&hex[2 * i..2 * i + 2]).ok()?, 16).ok()?;
+    }
+    Some(EthAddress::from_bytes(owner))
+}
+
+/// A deposit into an INJ orderbook (exchange) account. The module takes it from the sender's
+/// bank balance into whichever subaccount the ID names, another account's included, and that
+/// account's owner can withdraw it: a deposit anywhere but the sender's own is a transfer.
+fn deposit(data: &[u8], from: &EthAddress) -> Option<Finding> {
+    use abi::Ty::{Bytes, Word};
+    let v = args(data, &[Word, Bytes, Bytes, Word])?;
+    let (id, denom, amount) = (v[1].bytes().ok()?, v[2].bytes().ok()?, v[3].uint().ok()?);
+    let owner = subaccount_owner(id, from)?;
+    let denom = String::from_utf8(denom.to_vec()).ok()?;
+    let params = json!({
+        "precompile": "0x0000000000000000000000000000000000000065",
+        "method": "deposit(address,string,string,uint256)",
+        "subaccount_id": crate::text::clip(&String::from_utf8_lossy(id), 66),
+        "owner": owner.to_checksum_hex(),
+        "denom": crate::text::clip(&denom, 128),
+        "amount": amount.to_string(),
+    });
+    Some(if owner == *from {
+        finding(
+            "precompile_call",
+            Level::Info,
+            "Moves funds into your INJ orderbook account.".into(),
+            params,
+        )
+    } else {
+        finding(
+            "exchange_deposit_other",
+            Level::Red,
+            format!(
+                "Sends funds into the INJ orderbook account of {}, which can withdraw them.",
+                short(&owner.to_checksum_hex())
+            ),
+            params,
+        )
+    })
+}
+
+/// Exchange methods that place orders. Each spends this account's bank balance (its default
+/// trading account) or a trading account's deposits, at a worst price the site chose, and a
+/// market order fills at the resting orders' prices. The wallet can't weigh that price here,
+/// so an order is the unread sale it is: red, as the same order signed as a Cosmos message is.
+const ORDER_METHODS: [u32; 7] = [
+    0xf642485e, // createSpotLimitOrder
+    0x29d3d0e4, // createSpotMarketOrder
+    0x4881c7c6, // batchCreateSpotLimitOrders
+    0x20c69837, // createDerivativeLimitOrder
+    0xb84857a1, // createDerivativeMarketOrder
+    0x79374eab, // batchCreateDerivativeLimitOrders
+    0xcb0b6590, // batchUpdateOrders
+];
+
+/// `(marketID, subaccountID, feeRecipient, price, quantity, cid, orderType, triggerPrice)`.
+const SPOT_ORDER: abi::Ty = abi::Ty::Tuple(&[
+    abi::Ty::Bytes,
+    abi::Ty::Bytes,
+    abi::Ty::Bytes,
+    abi::Ty::Word,
+    abi::Ty::Word,
+    abi::Ty::Bytes,
+    abi::Ty::Bytes,
+    abi::Ty::Word,
+]);
+/// The spot order's fields with `margin` before `triggerPrice`.
+const DERIVATIVE_ORDER: abi::Ty = abi::Ty::Tuple(&[
+    abi::Ty::Bytes,
+    abi::Ty::Bytes,
+    abi::Ty::Bytes,
+    abi::Ty::Word,
+    abi::Ty::Word,
+    abi::Ty::Bytes,
+    abi::Ty::Bytes,
+    abi::Ty::Word,
+    abi::Ty::Word,
+]);
+
+/// `(marketID, subaccountID, orderHash, orderMask, cid)`.
+const CANCEL: abi::Ty = abi::Ty::Tuple(&[
+    abi::Ty::Bytes,
+    abi::Ty::Bytes,
+    abi::Ty::Bytes,
+    abi::Ty::Word,
+    abi::Ty::Bytes,
+]);
+/// `batchUpdateOrders`' request: subaccount, spot markets to cancel all in, spot cancels, spot
+/// orders to create, derivative markets to cancel all in, derivative cancels, derivative
+/// orders to create.
+const BATCH_UPDATE: abi::Ty = abi::Ty::Tuple(&[
+    abi::Ty::Bytes,
+    abi::Ty::Array(&abi::Ty::Bytes),
+    abi::Ty::Array(&CANCEL),
+    abi::Ty::Array(&SPOT_ORDER),
+    abi::Ty::Array(&abi::Ty::Bytes),
+    abi::Ty::Array(&CANCEL),
+    abi::Ty::Array(&DERIVATIVE_ORDER),
+]);
+
+/// An order's market, side, worst price, quantity and margin, as the precompile reads them.
+fn order_fields(v: &abi::Val) -> Option<serde_json::Value> {
+    let abi::Val::Tuple(f) = v else { return None };
+    let text = |i: usize| String::from_utf8(f.get(i)?.bytes().ok()?.to_vec()).ok();
+    let side = text(6)?;
+    if !["buy", "sell", "buyPostOnly", "sellPostOnly"].contains(&side.as_str()) {
+        return None;
+    }
+    let mut o = json!({
+        "market": crate::text::clip(&text(0)?, 66),
+        "order_type": side,
+        "price": f.get(3)?.uint().ok()?.to_string(),
+        "quantity": f.get(4)?.uint().ok()?.to_string(),
+    });
+    if f.len() == 9 {
+        o["margin"] = json!(f.get(7)?.uint().ok()?.to_string());
+    }
+    Some(o)
+}
+
+/// An order placed through the exchange precompile, read in its canonical encoding.
+fn order(data: &[u8], sel: u32, method: &Method) -> Option<Finding> {
+    use abi::Ty::{Array, Word};
+    let orders: Vec<serde_json::Value> = match sel {
+        0xf642485e | 0x29d3d0e4 => vec![order_fields(&args(data, &[Word, SPOT_ORDER])?[1])?],
+        0x20c69837 | 0xb84857a1 => vec![order_fields(&args(data, &[Word, DERIVATIVE_ORDER])?[1])?],
+        0x4881c7c6 => args(data, &[Word, Array(&SPOT_ORDER)])?[1]
+            .array()
+            .ok()?
+            .iter()
+            .map(order_fields)
+            .collect::<Option<_>>()?,
+        0x79374eab => args(data, &[Word, Array(&DERIVATIVE_ORDER)])?[1]
+            .array()
+            .ok()?
+            .iter()
+            .map(order_fields)
+            .collect::<Option<_>>()?,
+        // batchUpdateOrders: the orders it creates sit among cancels in one struct. With none
+        // to create it only cancels.
+        _ => {
+            let batch = &args(data, &[Word, BATCH_UPDATE])?[1];
+            let abi::Val::Tuple(f) = batch else { return None };
+            let mut created = Vec::new();
+            for i in [3, 6] {
+                for o in f.get(i)?.array().ok()? {
+                    created.push(order_fields(o)?);
+                }
+            }
+            if created.is_empty() {
+                return Some(finding(
+                    "precompile_call",
+                    Level::Info,
+                    "Cancels orders on the INJ orderbook.".into(),
+                    json!({ "precompile": "0x0000000000000000000000000000000000000065", "method": method.signature }),
+                ));
+            }
+            created
+        }
+    };
+    let what = match orders.as_slice() {
+        [o] if o["order_type"].as_str().is_some_and(|t| t.starts_with("buy")) => "Places a buy order".to_owned(),
+        [_] => "Places a sell order".to_owned(),
+        many => format!("Places {} orders", many.len()),
+    };
+    Some(finding(
+        "order_unweighed",
+        Level::Red,
+        format!("{what} on the INJ orderbook at a price the wallet can't check. It can spend all of what it trades."),
+        json!({
+            "precompile": "0x0000000000000000000000000000000000000065",
+            "method": method.signature,
+            "orders": orders,
+        }),
+    ))
 }
 
 #[cfg(test)]
@@ -1546,7 +1782,31 @@ mod tests {
         let a = grade(&approve(U256::MAX));
         assert_eq!((a.level, a.findings[0].rule), (Level::Red, "unlimited_allowance"));
         assert_eq!(grade(&approve(U256::from_u128(5))).level, Level::Amber);
-        assert_eq!(grade(&approve(U256::ZERO)).findings[0].rule, "allowance_revoke");
+        // approve(x, 0) is a revoke on an ERC20 and a grant of NFT #0 on an ERC721: amber,
+        // naming both, unless the wallet itself vouches for the token (its own revoke).
+        let a = grade(&approve(U256::ZERO));
+        assert_eq!((a.level, a.findings[0].rule), (Level::Amber, "approve_zero_ambiguous"));
+        assert!(a.findings[0].message.contains("NFT #0"), "{}", a.findings[0].message);
+        let own = Context {
+            erc20_contracts: vec![token.to_checksum_hex().to_lowercase()],
+            ..Default::default()
+        };
+        let a = evm_transaction(&approve(U256::ZERO), &EvmSide::injective(&MAINNET), &own);
+        assert_eq!((a.level, rules_of(&a)), (Level::Info, vec!["allowance_revoke"]));
+
+        // Permit2's approve is read only at Permit2; the same selector elsewhere is unread.
+        let p2 = |to: EthAddress| {
+            req(
+                to,
+                call(
+                    PERMIT2_APPROVE,
+                    &[addr_word([0x11; 20]), addr_word([0x22; 20]), [0; 32], [0; 32]],
+                ),
+            )
+        };
+        assert_eq!(rules_of(&grade(&p2(permit2()))), ["allowance_revoke"]);
+        let a = grade(&p2(EthAddress::from_bytes([0x6f; 20])));
+        assert_eq!((a.level, a.findings[0].rule), (Level::Amber, "contract_call_unread"));
 
         let mut yes = [0u8; 32];
         yes[31] = 1;
@@ -1646,21 +1906,105 @@ mod tests {
             (Level::Red, Some("GRANT"), "exchange_grant")
         );
 
-        // A deposit for yourself is info; for someone else, it uses their grant.
-        let deposit = 0xe441dec9u32.to_be_bytes();
-        let a = grade(&req(precompile(EXCHANGE), call(deposit, &[addr_word(FROM)])));
+        // A deposit names its sender first: anyone but this account means using a grant it gave.
+        let deposit = |sender: [u8; 32], id: &str| {
+            let mut d = 0xe441dec9u32.to_be_bytes().to_vec();
+            d.extend(abi::encode(&[
+                abi::Val::Word(sender),
+                abi::Val::Bytes(id.as_bytes().to_vec()),
+                abi::Val::Bytes(b"inj".to_vec()),
+                abi::Val::Word(U256::from_u128(500).to_be_bytes()),
+            ]));
+            req(precompile(EXCHANGE), d)
+        };
+        let a = grade(&deposit(addr_word(FROM), "1"));
         assert_eq!((a.level, a.findings[0].rule), (Level::Info, "precompile_call"));
-        let a = grade(&req(precompile(EXCHANGE), call(deposit, &[addr_word([0x44; 20])])));
+        let a = grade(&deposit(addr_word([0x44; 20]), "1"));
         assert_eq!(a.findings[0].rule, "exchange_for_other");
         // Dirty high bytes: the precompile still acts for the low 20 bytes' account.
         let mut dirty = addr_word([0x44; 20]);
         dirty[0] = 0xff;
-        let a = grade(&req(precompile(EXCHANGE), call(deposit, &[dirty])));
-        assert_eq!(a.findings[0].rule, "exchange_for_other");
+        assert_eq!(grade(&deposit(dirty, "1")).findings[0].rule, "exchange_for_other");
         let mut mine = addr_word(FROM);
         mine[0] = 0xff;
-        let a = grade(&req(precompile(EXCHANGE), call(deposit, &[mine])));
-        assert_eq!(a.findings[0].rule, "precompile_call");
+        assert_eq!(grade(&deposit(mine, "1")).findings[0].rule, "precompile_call");
+
+        // Where it goes is the subaccount ID's, read as the exchange module reads it: the
+        // sender's own (a nonce, or an ID that starts with the sender) is info; another
+        // account's is a transfer it can withdraw (run-4: graded info before).
+        let id = |owner: [u8; 20], prefix: &str| {
+            format!("{prefix}{}{}", hex::encode(owner), "0".repeat(23) + "1")
+        };
+        for own in [id(FROM, "0x"), id(FROM, "")] {
+            let a = grade(&deposit(addr_word(FROM), &own));
+            assert_eq!((a.level, a.findings[0].rule), (Level::Info, "precompile_call"), "{own}");
+        }
+        for other in [id([0xab; 20], "0x"), id([0xab; 20], ""), id([0xab; 20], "0x").to_uppercase().replacen("0X", "0x", 1)] {
+            let a = grade(&deposit(addr_word(FROM), &other));
+            assert_eq!((a.level, a.findings[0].rule), (Level::Red, "exchange_deposit_other"), "{other}");
+            assert_eq!(a.findings[0].params["denom"], "inj");
+            assert_eq!(a.findings[0].params["amount"], "500");
+        }
+        // An ID the module refuses, and calldata not in its canonical form: unreadable.
+        for bad in [id([0x44; 20], "0X"), "abcd".to_owned(), id([0x44; 20], "0x") + "0"] {
+            assert_eq!(grade(&deposit(addr_word(FROM), &bad)).findings[0].rule, "precompile_unknown", "{bad}");
+        }
+        let short_form = req(precompile(EXCHANGE), call(0xe441dec9u32.to_be_bytes(), &[addr_word(FROM)]));
+        assert_eq!(grade(&short_form).findings[0].rule, "precompile_unknown");
+
+        // An order spends this account's balance at a worst price the site chose: red, as the
+        // same Cosmos message is (run-4: a fixed amber before). A batch that only cancels is info.
+        let spot = |order_type: &str, price: u128| {
+            abi::Val::Tuple(vec![
+                abi::Val::Bytes(format!("0x{}", "22".repeat(32)).into_bytes()),
+                abi::Val::Bytes(id(FROM, "0x").into_bytes()),
+                abi::Val::Bytes(Vec::new()),
+                abi::Val::Word(U256::from_u128(price).to_be_bytes()),
+                abi::Val::Word(U256::from_u128(1_000_000_000_000_000_000).to_be_bytes()),
+                abi::Val::Bytes(Vec::new()),
+                abi::Val::Bytes(order_type.as_bytes().to_vec()),
+                abi::Val::Word([0; 32]),
+            ])
+        };
+        let with = |sel: u32, vals: Vec<abi::Val>| {
+            let mut d = sel.to_be_bytes().to_vec();
+            d.extend(abi::encode(&vals));
+            req(precompile(EXCHANGE), d)
+        };
+        let a = grade(&with(0x29d3d0e4, vec![abi::Val::Word(addr_word(FROM)), spot("buy", 1)]));
+        assert_eq!((a.level, a.findings[0].rule), (Level::Red, "order_unweighed"));
+        assert!(a.findings[0].message.starts_with("Places a buy order"), "{}", a.findings[0].message);
+        assert_eq!(a.findings[0].params["orders"][0]["price"], "1");
+        let a = grade(&with(0x4881c7c6, vec![abi::Val::Word(addr_word(FROM)), abi::Val::Array(vec![spot("sell", 1), spot("sellPostOnly", 2)])]));
+        assert_eq!((a.level, a.findings[0].message.as_str()), (Level::Red, "Places 2 orders on the INJ orderbook at a price the wallet can't check. It can spend all of what it trades."));
+        let batch = |creates: Vec<abi::Val>| {
+            with(
+                0xcb0b6590,
+                vec![
+                    abi::Val::Word(addr_word(FROM)),
+                    abi::Val::Tuple(vec![
+                        abi::Val::Bytes(id(FROM, "0x").into_bytes()),
+                        abi::Val::Array(vec![abi::Val::Bytes(b"0x22".to_vec())]),
+                        abi::Val::Array(Vec::new()),
+                        abi::Val::Array(creates),
+                        abi::Val::Array(Vec::new()),
+                        abi::Val::Array(Vec::new()),
+                        abi::Val::Array(Vec::new()),
+                    ]),
+                ],
+            )
+        };
+        assert_eq!(
+            (grade(&batch(Vec::new())).level, grade(&batch(Vec::new())).findings[0].rule),
+            (Level::Info, "precompile_call")
+        );
+        assert_eq!(grade(&batch(vec![spot("sell", 1)])).findings[0].rule, "order_unweighed");
+        // An order type the module refuses, or a non-canonical order: unreadable, red.
+        let a = grade(&with(0x29d3d0e4, vec![abi::Val::Word(addr_word(FROM)), spot("buyAtomic", 1)]));
+        assert_eq!(a.findings[0].rule, "precompile_unknown");
+        let mut d = with(0x29d3d0e4, vec![abi::Val::Word(addr_word(FROM)), spot("buy", 1)]);
+        d.tx.data.push(0);
+        assert_eq!(grade(&d).findings[0].rule, "precompile_unknown");
 
         // Unknown methods on a precompile are red; staking is readable.
         assert_eq!(grade(&req(precompile(EXCHANGE), vec![1, 2, 3, 4])).level, Level::Red);
