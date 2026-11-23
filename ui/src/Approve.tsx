@@ -41,13 +41,22 @@ const browser: ArmEnv = {
     const t = setTimeout(f, ms);
     return () => clearTimeout(t);
   },
-  presses(f) {
+  presses(down, up) {
     // Captured on the window: a disabled button gets no click, but the press still arrives.
-    window.addEventListener("pointerdown", f, true);
-    window.addEventListener("keydown", f, true);
+    // A pointer by its ID, a key by its code (auto-repeat is the same key, held).
+    const id = (e: Event) => (e instanceof KeyboardEvent ? `key:${e.code}` : `pointer:${(e as PointerEvent).pointerId}`);
+    const d = (e: Event) => down(id(e));
+    const u = (e: Event) => up?.(id(e));
+    const events: [string, (e: Event) => void][] = [
+      ["pointerdown", d],
+      ["keydown", d],
+      ["pointerup", u],
+      ["pointercancel", u],
+      ["keyup", u],
+    ];
+    for (const [name, f] of events) window.addEventListener(name, f, true);
     return () => {
-      window.removeEventListener("pointerdown", f, true);
-      window.removeEventListener("keydown", f, true);
+      for (const [name, f] of events) window.removeEventListener(name, f, true);
     };
   },
 };

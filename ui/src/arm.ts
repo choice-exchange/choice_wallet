@@ -12,8 +12,9 @@ export type ArmEnv = {
   watch: (f: () => void) => () => void;
   /** Calls `f` after `ms`; returns how to cancel. */
   later: (f: () => void, ms: number) => () => void;
-  /** Calls `f` on every pointer or key press in the window; returns how to stop. */
-  presses?: (f: () => void) => () => void;
+  /** Calls `down` on every pointer or key press in the window and `up` on its release, each
+   *  with the pointer's or key's ID when known; returns how to stop. */
+  presses?: (down: (id?: string) => void, up?: (id: string) => void) => () => void;
 };
 
 /** Disarms at once; while `showing`, arms ARM_MS after the window is in front, counted
@@ -25,10 +26,15 @@ export function arm(showing: boolean, env: ArmEnv, set: (armed: boolean) => void
   if (!showing) return () => {};
   let armed = false;
   let cancel = () => {};
+  // Presses that went down before it armed and are still down: a click lands on release, so
+  // it can't arm under one (run-4: a press held past ARM_MS approved on release).
+  const held = new Set<string>();
   const check = () => {
     cancel();
     cancel = () => {};
-    if (env.front()) {
+    // Out of front, a press held from before no longer counts: its release may land elsewhere.
+    if (!env.front()) held.clear();
+    if (env.front() && held.size === 0) {
       cancel = env.later(() => {
         armed = true;
         set(true);
@@ -42,9 +48,17 @@ export function arm(showing: boolean, env: ArmEnv, set: (armed: boolean) => void
   const stop = env.watch(check);
   // A press before it arms (one that started on the page, or a stream of them) starts the
   // count again: only a press after a still moment counts.
-  const stopPresses = env.presses?.(() => {
-    if (!armed) check();
-  }) ?? (() => {});
+  const stopPresses =
+    env.presses?.(
+      (id) => {
+        if (armed) return;
+        if (id !== undefined) held.add(id);
+        check();
+      },
+      (id) => {
+        if (held.delete(id)) check();
+      },
+    ) ?? (() => {});
   return () => {
     cancel();
     stop();

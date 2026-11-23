@@ -11,16 +11,21 @@ function fakeWindow() {
   let front = true;
   let timers: { at: number; f: () => void }[] = [];
   const listeners = new Set<() => void>();
-  const pressed = new Set<() => void>();
+  const pressed = new Set<(id?: string) => void>();
+  const released = new Set<(id: string) => void>();
   const env: ArmEnv = {
     front: () => front,
     watch(f) {
       listeners.add(f);
       return () => listeners.delete(f);
     },
-    presses(f) {
-      pressed.add(f);
-      return () => pressed.delete(f);
+    presses(down, up) {
+      pressed.add(down);
+      if (up) released.add(up);
+      return () => {
+        pressed.delete(down);
+        if (up) released.delete(up);
+      };
     },
     later(f, ms) {
       const t = { at: now + ms, f };
@@ -44,8 +49,63 @@ function fakeWindow() {
     press() {
       for (const f of pressed) f();
     },
+    down(id: string) {
+      for (const f of pressed) f(id);
+    },
+    up(id: string) {
+      for (const f of released) f(id);
+    },
   };
 }
+
+// Run-4: a press begun on the disarmed button and held past ARM_MS doesn't arm it: the click
+// comes on release, so the count starts again from the release. A press after it armed acts.
+test("a press held from before arming keeps it disarmed until released", () => {
+  const w = fakeWindow();
+  let armed = false;
+  const stop = arm(true, w.env, (v) => (armed = v));
+  w.advance(300);
+  w.down("pointer:1");
+  w.advance(2 * ARM_MS);
+  assert.equal(armed, false, "held");
+  w.up("pointer:1");
+  assert.equal(armed, false, "released: the click on release finds it disarmed");
+  w.advance(ARM_MS);
+  assert.equal(armed, true);
+  // Once armed, a press and its release are the click: nothing disarms.
+  w.down("pointer:2");
+  w.up("pointer:2");
+  assert.equal(armed, true);
+  stop();
+});
+
+test("key auto-repeat is one held key, and a release with no press changes nothing", () => {
+  const w = fakeWindow();
+  let armed = false;
+  const stop = arm(true, w.env, (v) => (armed = v));
+  w.up("key:Enter");
+  w.advance(ARM_MS);
+  assert.equal(armed, true, "a stray release doesn't hold it off");
+  stop();
+  const again = arm(true, w.env, (v) => (armed = v));
+  for (let i = 0; i < 20; i++) {
+    w.down("key:Enter");
+    w.advance(100);
+  }
+  assert.equal(armed, false);
+  w.up("key:Enter");
+  w.advance(ARM_MS);
+  assert.equal(armed, true);
+  // Losing the front while a press is held forgets it.
+  again();
+  const third = arm(true, w.env, (v) => (armed = v));
+  w.down("pointer:3");
+  w.focus(false);
+  w.focus(true);
+  w.advance(ARM_MS);
+  assert.equal(armed, true);
+  third();
+});
 
 // Hardening: the button armed 800 ms after the window took focus, even when a signature's
 // review arrived later, so the button first appeared already working.
