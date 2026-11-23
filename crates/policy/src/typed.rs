@@ -63,7 +63,15 @@ fn on_talis(td: &TypedData) -> bool {
         return false;
     };
     let zone = addr(td.message().get("zone"));
-    addr(td.domain().get("verifyingContract")) == Some(talis::seaport())
+    // Only an order the zone must approve (FULL_RESTRICTED or PARTIAL_RESTRICTED) is Talis's.
+    let restricted = td
+        .message()
+        .get("orderType")
+        .and_then(parse)
+        .and_then(|t| t.to_u64())
+        .is_some_and(|t| t == 2 || t == 3);
+    restricted
+        && addr(td.domain().get("verifyingContract")) == Some(talis::seaport())
         && NETWORKS
             .iter()
             .any(|n| n.evm_chain_id == chain && zone == Some(n.talis.zone()))
@@ -125,13 +133,13 @@ fn seaport_order(msg: &Value, signer: &EthAddress, ctx: &Context, talis: bool) -
         .iter()
         .filter(|w| w.recipient.as_deref() != Some(me.as_str()))
         .collect();
-    let list = |xs: &[&SeaportItem]| xs.iter().map(|x| x.describe(coin)).collect::<Vec<_>>().join(", ");
+    let list = |xs: &[&SeaportItem]| xs.iter().map(|x| x.describe(coin, ctx)).collect::<Vec<_>>().join(", ");
     let give_text = list(&gives.iter().collect::<Vec<_>>());
     let params = json!({
         "talis": talis,
-        "gives": gives.iter().map(|g| g.describe(coin)).collect::<Vec<_>>(),
-        "you_get": back.iter().map(|g| g.describe(coin)).collect::<Vec<_>>(),
-        "others_get": others.iter().map(|g| json!({ "item": g.describe(coin), "to": g.recipient })).collect::<Vec<_>>(),
+        "gives": gives.iter().map(|g| g.describe(coin, ctx)).collect::<Vec<_>>(),
+        "you_get": back.iter().map(|g| g.describe(coin, ctx)).collect::<Vec<_>>(),
+        "others_get": others.iter().map(|g| json!({ "item": g.describe(coin, ctx), "to": g.recipient })).collect::<Vec<_>>(),
     });
     if let Some(c) = gives.iter().find(|g| g.criteria) {
         out.push(finding(
@@ -144,11 +152,36 @@ fn seaport_order(msg: &Value, signer: &EthAddress, ctx: &Context, talis: bool) -
             params.clone(),
         ));
     }
-    if !gives.is_empty() && back.is_empty() {
+    // What comes back counts only when the wallet can name it as a price: the chain's coin, or
+    // an ERC20 the host lists (named in `symbols` by its address), in a non-zero amount no less
+    // than what others get of the same token. An NFT, a criteria item or an unlisted token is
+    // anyone's to mint, and a sliver beside the fees is not a price (run-4).
+    let to_others = |p: &SeaportItem| {
+        others
+            .iter()
+            .filter(|o| o.kind == p.kind && o.token == p.token)
+            .fold(U256::ZERO, |s, o| s.checked_add(&o.amount).unwrap_or(U256::MAX))
+    };
+    let zero = format!("0x{}", "0".repeat(40));
+    let paid = back.iter().any(|p| {
+        !p.amount.is_zero()
+            && match p.kind {
+                0 => p.token == zero,
+                1 => ctx.symbols.contains_key(&p.token),
+                _ => false,
+            }
+            && p.amount >= to_others(p)
+    });
+    if !gives.is_empty() && !paid {
+        let got = if back.is_empty() {
+            String::new()
+        } else {
+            format!(" ({} isn't a price the wallet can count)", list(&back))
+        };
         out.push(finding(
             "seaport_nothing_back",
             Level::Red,
-            format!("Gives {give_text}, and nothing comes back to you."),
+            format!("Gives {give_text}, and nothing of value comes back to you{got}."),
             params,
         ));
         return out;
@@ -208,10 +241,13 @@ impl SeaportItem {
         })
     }
 
-    fn describe(&self, coin: &str) -> String {
+    fn describe(&self, coin: &str, ctx: &Context) -> String {
         match self.kind {
             0 => format!("{} {coin}", crate::evm::coin_units(&self.amount)),
-            1 => format!("{} base units of token {}", self.amount, short(&self.token)),
+            1 => match ctx.symbols.get(&self.token) {
+                Some(symbol) => format!("{} base units of {symbol} ({})", self.amount, short(&self.token)),
+                None => format!("{} base units of unlisted token {}", self.amount, short(&self.token)),
+            },
             2 => format!("NFT #{} of {}", self.id, short(&self.token)),
             3 => format!("{} of NFT #{} of {}", self.amount, self.id, short(&self.token)),
             _ => format!("any NFT of {}", short(&self.token)),
@@ -611,5 +647,56 @@ mod tests {
         }
         let a = on(1776, seaport, order(json!([nft_item(2, "7")]), json!([pay("1", fee)])));
         assert_eq!(a.level, Level::Red, "a drain through Talis's zone is still a drain");
+        // An order anyone may fill (FULL_OPEN, 0) names the zone without being Talis's.
+        let mut open = listing();
+        open["orderType"] = json!(0);
+        let a = on(1776, seaport, open);
+        let f = a.findings.iter().find(|f| f.rule == "marketplace_order").expect("read");
+        assert!(f.message.starts_with("Offers NFT #7"), "{}", f.message);
+
+        // Run-4: what comes back counts only when the wallet can value it. A sliver beside
+        // the fees, an NFT, or a token the host doesn't list is nothing; a listed token is a price.
+        let usdt = "0x88f7f2b685f9692caf8c478f5badf09ee9b1cc13";
+        let junk = "0x6666666666666666666666666666666666666666";
+        let token = |t: &str, amount: &str, to: &str| json!({ "itemType": 1, "token": t, "identifierOrCriteria": "0", "startAmount": amount, "endAmount": amount, "recipient": to });
+        let nft_back = json!({ "itemType": 2, "token": junk, "identifierOrCriteria": "1", "startAmount": "1", "endAmount": "1", "recipient": me });
+        for consideration in [
+            json!([pay("1", me), pay("10000000000000000000", fee)]),
+            json!([nft_back, pay("10000000000000000000", fee)]),
+            json!([token(junk, "1000000", me)]),
+            json!([token(usdt, "1", me), token(usdt, "1000000", fee)]),
+        ] {
+            let a = grade(order(json!([nft_item(2, "7")]), consideration.clone()));
+            assert_eq!(
+                (a.level, a.findings.iter().any(|f| f.rule == "seaport_nothing_back")),
+                (Level::Red, true),
+                "{consideration}"
+            );
+        }
+        let listed = Context {
+            symbols: [
+                ("native".to_owned(), "INJ".to_owned()),
+                (usdt.to_owned(), "USDT".to_owned()),
+            ]
+            .into(),
+            ..Context::default()
+        };
+        let a = typed_data(
+            &td(
+                domain.clone(),
+                "OrderComponents",
+                types.clone(),
+                order(
+                    json!([nft_item(2, "7")]),
+                    json!([token(usdt, "9700000", me), token(usdt, "300000", fee)]),
+                ),
+            ),
+            None,
+            &signer,
+            &listed,
+        );
+        assert_eq!(a.level, Level::Amber);
+        let f = a.findings.iter().find(|f| f.rule == "marketplace_order").expect("read");
+        assert!(f.message.contains("9700000 base units of USDT"), "{}", f.message);
     }
 }

@@ -6,7 +6,7 @@
 // the site's to make (nothing is signed by it, and every request names its chain in the
 // approval window); moving the whole wallet between mainnet and the test networks asks first.
 
-import { addedKey, chainByKey, ChainError, chainList, CHAINS, checkAddedChain, copiedChainName, erc20Meta, evmDenom, isObject, MIN_GAS_PRICE, NETWORKS, Unreachable, type AnyChain, type EvmRpc, type NetworkId } from "@choice-wallet/chain";
+import { addedKey, boundErc20, chainByKey, ChainError, chainList, CHAINS, checkAddedChain, copiedChainName, erc20Meta, evmDenom, isObject, knownTokens, MIN_GAS_PRICE, NETWORKS, Unreachable, type AnyChain, type EvmRpc, type NetworkId } from "@choice-wallet/chain";
 import type { AccountInfo, NewChain, TokenInfo } from "@choice-wallet/ui/protocol";
 
 import { cleanName } from "../addedchains";
@@ -322,6 +322,23 @@ export function createEvmSite(core: SiteCore) {
     return { tokens, context: { balances: held === null ? {} : { native: held.toString() }, symbols: { native: chain.native.symbol }, ...(from ? { endpoint_from: from } : {}) } };
   }
 
+  /** What a signature review names amounts in, for the chain the signature is bound to: its
+   *  coin, and the ERC20s the wallet lists there, by address. A token not named is unlisted, so
+   *  a Seaport order paying it counts as nothing. On another chain than Injective's, Injective's
+   *  coin and balances say nothing about the signature (run-4). */
+  function signatureContext(network: NetworkId, chain: AnyChain): { context?: Record<string, unknown>; extra?: Record<string, unknown> } {
+    const symbols: Record<string, string> = { native: chain.native.symbol };
+    if (chain.kind === "injective") {
+      for (const t of knownTokens(network)) {
+        const a = boundErc20(network, t.denom);
+        if (a && !/^0x0{40}$/i.test(a)) symbols[a.toLowerCase()] = t.symbol;
+      }
+      return { extra: { symbols: { ...symbols, inj: "INJ" } } };
+    }
+    if (!chain.added && chain.usdc) symbols[chain.usdc.toLowerCase()] = "USDC";
+    return { context: { balances: {}, symbols } };
+  }
+
   async function evmSign(origin: string, method: string, params: unknown): Promise<DappReply> {
     const network = await h.network();
     const net = NETWORKS[network];
@@ -396,7 +413,7 @@ export function createEvmSite(core: SiteCore) {
         origin,
         network,
         "evm_personal_sign",
-        async () => ({ request: { evm_personal_sign: { chain: chain.caip2, signer: await me(), message } } }),
+        async () => ({ request: { evm_personal_sign: { chain: chain.caip2, signer: await me(), message } }, ...signatureContext(network, chain) }),
         async (signed) => signed["signature"],
         named(address),
       );
@@ -410,7 +427,7 @@ export function createEvmSite(core: SiteCore) {
       origin,
       network,
       "evm_typed_data",
-      async () => ({ request: { evm_typed_data: { chain: chain.caip2, signer: await me(), typed_data: typed } } }),
+      async () => ({ request: { evm_typed_data: { chain: chain.caip2, signer: await me(), typed_data: typed } }, ...signatureContext(network, chain) }),
       async (signed) => signed["signature"],
       named(address),
     );
