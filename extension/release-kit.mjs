@@ -133,12 +133,23 @@ export function unzip(buf) {
     }
   }
   if (end < 0) throw new Error("not a zip: no end record");
+  // Read only an archive every reader reads the same way (run-4): Chrome's unpacker relocates
+  // a directory that doesn't sit where the end record says, so an archive with a gap, bytes
+  // before or after it, a second directory, more than one disk or zip64 parts could hold other
+  // files for Chrome than for this check. Each of those is refused.
+  if (end + 22 + buf.readUInt16LE(end + 20) !== buf.length) throw new Error("zip: bytes after the end record");
+  if (buf.readUInt16LE(end + 4) !== 0 || buf.readUInt16LE(end + 6) !== 0) throw new Error("zip: more than one disk");
   const count = buf.readUInt16LE(end + 10);
+  if (buf.readUInt16LE(end + 8) !== count) throw new Error("zip: more than one disk");
   const cdSize = buf.readUInt32LE(end + 12);
   let p = buf.readUInt32LE(end + 16);
-  if (p + cdSize > end) throw new Error("zip central directory out of range");
+  if (p + cdSize !== end) throw new Error("zip central directory isn't where the end record says");
+  for (let i = Math.max(0, end - 0xffff); i + 4 <= end; i++) {
+    if (buf.readUInt32LE(i) === 0x07064b50 && i + 20 === end) throw new Error("zip64 archive");
+  }
   const files = [];
   const seen = new Set();
+  const spans = [];
   for (let n = 0; n < count; n++) {
     if (buf.readUInt32LE(p) !== 0x02014b50) throw new Error("bad zip central directory entry");
     const flags = buf.readUInt16LE(p + 8);
@@ -159,14 +170,24 @@ export function unzip(buf) {
     if (seen.has(path)) throw new Error(`duplicate path in zip: ${path}`);
     seen.add(path);
     if (buf.readUInt32LE(at) !== 0x04034b50) throw new Error(`bad local header: ${path}`);
+    // The local header says what the directory says: same name, method and (unless a data
+    // descriptor follows) CRC and sizes.
+    const localName = buf.subarray(at + 30, at + 30 + buf.readUInt16LE(at + 26)).toString("utf8");
+    if (localName !== path || buf.readUInt16LE(at + 8) !== method) throw new Error(`local header disagrees with the directory: ${path}`);
+    if (!(flags & 8) && (buf.readUInt32LE(at + 14) !== crc || buf.readUInt32LE(at + 18) !== csize || buf.readUInt32LE(at + 22) !== size)) {
+      throw new Error(`local header disagrees with the directory: ${path}`);
+    }
     const start = at + 30 + buf.readUInt16LE(at + 26) + buf.readUInt16LE(at + 28);
     const raw = buf.subarray(start, start + csize);
-    if (raw.length !== csize) throw new Error(`truncated entry: ${path}`);
+    if (raw.length !== csize || start + csize > end - cdSize) throw new Error(`truncated entry: ${path}`);
+    for (const [a, b] of spans) if (at < b && start + csize > a) throw new Error(`overlapping entries: ${path}`);
+    spans.push([at, start + csize]);
     const bytes = method === 0 ? Buffer.from(raw) : method === 8 ? inflateRawSync(raw) : null;
     if (!bytes) throw new Error(`unsupported compression ${method}: ${path}`);
     if (bytes.length !== size || crc32(bytes) !== crc) throw new Error(`entry does not match its size or CRC: ${path}`);
     files.push([path, bytes]);
   }
+  if (p !== end) throw new Error("zip central directory has more than its entries");
   return sortFiles(files);
 }
 

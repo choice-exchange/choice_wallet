@@ -132,3 +132,19 @@ test("unzip refuses a corrupted entry", () => {
   assert.throws(() => unzip(z), /CRC/);
   assert.throws(() => unzip(Buffer.from("not a zip at all, just some bytes")), /not a zip/);
 });
+
+// Run-4: Chrome relocates a directory that isn't where the end record says, so any archive it
+// could read differently from this check is refused: bytes before (a gap) or after it, or a
+// directory walk that doesn't end at the end record.
+test("unzip refuses an archive another reader could read differently", () => {
+  const z = zip(files());
+  assert.ok(unzip(z).length > 0);
+  assert.throws(() => unzip(Buffer.concat([Buffer.from("prefix"), z])), /isn't where the end record says/);
+  assert.throws(() => unzip(Buffer.concat([z, Buffer.from("tail")])), /after the end record/);
+  // A second directory entry claimed by the count but not in the bytes.
+  const more = Buffer.from(z);
+  const end = more.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
+  more.writeUInt16LE(more.readUInt16LE(end + 10) - 1, end + 10);
+  more.writeUInt16LE(more.readUInt16LE(end + 8) - 1, end + 8);
+  assert.throws(() => unzip(more), /more than its entries/);
+});
