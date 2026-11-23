@@ -1932,24 +1932,37 @@ mod tests {
         // Where it goes is the subaccount ID's, read as the exchange module reads it: the
         // sender's own (a nonce, or an ID that starts with the sender) is info; another
         // account's is a transfer it can withdraw (run-4: graded info before).
-        let id = |owner: [u8; 20], prefix: &str| {
-            format!("{prefix}{}{}", hex::encode(owner), "0".repeat(23) + "1")
-        };
+        let id = |owner: [u8; 20], prefix: &str| format!("{prefix}{}{}", hex::encode(owner), "0".repeat(23) + "1");
         for own in [id(FROM, "0x"), id(FROM, "")] {
             let a = grade(&deposit(addr_word(FROM), &own));
             assert_eq!((a.level, a.findings[0].rule), (Level::Info, "precompile_call"), "{own}");
         }
-        for other in [id([0xab; 20], "0x"), id([0xab; 20], ""), id([0xab; 20], "0x").to_uppercase().replacen("0X", "0x", 1)] {
+        for other in [
+            id([0xab; 20], "0x"),
+            id([0xab; 20], ""),
+            id([0xab; 20], "0x").to_uppercase().replacen("0X", "0x", 1),
+        ] {
             let a = grade(&deposit(addr_word(FROM), &other));
-            assert_eq!((a.level, a.findings[0].rule), (Level::Red, "exchange_deposit_other"), "{other}");
+            assert_eq!(
+                (a.level, a.findings[0].rule),
+                (Level::Red, "exchange_deposit_other"),
+                "{other}"
+            );
             assert_eq!(a.findings[0].params["denom"], "inj");
             assert_eq!(a.findings[0].params["amount"], "500");
         }
         // An ID the module refuses, and calldata not in its canonical form: unreadable.
         for bad in [id([0x44; 20], "0X"), "abcd".to_owned(), id([0x44; 20], "0x") + "0"] {
-            assert_eq!(grade(&deposit(addr_word(FROM), &bad)).findings[0].rule, "precompile_unknown", "{bad}");
+            assert_eq!(
+                grade(&deposit(addr_word(FROM), &bad)).findings[0].rule,
+                "precompile_unknown",
+                "{bad}"
+            );
         }
-        let short_form = req(precompile(EXCHANGE), call(0xe441dec9u32.to_be_bytes(), &[addr_word(FROM)]));
+        let short_form = req(
+            precompile(EXCHANGE),
+            call(0xe441dec9u32.to_be_bytes(), &[addr_word(FROM)]),
+        );
         assert_eq!(grade(&short_form).findings[0].rule, "precompile_unknown");
 
         // An order spends this account's balance at a worst price the site chose: red, as the
@@ -1973,10 +1986,26 @@ mod tests {
         };
         let a = grade(&with(0x29d3d0e4, vec![abi::Val::Word(addr_word(FROM)), spot("buy", 1)]));
         assert_eq!((a.level, a.findings[0].rule), (Level::Red, "order_unweighed"));
-        assert!(a.findings[0].message.starts_with("Places a buy order"), "{}", a.findings[0].message);
+        assert!(
+            a.findings[0].message.starts_with("Places a buy order"),
+            "{}",
+            a.findings[0].message
+        );
         assert_eq!(a.findings[0].params["orders"][0]["price"], "1");
-        let a = grade(&with(0x4881c7c6, vec![abi::Val::Word(addr_word(FROM)), abi::Val::Array(vec![spot("sell", 1), spot("sellPostOnly", 2)])]));
-        assert_eq!((a.level, a.findings[0].message.as_str()), (Level::Red, "Places 2 orders on the INJ orderbook at a price the wallet can't check. It can spend all of what it trades."));
+        let a = grade(&with(
+            0x4881c7c6,
+            vec![
+                abi::Val::Word(addr_word(FROM)),
+                abi::Val::Array(vec![spot("sell", 1), spot("sellPostOnly", 2)]),
+            ],
+        ));
+        assert_eq!(
+            (a.level, a.findings[0].message.as_str()),
+            (
+                Level::Red,
+                "Places 2 orders on the INJ orderbook at a price the wallet can't check. It can spend all of what it trades."
+            )
+        );
         let batch = |creates: Vec<abi::Val>| {
             with(
                 0xcb0b6590,
@@ -1995,12 +2024,18 @@ mod tests {
             )
         };
         assert_eq!(
-            (grade(&batch(Vec::new())).level, grade(&batch(Vec::new())).findings[0].rule),
+            (
+                grade(&batch(Vec::new())).level,
+                grade(&batch(Vec::new())).findings[0].rule
+            ),
             (Level::Info, "precompile_call")
         );
         assert_eq!(grade(&batch(vec![spot("sell", 1)])).findings[0].rule, "order_unweighed");
         // An order type the module refuses, or a non-canonical order: unreadable, red.
-        let a = grade(&with(0x29d3d0e4, vec![abi::Val::Word(addr_word(FROM)), spot("buyAtomic", 1)]));
+        let a = grade(&with(
+            0x29d3d0e4,
+            vec![abi::Val::Word(addr_word(FROM)), spot("buyAtomic", 1)],
+        ));
         assert_eq!(a.findings[0].rule, "precompile_unknown");
         let mut d = with(0x29d3d0e4, vec![abi::Val::Word(addr_word(FROM)), spot("buy", 1)]);
         d.tx.data.push(0);
