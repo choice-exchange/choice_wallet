@@ -52,7 +52,35 @@ export interface PoolOptions {
  *  browser decodes into any amount, so the answer is read as a stream and cut off here (run-3). */
 export const MAX_ANSWER = 16 * 1024 * 1024;
 
-async function bounded(res: Response, max: number): Promise<string> {
+/** The bytes of answers every pool in this worker holds at once, until each is parsed. The cap
+ *  above is per answer: a site's own endpoint answering many of its reads at once could
+ *  otherwise make the worker hold any number of them (run-4). */
+export const MAX_IN_FLIGHT = 48 * 1024 * 1024;
+let inFlight = 0;
+
+/** The most JSON values (arrays, objects, items) one answer may parse into: `[[],[],…]` makes a
+ *  16 MiB answer some 200 MiB of arrays. The largest answers the wallet reads (a page of logs,
+ *  of NFT transfers) have a few hundred thousand (run-4). */
+export const MAX_VALUES = 500_000;
+
+/** Commas, arrays and objects outside strings: a bound on how many values `text` parses into. */
+function values(text: string): number {
+  let n = 0;
+  let quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (quoted) {
+      if (c === 92) i++;
+      else if (c === 34) quoted = false;
+    } else if (c === 34) quoted = true;
+    else if (c === 44 || c === 91 || c === 123) n++;
+  }
+  return n;
+}
+
+/** The answer's text, read up to `max` bytes; `held.bytes` counts what it holds against
+ *  `MAX_IN_FLIGHT` until the caller lets it go. */
+async function bounded(res: Response, max: number, held: { bytes: number }): Promise<string> {
   const reader = res.body?.getReader();
   if (!reader) return "";
   const parts: Uint8Array[] = [];
@@ -61,9 +89,11 @@ async function bounded(res: Response, max: number): Promise<string> {
     const { done, value } = await reader.read();
     if (done) break;
     size += value.length;
-    if (size > max) {
+    held.bytes += value.length;
+    inFlight += value.length;
+    if (size > max || inFlight > MAX_IN_FLIGHT) {
       void reader.cancel().catch(() => {});
-      throw new Down("answer too large");
+      throw new Down(size > max ? "answer too large" : "too many answers at once");
     }
     parts.push(value);
   }
@@ -140,20 +170,27 @@ export class Pool {
 
   /** Fetch and parse JSON. Throws `Down` if nothing parseable came back in time. */
   async json(url: string, init: RequestInit = {}): Promise<{ status: number; body: unknown }> {
-    let text: string;
-    let status: number;
+    const held = { bytes: 0 };
     try {
-      const res = await this.#opts.fetch(url, { ...init, signal: AbortSignal.timeout(this.#opts.timeoutMs ?? 10_000) });
-      status = res.status;
-      text = await bounded(res, this.#opts.maxBytes ?? MAX_ANSWER);
-    } catch (e) {
-      if (e instanceof Down) throw e;
-      throw new Down(e instanceof Error && e.name === "TimeoutError" ? "timed out" : `network error (${String(e)})`);
-    }
-    try {
-      return { status, body: JSON.parse(text) as unknown };
-    } catch {
-      throw new Down(`HTTP ${status}, not JSON`);
+      let text: string;
+      let status: number;
+      try {
+        const res = await this.#opts.fetch(url, { ...init, signal: AbortSignal.timeout(this.#opts.timeoutMs ?? 10_000) });
+        status = res.status;
+        text = await bounded(res, this.#opts.maxBytes ?? MAX_ANSWER, held);
+      } catch (e) {
+        if (e instanceof Down) throw e;
+        throw new Down(e instanceof Error && e.name === "TimeoutError" ? "timed out" : `network error (${String(e)})`);
+      }
+      // Only a long answer can hold more values than the bound.
+      if (text.length > MAX_VALUES && values(text) > MAX_VALUES) throw new Down("answer too large");
+      try {
+        return { status, body: JSON.parse(text) as unknown };
+      } catch {
+        throw new Down(`HTTP ${status}, not JSON`);
+      }
+    } finally {
+      inFlight -= held.bytes;
     }
   }
 
