@@ -119,6 +119,9 @@ export type UiRequest =
   | { type: "snapshot" }
   /** The wallet is open: clear the count on the toolbar icon. */
   | { type: "seen" }
+  /** A private key was just copied: the worker takes it off the clipboard in 30 s, whether or
+   *  not the page that copied it is still open. */
+  | { type: "clear_clipboard_later" }
   /** Which tokens the current network's lists show (see `TokenFilter`). */
   | { type: "save_token_filter"; filter: TokenFilter }
   /** Add a token by its contract address: an ERC20 (0x…) with no bank denom, or a CW20
@@ -973,6 +976,7 @@ export type Replies = {
   prepare_bridge_reclaim: SendReview;
   snapshot: SnapshotView | null;
   seen: null;
+  clear_clipboard_later: null;
   add_token: { denom: string; symbol: string; filter: TokenFilter };
   save_token_filter: TokenFilter;
   activity: ActivityPage;

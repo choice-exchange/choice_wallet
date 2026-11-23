@@ -24,6 +24,7 @@ let ready: Promise<unknown> | null = null;
 const vaultReady = () => (ready ??= init({ module_or_path: chrome.runtime.getURL("vault/choice_wallet_wasm_bg.wasm") }));
 const AUTO_LOCK = "auto-lock";
 const WATCH = "watch";
+const CLEAR_CLIPBOARD = "clear-clipboard";
 /** The approval window: the popup's own size, plus the window's frame. */
 const APPROVAL = { width: 376, height: 668 };
 
@@ -118,7 +119,36 @@ const service = createService({
   },
   scheduleWatch,
   resizeImage,
+  clearClipboardLater() {
+    // An alarm, not a timer: it fires though this worker sleeps, and the popup that copied
+    // the key is gone by then.
+    void chrome.alarms.create(CLEAR_CLIPBOARD, { delayInMinutes: 0.5 });
+  },
 });
+
+/** Take whatever is on the clipboard off it, through an offscreen page (./clear.ts): a worker
+ *  has no clipboard. The page says when it's done, then it's closed. */
+async function clearClipboard() {
+  // One a worker left open, stopped mid-clear, goes first.
+  await chrome.offscreen.closeDocument().catch(() => {});
+  let on: ((message: unknown, sender: chrome.runtime.MessageSender) => void) | undefined;
+  const done = new Promise<void>((resolve) => {
+    on = (message, sender) => {
+      if (fromOwnPage(sender, chrome.runtime.id) && (message as { choice?: unknown } | null)?.choice === "clipboard_cleared") resolve();
+    };
+    chrome.runtime.onMessage.addListener(on);
+    setTimeout(resolve, 5_000);
+  });
+  try {
+    await chrome.offscreen.createDocument({ url: "clear.html", reasons: [chrome.offscreen.Reason.CLIPBOARD], justification: "Take a copied private key off the clipboard." });
+    await done;
+  } catch {
+    // Offscreen pages refused: nothing more to do here.
+  } finally {
+    if (on) chrome.runtime.onMessage.removeListener(on);
+  }
+  await chrome.offscreen.closeDocument().catch(() => {});
+}
 
 /** An added chain's logo, drawn 64 pixels square and kept as a PNG: small to store, and only
  *  pixels (whatever the image came as). Only a PNG, JPEG or WebP whose header declares a
@@ -140,6 +170,8 @@ async function resizeImage(bytes: Uint8Array): Promise<string | null> {
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  // The clipboard page's word that it's done, for clearClipboard's own listener.
+  if ((message as { choice?: unknown } | null)?.choice === "clipboard_cleared") return false;
   if (fromOwnPage(sender, chrome.runtime.id)) {
     service.handle(message).then(sendResponse, (e: unknown) =>
       sendResponse({ ok: false, error: { code: "internal", message: String(e) } }),
@@ -161,6 +193,7 @@ chrome.windows.onRemoved.addListener((windowId) => service.windowClosed(windowId
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === AUTO_LOCK) void service.lock();
   if (alarm.name === WATCH) void service.watch();
+  if (alarm.name === CLEAR_CLIPBOARD) void clearClipboard();
 });
 
 // The watcher's alarm, as the setting says (alarms can be lost with the browser's profile

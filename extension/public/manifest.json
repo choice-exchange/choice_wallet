@@ -25,7 +25,9 @@
   "permissions": [
     "storage",
     "alarms",
-    "notifications"
+    "notifications",
+    "offscreen",
+    "clipboardWrite"
   ],
   "content_scripts": [
     {

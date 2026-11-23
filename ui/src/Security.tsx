@@ -79,8 +79,8 @@ export function RevealView({ what, wallet, status, onBack }: { what: "phrase" | 
   const backend = useBackend();
   const [shown, setShown] = useState<{ phrase?: string; private_key?: string } | null>(null);
   const [copied, setCopied] = useState(false);
-  // A copied key is taken off the clipboard after a while, or when this screen goes, while the
-  // wallet page is still open (a popup that closes can't do it).
+  // A copied key is taken off the clipboard after 30 s by the worker, and here too when this
+  // screen goes while the page is still open.
   const clearing = useRef<ReturnType<typeof setTimeout> | null>(null);
   const clear = () => {
     if (clearing.current === null) return;
@@ -125,6 +125,9 @@ export function RevealView({ what, wallet, status, onBack }: { what: "phrase" | 
             className="btn"
             onClick={() =>
               void backend.copy(key).then(() => {
+                // The worker clears it in 30 s: this page may be gone by then (a popup closes
+                // as soon as the user goes to paste).
+                void backend.send({ type: "clear_clipboard_later" }).catch(() => {});
                 setCopied(true);
                 if (clearing.current !== null) clearTimeout(clearing.current);
                 clearing.current = setTimeout(() => {

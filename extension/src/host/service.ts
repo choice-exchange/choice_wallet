@@ -69,6 +69,9 @@ export interface Deps {
   scheduleWatch?(on: boolean): void;
   /** An image made 64 pixels square, as a PNG data URL: an added chain's logo. */
   resizeImage?(bytes: Uint8Array): Promise<string | null>;
+  /** Clear the clipboard in 30 s, from the worker: a copied key outlives the popup that
+   *  copied it. */
+  clearClipboardLater?(): void;
 }
 
 /** Minutes without activity before the wallet locks itself, unless the user picks another
@@ -685,6 +688,9 @@ export function createService(d: Deps) {
         return saveSettings(r.network, r.lcd, r.evm, r.evmIndex, r.prices, r.autoLock, r.notify, r.solana, r.chain);
       case "seen":
         await watcher.seen();
+        return { ok: true, result: null };
+      case "clear_clipboard_later":
+        d.clearClipboardLater?.();
         return { ok: true, result: null };
       case "save_token_filter":
         return saveTokenFilter(r.filter);

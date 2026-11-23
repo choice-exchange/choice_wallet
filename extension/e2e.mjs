@@ -1546,6 +1546,27 @@ try {
   await p.waitText(words[11]);
   const revealed = await p.eval(`[...document.querySelectorAll(".words li")].map((li) => li.textContent).join(" ")`);
   if (revealed !== words.join(" ")) throw new Error(`the phrase shown isn't the wallet's: ${revealed.split(" ").length} words shown, ${revealed.split(" ").filter((w, i) => w !== words[i]).length} differ`);
+  {
+    // A copied key is cleared by the worker, through its offscreen page, with the page that
+    // copied it gone (run-4). The alarm is brought forward from 30 s.
+    await send("Browser.grantPermissions", { origin: `chrome-extension://${extId}`, permissions: ["clipboardReadWrite", "clipboardSanitizedWrite"] });
+    await send("Emulation.setFocusEmulationEnabled", { enabled: true }, p.sessionId);
+    const copier = await openPopup();
+    await send("Emulation.setFocusEmulationEnabled", { enabled: true }, copier.sessionId);
+    await copier.eval(`navigator.clipboard.writeText("not a real key")`);
+    await copier.eval(`chrome.runtime.sendMessage({ type: "clear_clipboard_later" })`);
+    await copier.close();
+    const worker = await serviceWorker();
+    if (!(await worker.eval(`chrome.alarms.get("clear-clipboard").then((a) => !!a)`))) throw new Error("no clipboard alarm after a key was copied");
+    await worker.eval(`chrome.alarms.create("clear-clipboard", { when: Date.now() + 50 })`);
+    let left = "not a real key";
+    for (let t = 0; t < 10000 && left; t += 200) {
+      await sleep(200);
+      left = await p.eval(`navigator.clipboard.readText()`);
+    }
+    if (left) throw new Error(`the clipboard still holds "${left}" after the worker's clear`);
+    console.log("clipboard: a copied key cleared by the worker with the copying page closed");
+  }
   await p.click("Done");
   await p.click("Change password");
   await p.fill('input[aria-label="Password"]', 0, "correct horse battery staple");

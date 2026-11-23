@@ -341,7 +341,7 @@ This is designed before the UI is built, because retrofitting it is expensive.
 - **Provider injection.** The dapp-facing provider is injected with a `"world": "MAIN"` content script. No extension page is listed in `web_accessible_resources`.
 - **CSP.** Extension pages: `script-src 'self' 'wasm-unsafe-eval'; object-src 'none'; require-trusted-types-for 'script'`.
 - **Service-worker startup.** The wasm-bindgen glue is imported statically (dynamic `import()` is blocked in service workers). Listeners are registered synchronously. The WASM is compiled when a request first calls the vault, and such a request waits for it.
-- **Permissions.** `storage`, `alarms` (auto-lock, the watcher), `notifications` (the watcher), and the content scripts. No host permissions: endpoints answer the extension's origin with CORS.
+- **Permissions.** `storage`, `alarms` (auto-lock, the watcher, the clipboard clear), `notifications` (the watcher), `offscreen` and `clipboardWrite` (a copied private key is cleared after 30 s by the worker, through an offscreen page, since the popup that copied it is gone by then), and the content scripts. No host permissions: endpoints answer the extension's origin with CORS.
 
 ## Connecting to dapps
 

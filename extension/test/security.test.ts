@@ -129,6 +129,25 @@ test("lock after: one of the choices, applied from the next use", async () => {
   assert.equal(code(await service.handle({ type: "save_settings", network: "mainnet", lcd: null, autoLock: 7 })), "bad_request");
 });
 
+// Run-4: the page that copies a key is the popup, gone as soon as the user goes to paste, so
+// its own 30 s timer never ran. The worker is asked to clear it instead.
+test("a copied key is cleared from the clipboard by the worker", async () => {
+  let clears = 0;
+  const service = createService({
+    vault: async (method, params) => callVault(handle, method, params),
+    local: memory(),
+    session: memory(),
+    fetch: chain().fetch,
+    scheduleLock: () => {},
+    cancelLock: () => {},
+    openWindow: async () => undefined,
+    notify: () => {},
+    clearClipboardLater: () => void clears++,
+  });
+  ok(await service.handle({ type: "clear_clipboard_later" }));
+  assert.equal(clears, 1);
+});
+
 // F17: Reset left records naming the user's Solana addresses and connected sites.
 test("reset leaves no record of the accounts' Solana tokens, bridge rent or sites' chains", async () => {
   const { service, local } = await wallet();

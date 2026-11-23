@@ -111,7 +111,7 @@ const app = {
 // code) is its own file under chunks/, loaded the first time a Ledger is asked for.
 const pages = {
   ...app,
-  entryPoints: dev ? { popup: "src/popup.ts", dev: "src/dev/page.ts" } : { popup: "src/popup.ts" },
+  entryPoints: dev ? { popup: "src/popup.ts", clear: "src/clear.ts", dev: "src/dev/page.ts" } : { popup: "src/popup.ts", clear: "src/clear.ts" },
   splitting: true,
   chunkNames: "chunks/[name]-[hash]",
 };
@@ -160,7 +160,7 @@ if (!dev) {
     const assets = existsSync(join(dist, "assets")) ? readdirSync(join(dist, "assets")).map((f) => `assets/${f}`).sort() : [];
     const chunks = existsSync(join(dist, "chunks")) ? readdirSync(join(dist, "chunks")).map((f) => `chunks/${f}`).sort() : [];
     const s = {
-      page: digest(["popup.js", "popup.css", "popup.html", "shell.css", ...assets, ...chunks]),
+      page: digest(["popup.js", "popup.css", "popup.html", "shell.css", "clear.js", "clear.html", ...assets, ...chunks]),
       worker: digest(["background.js", "inpage.js", "relay.js", "manifest.json", "vault/choice_wallet_wasm_bg.wasm"]),
     };
     writeFileSync(join(dist, "dev-build.json"), JSON.stringify(s) + "\n");
