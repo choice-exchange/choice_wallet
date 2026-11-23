@@ -46,6 +46,48 @@ const INFO_PARALLEL = 8;
  *  0.3 to 0.6 s to answer one, so a wallet of 8 collections took 15 s one at a time. */
 const COLLECTIONS_PARALLEL = 4;
 
+/** What an EVM endpoint can fail with: a collection whose answers fail is left out, not the
+ *  whole list. */
+const failed = (e: unknown) => e instanceof Down || e instanceof Unreachable || e instanceof ChainError;
+
+/** `f` over each collection, at most `n` at a time, in order. One that fails is left out, so a
+ *  collection whose contract answers too much (a 450 KB tokenURI, twenty times over) can't
+ *  empty the list (run-4); when every one fails, the first failure is thrown. */
+async function eachCollection<T, R>(xs: readonly T[], n: number, f: (x: T) => Promise<R | null>): Promise<R[]> {
+  let first: unknown;
+  let ok = 0;
+  const out = await mapLimited(xs, n, async (x) => {
+    try {
+      const r = await f(x);
+      ok++;
+      return r;
+    } catch (e) {
+      if (!failed(e)) throw e;
+      first ??= e;
+      return null;
+    }
+  });
+  if (ok === 0 && first !== undefined) throw first;
+  return out.filter((c): c is R => c !== null);
+}
+
+/** Metadata links, a batch of `URI_BATCH` at a time: a batch that fails leaves its NFTs
+ *  shown by ID, not the collection gone. */
+const URI_BATCH = 20;
+async function uriBatches(rpc: EvmRpc, calls: { method: string; params: unknown[] }[]): Promise<unknown[]> {
+  const out: unknown[] = [];
+  for (let i = 0; i < calls.length; i += URI_BATCH) {
+    const part = calls.slice(i, i + URI_BATCH);
+    out.push(
+      ...(await rpc.batch(part).catch((e: unknown) => {
+        if (!failed(e)) throw e;
+        return part.map(() => null);
+      })),
+    );
+  }
+  return out;
+}
+
 /** `f` over `xs`, at most `n` at a time; the answers in `xs`'s order. */
 async function mapLimited<T, R>(xs: readonly T[], n: number, f: (x: T) => Promise<R>): Promise<R[]> {
   const out: R[] = new Array<R>(xs.length);
@@ -116,22 +158,31 @@ export async function cw721Info(lcd: Lcd, contract: string): Promise<{ name: str
 }
 
 /** The token IDs `owner` holds in a CW721, every page; `more` when the cap cut it short.
- *  Null if the contract doesn't answer `tokens`. */
+ *  Null if the contract doesn't answer `tokens`. At most as many pages as the cap needs, and
+ *  a full page with nothing new ends it: a contract that hands back the same pages in turn
+ *  would otherwise be asked forever (run-4). */
 export async function cw721Tokens(lcd: Lcd, contract: string, owner: string, max = MAX_PER_COLLECTION): Promise<{ ids: string[]; more: boolean } | null> {
   const ids: string[] = [];
+  const seen = new Set<string>();
   let after: string | undefined;
-  for (;;) {
+  for (let pages = Math.ceil(max / CW721_PAGE) + 1; pages > 0; pages--) {
     const r = await lcd.smart(contract, { tokens: { owner, limit: CW721_PAGE, ...(after === undefined ? {} : { start_after: after }) } });
     if (!isObject(r) || !Array.isArray(r["tokens"])) return ids.length ? { ids, more: true } : null;
     const page = (r["tokens"] as unknown[]).filter(isTokenId);
+    const before = ids.length;
     for (const id of page) {
       if (ids.length >= max) return { ids, more: true };
-      if (!ids.includes(id)) ids.push(id);
+      if (!seen.has(id)) {
+        seen.add(id);
+        ids.push(id);
+      }
     }
-    // A short page is the last; a page that repeats itself would loop.
-    if (page.length < CW721_PAGE || page.at(-1) === after) return { ids, more: false };
+    // A short page is the last.
+    if (page.length < CW721_PAGE) return { ids, more: false };
+    if (ids.length === before) return { ids, more: true };
     after = page.at(-1);
   }
+  return { ids, more: true };
 }
 
 /** What a CW721 says about one NFT: a name from its on-chain metadata, and its URI. */
@@ -205,7 +256,7 @@ export async function erc721Collections(rpc: EvmRpc, index: EvmIndex | null, own
     }
   }
   let budget = MAX_INFO;
-  const found = await mapLimited([...byCollection], COLLECTIONS_PARALLEL, async ([address, named]): Promise<NftCollection | null> => {
+  return eachCollection([...byCollection], COLLECTIONS_PARALLEL, async ([address, named]): Promise<NftCollection | null> => {
     // An added collection that enumerates: what it says this owner holds.
     const [bal, name, symbol] = await rpc.batch([call(address, `0x70a08231${word(owner)}`), call(address, "0x06fdde03"), call(address, "0x95d89b41")]);
     const count = typeof bal === "string" && /^0x[0-9a-fA-F]{1,64}$/.test(bal) ? BigInt(bal) : 0n;
@@ -222,7 +273,7 @@ export async function erc721Collections(rpc: EvmRpc, index: EvmIndex | null, own
     if (held.length === 0) return null;
     const look = held.slice(0, budget);
     budget -= look.length;
-    const uris = await rpc.batch(look.map((id) => call(address, `0xc87b56dd${u256(BigInt(id))}`)));
+    const uris = await uriBatches(rpc, look.map((id) => call(address, `0xc87b56dd${u256(BigInt(id))}`)));
     return {
       address,
       standard: "erc721",
@@ -232,7 +283,6 @@ export async function erc721Collections(rpc: EvmRpc, index: EvmIndex | null, own
       more: count > BigInt(held.length) && count > BigInt(MAX_PER_COLLECTION),
     };
   });
-  return found.filter((c): c is NftCollection => c !== null);
 }
 
 /** The ERC1155 tokens `owner` holds on an EVM chain: the index names what was ever sent to it,
@@ -245,7 +295,7 @@ export async function erc1155Collections(rpc: EvmRpc, index: EvmIndex | null, ow
     byCollection.set(t.contract, (byCollection.get(t.contract) ?? new Set()).add(t.tokenId));
   }
   let budget = MAX_INFO;
-  const found = await mapLimited([...byCollection], COLLECTIONS_PARALLEL, async ([address, named]): Promise<NftCollection | null> => {
+  return eachCollection([...byCollection], COLLECTIONS_PARALLEL, async ([address, named]): Promise<NftCollection | null> => {
     const ids = [...named].filter((id) => UINT.test(id)).slice(0, MAX_PER_COLLECTION);
     const balances = await rpc.batch(ids.map((id) => call(address, `0x00fdd58e${word(owner)}${u256(BigInt(id))}`)));
     const held = ids.flatMap((id, i) => {
@@ -256,7 +306,8 @@ export async function erc1155Collections(rpc: EvmRpc, index: EvmIndex | null, ow
     if (held.length === 0) return null;
     const look = held.slice(0, budget);
     budget -= look.length;
-    const [name, symbol, ...uris] = await rpc.batch([call(address, "0x06fdde03"), call(address, "0x95d89b41"), ...look.map((h) => call(address, `0x0e89341c${u256(BigInt(h.id))}`))]);
+    const [name, symbol] = await rpc.batch([call(address, "0x06fdde03"), call(address, "0x95d89b41")]);
+    const uris = await uriBatches(rpc, look.map((h) => call(address, `0x0e89341c${u256(BigInt(h.id))}`)));
     return {
       address,
       standard: "erc1155",
@@ -270,5 +321,4 @@ export async function erc1155Collections(rpc: EvmRpc, index: EvmIndex | null, ow
       more: false,
     };
   });
-  return found.filter((c): c is NftCollection => c !== null);
 }

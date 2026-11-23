@@ -8,7 +8,7 @@ import { EvmRpc } from "../src/evm.ts";
 import { EvmIndex } from "../src/evmindex.ts";
 import { Lcd } from "../src/lcd.ts";
 import { NETWORKS } from "../src/networks.ts";
-import { cw721Collections, CW721_PAGE, erc1155Collections, erc721Collections, isTokenId } from "../src/nfts.ts";
+import { cw721Collections, CW721_PAGE, cw721Tokens, erc1155Collections, erc721Collections, isTokenId, MAX_PER_COLLECTION } from "../src/nfts.ts";
 import type { Fetch } from "../src/pool.ts";
 
 const ME = "inj1npvwllfr9dqr8erajqqr6s0vxnk2ak55re90dz";
@@ -209,4 +209,64 @@ test("ERC1155: Blockscout names tokens, balanceOf says how many are held, uri fi
     },
   ]);
   assert.deepEqual(await erc1155Collections(rpc, null, ME_EVM), []);
+});
+
+// Run-4: a contract that answers `tokens` with the same full pages in turn never reached a
+// short page, so the list was asked for forever. Paging stops at the cap's pages, or at a full
+// page with nothing new.
+test("CW721: a contract that hands back the same pages in turn is asked a bounded number of times", async () => {
+  let asked = 0;
+  const pageA = Array.from({ length: CW721_PAGE }, (_, i) => `a-${i}`);
+  const pageB = Array.from({ length: CW721_PAGE }, (_, i) => `b-${i}`);
+  const fetch: Fetch = async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith("/node_info")) return json(200, { default_node_info: { network: "injective-1" } });
+    asked++;
+    const q = JSON.parse(atob(decodeURIComponent(url.pathname.split("/smart/")[1]!))) as { tokens: { start_after?: string } };
+    return json(200, { data: { tokens: q.tokens.start_after?.startsWith("a-") ? pageB : pageA } });
+  };
+  const lcd = new Lcd(NETWORKS.mainnet, ["https://a.example"], fetch, 1000);
+  const held = await cw721Tokens(lcd, PUNKS, ME);
+  assert.deepEqual([held?.ids.length, held?.more], [2 * CW721_PAGE, true]);
+  assert.equal(asked, 3);
+  // A cap of its own: no more pages than it needs.
+  asked = 0;
+  await cw721Tokens(lcd, PUNKS, ME, MAX_PER_COLLECTION * 10);
+  assert.ok(asked <= 3, String(asked));
+});
+
+// Run-4: one collection whose answers fail (a contract whose tokenURI is huge) took every EVM
+// NFT off the list. It is left out alone; its NFTs' links, failing, leave them shown by ID.
+test("ERC721: a collection whose answers fail leaves the others listed", async () => {
+  const GOOD = "0x1111111111111111111111111111111111111111";
+  const BAD = "0x4444444444444444444444444444444444444444";
+  const LINKS = "0x5555555555555555555555555555555555555555";
+  const word = (hex: string) => hex.replace(/^0x/, "").padStart(64, "0");
+  const fetch: Fetch = async (input, init) => {
+    const url = new URL(String(input));
+    if (url.host === "index.example") {
+      return json(200, { status: "1", result: [GOOD, BAD, LINKS].map((contractAddress) => ({ contractAddress, tokenID: "7", to: ME_EVM, from: "0x0000000000000000000000000000000000000000" })) });
+    }
+    type Req = { id: number; method: string; params: [{ to: string; data: string }] };
+    const body = JSON.parse(String(init?.body)) as Req | Req[];
+    const all = Array.isArray(body) ? body : [body];
+    // BAD's every answer, and LINKS's metadata answer, are too large for the endpoint to send.
+    if (all.some((r) => r.params?.[0]?.to === BAD || (r.params?.[0]?.to === LINKS && r.params[0].data.startsWith("0xc87b56dd")))) return new Response("x".repeat(64), { status: 502 });
+    const answer = (r: Req) => {
+      if (r.method === "eth_chainId") return { jsonrpc: "2.0", id: r.id, result: "0x6f0" };
+      const d = r.params[0].data;
+      return { jsonrpc: "2.0", id: r.id, result: d.startsWith("0x6352211e") ? `0x${word(ME_EVM)}` : "0x" };
+    };
+    return json(200, Array.isArray(body) ? body.map(answer) : answer(body));
+  };
+  const rpc = new EvmRpc(NETWORKS.mainnet, ["https://rpc.example"], fetch, 1000);
+  const index = new EvmIndex(["https://index.example"], fetch, 1000);
+  const found = await erc721Collections(rpc, index, ME_EVM, []);
+  assert.deepEqual(found.map((c) => [c.address, c.items.map((n) => [n.tokenId, n.uri])]), [
+    [GOOD, [["7", null]]],
+    [LINKS, [["7", null]]],
+  ]);
+  // Every collection failing: the failure, not an empty list.
+  const down: Fetch = async (input, init) => (new URL(String(input)).host === "index.example" ? fetch(input, init) : new Response("down", { status: 503 }));
+  await assert.rejects(erc721Collections(new EvmRpc(NETWORKS.mainnet, ["https://rpc.example"], down, 1000), new EvmIndex(["https://index.example"], down, 1000), ME_EVM, []));
 });
