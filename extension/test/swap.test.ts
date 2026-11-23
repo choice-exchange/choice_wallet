@@ -132,6 +132,23 @@ test("USDT in: approve Permit2, then Permit2 for the aggregator, then the swap; 
   assert.deepEqual(ok<Quote>(await service.handle({ type: "swap_quote", from: USDT, to: "inj", amount: "5000000" })).steps, ["permit2", "swap"]);
 });
 
+// Run-4: the approve step gives Permit2 the swap's amount, and any spender Permit2 already
+// lets spend that token could take it before the swap does. Such a spender is revoked first.
+test("the approve step waits while Permit2 lets another spender spend the token", async () => {
+  const net = chain({ balances: { inj: 3n * INJ, [USDT]: 10_000_000n } });
+  const { service } = await wallet(net);
+  const OTHER = "0x5555555555555555555555555555555555555555";
+  net.state.permit2Logs.push({ token: USDT_ERC20, spender: OTHER });
+  net.state.permit2[`${USDT_ERC20} ${OTHER}`] = { amount: 10n ** 30n, expiration: Math.floor(Date.now() / 1000) + 86_400 };
+  const q = ok<Quote>(await service.handle({ type: "swap_quote", from: USDT, to: "inj", amount: "5000000" }));
+  const refused = await service.handle({ type: "prepare_swap", quote: q.id });
+  assert.equal(code(refused), "permit2_spender", JSON.stringify(refused));
+  assert.match(JSON.stringify(refused), /0x5555…5555/);
+  // Revoked (or ended): the step goes ahead.
+  net.state.permit2[`${USDT_ERC20} ${OTHER}`] = { amount: 0n, expiration: 0 };
+  assert.equal(ok<Review>(await service.handle({ type: "prepare_swap", quote: q.id })).swap?.step, "approve");
+});
+
 test("refusals: no route, an answer for another pair, an old quote, more than held", async () => {
   const net = chain({ balances: { inj: 3n * INJ } });
   const { service, session } = await wallet(net);

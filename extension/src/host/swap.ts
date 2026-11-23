@@ -190,6 +190,27 @@ export function createSwaps(sender: Sender, session: Store, fetch: Fetch, shown:
     }
   }
 
+  /** A spender other than this swap's that Permit2 lets spend the swap's token now, from the
+   *  allowances the EVM index logged. None when the index is off or can't answer: then the
+   *  wallet can't tell, as on the Approvals screen. */
+  async function permit2Spender(network: NetworkId, q: Stored): Promise<string | null> {
+    const net = NETWORKS[network];
+    try {
+      const index = await sender.evmIndex(network);
+      if (!index) return null;
+      const { pairs } = await index.permit2Approvals(q.account, net.choice.permit2);
+      const others = pairs.filter((p) => same(p.token, q.tokenIn) && !same(p.spender, q.route.to)).slice(0, 50);
+      if (others.length === 0) return null;
+      const rpc = await sender.evm(network);
+      const left = await rpc.permit2Allowances(net.choice.permit2, others, q.account);
+      const at = Math.floor(now() / 1000);
+      const i = left.findIndex((a) => a !== null && a.amount > 0n && a.expiration >= at);
+      return i < 0 ? null : others[i]!.spender;
+    } catch {
+      return null;
+    }
+  }
+
   /** The next step of the stored quote, ready to review. */
   async function prepare(network: NetworkId, account: AccountInfo, id: unknown): Promise<Result<SendReview>> {
     const { swap_quote } = await session.get(["swap_quote"]);
@@ -227,6 +248,10 @@ export function createSwaps(sender: Sender, session: Store, fetch: Fetch, shown:
     };
     const tokens = [q.from, q.to, ...pair(q.from, q.tokenIn), ...pair(q.to, q.tokenOut)];
     if (step === "approve") {
+      // What this gives Permit2, any spender Permit2 already lets spend this token can take
+      // before the swap does (run-4). Such a spender is revoked first.
+      const other = await permit2Spender(network, q);
+      if (other) return fail("permit2_spender", `Permit2 still lets ${other.slice(0, 6)}…${other.slice(-4)} spend this token. Revoke that in Approvals first.`);
       return sender.prepareEvmCall(network, account, {
         to: q.tokenIn,
         amount,
