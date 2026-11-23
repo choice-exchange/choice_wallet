@@ -441,7 +441,7 @@ pub fn evm_transaction(req: &TxRequest, chain: &EvmSide<'_>, ctx: &Context) -> A
     }
     outflows.check(ctx, &mut out);
     if let Some(moves) = &ctx.evm_transfers {
-        simulated(moves, req, &mut out);
+        simulated(moves, req, ctx, &mut out);
     }
     // The amount plus the most gas could cost, against the native balance.
     if let Some(bal) = balance(ctx, "native") {
@@ -462,13 +462,53 @@ pub fn evm_transaction(req: &TxRequest, chain: &EvmSide<'_>, ctx: &Context) -> A
 /// What the node's simulation shows leaving the account. A call that sends the account's
 /// tokens away and brings nothing back is a payment at best; when some go anywhere but the
 /// contract called (another address, or burned), it is how an approval or deposit is drained.
-fn simulated(moves: &[crate::EvmTransfer], req: &TxRequest, out: &mut Vec<Finding>) {
+fn simulated(moves: &[crate::EvmTransfer], req: &TxRequest, ctx: &Context, out: &mut Vec<Finding>) {
     let me = req.from.to_checksum_hex().to_lowercase();
     let called = req.tx.to.to_checksum_hex().to_lowercase();
     let zero = format!("0x{}", "0".repeat(40));
+    // Only part of the simulation was read: what it shows can't say what the rest moves.
+    if ctx.evm_transfers_partial {
+        out.push(finding(
+            "simulation_partial",
+            Level::Red,
+            "The simulation moves more than the wallet could read. It can't say what leaves your account.".into(),
+            json!({ "moves_read": moves.len() }),
+        ));
+    }
     let gone: Vec<&crate::EvmTransfer> = moves.iter().filter(|m| m.from == me && m.to != me).collect();
-    let back = moves.iter().any(|m| m.to == me && m.from != me);
-    if gone.is_empty() || back {
+    // Something comes back only when the wallet can value it: the chain's coin or a token it
+    // lists, not an NFT or a token anyone can mint and log a Transfer of (run-4).
+    let back: Vec<&crate::EvmTransfer> = moves
+        .iter()
+        .filter(|m| {
+            m.to == me
+                && m.from != me
+                && !m.nft
+                && m.amount != "0"
+                && (m.token == "native" || ctx.symbols.contains_key(&m.token))
+        })
+        .collect();
+    if gone.is_empty() {
+        return;
+    }
+    if !back.is_empty() {
+        // A trade: the wallet can't weigh what comes back against what leaves.
+        let to: std::collections::BTreeSet<&str> = gone.iter().map(|m| m.to.as_str()).collect();
+        out.push(finding(
+            "simulated_trade",
+            Level::Amber,
+            format!(
+                "Simulated: tokens leave your account for {} and {} comes back. The wallet can't weigh one against the other.",
+                to.iter().map(|t| short(t)).collect::<Vec<_>>().join(", "),
+                back.iter()
+                    .map(|m| ctx.token_name(&m.token))
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            json!({ "to": to, "back": back.iter().map(|m| &m.token).collect::<Vec<_>>() }),
+        ));
         return;
     }
     let tokens = gone
@@ -484,7 +524,7 @@ fn simulated(moves: &[crate::EvmTransfer], req: &TxRequest, out: &mut Vec<Findin
         out.push(finding(
             "simulated_loss",
             Level::Red,
-            format!("Simulated: tokens leave your account and nothing comes back. {what}."),
+            format!("Simulated: tokens leave your account and nothing the wallet can value comes back. {what}."),
             json!({ "to": m.to, "token": m.token, "amount": m.amount, "tokens": tokens }),
         ));
     } else {
@@ -1315,18 +1355,23 @@ mod tests {
             to: to.into(),
             amount: "5000000000".into(),
             nft: false,
+            id: None,
         };
-        let grade_with = |moves: Option<Vec<crate::EvmTransfer>>| {
+        let grade_partial = |moves: Option<Vec<crate::EvmTransfer>>, partial: bool| {
             let r = req(
                 EthAddress::from_bytes([0x6f; 20]),
                 call(0x3593564cu32.to_be_bytes(), &[[0x60; 32]]),
             );
             let ctx = Context {
                 evm_transfers: moves,
+                evm_transfers_partial: partial,
+                // USDC is a token the wallet lists here.
+                symbols: [(usdc.clone(), "USDC".to_owned())].into(),
                 ..Context::default()
             };
             evm_transaction(&r, &EvmSide::injective(&MAINNET), &ctx)
         };
+        let grade_with = |moves: Option<Vec<crate::EvmTransfer>>| grade_partial(moves, false);
         // A router paying the account's tokens to someone else: red.
         let drained = grade_with(Some(vec![mv(&me, &payee)]));
         assert_eq!(drained.level, Level::Red);
@@ -1340,11 +1385,33 @@ mod tests {
         let pay = grade_with(Some(vec![mv(&me, &router)]));
         assert_eq!(pay.level, Level::Amber);
         assert!(rules_of(&pay).contains(&"simulated_payment"));
-        // Something comes back (a swap, a withdrawal to the account): no simulated finding.
+        // A listed token comes back (a swap, a withdrawal to the account): a trade the wallet
+        // can't weigh, amber, naming where the tokens go.
         let swap = grade_with(Some(vec![mv(&me, &router), mv(&router, &me)]));
-        assert!(!rules_of(&swap).iter().any(|r| r.starts_with("simulated_")));
-        let withdraw = grade_with(Some(vec![burned, mv(&router, &me)]));
-        assert!(!rules_of(&withdraw).iter().any(|r| r.starts_with("simulated_")));
+        assert_eq!(
+            (swap.level, rules_of(&swap).contains(&"simulated_trade")),
+            (Level::Amber, true)
+        );
+        let withdraw = grade_with(Some(vec![burned.clone(), mv(&router, &me)]));
+        assert!(rules_of(&withdraw).contains(&"simulated_trade"));
+        // Run-4: an NFT, an unlisted token or a zero amount coming back is nothing: the
+        // contract that drains the account can log any of them.
+        let mut nft_back = mv(&payee, &me);
+        (nft_back.nft, nft_back.id, nft_back.amount) = (true, Some("1".into()), "1".into());
+        let mut junk_back = mv(&payee, &me);
+        junk_back.token = format!("0x{}", "66".repeat(20));
+        let mut nothing_back = mv(&payee, &me);
+        nothing_back.amount = "0".into();
+        for back in [nft_back, junk_back, nothing_back] {
+            let a = grade_with(Some(vec![mv(&me, &payee), back]));
+            assert_eq!((a.level, rules_of(&a).contains(&"simulated_loss")), (Level::Red, true));
+        }
+        // Only part of the simulation read: red, whatever the part shows.
+        let a = grade_partial(Some(vec![]), true);
+        assert_eq!(
+            (a.level, rules_of(&a).contains(&"simulation_partial")),
+            (Level::Red, true)
+        );
         // Not simulated, or nothing moved: no simulated finding.
         assert!(!rules_of(&grade_with(None)).iter().any(|r| r.starts_with("simulated_")));
         assert!(

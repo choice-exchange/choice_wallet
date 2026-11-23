@@ -182,6 +182,10 @@ pub struct Context {
     /// can move tokens the account approved or deposited there; this is where that shows.
     #[serde(default)]
     pub evm_transfers: Option<Vec<EvmTransfer>>,
+    /// The simulation had more than the host reads (too many logs, or a token move it couldn't
+    /// parse): `evm_transfers` is then only part of what the transaction moves.
+    #[serde(default)]
+    pub evm_transfers_partial: bool,
     /// The addresses above in their forms, worked out once when the rules first need them.
     #[serde(skip)]
     pub(crate) address_forms: addresses::AddressForms,
@@ -199,9 +203,12 @@ pub struct EvmTransfer {
     pub to: String,
     /// Base units (1 for an NFT).
     pub amount: String,
-    /// An ERC-721 `Transfer` (the amount is one token).
+    /// An NFT move: an ERC-721 `Transfer` (the amount is one token) or an ERC-1155 transfer.
     #[serde(default)]
     pub nft: bool,
+    /// The NFT's token ID.
+    #[serde(default)]
+    pub id: Option<String>,
 }
 
 /// Control of the account, or of one of its token accounts, passing to someone else.
