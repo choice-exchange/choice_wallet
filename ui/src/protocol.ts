@@ -921,7 +921,7 @@ export type DappReview = Omit<SendReview, "display"> & {
   display: CosmosDisplay | EvmDisplay | { kind: string; [k: string]: unknown };
   /** A Cosmos tx's simulation: what it would move for this account (the fee apart), or why
    *  it would fail. */
-  simulation?: { ok: true; changes: Coin[] } | { ok: false; error: string };
+  simulation?: { ok: true; changes: Coin[]; partial?: boolean } | { ok: false; error: string };
 };
 
 export type Connection = { origin: string; since: number };

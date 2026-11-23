@@ -307,11 +307,23 @@ export function SignBody({ review, network, typed, onTyped, account }: { review:
       {review.simulation?.ok && (
         <div className="well">
           <div className="eyebrow">Simulated: what this account would see</div>
+          {review.simulation.partial && <p className="meta" style={{ marginTop: 6 }}>Only partly read: more may move than this shows.</p>}
           {review.simulation.changes.length === 0 ? (
-            <p className="meta" style={{ marginTop: 6 }}>No balance changes, besides the fee.</p>
+            !review.simulation.partial && <p className="meta" style={{ marginTop: 6 }}>No balance changes, besides the fee.</p>
           ) : (
             <ul className="changes">
               {review.simulation.changes.map((c) => {
+                // An NFT: its collection and ID, never a balance.
+                const nft = /^nft:(0x[0-9a-f]{40}):([0-9]{1,78}|\?)$/.exec(c.denom);
+                if (nft) {
+                  const n = c.amount.replace(/^-/, "");
+                  return (
+                    <li key={c.denom} className={c.amount.startsWith("-") ? "out" : "in"}>
+                      {c.amount.startsWith("-") ? "−" : "+"}
+                      {n === "1" ? "" : `${n} of `}NFT #{nft[2]} <span className="meta mono">{shortAddress(nft[1]!)}</span>
+                    </li>
+                  );
+                }
                 // An unlisted token's symbol proves nothing: say where it lives.
                 const t = tokens[c.denom];
                 return (

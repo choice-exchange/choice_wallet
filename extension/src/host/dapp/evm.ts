@@ -16,8 +16,34 @@ import { CHAIN_DISCONNECTED, INVALID_PARAMS, MAX_ARBITRARY, MAX_TYPED, no, quant
 const TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 /** The address eth_simulateV1's transfer tracing logs coin moves from. */
 const NATIVE_MOVES = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+/** keccak256("TransferSingle(address,address,address,uint256,uint256)"): ERC-1155. */
+const TRANSFER_SINGLE = "0xc3d58168c5ae7397731d063d5bbf3d657854427343f4c083240f7aacaa2d0f62";
+/** keccak256("TransferBatch(address,address,address,uint256[],uint256[])"): ERC-1155. */
+const TRANSFER_BATCH = "0x4a39dc06d4c0dbc64b70af90fd698a233a518aa5d07e595d983b8c0526c8f7fb";
 const MAX_SIMULATED_LOGS = 512;
-type EvmMove = { token: string; from: string; to: string; amount: string; nft: boolean };
+type EvmMove = { token: string; from: string; to: string; amount: string; nft: boolean; id?: string };
+/** A simulation as read: its moves, and whether that is all of them. */
+type Simulated = { moves: EvmMove[]; partial: boolean };
+
+/** The words of a log's data, or null when it isn't whole 32-byte words. */
+function words(data: unknown): bigint[] | null {
+  if (typeof data !== "string" || !/^0x([0-9a-fA-F]{64})*$/.test(data)) return null;
+  const out: bigint[] = [];
+  for (let i = 2; i < data.length; i += 64) out.push(BigInt(`0x${data.slice(i, i + 64)}`));
+  return out;
+}
+
+/** TransferBatch's data, abi.encode(uint256[] ids, uint256[] values), as [id, value] pairs. */
+function batchPairs(data: unknown): [bigint, bigint][] | null {
+  const w = words(data);
+  if (!w || w.length < 4) return null;
+  const at = (offset: bigint) => (offset % 32n === 0n && offset / 32n < BigInt(w.length) ? Number(offset / 32n) : null);
+  const [i, v] = [at(w[0]!), at(w[1]!)];
+  if (i === null || v === null) return null;
+  const [n, m] = [w[i]!, w[v]!];
+  if (n !== m || n > 256n || i + 1 + Number(n) > w.length || v + 1 + Number(m) > w.length) return null;
+  return Array.from({ length: Number(n) }, (_, k) => [w[i + 1 + k]!, w[v + 1 + k]!]);
+}
 
 /** An https URL that parses, with a host: a site's "https://" alone would leave the window
  *  that names its endpoints unable to draw. */
@@ -266,39 +292,68 @@ export function createEvmSite(core: SiteCore) {
   }
 
   /** What a site's transaction would move, from the user's own node: eth_simulateV1 with
-   *  transfer tracing gives every ERC20 and NFT Transfer log and every coin move. Null when
-   *  the node can't simulate it (the review then says nothing about it). */
-  async function simulateMoves(rpc: EvmRpc, tx: { from: string; to: string; value: string; data: string }): Promise<EvmMove[] | null> {
+   *  transfer tracing gives every ERC20, ERC-721 and ERC-1155 transfer log and every coin move.
+   *  Null when the node can't simulate it (the review then says nothing about it). Partial when
+   *  there were more logs than are read, or a transfer log naming the account didn't parse: the
+   *  moves are then not all it does, and are never shown as all (run-4). */
+  async function simulateMoves(rpc: EvmRpc, tx: { from: string; to: string; value: string; data: string }): Promise<Simulated | null> {
     try {
       const out = await rpc.call("eth_simulateV1", [{ blockStateCalls: [{ calls: [{ from: tx.from, to: tx.to, value: tx.value, data: tx.data }] }], traceTransfers: true }, "latest"]);
       const block = Array.isArray(out) && isObject(out[0]) ? out[0] : null;
       const call = block && Array.isArray(block["calls"]) && isObject(block["calls"][0]) ? block["calls"][0] : null;
       if (!call || call["status"] !== "0x1" || !Array.isArray(call["logs"])) return null;
       const address = (t: unknown) => (typeof t === "string" && /^0x0{24}[0-9a-fA-F]{40}$/.test(t) ? `0x${t.slice(26).toLowerCase()}` : null);
+      const me = `0x${"0".repeat(24)}${tx.from.slice(2).toLowerCase()}`;
       const moves: EvmMove[] = [];
+      let partial = call["logs"].length > MAX_SIMULATED_LOGS;
       for (const log of call["logs"].slice(0, MAX_SIMULATED_LOGS)) {
-        if (!isObject(log) || !Array.isArray(log["topics"]) || String(log["topics"][0]).toLowerCase() !== TRANSFER_TOPIC) continue;
-        const [from, to] = [address(log["topics"][1]), address(log["topics"][2])];
+        if (!isObject(log) || !Array.isArray(log["topics"])) continue;
+        const topics = log["topics"].map((t) => String(t).toLowerCase());
+        const kind = topics[0];
+        if (kind !== TRANSFER_TOPIC && kind !== TRANSFER_SINGLE && kind !== TRANSFER_BATCH) continue;
+        // A transfer log that names the account but can't be read means the moves aren't all.
+        const unread = () => {
+          if (topics.slice(1).includes(me)) partial = true;
+        };
         const token = typeof log["address"] === "string" && /^0x[0-9a-fA-F]{40}$/.test(log["address"]) ? log["address"].toLowerCase() : null;
-        if (!from || !to || !token) continue;
-        const nft = log["topics"].length === 4;
-        const data = log["data"];
-        if (!nft && !(typeof data === "string" && /^0x[0-9a-fA-F]{1,64}$/.test(data))) continue;
-        moves.push({ token: token === NATIVE_MOVES ? "native" : token, from, to, amount: nft ? "1" : BigInt(data as string).toString(), nft });
+        if (!token) {
+          unread();
+          continue;
+        }
+        if (kind === TRANSFER_TOPIC) {
+          const [from, to] = [address(topics[1]), address(topics[2])];
+          const nft = topics.length === 4;
+          const data = log["data"];
+          if (!from || !to || (!nft && !(typeof data === "string" && /^0x[0-9a-fA-F]{1,64}$/.test(data))) || (nft && !/^0x[0-9a-f]{64}$/.test(topics[3]!))) {
+            unread();
+            continue;
+          }
+          moves.push({ token: token === NATIVE_MOVES ? "native" : token, from, to, amount: nft ? "1" : BigInt(data as string).toString(), nft, ...(nft ? { id: BigInt(topics[3]!).toString() } : {}) });
+          continue;
+        }
+        // ERC-1155: topics are [kind, operator, from, to].
+        const [from, to] = [address(topics[2]), address(topics[3])];
+        const pairs = kind === TRANSFER_SINGLE ? (([w]) => (w && w.length === 2 ? [[w[0]!, w[1]!] as [bigint, bigint]] : null))([words(log["data"])]) : batchPairs(log["data"]);
+        if (!from || !to || topics.length !== 4 || !pairs) {
+          unread();
+          continue;
+        }
+        for (const [id, amount] of pairs) moves.push({ token, from, to, amount: amount.toString(), nft: true, id: id.toString() });
       }
-      return moves;
+      return { moves, partial };
     } catch (e) {
       if (e instanceof ChainError || e instanceof Unreachable || e instanceof SyntaxError || e instanceof RangeError) return null;
       throw e;
     }
   }
 
-  /** What the account gains and loses, by token, for the review's simulation block. */
+  /** What the account gains and loses, by token, and each NFT it gives or gets, for the
+   *  review's simulation block (`nft:<collection>:<id>` for an NFT). */
   function changesOf(moves: readonly EvmMove[], me: string, coin: string): { denom: string; amount: string }[] {
     const net = new Map<string, bigint>();
     for (const m of moves) {
-      if (m.nft || m.from === m.to) continue;
-      const denom = m.token === "native" ? coin : evmDenom(m.token);
+      if (m.from === m.to) continue;
+      const denom = m.nft ? `nft:${m.token}:${m.id ?? "?"}` : m.token === "native" ? coin : evmDenom(m.token);
       if (m.to === me) net.set(denom, (net.get(denom) ?? 0n) + BigInt(m.amount));
       if (m.from === me) net.set(denom, (net.get(denom) ?? 0n) - BigInt(m.amount));
     }
@@ -319,7 +374,7 @@ export function createEvmSite(core: SiteCore) {
       if (meta) tokens[evmDenom(to)] = { denom: evmDenom(to), symbol: meta.symbol, name: meta.symbol, decimals: meta.decimals, known: false, chain: chain.caip2 };
     }
     const from = chain.added ? await h.sender.endpointFrom(network, chain.key) : null;
-    return { tokens, context: { balances: held === null ? {} : { native: held.toString() }, symbols: { native: chain.native.symbol }, ...(from ? { endpoint_from: from } : {}) } };
+    return { tokens, context: { balances: held === null ? {} : { native: held.toString() }, symbols: { native: chain.native.symbol, ...(chain.added || !chain.usdc ? {} : { [chain.usdc.toLowerCase()]: "USDC" }) }, ...(from ? { endpoint_from: from } : {}) } };
   }
 
   /** What a signature review names amounts in, for the chain the signature is bound to: its
@@ -379,8 +434,14 @@ export function createEvmSite(core: SiteCore) {
           const moves = await simulateMoves(rpc, filled.tx);
           const from = filled.tx.from.toLowerCase();
           const coin = chain.kind === "injective" ? "inj" : `native:${chain.caip2}`;
-          const sim = moves ? { extra: { evm_transfers: moves }, simulation: { ok: true as const, changes: changesOf(moves, from, coin) } } : {};
-          if (chain.kind === "injective") return { request, checkedBy: filled.checkedBy, ...sim };
+          const sim = moves
+            ? {
+                extra: { evm_transfers: moves.moves, ...(moves.partial ? { evm_transfers_partial: true } : {}) },
+                simulation: { ok: true as const, changes: changesOf(moves.moves, from, coin), ...(moves.partial ? { partial: true } : {}) },
+              }
+            : {};
+          // What comes back counts only in a token the wallet lists here: name them for the rules.
+          if (chain.kind === "injective") return { request, checkedBy: filled.checkedBy, ...sim, extra: { ...sim.extra, ...signatureContext(network, chain).extra } };
           const extra = await elsewhere(network, chain, rpc, filled.tx.to, filled.held);
           // The tokens the simulation moves, named (a few: each is a read of the token).
           for (const c of sim.simulation?.changes ?? []) {
