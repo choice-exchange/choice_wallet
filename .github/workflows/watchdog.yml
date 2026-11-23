@@ -42,7 +42,11 @@ jobs:
           set -euo pipefail
           version=$(node extension/crx-compare.mjs --version store.crx)
           gh release download "v$version" --dir release --pattern "choice-wallet-$version.zip" --pattern SHA256SUMS
-          gh attestation verify "release/choice-wallet-$version.zip" --repo "$GITHUB_REPOSITORY"
+          # Attested by release.yml, from this version's tag, on GitHub's runners: any other
+          # workflow of the repository can attest a zip too (run-4).
+          gh attestation verify "release/choice-wallet-$version.zip" --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+            --source-ref "refs/tags/v$version" --deny-self-hosted-runners
           echo "VERSION=$version" >> "$GITHUB_ENV"
 
       - name: Compare

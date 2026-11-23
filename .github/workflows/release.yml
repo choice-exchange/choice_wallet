@@ -27,7 +27,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: The tag is annotated and signed by a key GitHub verifies
+      - name: The tag is annotated, signed by a key GitHub verifies, and names the commit built
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
@@ -37,9 +37,14 @@ jobs:
           if [ "$(jq -r .object.type <<<"$ref")" != tag ]; then
             echo "::error::$TAG is a lightweight tag; release tags are annotated and signed"; exit 1
           fi
-          verified=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$(jq -r .object.sha <<<"$ref")" --jq .verification.verified)
-          if [ "$verified" != true ]; then
+          tag=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$(jq -r .object.sha <<<"$ref")")
+          if [ "$(jq -r .verification.verified <<<"$tag")" != true ]; then
             echo "::error::$TAG is not signed by a key GitHub verifies"; exit 1
+          fi
+          # The signed tag read here must name the commit this job checked out and builds: a tag
+          # moved after the push started the job would otherwise vouch for another commit (run-4).
+          if [ "$(jq -r '.object.type + " " + .object.sha' <<<"$tag")" != "commit $GITHUB_SHA" ] || [ "$(git rev-parse HEAD)" != "$GITHUB_SHA" ]; then
+            echo "::error::$TAG's signed tag doesn't name the commit this job builds"; exit 1
           fi
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0

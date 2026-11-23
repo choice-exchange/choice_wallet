@@ -137,8 +137,8 @@ In this repo, and anyone can check it:
 
 - **Release builds come only from a signed tag.** `node extension/release.mjs` refuses a tree with changes, untracked files or ignored files under `extension/public`, and a HEAD that isn't the annotated tag `v<version>`. It stamps the commit into the manifest's `version_name`.
 - **Reproducible package.** Pinned Rust toolchain (`rust-toolchain.toml`), `wasm-bindgen-cli` at exactly the crate's version, `--remap-path-prefix`, pinned lockfiles, no minification. The zip is deterministic: files sorted, stored, fixed dates and modes. Rebuilding a tag gives the same bytes, and `SHA256SUMS` names every file.
-- **Release workflow** (`.github/workflows/release.yml`). It runs for a `v*` tag GitHub verifies as signed, builds with pinned Node and Rust, and attaches the zip and `SHA256SUMS` to a draft release with a Sigstore provenance attestation. A maintainer publishes the draft.
-- **Store check.** `node extension/crx-compare.mjs <store.crx> <zip> SHA256SUMS` unwraps the store's CRX3, leaves out its `_metadata/` folder and the `update_url` it adds, and compares every other file. The watchdog workflow (`.github/workflows/watchdog.yml`) runs it every 6 hours against the live package and fails on any difference or a missing or unattested release.
+- **Release workflow** (`.github/workflows/release.yml`). It runs for a `v*` tag GitHub verifies as signed, and only when that signed tag names the commit it checked out. It builds with pinned Node and Rust, and attaches the zip and `SHA256SUMS` to a draft release with a Sigstore provenance attestation. A maintainer publishes the draft.
+- **Store check.** `node extension/crx-compare.mjs <store.crx> <zip> SHA256SUMS` unwraps the store's CRX3, leaves out its `_metadata/` folder and the `update_url` it adds, and compares every other file. The watchdog workflow (`.github/workflows/watchdog.yml`) runs it every 6 hours against the live package and fails on any difference, or on a release that is missing or not attested by `release.yml` from its own tag on GitHub's runners.
 
 Set up outside the repo, before the first store release:
 
