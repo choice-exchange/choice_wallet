@@ -905,7 +905,10 @@ mod tests {
         assert_eq!((a.level, a.confirm), (Level::Red, Some("GIVE")));
         assert!(a.findings.iter().any(|f| f.rule == "solana_nonce_authority"));
         let a = solana_transaction(&authorize, &ME, &MAINNET, &ctx);
-        assert_eq!(a.findings.iter().filter(|f| f.rule == "solana_nonce_authority").count(), 1);
+        assert_eq!(
+            a.findings.iter().filter(|f| f.rule == "solana_nonce_authority").count(),
+            1
+        );
     }
 
     fn rules(r: &Read, c: &Cctp, ctx: &Context) -> Vec<&'static str> {

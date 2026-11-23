@@ -492,8 +492,14 @@ mod tests {
         };
         assert_eq!(rules(&order(SPENDER)), (Level::Red, vec!["order_receiver_other"]));
         // To the signer, or the zero address (the signer): the floor.
-        assert_eq!(rules(&order("0x0101010101010101010101010101010101010101")), (Level::Amber, vec!["typed_data"]));
-        assert_eq!(rules(&order("0x0000000000000000000000000000000000000000")), (Level::Amber, vec!["typed_data"]));
+        assert_eq!(
+            rules(&order("0x0101010101010101010101010101010101010101")),
+            (Level::Amber, vec!["typed_data"])
+        );
+        assert_eq!(
+            rules(&order("0x0000000000000000000000000000000000000000")),
+            (Level::Amber, vec!["typed_data"])
+        );
     }
 
     fn grade(t: &TypedData) -> Assessment {

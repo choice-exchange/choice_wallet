@@ -540,7 +540,12 @@ fn own_call(
             if to != choice_wallet_injective::talis::seaport() {
                 return Err(VaultError::bad("cancelling Seaport orders goes to Seaport"));
             }
-            Ok(Eip1559Tx::contract_call(chain_id, to, U256::ZERO, vec![0x5b, 0x34, 0xb9, 0x66]))
+            Ok(Eip1559Tx::contract_call(
+                chain_id,
+                to,
+                U256::ZERO,
+                vec![0x5b, 0x34, 0xb9, 0x66],
+            ))
         }
         OwnCall::Permit2Approve {
             token,

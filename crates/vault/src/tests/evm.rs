@@ -497,7 +497,10 @@ fn own_revokes_build_on_any_evm_chain_and_read_as_revokes() {
         json!({ "type": "permit2_cancel_permits", "token": token, "spender": spender, "nonce": "1" }),
         json!({ "type": "seaport_cancel_all" }),
     ] {
-        assert!(call("build_evm", evm_params("eip155:8453", me, nft, "0", c.clone())).is_err(), "{c}");
+        assert!(
+            call("build_evm", evm_params("eip155:8453", me, nft, "0", c.clone())).is_err(),
+            "{c}"
+        );
     }
 }
 

@@ -316,8 +316,12 @@ fn chain_system_contract(chain_id: u64, to: &EthAddress) -> Option<&'static str>
             match () {
                 () if low(0x64) => Some("ArbSys"),
                 () if low(0x6e) => Some("ArbRetryableTx"),
-                () if chain_id == 42_161 && is("5288c571fd7ad117bea99bf60fe0846c4e84f933") => Some("the L2 gateway router"),
-                () if chain_id == 421_614 && is("9fdd1c4e4aa24eec1d913fabea925594a20d43c7") => Some("the L2 gateway router"),
+                () if chain_id == 42_161 && is("5288c571fd7ad117bea99bf60fe0846c4e84f933") => {
+                    Some("the L2 gateway router")
+                }
+                () if chain_id == 421_614 && is("9fdd1c4e4aa24eec1d913fabea925594a20d43c7") => {
+                    Some("the L2 gateway router")
+                }
                 () if chain_id == 42_161
                     && [
                         "09e9222e96e7b4ae2a407b98d48e330053351eee",
@@ -863,14 +867,18 @@ fn contract_call(
         // Permit2's own cancel of permits the sender signed for a spender and token: it moves
         // only the sender's nonce, so it takes nothing.
         PERMIT2_INVALIDATE if data.len() == 4 + 3 * 32 && tx.to == permit2() => {
-            if let (Some(token), Some(spender), Some(nonce)) = (address_arg(data, 0), address_arg(data, 1), uint_arg(data, 2))
+            if let (Some(token), Some(spender), Some(nonce)) =
+                (address_arg(data, 0), address_arg(data, 1), uint_arg(data, 2))
                 && nonce.to_u64().is_some_and(|n| n < 1 << 48)
             {
                 let spender = spender.to_checksum_hex();
                 out.push(finding(
                     "permit2_cancel",
                     Level::Info,
-                    format!("Cancels Permit2 permits you signed for {} on this token.", short(&spender)),
+                    format!(
+                        "Cancels Permit2 permits you signed for {} on this token.",
+                        short(&spender)
+                    ),
                     json!({ "token": token.to_checksum_hex(), "spender": spender, "nonce": nonce.to_string() }),
                 ));
                 return;
@@ -1570,7 +1578,10 @@ mod tests {
             "096760f208390250649e3e8763348e783aef5562",
             "6c411ad3e74de3e7bd422b94a27770f5b86c623b",
         ] {
-            assert!(rules_of(&on(42_161, hex20(g), 42_161)).contains(&"chain_system_contract"), "{g}");
+            assert!(
+                rules_of(&on(42_161, hex20(g), 42_161)).contains(&"chain_system_contract"),
+                "{g}"
+            );
         }
         let sepolia = hex20("9fdd1c4e4aa24eec1d913fabea925594a20d43c7");
         assert!(rules_of(&on(421_614, sepolia, 42_161)).contains(&"chain_system_contract"));
