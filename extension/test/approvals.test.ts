@@ -45,7 +45,14 @@ test("approvals: grants, fee grants, rewards address, CW20 and ERC20 allowances"
   ok(await service.handle({ type: "add_token", address: CW }));
   const s = ok<Summary>(await service.handle({ type: "approvals" }));
   // What the wallet can't read yet is named, so the screen never says nothing stands (run-3).
-  assert.deepEqual(s.unchecked, ["other EVM chains (pick one above)"]);
+  // Run-4: classes the wallet signs for but has no reader for are always named.
+  assert.deepEqual(s.unchecked, [
+    "Solana token delegates, close and stake authorities",
+    "CW20 allowances on CW20s the wallet doesn't list or you no longer hold",
+    "ERC-777 operators",
+    "signed but unfilled Seaport orders and Permit2 or token permits",
+    "other EVM chains (pick one above)",
+  ]);
   assert.deepEqual(
     s.grants.map((g) => [g.grantee, g.msgTypeUrl]),
     [

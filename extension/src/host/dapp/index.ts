@@ -14,7 +14,7 @@
 // Each chain's requests are handled in its own file (./evm.ts, ./cosmos.ts, ./solana.ts);
 // this one keeps the grants, the requests waiting and the approval window's side.
 
-import { chainByCaip2, ChainError, evmDenom, isObject, NETWORKS, Unreachable, valueLost, type Coin, type NetworkId } from "@choice-wallet/chain";
+import { boundErc20, chainByCaip2, ChainError, evmAddress, evmDenom, isObject, knownToken, knownTokens, NETWORKS, Unreachable, valueLost, type Coin, type NetworkId } from "@choice-wallet/chain";
 import type { AccountInfo, Connection, CosmosDisplay, DappRequest, DappReview, DeviceRequest, Result, Risk } from "@choice-wallet/ui/protocol";
 
 import { displayDenoms } from "../send";
@@ -269,12 +269,25 @@ export function createDapps(h: DappHost) {
     return { from: denom(a), to: denom(b), amountIn: n, minimum: m };
   }
 
+  /** A swap token's decimals as the wallet pins them: native INJ, or a token on the wallet's
+   *  list matched by its pinned ERC20 pair. Null for any other token: its decimals would come
+   *  from an endpoint or the token itself, which may not decide whether a loss is shown (run-4). */
+  function pinnedDecimals(network: NetworkId, denom: string): number | null {
+    if (denom === "inj") return knownToken(network, "inj")?.decimals ?? null;
+    const a = evmAddress(denom)?.toLowerCase();
+    if (!a) return null;
+    const t = knownTokens(network).find((k) => boundErc20(network, k.denom)?.toLowerCase() === a);
+    return t ? t.decimals : null;
+  }
+
   /** How much of a swap's input its minimum could lose, by Choice's prices, in basis points;
-   *  null when either token can't be priced. */
+   *  null when either token can't be priced, or isn't one the wallet lists (unweighed: amber). */
   async function lostBps(network: NetworkId, s: { from: string; to: string; amountIn: string; minimum: string }): Promise<number | null> {
+    const [df, dt] = [pinnedDecimals(network, s.from), pinnedDecimals(network, s.to)];
+    if (df === null || dt === null) return null;
     try {
       const t = await h.sender.tokensFor(network, [s.from, s.to], true);
-      const lost = t[s.from] && t[s.to] ? valueLost(s.amountIn, s.minimum, t[s.from]!, t[s.to]!) : null;
+      const lost = t[s.from] && t[s.to] ? valueLost(s.amountIn, s.minimum, { ...t[s.from]!, decimals: df }, { ...t[s.to]!, decimals: dt }) : null;
       return lost === null || !Number.isFinite(lost) ? null : Math.max(-1_000_000, Math.min(10_000, Math.round(lost * 10_000)));
     } catch (e) {
       if (e instanceof Unreachable || e instanceof ChainError) return null;

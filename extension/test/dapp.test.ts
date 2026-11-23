@@ -10,7 +10,7 @@ import { ed25519 } from "@noble/curves/ed25519";
 import type { DappReview } from "../../ui/src/protocol";
 import { shown } from "../../ui/src/review";
 
-import { BASE_USDC, base58Decode, bs58, callVault, chain, CHOICE_ROUTES, code, exchangeDeposits, handle, INJ, ME, ME_EVM, ME_SOL, ME_SOL_USDC, ok, PASSWORD, PHRASE, SOL_USDC, solTransfer, THEM, THEM_EVM, THEM_SOL, wallet } from "./fake";
+import { BASE_USDC, base58Decode, bs58, callVault, chain, CHOICE_ROUTES, code, ERC20, exchangeDeposits, handle, INJ, ME, ME_EVM, ME_SOL, ME_SOL_USDC, ok, PASSWORD, PHRASE, SOL_USDC, solTransfer, THEM, THEM_EVM, THEM_SOL, USDT_ERC20, wallet } from "./fake";
 
 const SITE = "https://app.example";
 const OTHER = "https://other.example";
@@ -1020,6 +1020,17 @@ test("a site's swap is weighed against Choice's prices", async () => {
   const dust = await review(tx.data.replace(min, "1".padStart(64, "0")));
   assert.equal(dust.level, "red");
   assert.ok(dust.findings.some((f) => f.rule === "swap_value_lost"), JSON.stringify(dust));
+  // Run-4: an endpoint answering decimals() = 0 for USDT's pair can't turn the dust minimum
+  // into a fair one: a listed token is weighed with the decimals the wallet pins.
+  const real = ERC20[USDT_ERC20]!.decimals;
+  ERC20[USDT_ERC20]!.decimals = 0;
+  try {
+    const lied = await review(tx.data.replace(min, "1".padStart(64, "0")));
+    assert.equal(lied.level, "red");
+    assert.ok(lied.findings.some((f) => f.rule === "swap_value_lost"), JSON.stringify(lied));
+  } finally {
+    ERC20[USDT_ERC20]!.decimals = real;
+  }
 });
 
 // Run-3: a site's review describes a bounded number of tokens, however many it names, and a
