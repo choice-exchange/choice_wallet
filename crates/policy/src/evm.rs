@@ -306,16 +306,30 @@ fn chain_system_contract(chain_id: u64, to: &EthAddress) -> Option<&'static str>
             () if predeploy(0x16) => Some("the L2-to-L1 message passer"),
             () => None,
         },
-        // Arbitrum: ArbSys (withdrawEth, sendTxToL1), ArbRetryableTx, and the L2 gateway
-        // router, whose outboundTransfer burns bridged tokens with no allowance.
-        42_161 | 421_614 => match () {
-            () if low(0x64) => Some("ArbSys"),
-            () if low(0x6e) => Some("ArbRetryableTx"),
-            () if *to == EthAddress::from_bytes(hex20("5288c571fd7ad117bea99bf60fe0846c4e84f933")) => {
-                Some("the L2 gateway router")
+        // Arbitrum: ArbSys (withdrawEth, sendTxToL1), ArbRetryableTx, the L2 gateway router,
+        // and the gateways it routes to: called directly, a gateway's outboundTransfer burns
+        // the caller's bridged tokens with no allowance too (run-4).
+        42_161 | 421_614 => {
+            let is = |h: &str| *to == EthAddress::from_bytes(hex20(h));
+            match () {
+                () if low(0x64) => Some("ArbSys"),
+                () if low(0x6e) => Some("ArbRetryableTx"),
+                () if chain_id == 42_161 && is("5288c571fd7ad117bea99bf60fe0846c4e84f933") => Some("the L2 gateway router"),
+                () if chain_id == 421_614 && is("9fdd1c4e4aa24eec1d913fabea925594a20d43c7") => Some("the L2 gateway router"),
+                () if chain_id == 42_161
+                    && [
+                        "09e9222e96e7b4ae2a407b98d48e330053351eee",
+                        "096760f208390250649e3e8763348e783aef5562",
+                        "6c411ad3e74de3e7bd422b94a27770f5b86c623b",
+                    ]
+                    .iter()
+                    .any(|h| is(h)) =>
+                {
+                    Some("an L2 token gateway")
+                }
+                () => None,
             }
-            () => None,
-        },
+        }
         // Ethereum: the EIP-7002 withdrawal and EIP-7251 consolidation request predeploys,
         // which act on validators whose withdrawal address is the caller.
         1 | 11_155_111 => match () {
@@ -1493,6 +1507,19 @@ mod tests {
         );
         // Base's predeploy address means nothing on Arbitrum.
         assert!(!rules_of(&on(42_161, bridge, 42_161)).contains(&"chain_system_contract"));
+        // Run-4: the gateways the router routes to burn the caller's tokens when called
+        // directly; Arbitrum Sepolia has its own router, and One's means nothing there.
+        for g in [
+            "09e9222e96e7b4ae2a407b98d48e330053351eee",
+            "096760f208390250649e3e8763348e783aef5562",
+            "6c411ad3e74de3e7bd422b94a27770f5b86c623b",
+        ] {
+            assert!(rules_of(&on(42_161, hex20(g), 42_161)).contains(&"chain_system_contract"), "{g}");
+        }
+        let sepolia = hex20("9fdd1c4e4aa24eec1d913fabea925594a20d43c7");
+        assert!(rules_of(&on(421_614, sepolia, 42_161)).contains(&"chain_system_contract"));
+        let one = hex20("5288c571fd7ad117bea99bf60fe0846c4e84f933");
+        assert!(!rules_of(&on(421_614, one, 42_161)).contains(&"chain_system_contract"));
     }
 
     /// Run-3: a swap sent straight to the spot swap precompile (0x68) is read: someone else

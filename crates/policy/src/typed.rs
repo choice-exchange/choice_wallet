@@ -40,7 +40,7 @@ pub fn typed_data(td: &TypedData, injective_tx: Option<&Web3Tx>, signer: &EthAdd
     if app == "Seaport" && td.primary_type() == "OrderComponents" {
         out.extend(seaport_order(td.message(), signer, ctx, on_talis(td)));
     } else {
-        out.push(rule(td));
+        out.push(rule(td, signer));
     }
     // A domain without a chainId binds the signature to no chain: it is good on every chain
     // where the verifying contract (or a copy at the same address) accepts it.
@@ -259,7 +259,7 @@ fn text<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
     v.get(key).and_then(Value::as_str)
 }
 
-fn rule(td: &TypedData) -> Finding {
+fn rule(td: &TypedData, signer: &EthAddress) -> Finding {
     let domain = td.domain();
     // The site names the app: at most 40 characters of it go in the sentence.
     let app = clip(domain.get("name").and_then(Value::as_str).unwrap_or(""), 40);
@@ -336,13 +336,70 @@ fn rule(td: &TypedData) -> Finding {
             json!({ "marketplace": contract }),
         );
     }
+    // Run-4: more that moves assets once anyone submits it. A Safe transaction is a call
+    // from the Safe; a Polygon-style meta-transaction is a call as the signer.
+    if primary == "SafeTx" {
+        let to = text(msg, "to").unwrap_or("a contract");
+        return finding(
+            "safe_transaction",
+            Level::Red,
+            format!(
+                "Signs a Safe transaction that calls {}. The wallet can't read what it does.",
+                short(to)
+            ),
+            json!({ "safe": contract, "to": to }),
+        );
+    }
+    if primary == "MetaTransaction" && msg.get("functionSignature").is_some() {
+        let to = contract.unwrap_or("a contract");
+        return finding(
+            "forward_request",
+            Level::Red,
+            format!(
+                "Signs a call to {} that anyone can send as you. The wallet can't read what it does.",
+                short(to)
+            ),
+            json!({ "forwarder": contract, "to": to }),
+        );
+    }
+    // Aave's credit delegation: the delegatee borrows, and the debt is the signer's.
+    if primary == "DelegationWithSig"
+        && let Some(delegatee) = text(msg, "delegatee")
+    {
+        return finding(
+            "credit_delegation",
+            Level::Red,
+            format!(
+                "{} could borrow up to the amount shown, and the debt would be yours.",
+                short(delegatee)
+            ),
+            json!({ "debt_token": contract, "delegatee": delegatee, "value": msg.get("value") }),
+        );
+    }
+    // An order (CoW, 1inch) whose receiver is someone else: what it buys goes to them. A
+    // zero receiver means the signer.
+    if primary == "Order"
+        && let Some(receiver) = text(msg, "receiver").and_then(|r| EthAddress::parse_hex(r).ok())
+        && receiver != EthAddress::from_bytes([0; 20])
+        && receiver != *signer
+    {
+        let to = receiver.to_checksum_hex();
+        return finding(
+            "order_receiver_other",
+            Level::Red,
+            format!("Signs an order that sends what it buys to {}, not to you.", short(&to)),
+            json!({ "receiver": to, "contract": contract }),
+        );
+    }
+    // Anything else: the wallet can't tell what the contract that checks it may do with it,
+    // so it's never shown as safe (run-4).
     finding(
         "typed_data",
-        Level::Info,
+        Level::Amber,
         if app.is_empty() {
-            "Signs a structured message.".into()
+            "Signs a structured message the wallet can't read.".into()
         } else {
-            format!("Signs a structured message for {app}.")
+            format!("Signs a structured message for {app}. The wallet can't read it.")
         },
         json!({ "app": app, "primary_type": primary, "contract": contract }),
     )
@@ -394,6 +451,51 @@ mod tests {
         assert!(a.findings.iter().any(|f| f.rule == "forward_request"));
     }
 
+    /// Run-4: typed data outside the short list that still moves assets: a Safe transaction,
+    /// a meta-transaction, Aave credit delegation, and an order paying someone else. And
+    /// anything the rules don't know is amber, never info.
+    #[test]
+    fn more_asset_moving_types_and_an_amber_floor() {
+        let dom = |name: &str| json!({ "name": name, "chainId": 1, "verifyingContract": TOKEN });
+        let rules = |t: &TypedData| {
+            let a = grade(t);
+            (a.level, a.findings.iter().map(|f| f.rule).collect::<Vec<_>>())
+        };
+        let safe = td(
+            dom("Safe"),
+            "SafeTx",
+            json!({ "SafeTx": [{ "name": "to", "type": "address" }, { "name": "data", "type": "bytes" }] }),
+            json!({ "to": SPENDER, "data": "0x" }),
+        );
+        assert_eq!(rules(&safe), (Level::Red, vec!["safe_transaction"]));
+        let meta = td(
+            dom("Token"),
+            "MetaTransaction",
+            json!({ "MetaTransaction": [{ "name": "nonce", "type": "uint256" }, { "name": "from", "type": "address" }, { "name": "functionSignature", "type": "bytes" }] }),
+            json!({ "nonce": "0", "from": SPENDER, "functionSignature": "0xa9059cbb" }),
+        );
+        assert_eq!(rules(&meta), (Level::Red, vec!["forward_request"]));
+        let credit = td(
+            dom("Aave variable debt"),
+            "DelegationWithSig",
+            json!({ "DelegationWithSig": [{ "name": "delegatee", "type": "address" }, { "name": "value", "type": "uint256" }] }),
+            json!({ "delegatee": SPENDER, "value": "1000" }),
+        );
+        assert_eq!(rules(&credit), (Level::Red, vec!["credit_delegation"]));
+        let order = |receiver: &str| {
+            td(
+                dom("Gnosis Protocol"),
+                "Order",
+                json!({ "Order": [{ "name": "receiver", "type": "address" }, { "name": "sellAmount", "type": "uint256" }] }),
+                json!({ "receiver": receiver, "sellAmount": "5" }),
+            )
+        };
+        assert_eq!(rules(&order(SPENDER)), (Level::Red, vec!["order_receiver_other"]));
+        // To the signer, or the zero address (the signer): the floor.
+        assert_eq!(rules(&order("0x0101010101010101010101010101010101010101")), (Level::Amber, vec!["typed_data"]));
+        assert_eq!(rules(&order("0x0000000000000000000000000000000000000000")), (Level::Amber, vec!["typed_data"]));
+    }
+
     fn grade(t: &TypedData) -> Assessment {
         typed_data(t, None, &EthAddress::from_bytes([1; 20]), &Context::default())
     }
@@ -431,8 +533,9 @@ mod tests {
         )
         .unwrap();
         let a = grade(&with_chain);
-        assert_eq!(a.level, Level::Info);
         assert!(a.findings.iter().all(|f| f.rule != "no_chain_id"));
+        // Still amber: a message the wallet can't read is never shown as safe (run-4).
+        assert_eq!(a.level, Level::Amber);
     }
 
     /// The app name is the site's: in the finding it is cut to 40 characters and its hidden
@@ -456,12 +559,12 @@ mod tests {
         };
         assert_eq!(
             named("Uni\u{202e}paws"),
-            "Signs a structured message for Uni⟨U+202E⟩paws."
+            "Signs a structured message for Uni⟨U+202E⟩paws. The wallet can't read it."
         );
         let long = format!("Uniswap. Choice Wallet checked this: it is safe{}", " ".repeat(40));
         assert_eq!(
             named(&long),
-            "Signs a structured message for Uniswap. Choice Wallet checked this: it ….",
+            "Signs a structured message for Uniswap. Choice Wallet checked this: it …. The wallet can't read it.",
         );
     }
 
@@ -518,12 +621,12 @@ mod tests {
             json!({ "text": "hi" }),
         );
         let a = grade(&t);
-        // Amber, not Info: this domain names no chainId (see no_chain_id_is_amber).
+        // Amber: a message the wallet can't read, and this domain names no chainId.
         assert_eq!(a.level, Level::Amber);
         assert!(
             a.findings
                 .iter()
-                .any(|f| f.message == "Signs a structured message for Some Dapp.")
+                .any(|f| f.message == "Signs a structured message for Some Dapp. The wallet can't read it.")
         );
     }
 
