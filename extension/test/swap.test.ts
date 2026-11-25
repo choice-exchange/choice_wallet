@@ -149,6 +149,68 @@ test("the approve step waits while Permit2 lets another spender spend the token"
   assert.equal(ok<Review>(await service.handle({ type: "prepare_swap", quote: q.id })).swap?.step, "approve");
 });
 
+// Run-5: a Permit2 permit signed for a site and not used leaves no log, yet can take what the
+// approve step gives Permit2. The wallet keeps each it signs: the step waits until it is used,
+// cancelled or ended, and a site's own approve to Permit2 names who could take it.
+test("a Permit2 permit signed here holds off the approve step, and a site's approve names it", async () => {
+  const net = chain({ balances: { inj: 3n * INJ, [USDT]: 10_000_000n } });
+  const { service, ui, local } = await wallet(net);
+  const OTHER = "0x5555555555555555555555555555555555555555";
+  const site = (method: string, params?: unknown) => service.dapp("https://app.example", { method, params });
+  let seen = 0;
+  const window = async () => {
+    for (let i = 0; i < 200 && ui.opened.length <= seen; i++) await new Promise((r) => setTimeout(r, 5));
+    assert.ok(ui.opened.length > seen, "no approval window opened");
+    seen = ui.opened.length;
+    return { id: ui.opened.at(-1)! };
+  };
+  const connecting = site("eth_requestAccounts");
+  ok(await service.handle({ type: "dapp_answer", id: (await window()).id, approve: true }));
+  await connecting;
+  const sign = async (typed: object) => {
+    const asked = site("eth_signTypedData_v4", [ME_EVM, JSON.stringify(typed)]);
+    const w = await window();
+    const r = ok<{ digest: string; risk: { confirm?: string } }>(await service.handle({ type: "dapp_review", id: w.id }));
+    ok(await service.handle({ type: "dapp_answer", id: w.id, approve: true, digest: r.digest, ...(r.risk.confirm ? { confirm: r.risk.confirm } : {}) }));
+    return asked;
+  };
+  const deadline = Math.floor(Date.now() / 1000) + 3600;
+  const domain = { name: "Permit2", chainId: 1776, verifyingContract: PERMIT2 };
+  const types = {
+    EIP712Domain: [{ name: "name", type: "string" }, { name: "chainId", type: "uint256" }, { name: "verifyingContract", type: "address" }],
+    PermitTransferFrom: [{ name: "permitted", type: "TokenPermissions" }, { name: "spender", type: "address" }, { name: "nonce", type: "uint256" }, { name: "deadline", type: "uint256" }],
+    TokenPermissions: [{ name: "token", type: "address" }, { name: "amount", type: "uint256" }],
+  };
+  const signed = (await sign({ types, domain, primaryType: "PermitTransferFrom", message: { permitted: { token: USDT_ERC20, amount: "10000000" }, spender: OTHER, nonce: "258", deadline: String(deadline) } })) as { result?: unknown };
+  assert.equal(typeof signed.result, "string", JSON.stringify(signed));
+  assert.ok(JSON.stringify(await local.get(["permit2_signed"])).includes(OTHER), JSON.stringify(await local.get(["permit2_signed"])));
+  // The swap's approve step waits for it.
+  const q = ok<Quote>(await service.handle({ type: "swap_quote", from: USDT, to: "inj", amount: "5000000" }));
+  const refused = await service.handle({ type: "prepare_swap", quote: q.id });
+  assert.equal(code(refused), "permit2_spender", JSON.stringify(refused));
+  // A site's approve(USDT, Permit2) names who could take it: red.
+  const approve = `0x095ea7b3${PERMIT2.slice(2).toLowerCase().padStart(64, "0")}${(5_000_000n).toString(16).padStart(64, "0")}`;
+  const asked = site("eth_sendTransaction", [{ from: ME_EVM, to: USDT_ERC20, data: approve }]);
+  const w = await window();
+  const r = ok<{ risk: { level: string; findings: { rule: string; message: string }[] } }>(await service.handle({ type: "dapp_review", id: w.id }));
+  ok(await service.handle({ type: "dapp_answer", id: w.id, approve: false }));
+  await asked;
+  assert.equal(r.risk.level, "red", JSON.stringify(r.risk));
+  assert.ok(r.risk.findings.some((f) => f.rule === "permit2_rearms" && f.message.includes("0x5555…5555")), JSON.stringify(r.risk));
+  // Approvals lists it, to cancel by its nonce's bit (word 1, bit 2).
+  const s = ok<{ permit2Signed?: { spender: string; kind: string; nonce: string }[] }>(await service.handle({ type: "approvals" }));
+  assert.deepEqual(s.permit2Signed?.map((p) => [p.spender, p.kind, p.nonce]), [[OTHER, "transfer", "258"]]);
+  const cancel = ok<{ risk: { level: string; findings: { rule: string }[] }; display: { call: Record<string, unknown> } }>(
+    await service.handle({ type: "prepare_revoke_evm", kind: "permit2_transfer", contract: PERMIT2, word: "1", mask: "4" }),
+  );
+  assert.deepEqual([cancel.risk.level, cancel.risk.findings.map((f) => f.rule)], ["info", ["permit2_cancel_transfers"]]);
+  assert.equal(cancel.display.call["selector"], "0x3ff9dcb1");
+  // Used or cancelled on chain (its bit set): the step goes ahead, and the row is gone.
+  net.state.permit2Bitmap["1"] = 4n;
+  assert.equal(ok<Review>(await service.handle({ type: "prepare_swap", quote: q.id })).swap?.step, "approve");
+  assert.equal(ok<{ permit2Signed?: unknown[] }>(await service.handle({ type: "approvals" })).permit2Signed, undefined);
+});
+
 test("refusals: no route, an answer for another pair, an old quote, more than held", async () => {
   const net = chain({ balances: { inj: 3n * INJ } });
   const { service, session } = await wallet(net);

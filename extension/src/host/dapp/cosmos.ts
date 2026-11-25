@@ -1,7 +1,7 @@
 // Cosmos sites (`window.choice`, Keplr's shape): enable, the key, signDirect, signAmino,
 // ADR-036 arbitrary data, and broadcasting a signed transaction.
 
-import { balanceChanges, bytesToHex, ChainError, cosmosTxHash, isObject, NETWORKS, type NetworkId } from "@choice-wallet/chain";
+import { balanceChanges, bytesToHex, ChainError, cosmosTxHash, isObject, NETWORKS, Unreachable, type Coin, type Lcd, type NetworkId, type TxEvent } from "@choice-wallet/chain";
 import type { AccountInfo, DappReview } from "@choice-wallet/ui/protocol";
 
 import { b64, bytesHex, CHAIN_DISCONNECTED, fromB64, INVALID_PARAMS, MAX_ARBITRARY, no, UNAUTHORIZED, UNSUPPORTED, type DappReply, type SiteCore } from "./shared";
@@ -169,7 +169,9 @@ export function createCosmosSite(core: SiteCore) {
         const m = /^([0-9]+)([a-zA-Z][a-zA-Z0-9/:._-]{2,127})$/.exec(c.trim());
         return m ? [{ denom: m[2]!, amount: m[1]! }] : [];
       });
-      return { checkedBy: new URL(client.pool.current).host, simulation: { ok: true, changes: balanceChanges(events, me, fee).changes } };
+      const nfts = await cw721Moves(client, events, me);
+      const changes = [...balanceChanges(events, me, fee).changes, ...nfts.changes];
+      return { checkedBy: new URL(client.pool.current).host, simulation: { ok: true, changes, ...(nfts.partial ? { partial: true } : {}) } };
     } catch (e) {
       if (e instanceof ChainError) return { checkedBy: new URL(client.pool.current).host, simulation: { ok: false, error: e.message } };
       throw e;
@@ -183,6 +185,64 @@ export function createCosmosSite(core: SiteCore) {
   }
 
   return { handle };
+}
+
+/** Owners asked about in one review: each NFT that moves is one query. */
+const MAX_OWNER_CHECKS = 8;
+
+/** The CW721 NFTs a simulated Cosmos tx moves for `me`, from its wasm events (run-5): one it
+ *  gets (a transfer or send to it, a mint for it) is +1 `nft:<collection>:<id>`, one it held
+ *  and that is transferred, sent or burned is -1. A move's event names only who called it (an
+ *  operator, a marketplace), so whose the NFT was comes from the collection, before the tx.
+ *  When that can't be read, the list is only part of what moves. */
+export async function cw721Moves(client: Pick<Lcd, "smart">, events: readonly TxEvent[], me: string): Promise<{ changes: Coin[]; partial: boolean }> {
+  const net = new Map<string, bigint>();
+  const leaving: { contract: string; id: string }[] = [];
+  const coming = new Set<string>();
+  let partial = false;
+  for (const e of events) {
+    if (e.type !== "wasm") continue;
+    // A contract's attributes, from each `_contract_address` to the next.
+    const groups: Record<string, string>[] = [];
+    for (const a of e.attributes) {
+      if (a.key === "_contract_address" || groups.length === 0) groups.push({});
+      groups[groups.length - 1]![a.key] = a.value;
+    }
+    for (const g of groups) {
+      const [contract, id, action] = [g["_contract_address"], g["token_id"], g["action"]];
+      if (!contract || id === undefined || !action) continue;
+      const denom = `nft:${contract}:${id}`;
+      if ((action === "transfer_nft" || action === "send_nft") && g["recipient"] !== undefined) {
+        if (g["recipient"] === me) {
+          net.set(denom, (net.get(denom) ?? 0n) + 1n);
+          coming.add(denom);
+        } else leaving.push({ contract, id });
+      } else if (action === "mint" && g["owner"] !== undefined) {
+        if (g["owner"] === me) {
+          net.set(denom, (net.get(denom) ?? 0n) + 1n);
+          coming.add(denom);
+        }
+      } else if (action === "burn" && g["amount"] === undefined) leaving.push({ contract, id });
+    }
+  }
+  for (const [i, { contract, id }] of leaving.entries()) {
+    const denom = `nft:${contract}:${id}`;
+    // One that came in within the same tx: what it held before says nothing about it.
+    if (i >= MAX_OWNER_CHECKS || coming.has(denom)) {
+      partial = true;
+      continue;
+    }
+    let owner: unknown = null;
+    try {
+      const r = await client.smart(contract, { owner_of: { token_id: id } });
+      owner = isObject(r) ? r["owner"] : null;
+    } catch (e) {
+      if (!(e instanceof Unreachable || e instanceof ChainError)) throw e;
+    }
+    if (typeof owner !== "string") partial = true;
+    else if (owner === me) net.set(denom, (net.get(denom) ?? 0n) - 1n);
+  }
+  return { changes: [...net].filter(([, a]) => a !== 0n).map(([denom, a]) => ({ denom, amount: a.toString() })), partial };
 }
 
 /** The signatures (hex) in a TxRaw's protobuf bytes (field 3, repeated bytes); none for

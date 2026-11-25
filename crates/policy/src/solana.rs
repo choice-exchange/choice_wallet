@@ -164,7 +164,9 @@ pub fn solana_transaction(r: &Read, signer: &Pubkey, c: &Cctp, ctx: &Context) ->
                     sol_out = sol_out.saturating_add(*lamports);
                 }
             }
-            // SOL out of an account derived from the signer, which it alone signs for: its SOL.
+            // SOL out of an account derived from the signer, which it alone signs for: its SOL,
+            // but not out of its own balance, so it isn't weighed against that one (review-3:
+            // a sweep of a derived account read as "not enough SOL"). The finding names it.
             Instruction::TransferWithSeed {
                 from,
                 base,
@@ -172,7 +174,6 @@ pub fn solana_transaction(r: &Read, signer: &Pubkey, c: &Cctp, ctx: &Context) ->
                 lamports,
             } => {
                 if base == signer && to != signer {
-                    sol_out = sol_out.saturating_add(*lamports);
                     recipient(ctx, &b58(to), None, &mut out);
                     out.push(finding(
                         "solana_seed_transfer",
@@ -198,7 +199,8 @@ pub fn solana_transaction(r: &Read, signer: &Pubkey, c: &Cctp, ctx: &Context) ->
                     ));
                 }
             }
-            // The signer may be the nonce's authority: then it's this account's SOL leaving.
+            // The signer may be the nonce's authority: then it's this account's SOL leaving, out
+            // of the nonce account's balance, not its own (as a seed transfer).
             Instruction::NonceWithdraw {
                 nonce,
                 to,
@@ -206,7 +208,6 @@ pub fn solana_transaction(r: &Read, signer: &Pubkey, c: &Cctp, ctx: &Context) ->
                 signers,
             } => {
                 if signers.contains(signer) && to != signer {
-                    sol_out = sol_out.saturating_add(*lamports);
                     recipient(ctx, &b58(to), None, &mut out);
                     out.push(finding(
                         "solana_nonce_withdraw",
@@ -234,7 +235,9 @@ pub fn solana_transaction(r: &Read, signer: &Pubkey, c: &Cctp, ctx: &Context) ->
                             short(&b58(nonce)),
                             short(&b58(new_authority))
                         ),
-                        json!({ "nonce": b58(nonce), "new_authority": b58(new_authority) }),
+                        // The account it gives, so a simulated handover of another nonce
+                        // account to the same party isn't folded into this one (run-5).
+                        json!({ "account": b58(nonce), "nonce": b58(nonce), "new_authority": b58(new_authority) }),
                     );
                     f.confirm = Some("GIVE");
                     out.push(f);
@@ -699,6 +702,27 @@ fn handovers(ctx: &Context, out: &mut Vec<Finding>) {
                 f.confirm = Some("GIVE");
                 f
             }
+            // Another program's record of the account changing in a way the wallet can't read
+            // (run-5): its asset may leave with no balance showing it. A compressed NFT is a
+            // leaf in a tree; a Metaplex Core asset or a position is a record holding its key.
+            "compressed_tree" => finding(
+                "solana_compressed_tree",
+                Level::Red,
+                format!(
+                    "Changes compressed NFT tree {}: an NFT of this account's there could leave.",
+                    short(account.unwrap_or("?"))
+                ),
+                params,
+            ),
+            "program_record" => finding(
+                "solana_program_record",
+                Level::Red,
+                format!(
+                    "{} named this account and names {to} after: what it records could go with it.",
+                    short(account.unwrap_or("?"))
+                ),
+                params,
+            ),
             _ => continue,
         };
         if !out.iter().any(|said| covers(said, &f)) {
@@ -951,7 +975,11 @@ mod tests {
         };
         let mine = rules(&withdraw(vec![ME]), &MAINNET, &ctx);
         assert!(mine.contains(&"solana_nonce_withdraw"), "{mine:?}");
-        assert!(mine.contains(&"most_of_balance"), "{mine:?}");
+        // The nonce account's SOL, not this account's balance: named, not weighed against it.
+        assert!(
+            !mine.contains(&"most_of_balance") && !mine.contains(&"solana_fee_over_balance"),
+            "{mine:?}"
+        );
         assert!(!rules(&withdraw(vec![THEM]), &MAINNET, &ctx).contains(&"solana_nonce_withdraw"));
         let authorize = tx(
             &[ME],
@@ -1055,12 +1083,32 @@ mod tests {
         assert_eq!(
             grade(crate::SolanaHandover {
                 kind: "close_authority".into(),
-                account,
-                to: them,
+                account: account.clone(),
+                to: them.clone(),
                 ..Default::default()
             })
             .2,
             Some("solana_close_authority")
+        );
+        // Run-5: a compressed NFT's tree, or a record that named the account and names someone
+        // else after, changing under a program the vault can't read.
+        assert_eq!(
+            grade(crate::SolanaHandover {
+                kind: "compressed_tree".into(),
+                account: account.clone(),
+                to: b58(&program),
+                ..Default::default()
+            }),
+            (Level::Red, None, Some("solana_compressed_tree"))
+        );
+        assert_eq!(
+            grade(crate::SolanaHandover {
+                kind: "program_record".into(),
+                account,
+                to: them,
+                ..Default::default()
+            }),
+            (Level::Red, None, Some("solana_program_record"))
         );
     }
 
@@ -1549,8 +1597,18 @@ mod tests {
         };
         let mine = rules(&send(ME), &MAINNET, &ctx);
         assert!(mine.contains(&"solana_seed_transfer"), "{mine:?}");
-        assert!(mine.contains(&"most_of_balance"), "{mine:?}");
         assert!(!mine.contains(&"solana_unread_program"), "{mine:?}");
+        // Review-3: its SOL is the derived account's, not this one's balance: never weighed
+        // against that (a sweep larger than it read as "not enough SOL").
+        let small = Context {
+            balances: [("native".to_owned(), "5000000".to_owned())].into(),
+            ..Default::default()
+        };
+        let sweep = rules(&send(ME), &MAINNET, &small);
+        assert!(
+            !sweep.contains(&"solana_fee_over_balance") && !sweep.contains(&"more_than_balance"),
+            "{sweep:?}"
+        );
         assert!(rules(&send(THEM), &MAINNET, &ctx).is_empty());
         let create = tx(
             &[ME],

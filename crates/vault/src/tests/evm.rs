@@ -457,6 +457,12 @@ fn own_revokes_build_on_any_evm_chain_and_read_as_revokes() {
             json!({ "type": "permit2_cancel_permits", "token": token, "spender": spender, "nonce": "65535" }),
             "permit2_cancel",
         ),
+        // Run-5: one-off transfer permits signed here, cancelled by their nonces' bits.
+        (
+            permit2,
+            json!({ "type": "permit2_cancel_transfers", "word": "3", "mask": "5" }),
+            "permit2_cancel_transfers",
+        ),
         (
             "0x0000000000000068F116a894984e2DB1123eB395",
             json!({ "type": "seaport_cancel_all" }),
@@ -506,6 +512,7 @@ fn own_revokes_build_on_any_evm_chain_and_read_as_revokes() {
     // Each cancel goes only to its own contract.
     for c in [
         json!({ "type": "permit2_cancel_permits", "token": token, "spender": spender, "nonce": "1" }),
+        json!({ "type": "permit2_cancel_transfers", "word": "0", "mask": "1" }),
         json!({ "type": "seaport_cancel_all" }),
     ] {
         assert!(

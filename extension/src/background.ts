@@ -177,9 +177,11 @@ async function resizeImage(bytes: Uint8Array): Promise<string | null> {
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  // The clipboard page's word that it's done, for clearClipboard's own listener.
-  if ((message as { choice?: unknown } | null)?.choice === "clipboard_cleared") return false;
-  if (fromOwnPage(sender, chrome.runtime.id)) {
+  // Whose it is first (run-5): then the clipboard page's word that it's done, for
+  // clearClipboard's own listener.
+  const own = fromOwnPage(sender, chrome.runtime.id);
+  if (own && (message as { choice?: unknown } | null)?.choice === "clipboard_cleared") return false;
+  if (own) {
     service.handle(message).then(sendResponse, (e: unknown) =>
       sendResponse({ ok: false, error: { code: "internal", message: String(e) } }),
     );

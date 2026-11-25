@@ -20,6 +20,7 @@ import {
   readEvmTxs,
   summarizeEvmTx,
   Unreachable,
+  siteBudget,
   usdValue,
   word,
   type AnyChain,
@@ -88,10 +89,13 @@ export function createEvmChains(d: EvmChainsDeps) {
     const c = chainByKey(network, key);
     if (!c || c.kind !== "evm" || c.chainId === undefined) throw new RangeError(`not an EVM chain: ${key}`);
     const urls = await endpoints(network, key);
-    const id = `${c.chainId} ${urls.join(" ")}`;
+    // Endpoints a site gave count their answers against that site's budget, not the wallet's:
+    // a site holding its own server's answers can't fail the wallet's reads (run-5).
+    const from = await endpointFrom(network, key);
+    const id = `${c.chainId} ${urls.join(" ")} ${from ?? ""}`;
     let client = clients.get(id);
     if (!client) {
-      client = new EvmRpc({ evmChainId: c.chainId }, urls, d.fetch);
+      client = new EvmRpc({ evmChainId: c.chainId }, urls, d.fetch, undefined, from ? siteBudget(from) : undefined);
       clients.set(id, client);
     }
     return client;

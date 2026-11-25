@@ -16,6 +16,7 @@ import { chainByKey, contractNames, cw20Address, cw721CandidatesRead, cw721Token
 import type { AccountInfo, ApprovalsSummary, EvmRevokeKind, Result, RevokeItem, SendReview, TokenInfo } from "@choice-wallet/ui/protocol";
 
 import { evmChains } from "./evmchains";
+import { PERMIT2, type Permit2Records } from "./permit2";
 import { sourceOfChain, type createSender, type EvmDisplayLike } from "./send";
 import type { Store } from "./service";
 import { fail } from "./util";
@@ -32,8 +33,17 @@ const CW20_MAX = "340282366920938463463374607431768211455";
 const TYPE_URL = /^\/[A-Za-z0-9._]{1,127}$/;
 
 /** Standing permissions the wallet signs for sites but has no reader for yet: always named as
- *  not checked, so the screen never says nothing stands while one may (run-4). */
-const NOT_READ_EVM = ["ERC-777 operators", "signed but unfilled Seaport orders and Permit2 or token permits"];
+ *  not checked, so the screen never says nothing stands while one may (run-4). Every red rule
+ *  for a standing authority the vault signs has a reader here or an entry in this list (run-5:
+ *  Aave borrow allowances and forward requests were neither). Permit2 permits signed in this
+ *  wallet are read (./permit2.ts); one signed with the same key elsewhere isn't. */
+export const NOT_READ_EVM = [
+  "ERC-777 operators",
+  "Aave credit delegations (borrow allowances)",
+  "signed but unfilled Seaport orders and token permits",
+  "Permit2 permits signed outside this wallet",
+  "meta-transactions and forward requests signed but not sent",
+];
 const NOT_READ: string[] = [
   "Solana token delegates, close and stake authorities",
   "CW20 allowances on CW20s the wallet doesn't list or you no longer hold",
@@ -44,8 +54,6 @@ const CW721_COLLECTIONS = 20;
 const CW721_TOKENS = 60;
 /** Candidates of each EVM kind checked on chain (each is an eth_call). */
 const MAX_CHECKS = 100;
-/** Permit2: one address on every chain. */
-const PERMIT2 = "0x000000000022d473030f116ddee9f6b43ac78ba3";
 
 type EvmPermissions = Pick<ApprovalsSummary, "nftOperators" | "nftApprovals"> & {
   erc20: { token: string; spender: string; amount: string }[];
@@ -171,8 +179,19 @@ export interface ApprovalChains {
   session?: Store;
   /** The NFT collections added by hand on a network. */
   addedNfts?(network: NetworkId): Promise<string[]>;
+  /** The Permit2 permits this wallet signed, shown until used, cancelled or ended. */
+  permit2?: Permit2Records;
   fetch: Fetch;
   now?: () => number;
+}
+
+/** A uniform random integer in [0, n), n at most 2^32. */
+function randomBelow(n: number): number {
+  const limit = Math.floor(2 ** 32 / n) * n;
+  const b = new Uint32Array(1);
+  do crypto.getRandomValues(b);
+  while (b[0]! >= limit);
+  return b[0]! % n;
 }
 
 export function createApprovals(sender: Sender, chains: ApprovalChains) {
@@ -187,13 +206,29 @@ export function createApprovals(sender: Sender, chains: ApprovalChains) {
     const { permit2_cancelled } = (await chains.session?.get(["permit2_cancelled"])) ?? {};
     return typeof permit2_cancelled === "object" && permit2_cancelled !== null ? (permit2_cancelled as Record<string, number>) : {};
   }
-  /** The summary's Permit2 rows: whether each one's permits are cancelled already. */
+  /** The summary's Permit2 rows: whether each one's permits are cancelled already, which is
+   *  so only while the pair's nonce is the one the first step set (run-5): a permit used since
+   *  moved it on, and the next revoke cancels again. */
   async function permit2Rows(network: NetworkId, chain: string, owner: string, rows: EvmPermissions["permit2"]) {
     const marks = await cancelled();
     return rows.map(({ nonce, ...p }) => {
       const mark = marks[cancelKey(network, chain, owner, p.token, p.spender)];
-      return { ...p, token: evmDenom(p.token), ...(mark !== undefined && nonce >= mark ? { permitsCancelled: true } : {}) };
+      return { ...p, token: evmDenom(p.token), ...(mark !== undefined && nonce === mark ? { permitsCancelled: true } : {}) };
     });
+  }
+
+  /** The Permit2 permits this account signed here on `caip2` that may still be used. */
+  async function signedRows(caip2: string, owner: string, rpc: () => Promise<EvmRpc>, unchecked: string[]): Promise<NonNullable<ApprovalsSummary["permit2Signed"]>> {
+    if (!chains.permit2) return [];
+    let client: EvmRpc | null = null;
+    try {
+      client = await rpc();
+    } catch {
+      client = null;
+    }
+    const live = await chains.permit2.live(caip2, owner, client);
+    if (live.unchecked && !unchecked.includes("whether some Permit2 permits signed here were used")) unchecked.push("whether some Permit2 permits signed here were used");
+    return live.permits.map((p) => ({ token: evmDenom(p.token), spender: p.spender, kind: p.kind, amount: p.amount, deadline: p.deadline, nonce: p.nonce }));
   }
 
   /** The other EVM chains whose permissions can be checked: those with a history index. */
@@ -240,7 +275,8 @@ export function createApprovals(sender: Sender, chains: ApprovalChains) {
       const perms = await evmPermissions(await sender.evmIndex(network), () => sender.evm(network), evm0x, unchecked, now());
       const erc20 = perms.erc20.map((e) => ({ ...e, token: evmDenom(e.token) }));
       const permit2 = await permit2Rows(network, "", evm0x, perms.permit2);
-      const tokens = await sender.tokensFor(network, [...cw20.map((c) => c.token), ...erc20.map((e) => e.token), ...permit2.map((p) => p.token)]);
+      const permit2Signed = await signedRows(`eip155:${net.evmChainId}`, evm0x, () => sender.evm(network), unchecked);
+      const tokens = await sender.tokensFor(network, [...cw20.map((c) => c.token), ...erc20.map((e) => e.token), ...permit2.map((p) => p.token), ...permit2Signed.map((p) => p.token)]);
       // What the account holds of them (and of INJ, for fee allowances), where the balance
       // list read it: an allowance below that is amber on the screen, every other one red.
       // An `erc20:` bank denom is the ERC20 itself.
@@ -264,6 +300,7 @@ export function createApprovals(sender: Sender, chains: ApprovalChains) {
           nftOperators: perms.nftOperators,
           nftApprovals: perms.nftApprovals,
           permit2,
+          ...(permit2Signed.length > 0 ? { permit2Signed } : {}),
           chains: await checkable(network),
           tokens,
           balances,
@@ -288,9 +325,10 @@ export function createApprovals(sender: Sender, chains: ApprovalChains) {
       const urls = await chains.historyEndpoints(network, c.key);
       const unchecked: string[] = [...NOT_READ_EVM];
       const perms = await evmPermissions(urls.length > 0 ? new EvmIndex(urls, chains.fetch) : null, () => sender.chainRpc(network, c.key), owner, unchecked, now());
+      const permit2Signed = await signedRows(c.caip2, owner, () => sender.chainRpc(network, c.key), unchecked);
       // Token names from the chain itself, for a few.
       const tokens: Record<string, TokenInfo> = {};
-      const named = [...new Set([...perms.erc20, ...perms.permit2].map((x) => x.token))].slice(0, 12);
+      const named = [...new Set([...perms.erc20, ...perms.permit2, ...permit2Signed.map((p) => ({ token: p.token.slice(4) }))].map((x) => x.token))].slice(0, 12);
       if (named.length > 0) {
         const rpc = await sender.chainRpc(network, c.key);
         await Promise.all(
@@ -316,6 +354,7 @@ export function createApprovals(sender: Sender, chains: ApprovalChains) {
           nftOperators: perms.nftOperators,
           nftApprovals: perms.nftApprovals,
           permit2: await permit2Rows(network, c.key, owner, perms.permit2),
+          ...(permit2Signed.length > 0 ? { permit2Signed } : {}),
           tokens,
           names: contractNames(NETWORKS[network], false),
           unchecked,
@@ -386,7 +425,7 @@ export function createApprovals(sender: Sender, chains: ApprovalChains) {
   async function prepareEvmRevoke(
     network: NetworkId,
     account: AccountInfo,
-    r: { chain?: unknown; kind?: unknown; contract?: unknown; spender?: unknown; token?: unknown; token_id?: unknown },
+    r: { chain?: unknown; kind?: unknown; contract?: unknown; spender?: unknown; token?: unknown; token_id?: unknown; word?: unknown; mask?: unknown },
   ): Promise<Result<SendReview>> {
     const addr = (v: unknown) => (typeof v === "string" && /^0x[0-9a-fA-F]{40}$/.test(v) ? v.toLowerCase() : null);
     const contract = addr(r.contract);
@@ -437,16 +476,36 @@ export function createApprovals(sender: Sender, chains: ApprovalChains) {
         const key = cancelKey(network, other?.key ?? "", owner, token, spender);
         const marks = await cancelled();
         const mark = marks[key];
-        if (mark !== undefined && nonce >= mark) {
+        if (mark !== undefined && nonce === mark) {
+          // The first step landed and no permit was used since: the allowance goes now, and
+          // the mark with it, so a later revoke of the pair cancels again (run-5).
+          const { [key]: _, ...rest } = marks;
+          await chains.session?.set({ permit2_cancelled: rest });
           call = { type: "permit2_revoke", token, spender };
           expect = (d) => (at(d) && ((d.call["type"] === "permit2_approve" && d.call["amount"] === "0") || d.call["selector"] === "0x87517c45") ? null : wrong);
         } else {
-          const next = nonce + 65_535;
+          // Permit2 sets the pair's nonce to the target: every permit below it is cancelled, but
+          // one signed for exactly the target becomes usable. So the target is one no one can
+          // know in advance, and never a nonce of a permit signed here (run-5).
+          const caip2 = other ? other.caip2 : `eip155:${NETWORKS[network].evmChainId}`;
+          const signed = new Set(((await chains.permit2?.live(caip2, owner, null))?.permits ?? []).filter((p) => p.kind === "allowance" && p.token === token && p.spender === spender).map((p) => p.nonce));
+          let next = 0;
+          for (let i = 0; i < 16 && (next === 0 || signed.has(String(next))); i++) next = nonce + 32_768 + randomBelow(32_768);
           if (next >= 2 ** 48) return fail("bad_request", "Permit2 can't cancel more permits for this allowance.");
+          if (signed.has(String(next))) return fail("internal", "Couldn't pick a nonce to cancel permits with. Try again.");
           await chains.session?.set({ permit2_cancelled: { ...marks, [key]: next } });
           call = { type: "permit2_cancel_permits", token, spender, nonce: String(next) };
           expect = (d) => (at(d) && d.call["selector"] === "0x65d9723c" ? null : wrong);
         }
+        break;
+      }
+      case "permit2_transfer": {
+        // One-off transfer permits signed here: their nonces' bits, one bitmap word at a time.
+        const word = typeof r.word === "string" && /^[0-9]{1,78}$/.test(r.word) ? r.word : null;
+        const mask = typeof r.mask === "string" && /^[1-9][0-9]{0,77}$/.test(r.mask) ? r.mask : null;
+        if (!word || !mask || contract !== PERMIT2 || BigInt(mask) >= 1n << 256n || BigInt(word) >= 1n << 248n) return fail("bad_request", "Not a Permit2 permit.");
+        call = { type: "permit2_cancel_transfers", word, mask };
+        expect = (d) => (at(d) && d.call["selector"] === "0x3ff9dcb1" ? null : wrong);
         break;
       }
       case "seaport_cancel": {

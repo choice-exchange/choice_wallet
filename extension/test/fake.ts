@@ -331,6 +331,8 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
     routes: CHOICE_ROUTES,
     routeAsks: [] as URLSearchParams[],
     permit2: {} as Record<string, { amount: bigint; expiration: number; nonce?: number }>,
+    /** Permit2's nonceBitmap for ME, by word (decimal): SignatureTransfer nonces used. */
+    permit2Bitmap: {} as Record<string, bigint>,
     /** Circle's Iris: its messages by burn hash, and the requests it saw (with their headers). */
     iris: {} as Record<string, unknown[]>,
     irisAsks: [] as { path: string; headers: Record<string, string> }[],
@@ -366,6 +368,8 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
       down: false,
       /** The logs eth_simulateV1 gives for any call (null: the node can't simulate). */
       simulate: null as null | { address: string; topics: string[]; data: string }[],
+      /** The simulated call reverts (with the logs above still null-or-not). */
+      simulateReverted: false,
       /** Transactions on Base by hash, for history. */
       txs: {} as Record<string, { from: string; to: string; value: bigint; input: string; logs: { address: string; topics: string[]; data: string }[]; block: bigint }>,
       /** What a test's Base index finds: hashes of transactions and of token transfers. */
@@ -394,6 +398,7 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
     if (r.method === "eth_maxPriorityFeePerGas") return answer("0xf4240");
     if (r.method === "eth_getBalance") return answer(r.params[0] as unknown as string === ME_EVM ? `0x${state.base.eth.toString(16)}` : "0x0");
     if (r.method === "eth_simulateV1") {
+      if (state.base.simulateReverted) return answer([{ number: "0x1000", calls: [{ status: "0x0", returnData: "0x", gasUsed: "0x30000", logs: [], error: { code: 3, message: "execution reverted" } }] }]);
       return state.base.simulate ? answer([{ number: "0x1000", calls: [{ status: "0x1", returnData: "0x", gasUsed: "0x30000", logs: state.base.simulate }] }]) : { jsonrpc: "2.0", id: r.id, error: { code: -32601, message: "the method eth_simulateV1 does not exist" } };
     }
     if (r.method === "eth_estimateGas") {
@@ -484,6 +489,12 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
       const a = data.slice(34, 74) === ME_EVM.slice(2).toLowerCase() ? state.permit2[`${token} ${spender}`] : undefined;
       const w = (n: bigint | number) => BigInt(n).toString(16).padStart(64, "0");
       return { jsonrpc: "2.0", id: r.id, result: `0x${w(a?.amount ?? 0n)}${w(a?.expiration ?? 0)}${w(a?.nonce ?? 0)}` };
+    }
+    if (r.method === "eth_call" && to.toLowerCase() === PERMIT2.toLowerCase() && data.startsWith("0x4fe02b44")) {
+      // nonceBitmap(owner, word): ME's used SignatureTransfer nonces.
+      const at = BigInt(`0x${data.slice(74, 138)}`).toString();
+      const b = data.slice(34, 74) === ME_EVM.slice(2).toLowerCase() ? (state.permit2Bitmap[at] ?? 0n) : 0n;
+      return { jsonrpc: "2.0", id: r.id, result: `0x${b.toString(16).padStart(64, "0")}` };
     }
     if (r.method === "eth_call" && data.startsWith("0xe985e9c5")) {
       // isApprovedForAll(owner, operator)

@@ -25,6 +25,22 @@ export class Unreachable extends Error {
   }
 }
 
+/** The worker holds as many answers as its budget allows: this one was refused. It isn't the
+ *  endpoint's failure, so no other endpoint is tried (run-5). */
+export class Busy extends Unreachable {
+  override name = "Busy";
+  constructor() {
+    super(["the wallet is reading too much at once"]);
+  }
+}
+
+/** A write (a broadcast) went out to an endpoint, and no answer saying what became of it was
+ *  read: it may be on its way. A caller follows its hash rather than call it failed, so a retry
+ *  doesn't send it twice (run-5). */
+export class Unconfirmed extends Unreachable {
+  override name = "Unconfirmed";
+}
+
 /** The chain answered with an error. */
 export class ChainError extends Error {
   override name = "ChainError";
@@ -45,6 +61,18 @@ export interface PoolOptions {
   /** Throws `Down` unless the endpoint serves the expected chain. Run once per endpoint
    *  while it keeps passing. */
   identify(base: string): Promise<void>;
+  /** What this pool's answers are counted against: the wallet's own by default, a site's own
+   *  for endpoints it supplied or reads it asks for (`siteBudget`). */
+  budget?: Budget;
+}
+
+/** Bytes of answers held at once, until each is parsed, against a cap. */
+export class Budget {
+  held = 0;
+  readonly cap: number;
+  constructor(cap: number) {
+    this.cap = cap;
+  }
 }
 
 /** The most of one answer a pool reads: the largest the wallet asks for (a busy account's
@@ -52,11 +80,28 @@ export interface PoolOptions {
  *  browser decodes into any amount, so the answer is read as a stream and cut off here (run-3). */
 export const MAX_ANSWER = 16 * 1024 * 1024;
 
-/** The bytes of answers every pool in this worker holds at once, until each is parsed. The cap
+/** The bytes of answers the wallet's own pools hold at once, until each is parsed. The cap
  *  above is per answer: a site's own endpoint answering many of its reads at once could
- *  otherwise make the worker hold any number of them (run-4). */
+ *  otherwise make the worker hold any number of them (run-4). A site's load is counted against
+ *  its own budget instead, so holding it can't fail the wallet's reads (run-5). */
 export const MAX_IN_FLIGHT = 48 * 1024 * 1024;
-let inFlight = 0;
+/** What one site's endpoints and reads may hold at once: one answer as large as any. */
+export const MAX_SITE_IN_FLIGHT = 24 * 1024 * 1024;
+/** The most of a write's answer read (a broadcast's is a hash or a short result). Not counted
+ *  against any budget, so nothing else held can make it look unanswered. */
+export const MAX_WRITE_ANSWER = 1024 * 1024;
+
+const WALLET = new Budget(MAX_IN_FLIGHT);
+const sites = new Map<string, Budget>();
+/** The budget a site's endpoints and reads share (by origin). */
+export function siteBudget(origin: string): Budget {
+  let b = sites.get(origin);
+  if (!b) {
+    b = new Budget(MAX_SITE_IN_FLIGHT);
+    sites.set(origin, b);
+  }
+  return b;
+}
 
 /** The most JSON values (arrays, objects, items) one answer may parse into: `[[],[],…]` makes a
  *  16 MiB answer some 200 MiB of arrays. The largest answers the wallet reads (a page of logs,
@@ -79,8 +124,8 @@ function values(text: string): number {
 }
 
 /** The answer's text, read up to `max` bytes; `held.bytes` counts what it holds against
- *  `MAX_IN_FLIGHT` until the caller lets it go. */
-async function bounded(res: Response, max: number, held: { bytes: number }): Promise<string> {
+ *  `budget` (none for a write) until the caller lets it go. */
+async function bounded(res: Response, max: number, held: { bytes: number }, budget: Budget | null): Promise<string> {
   const reader = res.body?.getReader();
   if (!reader) return "";
   const parts: Uint8Array[] = [];
@@ -89,11 +134,17 @@ async function bounded(res: Response, max: number, held: { bytes: number }): Pro
     const { done, value } = await reader.read();
     if (done) break;
     size += value.length;
-    held.bytes += value.length;
-    inFlight += value.length;
-    if (size > max || inFlight > MAX_IN_FLIGHT) {
+    if (budget) {
+      held.bytes += value.length;
+      budget.held += value.length;
+    }
+    if (size > max) {
       void reader.cancel().catch(() => {});
-      throw new Down(size > max ? "answer too large" : "too many answers at once");
+      throw new Down("answer too large");
+    }
+    if (budget && budget.held > budget.cap) {
+      void reader.cancel().catch(() => {});
+      throw new Busy();
     }
     parts.push(value);
   }
@@ -138,16 +189,22 @@ export class Pool {
    *  answer counts only once the endpoint proves it serves the right chain: a wrong-chain
    *  endpoint's answer, or its error, is thrown away like any other failure. That saves a
    *  round trip on every new endpoint (each service worker start). A `write` (a broadcast)
-   *  waits for the endpoint to be identified first. */
+   *  waits for the endpoint to be identified first, and once it went out to any endpoint, no
+   *  answer read ends in `Unconfirmed`, not `Unreachable`: it may have landed (run-5). The same
+   *  bytes still go to the next endpoint, which can only relay them again. */
   async run<T>(attempt: (base: string, tries: number) => Promise<T>, opts: { write?: boolean } = {}): Promise<T> {
     const failures: string[] = [];
+    /** A write went out to an endpoint that then gave no answer. */
+    let sent = false;
     for (let i = 0; i < this.urls.length; i++) {
       const index = (this.#preferred + i) % this.urls.length;
       const base = this.urls[index]!;
+      let going = false;
       try {
         let value: T;
         if (opts.write) {
           await this.#identify(base);
+          going = true;
           value = await attempt(base, i);
         } else {
           const [identified, answered] = await Promise.allSettled([this.#identify(base), attempt(base, i)]);
@@ -160,26 +217,34 @@ export class Pool {
       } catch (e) {
         if (!(e instanceof Down)) {
           this.#preferred = index;
+          // Refused here after an earlier endpoint took it ("nonce too low": it landed), the
+          // chain's answer says nothing sure about the write. "Already known" says it's there.
+          if (sent && e instanceof ChainError && !/already known|already imported|known transaction/i.test(e.message)) {
+            throw new Unconfirmed([...failures, `${base}: ${e.message}`]);
+          }
           throw e;
         }
         failures.push(`${base}: ${e.message}`);
+        if (going) sent = true;
       }
     }
-    throw new Unreachable(failures);
+    throw sent ? new Unconfirmed(failures) : new Unreachable(failures);
   }
 
-  /** Fetch and parse JSON. Throws `Down` if nothing parseable came back in time. */
-  async json(url: string, init: RequestInit = {}): Promise<{ status: number; body: unknown }> {
+  /** Fetch and parse JSON. Throws `Down` if nothing parseable came back in time, `Busy` when
+   *  the pool's budget is full. A `write`'s answer is read on its own small cap, uncounted. */
+  async json(url: string, init: RequestInit = {}, opts: { write?: boolean } = {}): Promise<{ status: number; body: unknown }> {
     const held = { bytes: 0 };
+    const budget = opts.write ? null : (this.#opts.budget ?? WALLET);
     try {
       let text: string;
       let status: number;
       try {
         const res = await this.#opts.fetch(url, { ...init, signal: AbortSignal.timeout(this.#opts.timeoutMs ?? 10_000) });
         status = res.status;
-        text = await bounded(res, this.#opts.maxBytes ?? MAX_ANSWER, held);
+        text = await bounded(res, opts.write ? MAX_WRITE_ANSWER : (this.#opts.maxBytes ?? MAX_ANSWER), held, budget);
       } catch (e) {
-        if (e instanceof Down) throw e;
+        if (e instanceof Down || e instanceof Busy) throw e;
         throw new Down(e instanceof Error && e.name === "TimeoutError" ? "timed out" : `network error (${String(e)})`);
       }
       // Only a long answer can hold more values than the bound.
@@ -190,7 +255,7 @@ export class Pool {
         throw new Down(`HTTP ${status}, not JSON`);
       }
     } finally {
-      inFlight -= held.bytes;
+      if (budget) budget.held -= held.bytes;
     }
   }
 

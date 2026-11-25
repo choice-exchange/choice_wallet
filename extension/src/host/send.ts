@@ -16,6 +16,7 @@ import {
   chainByKey,
   chainDenom,
   ChainError,
+  Unconfirmed,
   cosmosTxHash,
   cw20Address,
   cw20Denom,
@@ -809,39 +810,52 @@ export function createSender(d: SendDeps) {
       // On the chain the USDC comes from. The background watcher follows Injective only; a
       // deposit's burn is followed by ./bridge/ instead.
       const hash = signed.hash.toLowerCase();
+      let unconfirmed = false;
       try {
         await (await rpcOn(p.network, p.source)).call("eth_sendRawTransaction", [signed.raw]);
       } catch (e) {
-        if (!(e instanceof ChainError && /already known|already imported|known transaction/i.test(e.message))) return chainFailure(e);
+        if (e instanceof Unconfirmed) unconfirmed = true;
+        else if (!(e instanceof ChainError && /already known|already imported|known transaction/i.test(e.message))) return chainFailure(e);
       }
       if (p.deposit) await d.onDeposit?.(p.network, { chain: p.source.key, hash, ...p.deposit });
       // The signer's 0x address, as the request the vault read names it.
       const signer = (p.request as { evm_transaction?: { tx?: { from?: unknown } } }).evm_transaction?.tx?.from;
       if (typeof signer === "string") await d.onChainSent?.(p.network, p.source.key, signer, hash).catch(() => {});
-      return { ok: true, result: { hash, explorer: p.source.explorerTx.replace("{hash}", hash), chain: p.source.key } };
+      return { ok: true, result: { hash, explorer: p.source.explorerTx.replace("{hash}", hash), chain: p.source.key, ...unsure(unconfirmed) } };
     }
     if (p.evm) {
       // The vault hashes what it signed; a node that already has the tx (a retry) is fine.
       const hash = signed.hash.toLowerCase();
+      let unconfirmed = false;
       try {
         await (await evm(p.network)).call("eth_sendRawTransaction", [signed.raw]);
       } catch (e) {
-        if (!(e instanceof ChainError && /already known|already imported|known transaction/i.test(e.message))) return chainFailure(e);
+        if (e instanceof Unconfirmed) unconfirmed = true;
+        else if (!(e instanceof ChainError && /already known|already imported|known transaction/i.test(e.message))) return chainFailure(e);
       }
       d.onBroadcast?.(p.network, hash, p.from ?? "");
       if (p.deposit) await d.onDeposit?.(p.network, { chain: "injective", hash, ...p.deposit });
-      return { ok: true, result: { hash, explorer: explorerTxUrl(NETWORKS[p.network], hash) } };
+      return { ok: true, result: { hash, explorer: explorerTxUrl(NETWORKS[p.network], hash), ...unsure(unconfirmed) } };
     }
     const hash = await cosmosTxHash(signed.tx_raw);
+    let unconfirmed = false;
     try {
-      await (await lcd(p.network)).broadcast(signed.tx_raw, hash);
+      // Another endpoint may have relayed it already (a retry after a timeout): then too it's
+      // followed by its hash, and the user told it may already be on its way.
+      unconfirmed = (await (await lcd(p.network)).broadcast(signed.tx_raw, hash)).uncertain;
     } catch (e) {
-      return chainFailure(e);
+      if (e instanceof Unconfirmed) unconfirmed = true;
+      else return chainFailure(e);
     }
     d.onBroadcast?.(p.network, hash, p.from ?? "");
     if (p.vote && p.from) await d.onVoted?.(p.network, p.from, p.vote).catch(() => {});
-    return { ok: true, result: { hash, explorer: explorerTxUrl(NETWORKS[p.network], hash) } };
+    return { ok: true, result: { hash, explorer: explorerTxUrl(NETWORKS[p.network], hash), ...unsure(unconfirmed) } };
   }
+
+  /** A broadcast whose answer was lost after it went out (run-5): it may land, so it is
+   *  followed by its hash like any other, and the screen says it isn't confirmed yet. Called
+   *  a failure, it would be prepared again with a new nonce and paid twice. */
+  const unsure = (unconfirmed: boolean) => (unconfirmed ? { unconfirmed: true as const } : {});
 
   /** A transaction's state: on Injective, or on `source` when it was signed there. */
   async function status(network: NetworkId, hash: string, source?: SourceChain): Promise<Result<TxState>> {

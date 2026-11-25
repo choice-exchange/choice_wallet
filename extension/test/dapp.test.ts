@@ -10,6 +10,7 @@ import { ed25519 } from "@noble/curves/ed25519";
 import type { DappReview } from "../../ui/src/protocol";
 import { shown } from "../../ui/src/review";
 
+import { cw721Moves } from "../src/host/dapp/cosmos";
 import { BASE_USDC, base58Decode, bs58, callVault, chain, CHOICE_ROUTES, code, ERC20, exchangeDeposits, handle, INJ, ME, ME_EVM, ME_SOL, ME_SOL_USDC, ok, PASSWORD, PHRASE, SOL_USDC, solTransfer, THEM, THEM_EVM, THEM_SOL, USDT_ERC20, wallet } from "./fake";
 
 const SITE = "https://app.example";
@@ -331,6 +332,85 @@ test("a site's EVM transaction is simulated: what leaves the account is shown an
   const blind = await review(null);
   assert.equal(blind.simulation, undefined);
   assert.equal(blind.risk.level, "amber");
+});
+
+// Run-5: a call that fails in the user's node's simulation is shown failing, not dropped:
+// red when the wallet can't read the call (it may act otherwise once signed).
+test("a site's EVM call that fails in simulation says so", async () => {
+  const net = chain();
+  const { page, window, service } = await setup(net);
+  const site = page(SITE);
+  const asked = site("eth_requestAccounts");
+  ok(await service.handle({ type: "dapp_answer", id: (await window()).id, approve: true }));
+  await asked;
+  await site("wallet_switchEthereumChain", [{ chainId: "0x2105" }]);
+  net.state.base.simulate = [];
+  net.state.base.simulateReverted = true;
+  const sending = site("eth_sendTransaction", [{ from: ME_EVM, to: `0x${"77".repeat(20)}`, data: `0x3593564c${"00".repeat(32)}` }]);
+  const w = await window();
+  const r = ok<DappReview>(await service.handle({ type: "dapp_review", id: w.id }));
+  ok(await service.handle({ type: "dapp_answer", id: w.id, approve: false }));
+  await sending;
+  assert.deepEqual(r.simulation, { ok: false, error: "It fails: execution reverted" });
+  assert.equal(r.risk.level, "red");
+  assert.ok(r.risk.findings.some((f) => f.rule === "simulation_reverted"), JSON.stringify(r.risk));
+});
+
+// Run-5: typed data the vault reads as an Injective transaction takes effect on Injective
+// whichever chain asked, so it is weighed against Injective's balances from Base too.
+test("an Injective EIP-712 transaction asked from Base is weighed on Injective", async () => {
+  const net = chain({ balances: { inj: 5n * INJ } });
+  const { page, window, service } = await setup(net);
+  const site = page(SITE);
+  const asked = site("eth_requestAccounts");
+  ok(await service.handle({ type: "dapp_answer", id: (await window()).id, approve: true }));
+  await asked;
+  const typed = JSON.stringify({
+    types: {
+      EIP712Domain: [{ name: "name", type: "string" }, { name: "version", type: "string" }, { name: "chainId", type: "uint256" }, { name: "verifyingContract", type: "address" }, { name: "salt", type: "string" }],
+      Tx: [{ name: "context", type: "string" }, { name: "msgs", type: "string" }],
+    },
+    primaryType: "Tx",
+    domain: { name: "Injective Web3", version: "1.0.0", chainId: "0x6f0", verifyingContract: "0xCcCCccccCCCCcCCCCCCcCcCccCcCCCcCcccccccC", salt: "0" },
+    message: {
+      context: JSON.stringify({ account_number: 12345, chain_id: "injective-1", fee: { amount: [{ denom: "inj", amount: "160000000000000" }], gas: 160000 }, memo: "", sequence: 3, timeout_height: 0 }),
+      msgs: JSON.stringify([{ "@type": "/cosmos.bank.v1beta1.MsgSend", from_address: ME, to_address: THEM, amount: [{ denom: "inj", amount: ((49n * INJ) / 10n).toString() }] }]),
+    },
+  });
+  for (const chainId of ["0x6f0", "0x2105", "0x1"]) {
+    await site("wallet_switchEthereumChain", [{ chainId }]);
+    const signing = site("eth_signTypedData_v4", [ME_EVM, typed]);
+    const w = await window();
+    const r = ok<DappReview>(await service.handle({ type: "dapp_review", id: w.id }));
+    ok(await service.handle({ type: "dapp_answer", id: w.id, approve: false }));
+    await signing;
+    assert.ok(r.risk.findings.some((f) => f.rule === "most_of_balance"), `${chainId}: ${JSON.stringify(r.risk)}`);
+  }
+});
+
+// Run-5: a site's Cosmos transaction that moves a CW721 NFT showed "No balance changes": the
+// simulation's wasm events name it now. One leaving names only the operator, so whose it was
+// comes from the collection; when that can't be read, the list is only partly read.
+test("a Cosmos simulation names the CW721 NFTs that move", async () => {
+  const COLLECTION = "inj1q3ekpxeyrcjl6xpp9ylwvjaxjtw0dfhj9z9zgk";
+  const MARKET = "inj1zzmj8ce9rvz2ah8x4hz7n9zmm5a3u5v0scmpp3";
+  const owners: Record<string, string | null> = { "42": ME, "43": THEM, "44": null };
+  const client = { smart: async (_c: string, q: unknown) => ((id) => (owners[id] ? { owner: owners[id] } : null))((q as { owner_of: { token_id: string } }).owner_of.token_id) };
+  const wasm = (a: Record<string, string>) => ({ type: "wasm", attributes: Object.entries({ _contract_address: COLLECTION, ...a }).map(([key, value]) => ({ key, value })) });
+  const nft = (id: string) => `nft:${COLLECTION}:${id}`;
+  // A marketplace holding ME's operator grant moves ME's #42 away.
+  assert.deepEqual(await cw721Moves(client, [wasm({ action: "transfer_nft", sender: MARKET, recipient: THEM, token_id: "42" })], ME), { changes: [{ denom: nft("42"), amount: "-1" }], partial: false });
+  assert.deepEqual(await cw721Moves(client, [wasm({ action: "send_nft", sender: MARKET, recipient: MARKET, token_id: "42" })], ME), { changes: [{ denom: nft("42"), amount: "-1" }], partial: false });
+  // Someone else's: nothing of ME's. One coming to ME, or minted for it: +1.
+  assert.deepEqual(await cw721Moves(client, [wasm({ action: "transfer_nft", sender: MARKET, recipient: MARKET, token_id: "43" })], ME), { changes: [], partial: false });
+  assert.deepEqual(await cw721Moves(client, [wasm({ action: "transfer_nft", sender: MARKET, recipient: ME, token_id: "43" }), wasm({ action: "mint", minter: MARKET, owner: ME, token_id: "9" })], ME), {
+    changes: [{ denom: nft("43"), amount: "1" }, { denom: nft("9"), amount: "1" }],
+    partial: false,
+  });
+  // Burned: ME's leaves; a CW20's burn (an amount) isn't an NFT.
+  assert.deepEqual(await cw721Moves(client, [wasm({ action: "burn", sender: ME, token_id: "42" }), wasm({ action: "burn", from: ME, amount: "5" })], ME), { changes: [{ denom: nft("42"), amount: "-1" }], partial: false });
+  // Whose it was can't be read: only partly read.
+  assert.deepEqual(await cw721Moves(client, [wasm({ action: "transfer_nft", sender: MARKET, recipient: THEM, token_id: "44" })], ME), { changes: [], partial: true });
 });
 
 // Hardening: two sites switching chains at once each read the map before either saved it,
@@ -718,6 +798,60 @@ test("a site's Solana transaction is signed only for the cluster it's reviewed o
   net.state.solana.simulateAfter = (a: string, r: unknown) => (a === NONCE ? null : r);
   const emptied = ok<DappReview>(await review(tx([NONCE], [unread], new Uint8Array(32).fill(9), [{ program: 2, accounts: [1, 0], data: [7] }])));
   assert.deepEqual((emptied.simulation as { changes: unknown[] }).changes, [{ denom: "sol", amount: (-(1_500_000n + 5_000n)).toString() }], JSON.stringify(emptied.simulation));
+});
+
+// Run-5: an asset kept in another program's account (a compressed NFT's tree leaf, a Metaplex
+// Core asset naming its owner) moves with no balance changing. The review says the simulation
+// is only partly read, never "No balance changes", and is red when the tree changes or the
+// record stops naming the account. A record that still names it is only partly read.
+test("a Solana transaction that changes another program's record of the account is only partly read", async () => {
+  const net = chain();
+  const { page, window, service } = await setup(net);
+  const site = page(SITE);
+  const asked = site("solana_connect", {});
+  ok(await service.handle({ type: "dapp_answer", id: (await window()).id, approve: true }));
+  await asked;
+  const ASSET = bs58(new Uint8Array(32).fill(0x51));
+  const TREE = bs58(new Uint8Array(32).fill(0x52));
+  const POOL = bs58(new Uint8Array(32).fill(0x53));
+  const unread = bs58(new Uint8Array(32).fill(0x42));
+  const core = bs58(new Uint8Array(32).fill(0x43));
+  const raw = (owner: string, data: Uint8Array) => ({ lamports: 2_000_000, owner, data: [Buffer.from(data).toString("base64"), "base64"], executable: false, rentEpoch: 0, space: data.length });
+  // A Core-like asset: a key byte, then its owner.
+  const asset = (holder: string, extra = 3) => Uint8Array.from([1, ...base58Decode(holder), ...new Uint8Array(40).fill(extra)]);
+  net.state.solana.accounts[ASSET] = raw(core, asset(ME_SOL));
+  net.state.solana.accounts[TREE] = raw("cmtDvXumGCrqC1Age74AVPhSRVXJMd8PJS91L8KbNCK", new Uint8Array(64).fill(1));
+  net.state.solana.accounts[POOL] = raw(unread, new Uint8Array(64).fill(2));
+  net.state.solana.simulateSpend = 5_000n;
+  const tx = (written: string) => {
+    const keys = [ME_SOL, written, unread].map(base58Decode);
+    const message = Uint8Array.from([1, 0, 1, keys.length, ...keys.flatMap((k) => [...k]), ...new Uint8Array(32).fill(9), 1, 2, 2, 0, 1, 1, 7]);
+    return Buffer.from(Uint8Array.from([1, ...new Uint8Array(64), ...message])).toString("hex");
+  };
+  const review = async (written: string, after: Uint8Array) => {
+    net.state.solana.simulateAfter = (a: string, r: unknown) => (a === written ? raw((r as { owner: string }).owner, after) : r);
+    const signing = site("solana_signTransaction", { account: ME_SOL, transaction: tx(written) });
+    const w = await window();
+    const r = ok<DappReview>(await service.handle({ type: "dapp_review", id: w.id }));
+    ok(await service.handle({ type: "dapp_answer", id: w.id, approve: false }));
+    assert.equal(((await signing) as Reply).error?.code, 4001);
+    return { level: r.risk.level, rules: r.risk.findings.map((f) => f.rule), partial: (r.simulation as { partial?: boolean }).partial === true };
+  };
+  // The asset passes to THEM: red, named, only partly read.
+  const handed = await review(ASSET, asset(THEM_SOL));
+  assert.deepEqual([handed.level, handed.partial], ["red", true], JSON.stringify(handed));
+  assert.ok(handed.rules.includes("solana_program_record"), JSON.stringify(handed));
+  // The tree of a compressed NFT changes: red, only partly read.
+  const tree = await review(TREE, new Uint8Array(64).fill(4));
+  assert.deepEqual([tree.level, tree.partial], ["red", true], JSON.stringify(tree));
+  assert.ok(tree.rules.includes("solana_compressed_tree"), JSON.stringify(tree));
+  // The asset changes but still names the account: only partly read, no handover.
+  const kept = await review(ASSET, asset(ME_SOL, 5));
+  assert.deepEqual([kept.level, kept.partial], ["amber", true], JSON.stringify(kept));
+  assert.ok(!kept.rules.some((r) => r === "solana_program_record" || r === "solana_compressed_tree"), JSON.stringify(kept));
+  // A pool account that never named the account, as every swap writes: as before.
+  const pool = await review(POOL, new Uint8Array(64).fill(6));
+  assert.deepEqual([pool.level, pool.partial], ["amber", false], JSON.stringify(pool));
 });
 
 // Run-2 NV2: the review compares what a site's transaction writes before and after a

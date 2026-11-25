@@ -101,7 +101,7 @@ export class Lcd {
   #call(path: string, post?: unknown, onAnswer?: (body: unknown, tries: number) => unknown, write = false): Promise<unknown> {
     return this.pool.run(async (base, tries) => {
       const init: RequestInit = post === undefined ? {} : { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(post) };
-      const { status, body } = await this.pool.json(`${base}${path}`, init);
+      const { status, body } = await this.pool.json(`${base}${path}`, init, { write });
       if (status === 200 && isObject(body)) return onAnswer ? onAnswer(body, tries) : body;
       if (isObject(body) && typeof body["code"] === "number" && typeof body["message"] === "string") {
         if (NODE_TROUBLE.has(body["code"])) throw new Down(`code ${body["code"]}: ${body["message"]}`);

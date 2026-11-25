@@ -570,7 +570,7 @@ export function createWallets(h: WalletsHost) {
     if (!s.vault) return err("locked", "Unlock the wallet first.");
     const bad = await checkPassword(s.vault, password);
     if (bad) return bad;
-    await h.session.remove(["unlock_key", "pending_send", "pending_device"]);
+    await h.session.remove(["unlock_key", "pending_send", "pending_device", "permit2_cancelled", "swap_quote"]);
     await h.local.remove([...walletKeys]);
     h.cancelLock();
     h.notify();

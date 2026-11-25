@@ -1,9 +1,10 @@
 // What the site handlers share (./index.ts puts them together): the page's answers and
 // error codes, the host, a waiting request, and the encodings pages send.
 
-import { base64ToBytes, bytesToHex, type AddedChain, type NetworkId } from "@choice-wallet/chain";
+import { base64ToBytes, bytesToHex, type AddedChain, type EvmIndex, type NetworkId } from "@choice-wallet/chain";
 import type { AccountInfo, DappRequest, DappReview, DeviceRequest, ListedChain, NewChain, Result } from "@choice-wallet/ui/protocol";
 
+import type { Permit2Records } from "../permit2";
 import type { createSender } from "../send";
 import type { Store } from "../service";
 import type { createSolana } from "../solana";
@@ -39,6 +40,11 @@ export interface DappHost {
   turn?: Turn;
   sender: Sender;
   solana: ReturnType<typeof createSolana>;
+  /** The Permit2 permits this wallet signs (../permit2.ts): kept when a site's is signed,
+   *  and asked when a site's transaction funds Permit2. */
+  permit2?: Permit2Records;
+  /** The EVM history index for a chain (`injective`, or another EVM chain's key); null when off. */
+  evmIndexFor?(network: NetworkId, key: string): Promise<EvmIndex | null>;
   network(): Promise<NetworkId>;
   setNetwork(n: NetworkId): Promise<void>;
   /** The account in use, its wallet's sealed secret and ID, and the unlock key, while
