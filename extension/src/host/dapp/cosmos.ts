@@ -75,6 +75,9 @@ export function createCosmosSite(core: SiteCore) {
     const account = u!.account;
     if (p["signer"] !== account.addresses[net.cosmos]) return no(UNAUTHORIZED, "The signer isn't this wallet's connected account.");
     const pubkey = account.public_key;
+    /** The account the request's signer is: only it answers, whichever account is in use at
+     *  review, so a switch shows as the wrong account before approval, not as a failed signature. */
+    const named = { address: account.addresses[net.cosmos] ?? "", of: (a: AccountInfo) => a.addresses[net.cosmos] };
     const signature = (sig: unknown) => {
       gave(sig);
       return { pub_key: { type: "tendermint/PubKeySecp256k1", value: b64(pubkey) }, signature: b64(String(sig)) };
@@ -99,6 +102,7 @@ export function createCosmosSite(core: SiteCore) {
           return { request, ...(await simulate(network, account, body, auth)) };
         },
         async (signed) => signature(signed["signature"]),
+        named,
       );
     }
     if (method === "choice_signAmino") {
@@ -111,6 +115,7 @@ export function createCosmosSite(core: SiteCore) {
         "cosmos_amino",
         async () => ({ request: { cosmos_amino: { chain: net.cosmos, signer: pubkey, sign_doc: doc } } }),
         async (signed) => signature(signed["signature"]),
+        named,
       );
     }
     if (method === "choice_signArbitrary" || method === "choice_verifyArbitrary") {
@@ -124,6 +129,7 @@ export function createCosmosSite(core: SiteCore) {
           "cosmos_arbitrary",
           async () => ({ request: { cosmos_arbitrary: { chain: net.cosmos, signer: pubkey, data: dataHex } } }),
           async (signed) => signature(signed["signature"]),
+          named,
         );
       }
       // verifyArbitrary: whether a signature of `data` is this account's (Keplr's checks).

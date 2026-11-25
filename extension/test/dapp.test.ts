@@ -970,6 +970,38 @@ test("only the account a site named answers its signature request", async () => 
   assert.equal((await page(SITE)("personal_sign", ["0x6869", ""])).error?.code, 4100);
 });
 
+// The same on Cosmos: the request's signer answers it, so a switch shows at review, before
+// approval, rather than as a signature that fails after it.
+test("only the Cosmos account a site named answers its signature request", async () => {
+  const { page, window, service } = await connected();
+  ok(await service.handle({ type: "add_account" }));
+  ok(await service.handle({ type: "switch_account", index: 0 }));
+  const site = page(SITE);
+  const doc = { chain_id: "injective-1", account_number: "1", sequence: "0", fee: { amount: [{ denom: "inj", amount: "1000" }], gas: "100000" }, msgs: [], memo: "" };
+  const asks = [
+    ["choice_signArbitrary", { chainId: "injective-1", signer: ME, data: "6869" }],
+    ["choice_signAmino", { chainId: "injective-1", signer: ME, signDoc: doc }],
+    ["choice_signDirect", { chainId: "injective-1", signer: ME, signDoc: { chainId: "injective-1", accountNumber: "1", bodyBytes: "0a00", authInfoBytes: "0a00" } }],
+  ] as const;
+  for (const [method, params] of asks) {
+    const asked = site(method, params);
+    const w = await window();
+    ok(await service.handle({ type: "switch_account", index: 1 }));
+    assert.equal(code(await service.handle({ type: "dapp_review", id: w.id })), "wrong_account", method);
+    ok(await service.handle({ type: "switch_account", index: 0 }));
+    if (method === "choice_signArbitrary") {
+      const review = ok<{ digest: string }>(await service.handle({ type: "dapp_review", id: w.id }));
+      ok(await service.handle({ type: "dapp_answer", id: w.id, approve: true, digest: review.digest }));
+      assert.ok(isSignature((await asked).result), JSON.stringify(await asked));
+    } else {
+      ok(await service.handle({ type: "dapp_answer", id: w.id, approve: false }));
+      assert.equal((await asked).error?.code, 4001);
+    }
+  }
+});
+
+const isSignature = (r: unknown) => typeof r === "object" && r !== null && typeof (r as { signature?: unknown }).signature === "string";
+
 // F13: oversized typed data (and personal_sign messages) are refused before they reach
 // the vault, so a site can't hold the worker with one.
 test("oversized typed data and messages are refused before any window", async () => {
