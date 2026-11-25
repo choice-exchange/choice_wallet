@@ -34,20 +34,23 @@ pub fn cosmos(messages: &[Msg], signer: &str, memo: &str, fee: CosmosFee, ctx: &
     for m in messages {
         message(m, signer, memo, ctx, Some(&mut outflows), &mut out);
     }
-    match (fee.granter, fee.payer) {
+    // As x/auth's DeductFeeDecorator charges: the granter when there is one (with no grant
+    // when it is the payer), else the payer, else the signer.
+    let other = |a: &&str| !same(a, signer);
+    match (fee.granter.filter(other), fee.payer.filter(other)) {
         (Some(g), _) => out.push(finding(
             "fee_grant_used",
             Level::Info,
             format!("The fee is paid from {}'s fee grant.", short(g)),
             json!({ "granter": g }),
         )),
-        (None, Some(p)) => out.push(finding(
+        (None, Some(p)) if fee.granter.is_none() => out.push(finding(
             "fee_payer",
             Level::Info,
             format!("{} pays the fee.", short(p)),
             json!({ "payer": p }),
         )),
-        (None, None) => {
+        _ => {
             for c in fee.amount {
                 outflows.add_str(c.denom(), c.amount());
             }

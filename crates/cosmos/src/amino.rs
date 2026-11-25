@@ -211,6 +211,9 @@ pub fn decode_sign_doc(json: &str, chain: &Chain, signer: &PublicKey) -> Result<
     }
     if let Some(g) = &doc.fee.granter {
         chain.check_address(g)?;
+        if *g == signer_addr {
+            return Err(Error::FeeGranter);
+        }
     }
     Ok(AminoTx {
         sign_bytes: canonical(&value)?.into_bytes(),

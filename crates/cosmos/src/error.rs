@@ -50,6 +50,10 @@ pub enum Error {
     /// Someone other than the signer pays the fee, which would need a second signature.
     #[error("the fee payer must be the signer")]
     FeePayer,
+    /// The fee granter is the signer. x/auth then takes the fee from the signer with no
+    /// grant, so naming one only makes the fee look paid by someone else.
+    #[error("the fee granter is the signer")]
+    FeeGranter,
     /// A message names a different account as its signer.
     #[error("message signer {0} is not this account")]
     ForeignSigner(String),

@@ -125,3 +125,48 @@ fn self_exec_is_refused_end_to_end() {
         Error::SelfExec(me)
     );
 }
+
+fn rewards() -> Msg {
+    Msg::WithdrawRewards {
+        delegator: ME.into(),
+        validator: "injvaloper1qyqszqgpqyqszqgpqyqszqgpqyqszqgp0url7q".into(),
+    }
+}
+
+fn with_fee(granter: Option<&str>, payer: Option<&str>) -> Assessment {
+    let fee = [Coin::new("inj", "90").unwrap()];
+    cosmos(
+        &[rewards()],
+        ME,
+        "",
+        CosmosFee {
+            amount: &fee,
+            granter,
+            payer,
+        },
+        &ctx(),
+    )
+}
+
+/// x/auth DeductFeeDecorator: a fee granter equal to the fee payer uses no grant and takes
+/// the fee from the signer. The fee counts as the signer's, and no one else is said to pay.
+#[test]
+fn self_granter_pays_the_fee() {
+    let paid = with_fee(None, None);
+    let granted = with_fee(Some(ME), None);
+    assert_eq!(paid.level, Level::Amber);
+    assert_eq!((granted.level, rules(&granted)), (paid.level, rules(&paid)));
+    // Someone else's grant still pays.
+    assert_eq!(rules(&with_fee(Some(OTHER), None)), ["fee_grant_used"]);
+    // With another payer the signer's grant to it pays: still the signer's fee.
+    assert_eq!(rules(&with_fee(Some(ME), Some(OTHER))), rules(&paid));
+}
+
+/// direct::decode accepts fee.payer equal to the signer: that is the signer paying.
+#[test]
+fn self_payer_pays_the_fee() {
+    let paid = with_fee(None, None);
+    let a = with_fee(None, Some(ME));
+    assert_eq!((a.level, rules(&a)), (paid.level, rules(&paid)));
+    assert_eq!(rules(&with_fee(None, Some(OTHER))), ["fee_payer"]);
+}

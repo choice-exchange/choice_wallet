@@ -297,6 +297,28 @@ fn refuses_second_signer_and_fee_payer() {
         Error::FeePayer
     );
     assert_eq!(decode_err(with_auth(|a| a.fee = None)), Error::MissingFee);
+    // x/auth takes the fee from the signer, with no grant, when the granter is the signer.
+    let me = key(0).public_key().eth_address().to_inj();
+    let other_granter = key(1).public_key().eth_address().to_inj();
+    assert_eq!(
+        decode_err(with_auth(|a| a.fee.as_mut().unwrap().granter = me.clone())),
+        Error::FeeGranter
+    );
+    let d = direct::decode(
+        with_auth(|a| a.fee.as_mut().unwrap().granter = other_granter.clone()),
+        &MAINNET.cosmos,
+        &key(0).public_key(),
+    )
+    .unwrap();
+    assert_eq!(d.fee().granter.as_deref(), Some(other_granter.as_str()));
+    // The signer named as payer is the signer paying.
+    let d = direct::decode(
+        with_auth(|a| a.fee.as_mut().unwrap().payer = me.clone()),
+        &MAINNET.cosmos,
+        &key(0).public_key(),
+    )
+    .unwrap();
+    assert_eq!(d.fee().payer.as_deref(), Some(me.as_str()));
 }
 
 #[test]

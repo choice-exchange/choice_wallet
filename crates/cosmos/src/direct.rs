@@ -10,8 +10,8 @@
 //! - Exactly one signer, using this account's key, of the chain's key type, in
 //!   SIGN_MODE_DIRECT.
 //! - Every message we can read names this account as its signer.
-//! - A fee is present, paid by the signer (a fee granter is allowed). No tip, no extension
-//!   options.
+//! - A fee is present, paid by the signer (a fee granter other than the signer is
+//!   allowed). No tip, no extension options.
 //!
 //! The signature is a 64-byte `r || s` with low S, over the SignDoc bytes hashed as the
 //! chain's key type requires (keccak256 for ethsecp256k1).
@@ -63,7 +63,8 @@ pub struct Fee {
     pub gas_limit: u64,
     /// Account that pays the fee through a fee grant, if any.
     pub granter: Option<String>,
-    /// The fee payer, when the request names one explicitly. It can only be the signer.
+    /// The fee payer, when the request names one explicitly. It can only be the signer, and
+    /// is kept as written because the amino JSON of the wallet's own transactions repeats it.
     pub payer: Option<String>,
 }
 
@@ -195,6 +196,9 @@ pub(crate) fn decode_with_mode(
     let fee = auth.fee.ok_or(Error::MissingFee)?;
     if !fee.payer.is_empty() && fee.payer != signer_addr {
         return Err(Error::FeePayer);
+    }
+    if fee.granter == signer_addr {
+        return Err(Error::FeeGranter);
     }
     let fee = Fee {
         amount: coins_from_proto(fee.amount)?,

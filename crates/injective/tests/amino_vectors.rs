@@ -203,6 +203,11 @@ fn refuses_bad_sign_docs() {
     v["fee"]["payer"] = key(1).public_key().eth_address().to_inj().into();
     assert_eq!(decode(&v).unwrap_err(), Error::FeePayer);
 
+    // x/auth takes the fee from the signer, with no grant, when the granter is the signer.
+    let mut v = doc();
+    v["fee"]["granter"] = MAINNET.cosmos.address(&key(0).public_key()).into();
+    assert_eq!(decode(&v).unwrap_err(), Error::FeeGranter);
+
     // A MsgExec of the signer's own message runs with no grant, as the signer.
     let mut v = doc();
     let me = MAINNET.cosmos.address(&key(0).public_key());
