@@ -13,7 +13,8 @@
 //! | `blocked` | Don't sign at all |
 //!
 //! The rules only see what was decoded. Anything a decoder couldn't read is red on its
-//! own, so a gap in the decoders never shows as safe.
+//! own, and a contract call it couldn't read is never below amber, so a gap in the
+//! decoders never shows as safe.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]

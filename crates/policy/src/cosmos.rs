@@ -83,6 +83,21 @@ fn new_contract(contract: &str) -> Finding {
     )
 }
 
+/// A call the wallet can't read, to a contract the host doesn't know: amber, as on EVM,
+/// since the contract can pay out whatever was approved or deposited there.
+fn unread_call(contract: &str, out: &mut Vec<Finding>) {
+    out.push(finding(
+        "contract_call_unread",
+        Level::Amber,
+        format!(
+            "The wallet can't read what this call to contract {} does. It can move tokens you approved or deposited there.",
+            short(contract)
+        ),
+        json!({ "contract": contract }),
+    ));
+    out.push(new_contract(contract));
+}
+
 /// `outflows` is `None` for a message in `MsgExec` signed by another account: it moves that
 /// granter's funds.
 fn message(
@@ -331,7 +346,7 @@ fn message(
                     // Redeem-shaped is a shape any contract can take: only the adapter the
                     // host knows is the wallet's conversion.
                     if !known_contract(ctx, contract) {
-                        out.push(new_contract(contract));
+                        unread_call(contract, out);
                     }
                     // The CW20 goes to `to`: a send, when that isn't the signer, and always
                     // with a hook, which hands it to a contract's code.
@@ -422,7 +437,7 @@ fn message(
                             json!({ "contract": contract }),
                         ));
                     } else {
-                        out.push(new_contract(contract));
+                        unread_call(contract, out);
                     }
                 }
             }
@@ -861,13 +876,22 @@ mod tests {
             &ctx,
         );
         assert_eq!(rules(&other), ["known_contract_unread"]);
+        // At a contract the host doesn't know, as on EVM: amber, never info.
+        let unknown = cosmos(&[exec(OTHER, ContractCall::Other)], ME, "", CosmosFee::default(), &ctx);
+        assert_eq!(
+            (unknown.level, rules(&unknown)),
+            (Level::Amber, vec!["contract_call_unread", "new_contract"])
+        );
         // The wallet's own conversion: nothing to say.
         assert_eq!(redeem(ADAPTER, None), (Level::Info, vec![]));
         assert_eq!(redeem(ADAPTER, Some(ME)), (Level::Info, vec![]));
         // To someone else, through the real adapter.
         assert_eq!(redeem(ADAPTER, Some(OTHER)), (Level::Amber, vec!["redeem_to_other"]));
         // The same shape at another contract.
-        assert_eq!(redeem(OTHER, None), (Level::Info, vec!["new_contract"]));
+        assert_eq!(
+            redeem(OTHER, None),
+            (Level::Amber, vec!["contract_call_unread", "new_contract"])
+        );
     }
 
     #[test]
