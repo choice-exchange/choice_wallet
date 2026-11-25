@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { orderHash, orderOf, unkept as seaportUnkept } from "../src/host/seaport";
 import { chain, CW, code, LUMA, ME_EVM, ok, THEM, wallet } from "./fake";
 
 type Summary = {
@@ -51,8 +52,8 @@ test("approvals: grants, fee grants, rewards address, CW20 and ERC20 allowances"
     "Solana token delegates, close and stake authorities",
     "CW20 allowances on CW20s the wallet doesn't list or you no longer hold",
     "ERC-777 operators",
-    "Aave credit delegations (borrow allowances)",
-    "signed but unfilled Seaport orders and token permits",
+    "Seaport listings signed outside this wallet",
+    "token permits signed but not used",
     "Permit2 permits signed outside this wallet",
     "Permit2 allowances and permits at other Permit2 deployments",
     "meta-transactions and forward requests signed but not sent",
@@ -316,4 +317,213 @@ test("approvals: CW721 operators and NFT approvals, read and revoked in one tran
   );
   assert.equal(r.risk.level, "info");
   assert.deepEqual(r.risk.findings.map((f) => f.rule).filter((x) => x === "nft_approval_revoke"), ["nft_approval_revoke", "nft_approval_revoke"]);
+});
+
+// Run-5: Seaport moves an account's counter by the last block's hash, and Injective's EVM
+// answers BLOCKHASH with zero, so there cancel-all cancels nothing. The wallet keeps each
+// listing it signs and cancels them one by one; cancel-all stays offered after a revoke
+// wherever it works, since a new approval brings old listings back.
+const SEAPORT_ADDRESS = "0x0000000000000068F116a894984e2DB1123eB395";
+const ZERO = "0x0000000000000000000000000000000000000000";
+const H0 = `0x${"00".repeat(32)}`;
+/** A listing of NFT #7 for 1 INJ (and 10,000 base units of a token to another), as signed. */
+const listingOrder = {
+  offerer: ME_EVM,
+  zone: ZERO,
+  offer: [{ itemType: 2, token: "0x4444444444444444444444444444444444444444", identifierOrCriteria: "7", startAmount: "1", endAmount: "1" }],
+  consideration: [
+    { itemType: 0, token: ZERO, identifierOrCriteria: "0", startAmount: "1000000000000000000", endAmount: "1000000000000000000", recipient: ME_EVM },
+    { itemType: 1, token: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", identifierOrCriteria: "0", startAmount: "10000", endAmount: "10000", recipient: "0xbBbBBBBbbBBBbbbBbbBbbbbBBbBbbbbBbBbbBBbB" },
+  ],
+  orderType: 0,
+  startTime: "1700000000",
+  endTime: "1800000000",
+  zoneHash: H0,
+  salt: "291",
+  conduitKey: H0,
+  counter: "0",
+};
+/** Seaport's own getOrderHash of `listingOrder`, read on Injective EVM and Ethereum (2026-11-26). */
+const LISTING_HASH = "0x37b8e184dc8b76f994e9362c22799dd1fd7d19305f2f5480245caaa4afdf00e0";
+const item = [
+  { name: "itemType", type: "uint8" },
+  { name: "token", type: "address" },
+  { name: "identifierOrCriteria", type: "uint256" },
+  { name: "startAmount", type: "uint256" },
+  { name: "endAmount", type: "uint256" },
+];
+const seaportTyped = (message: object, verifyingContract = SEAPORT_ADDRESS) => ({
+  types: {
+    EIP712Domain: [
+      { name: "name", type: "string" },
+      { name: "version", type: "string" },
+      { name: "chainId", type: "uint256" },
+      { name: "verifyingContract", type: "address" },
+    ],
+    OrderComponents: [
+      { name: "offerer", type: "address" },
+      { name: "zone", type: "address" },
+      { name: "offer", type: "OfferItem[]" },
+      { name: "consideration", type: "ConsiderationItem[]" },
+      { name: "orderType", type: "uint8" },
+      { name: "startTime", type: "uint256" },
+      { name: "endTime", type: "uint256" },
+      { name: "zoneHash", type: "bytes32" },
+      { name: "salt", type: "uint256" },
+      { name: "conduitKey", type: "bytes32" },
+      { name: "counter", type: "uint256" },
+    ],
+    OfferItem: item,
+    ConsiderationItem: [...item, { name: "recipient", type: "address" }],
+  },
+  primaryType: "OrderComponents",
+  domain: { name: "Seaport", version: "1.6", chainId: 1776, verifyingContract },
+  message,
+});
+
+test("Seaport orders: hashed as Seaport hashes them, kept only when the wallet can cancel them", () => {
+  assert.equal(orderHash(listingOrder), LISTING_HASH);
+  const got = orderOf(seaportTyped(listingOrder));
+  assert.deepEqual([got?.chain, got?.offerer, got?.order.hash, got?.order.end], ["eip155:1776", ME_EVM.toLowerCase(), LISTING_HASH, 1800000000]);
+  assert.deepEqual(got?.order.offer, [{ kind: 2, token: "0x4444444444444444444444444444444444444444", id: "7", amount: "1" }]);
+  // Another contract's "Seaport" isn't kept, and isn't refused either.
+  assert.equal(orderOf(seaportTyped(listingOrder, "0x00000000000000ADc04C56Bf30aC9d3c0aAF14dC")), null);
+  assert.equal(seaportUnkept(seaportTyped(listingOrder, "0x00000000000000ADc04C56Bf30aC9d3c0aAF14dC")), false);
+  // One the vault couldn't cancel as it stands isn't signed.
+  const many = { ...listingOrder, offer: Array.from({ length: 101 }, () => listingOrder.offer[0]) };
+  assert.equal(seaportUnkept(seaportTyped(many)), true);
+  assert.equal(seaportUnkept(seaportTyped({ ...listingOrder, salt: 1.5 })), true);
+  assert.equal(seaportUnkept(seaportTyped(listingOrder)), false);
+});
+
+test("Seaport listings signed here: listed, and cancelled one by one where cancel-all does nothing", async () => {
+  const net = chain();
+  net.state.seaport.stuck = true;
+  const { service, ui, local } = await wallet(net);
+  const site = (method: string, params?: unknown) => service.dapp("https://app.example", { method, params });
+  let seen = 0;
+  const window = async () => {
+    for (let i = 0; i < 200 && ui.opened.length <= seen; i++) await new Promise((r) => setTimeout(r, 5));
+    assert.ok(ui.opened.length > seen, "no approval window opened");
+    seen = ui.opened.length;
+    return ui.opened.at(-1)!;
+  };
+  type Risk = { level: string; findings: { rule: string; message: string }[]; confirm?: string };
+  const connecting = site("eth_requestAccounts");
+  ok(await service.handle({ type: "dapp_answer", id: await window(), approve: true }));
+  await connecting;
+  const asked = site("eth_signTypedData_v4", [ME_EVM, JSON.stringify(seaportTyped(listingOrder))]);
+  const w = await window();
+  const r = ok<{ digest: string; risk: Risk }>(await service.handle({ type: "dapp_review", id: w }));
+  ok(await service.handle({ type: "dapp_answer", id: w, approve: true, digest: r.digest, ...(r.risk.confirm ? { confirm: r.risk.confirm } : {}) }));
+  assert.equal(typeof ((await asked) as { result?: unknown }).result, "string");
+  assert.ok(JSON.stringify(await local.get(["seaport_signed"])).includes(LISTING_HASH));
+
+  type Seaport = { seaport?: { ever?: true; stuck?: true; signed: { hash: string; offer: { id: string }[]; ends: number }[] }; unchecked: string[] };
+  const s = ok<Seaport>(await service.handle({ type: "approvals" }));
+  assert.deepEqual([s.seaport?.stuck, s.seaport?.ever, s.seaport?.signed.map((o) => [o.hash, o.offer[0]?.id, o.ends])], [true, undefined, [[LISTING_HASH, "7", 1800000000]]]);
+  assert.ok(s.unchecked.includes("Seaport listings signed outside this wallet"));
+  // Cancel-all would cancel nothing here: refused, and a site's is said to do nothing.
+  assert.equal((await service.handle({ type: "prepare_revoke_evm", kind: "seaport_cancel", contract: SEAPORT_ADDRESS })).ok, false);
+  const all = site("eth_sendTransaction", [{ from: ME_EVM, to: SEAPORT_ADDRESS, data: "0x5b34b966" }]);
+  const aw = await window();
+  const ar = ok<{ risk: Risk }>(await service.handle({ type: "dapp_review", id: aw }));
+  ok(await service.handle({ type: "dapp_answer", id: aw, approve: false }));
+  await all;
+  assert.deepEqual([ar.risk.level, ar.risk.findings.map((f) => f.rule)], ["amber", ["seaport_cancel_none"]]);
+  // The listing's own cancel, with the order as signed.
+  const c = ok<{ risk: Risk; display: { call: Record<string, unknown> } }>(await service.handle({ type: "prepare_revoke_evm", kind: "seaport_order", contract: SEAPORT_ADDRESS, order: LISTING_HASH }));
+  assert.deepEqual([c.risk.level, c.risk.findings.map((f) => f.rule)], ["info", ["seaport_cancel"]]);
+  assert.equal(c.display.call["selector"], "0xfd9f1e10");
+  // Only a listing signed here, by its hash, at Seaport.
+  assert.equal((await service.handle({ type: "prepare_revoke_evm", kind: "seaport_order", contract: SEAPORT_ADDRESS, order: `0x${"12".repeat(32)}` })).ok, false);
+  assert.equal((await service.handle({ type: "prepare_revoke_evm", kind: "seaport_order", contract: ZERO, order: LISTING_HASH })).ok, false);
+  // Cancelled on chain (or filled, or left behind by the counter): gone.
+  net.state.seaport.status[LISTING_HASH] = { cancelled: true };
+  assert.equal(ok<Seaport>(await service.handle({ type: "approvals" })).seaport, undefined);
+  net.state.seaport.status[LISTING_HASH] = { filled: 1n, size: 1n };
+  assert.equal(ok<Seaport>(await service.handle({ type: "approvals" })).seaport, undefined);
+  net.state.seaport.status = {};
+  net.state.seaport.counter = 5n;
+  assert.equal(ok<Seaport>(await service.handle({ type: "approvals" })).seaport, undefined);
+});
+
+test("Seaport cancel-all stays offered after its approval is taken back, where it works", async () => {
+  const net = chain();
+  const NFT = "0x7777777777777777777777777777777777777777";
+  net.state.operatorLogs = [{ collection: NFT, operator: SEAPORT_ADDRESS }];
+  net.state.nftOperatorOn = { [`${NFT} ${SEAPORT_ADDRESS.toLowerCase()}`]: false };
+  const { service } = await wallet(net);
+  const s = ok<{ nftOperators: unknown[]; seaport?: { ever?: true; stuck?: true; signed: unknown[] } }>(await service.handle({ type: "approvals" }));
+  assert.deepEqual([s.nftOperators.length, s.seaport], [0, { ever: true, signed: [] }]);
+  const c = ok<{ risk: { level: string; findings: { rule: string }[] } }>(await service.handle({ type: "prepare_revoke_evm", kind: "seaport_cancel", contract: SEAPORT_ADDRESS }));
+  assert.deepEqual([c.risk.level, c.risk.findings.map((f) => f.rule)], ["info", ["seaport_cancel"]]);
+  // Never approved here, nothing signed: no Seaport section at all.
+  const fresh = await wallet(chain());
+  assert.equal(ok<{ seaport?: unknown }>(await fresh.service.handle({ type: "approvals" })).seaport, undefined);
+});
+
+// Run-5: a listing's price reads in whole tokens, and dust is nothing: a millionth of a token
+// whatever its price, or under a dollar's worth at the price the wallet has (INJ at $8, USDT at
+// $1 on the fake Choice).
+test("a Seaport listing for dust gives the NFT away; a real price reads in whole tokens", async () => {
+  const net = chain();
+  const { service, ui } = await wallet(net);
+  const site = (method: string, params?: unknown) => service.dapp("https://app.example", { method, params });
+  let seen = 0;
+  const window = async () => {
+    for (let i = 0; i < 200 && ui.opened.length <= seen; i++) await new Promise((r) => setTimeout(r, 5));
+    assert.ok(ui.opened.length > seen, "no approval window opened");
+    seen = ui.opened.length;
+    return ui.opened.at(-1)!;
+  };
+  const connecting = site("eth_requestAccounts");
+  ok(await service.handle({ type: "dapp_answer", id: await window(), approve: true }));
+  await connecting;
+  type Risk = { level: string; findings: { rule: string; message: string }[] };
+  const review = async (consideration: object[]) => {
+    const asked = site("eth_signTypedData_v4", [ME_EVM, JSON.stringify(seaportTyped({ ...listingOrder, consideration }))]);
+    const w = await window();
+    const r = ok<{ risk: Risk }>(await service.handle({ type: "dapp_review", id: w }));
+    ok(await service.handle({ type: "dapp_answer", id: w, approve: false }));
+    await asked;
+    return r.risk;
+  };
+  const usdt = (amount: string, to = ME_EVM) => ({ itemType: 1, token: "0x88f7F2b685F9692caf8c478f5BADF09eE9B1Cc13", identifierOrCriteria: "0", startAmount: amount, endAmount: amount, recipient: to });
+  const inj = (amount: string) => ({ itemType: 0, token: ZERO, identifierOrCriteria: "0", startAmount: amount, endAmount: amount, recipient: ME_EVM });
+  for (const [consideration, why] of [
+    [[usdt("1")], "one base unit"],
+    [[usdt("900000")], "under a dollar"],
+    [[inj("1")], "1 wei"],
+    [[inj("100000000000000000")], "0.1 INJ, under a dollar at $8"],
+  ] as const) {
+    const risk = await review([...consideration]);
+    assert.deepEqual([risk.level, risk.findings.some((f) => f.rule === "seaport_nothing_back")], ["red", true], `${why}: ${JSON.stringify(risk)}`);
+  }
+  const real = await review([usdt("9700000"), usdt("300000", "0xbBbBBBBbbBBBbbbBbbBbbbbBBbBbbbbBbBbbBBbB")]);
+  assert.equal(real.level, "amber", JSON.stringify(real));
+  assert.ok(real.findings.some((f) => f.rule === "marketplace_order" && f.message.includes("for 9.7 USDT (0x88f7…cc13) to you")), JSON.stringify(real));
+  assert.equal((await review([inj("200000000000000000")])).level, "amber");
+});
+
+// Run-5's open item: Aave credit delegations were only named as not checked. The index names
+// each (debt token, delegatee) from the account's BorrowAllowanceDelegated logs, the token
+// says what is left, and each is taken back with approveDelegation(delegatee, 0).
+test("Aave borrow allowances: found, read, and taken back", async () => {
+  const net = chain();
+  const DEBT = "0x6666666666666666666666666666666666666666";
+  const SPENT_DEBT = "0x6767676767676767676767676767676767676767";
+  net.state.borrowLogs = [
+    { token: DEBT, delegatee: SPENDER },
+    { token: SPENT_DEBT, delegatee: SPENDER },
+  ];
+  net.state.borrowAllowance = { [`${DEBT} ${SPENDER}`]: 5_000_000n };
+  const { service } = await wallet(net);
+  const s = ok<Summary & { borrow?: { token: string; delegatee: string; amount: string }[] }>(await service.handle({ type: "approvals" }));
+  assert.deepEqual(s.borrow, [{ token: `evm:${DEBT}`, delegatee: SPENDER, amount: "5000000" }]);
+  assert.ok(!s.unchecked.some((u) => /Aave/.test(u)), s.unchecked.join("; "));
+  const r = ok<Review & { display: { call: Record<string, unknown> } }>(await service.handle({ type: "prepare_revoke_evm", kind: "borrow", contract: DEBT, spender: SPENDER }));
+  assert.deepEqual([r.risk.level, r.risk.findings.map((f) => f.rule)], ["info", ["credit_delegation_revoke"]]);
+  assert.equal(r.display.call["selector"], "0xc04a8a10");
+  assert.equal((await service.handle({ type: "prepare_revoke_evm", kind: "borrow", contract: DEBT, spender: "nope" })).ok, false);
 });

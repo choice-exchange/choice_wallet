@@ -34,7 +34,7 @@ export function ApprovalsView({ canSign, onReview, onBack }: { canSign: boolean;
     const r = chain ? await run({ type: "prepare_revoke_evm", chain, kind: "erc20", contract: token.slice(4), spender }) : await run({ type: "prepare_revoke_erc20", token, spender });
     if (r) onReview(r);
   };
-  const revokeEvm = async (kind: EvmRevokeKind, contract: string, more: { spender?: string; token?: string; token_id?: string; word?: string; mask?: string }) => {
+  const revokeEvm = async (kind: EvmRevokeKind, contract: string, more: { spender?: string; token?: string; token_id?: string; word?: string; mask?: string; order?: string }) => {
     const r = await run({ type: "prepare_revoke_evm", ...(chain ? { chain } : {}), kind, contract, ...more });
     if (r) onReview(r);
   };
@@ -95,7 +95,9 @@ export function ApprovalsView({ canSign, onReview, onBack }: { canSign: boolean;
     s.nftOperators.length === 0 &&
     s.nftApprovals.length === 0 &&
     s.permit2.length === 0 &&
-    (s.permit2Signed ?? []).length === 0;
+    (s.permit2Signed ?? []).length === 0 &&
+    (s.seaport?.signed ?? []).length === 0 &&
+    (s.borrow ?? []).length === 0;
   const date = (t: number) => new Date(t * 1000).toLocaleDateString();
   // An end past what a date can say (a permit signed "for good") is said so.
   const ends = (t: number) => (t > 8.64e12 ? "for good" : `until ${date(t)}`);
@@ -108,9 +110,12 @@ export function ApprovalsView({ canSign, onReview, onBack }: { canSign: boolean;
       </button>
     );
   // Listings and offers signed on Seaport stay valid while it can move what they sell; a
-  // revoke only pauses them (run-4).
-  const isSeaport = (a: string) => a.toLowerCase() === SEAPORT.toLowerCase();
-  const seaportHeld = s.nftOperators.some((o) => isSeaport(o.operator)) || s.erc20.some((a) => isSeaport(a.spender));
+  // revoke only pauses them (run-4). Cancel-all is offered wherever Seaport was ever approved,
+  // revoked or not, but not where its counter doesn't move (Injective's EVM): there each
+  // listing signed here is cancelled on its own (run-5).
+  const seaport = s.seaport;
+  const listing = (o: { kind: number; token: string; id: string; amount: string }) =>
+    o.kind >= 2 ? `NFT #${o.id.length > 12 ? `${o.id.slice(0, 10)}…` : o.id} of ${shortAddress(o.token)}` : o.kind === 1 ? `${amount(`evm:${o.token}`, o.amount)} of ${symbol(`evm:${o.token}`)}` : "Coin";
 
   return (
     <Screen
@@ -268,19 +273,54 @@ export function ApprovalsView({ canSign, onReview, onBack }: { canSign: boolean;
         </>
       )}
 
-      {seaportHeld && (
+      {(s.borrow ?? []).length > 0 && (
+        <>
+          <div className="section-head">
+            <span className="eyebrow">Borrowing on your credit</span>
+          </div>
+          <div className="token-list">
+            {s.borrow!.map((b, i) => (
+              <div key={`b${i}`} className="token approval-row" title={b.token}>
+                <span className="name">
+                  <span className="symbol danger-text">{symbol(b.token)}</span>
+                  <span className="sub">
+                    {who(b.delegatee)} may borrow {amount(b.token, b.amount)} as your debt
+                  </span>
+                </span>
+                {pill(`Revoke ${b.delegatee}'s borrowing on ${b.token}`, () => void revokeEvm("borrow", b.token.slice(4), { spender: b.delegatee }))}
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {seaport && (
         <>
           <div className="section-head">
             <span className="eyebrow">Seaport</span>
           </div>
           <div className="token-list">
-            <div className="token approval-row">
-              <span className="name">
-                <span className="symbol">Listings you signed</span>
-                <span className="sub">They come back with any new approval</span>
-              </span>
-              {pill("Cancel every Seaport listing you signed", () => void revokeEvm("seaport_cancel", SEAPORT, {}), "Cancel all")}
-            </div>
+            {seaport.ever && (
+              <div className="token approval-row">
+                <span className="name">
+                  <span className="symbol">Listings you signed</span>
+                  <span className="sub">{seaport.stuck ? "Cancel all does nothing here. Cancel each listing." : "They come back with any new approval"}</span>
+                </span>
+                {!seaport.stuck && pill("Cancel every Seaport listing you signed", () => void revokeEvm("seaport_cancel", SEAPORT, {}), "Cancel all")}
+              </div>
+            )}
+            {seaport.signed.map((o) => (
+              <div key={o.hash} className="token approval-row" title={o.hash}>
+                <span className="name">
+                  <span className="symbol danger-text">{o.offer.length > 0 ? listing(o.offer[0]!) : "A listing"}</span>
+                  <span className="sub">
+                    Listed here {ends(o.ends)}
+                    {o.offer.length > 1 ? `, with ${o.offer.length - 1} more` : ""}
+                  </span>
+                </span>
+                {pill(`Cancel the Seaport listing ${o.hash}`, () => void revokeEvm("seaport_order", SEAPORT, { order: o.hash }), "Cancel")}
+              </div>
+            ))}
           </div>
         </>
       )}

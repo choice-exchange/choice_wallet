@@ -169,6 +169,15 @@ pub struct Context {
     /// `balances`. A token without one is named by its key.
     #[serde(default)]
     pub symbols: BTreeMap<String, String>,
+    /// Decimals of the ERC20s named in `symbols`, by the same keys: their amounts are shown in
+    /// whole tokens rather than base units.
+    #[serde(default)]
+    pub decimals: BTreeMap<String, u8>,
+    /// The least amount, in base units, that counts as a price, by `native` or an ERC20's
+    /// lowercase address: what the host's price makes a dollar's worth. Below it a Seaport
+    /// order's payment counts as nothing (run-5).
+    #[serde(default)]
+    pub price_floors: BTreeMap<String, String>,
     /// Solana token accounts the host looked up, by address: the owner and token its RPC
     /// says they hold. The rules call an owner checked only when the address derives from
     /// it.
@@ -206,6 +215,11 @@ pub struct Context {
     /// The host couldn't check for those (its EVM history off, or a read failed).
     #[serde(default)]
     pub permit2_unchecked: bool,
+    /// The user's node shows Seaport's `incrementCounter()` leaving the counter where it is on
+    /// this chain (Injective's EVM answers BLOCKHASH with zero, which is what Seaport adds), so
+    /// it cancels nothing (run-5).
+    #[serde(default)]
+    pub seaport_counter_stuck: bool,
     /// The addresses above in their forms, worked out once when the rules first need them.
     #[serde(skip)]
     pub(crate) address_forms: addresses::AddressForms,

@@ -348,6 +348,127 @@ pub(crate) enum OwnCall {
     /// signed there, which would otherwise come back with an approval given again. `amount` is
     /// "0".
     SeaportCancelAll,
+    /// Seaport's `cancel(OrderComponents[])` at Seaport 1.6 (`to`): cancels these orders, each
+    /// the account's own (its `offerer`), as signed. Where the counter can't move (Injective's
+    /// EVM, whose BLOCKHASH is zero), the only way to end a listing (run-5). `amount` is "0".
+    SeaportCancel { orders: Vec<Value> },
+    /// `approveDelegation(delegatee, 0)` on an Aave debt token (`to`): takes back what
+    /// `delegatee` may borrow on the account's credit. `amount` is "0".
+    BorrowRevoke { delegatee: String },
+}
+
+/// The most orders one Seaport cancel takes, and items one order may carry.
+const MAX_SEAPORT_ORDERS: usize = 20;
+const MAX_SEAPORT_ITEMS: usize = 100;
+
+/// `cancel(OrderComponents[])`'s calldata for `orders`, each one `from`'s, read field by field
+/// as EIP-712 signed it: an unsigned integer is a JSON number while exact, or a decimal or
+/// `0x` string.
+fn seaport_cancel_calldata(orders: &[Value], from: &choice_wallet_core::EthAddress) -> Result<Vec<u8>, VaultError> {
+    let bad = |why: &str| VaultError::bad(format!("not a Seaport order: {why}"));
+    if orders.is_empty() || orders.len() > MAX_SEAPORT_ORDERS {
+        return Err(VaultError::bad(format!("one to {MAX_SEAPORT_ORDERS} orders at once")));
+    }
+    let uint = |v: &Value, what: &str| -> Result<U256, VaultError> {
+        match v {
+            Value::Number(n) => n.as_u64().map(|v| U256::from_u128(v.into())).ok_or_else(|| bad(what)),
+            Value::String(s) => match s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+                Some(h) if !h.is_empty() && h.len() <= 64 => {
+                    let mut out = [0u8; 32];
+                    hexutil::decode_into(&format!("{h:0>64}"), &mut out).map_err(|_| bad(what))?;
+                    Ok(U256::from_be_bytes(out))
+                }
+                Some(_) => Err(bad(what)),
+                None if !s.is_empty() && s.len() <= 78 && s.bytes().all(|b| b.is_ascii_digit()) => {
+                    U256::from_dec_str(s).map_err(|_| bad(what))
+                }
+                None => Err(bad(what)),
+            },
+            _ => Err(bad(what)),
+        }
+    };
+    let address = |v: &Value, what: &str| -> Result<[u8; 32], VaultError> {
+        let a = v
+            .as_str()
+            .and_then(|s| choice_wallet_core::EthAddress::parse_hex(s).ok())
+            .ok_or_else(|| bad(what))?;
+        let mut w = [0u8; 32];
+        w[12..].copy_from_slice(a.as_bytes());
+        Ok(w)
+    };
+    let bytes32 = |v: &Value, what: &str| -> Result<[u8; 32], VaultError> {
+        let s = v.as_str().and_then(|s| s.strip_prefix("0x")).ok_or_else(|| bad(what))?;
+        let b = hex(s, what)?;
+        <[u8; 32]>::try_from(b.as_slice()).map_err(|_| bad(what))
+    };
+    let word = |n: usize| U256::from_u128(n as u128).to_be_bytes();
+    let mut encoded: Vec<Vec<u8>> = Vec::with_capacity(orders.len());
+    for o in orders {
+        let o = o.as_object().ok_or_else(|| bad("an order is an object"))?;
+        let field = |k: &str| o.get(k).ok_or_else(|| bad(k));
+        let offerer = address(field("offerer")?, "offerer")?;
+        if offerer[12..] != *from.as_bytes() {
+            return Err(VaultError::bad("refused: only an order's own offerer cancels it here"));
+        }
+        let items = |k: &str, recipient: bool| -> Result<Vec<u8>, VaultError> {
+            let list = field(k)?.as_array().ok_or_else(|| bad(k))?;
+            if list.len() > MAX_SEAPORT_ITEMS {
+                return Err(bad("too many items"));
+            }
+            let mut out = word(list.len()).to_vec();
+            for i in list {
+                let i = i.as_object().ok_or_else(|| bad(k))?;
+                let get = |f: &str| i.get(f).ok_or_else(|| bad(f));
+                let kind = uint(get("itemType")?, "itemType")?;
+                if kind > U256::from_u128(5) {
+                    return Err(bad("itemType"));
+                }
+                out.extend_from_slice(&kind.to_be_bytes());
+                out.extend_from_slice(&address(get("token")?, "token")?);
+                for f in ["identifierOrCriteria", "startAmount", "endAmount"] {
+                    out.extend_from_slice(&uint(get(f)?, f)?.to_be_bytes());
+                }
+                if recipient {
+                    out.extend_from_slice(&address(get("recipient")?, "recipient")?);
+                }
+            }
+            Ok(out)
+        };
+        let (offer, consideration) = (items("offer", false)?, items("consideration", true)?);
+        let order_type = uint(field("orderType")?, "orderType")?;
+        if order_type > U256::from_u128(4) {
+            return Err(bad("orderType"));
+        }
+        // Eleven head words; the offer and consideration lists follow, their offsets counted
+        // from the order's start.
+        let mut e = Vec::with_capacity(11 * 32 + offer.len() + consideration.len());
+        e.extend_from_slice(&offerer);
+        e.extend_from_slice(&address(field("zone")?, "zone")?);
+        e.extend_from_slice(&word(11 * 32));
+        e.extend_from_slice(&word(11 * 32 + offer.len()));
+        e.extend_from_slice(&order_type.to_be_bytes());
+        e.extend_from_slice(&uint(field("startTime")?, "startTime")?.to_be_bytes());
+        e.extend_from_slice(&uint(field("endTime")?, "endTime")?.to_be_bytes());
+        e.extend_from_slice(&bytes32(field("zoneHash")?, "zoneHash")?);
+        e.extend_from_slice(&uint(field("salt")?, "salt")?.to_be_bytes());
+        e.extend_from_slice(&bytes32(field("conduitKey")?, "conduitKey")?);
+        e.extend_from_slice(&uint(field("counter")?, "counter")?.to_be_bytes());
+        e.extend_from_slice(&offer);
+        e.extend_from_slice(&consideration);
+        encoded.push(e);
+    }
+    let mut data = vec![0xfd, 0x9f, 0x1e, 0x10]; // cancel(OrderComponents[])
+    data.extend_from_slice(&word(32));
+    data.extend_from_slice(&word(encoded.len()));
+    let mut offset = 32 * encoded.len();
+    for e in &encoded {
+        data.extend_from_slice(&word(offset));
+        offset += e.len();
+    }
+    for e in encoded {
+        data.extend_from_slice(&e);
+    }
+    Ok(data)
 }
 
 /// Permit2: one address on every chain (a deterministic deployment).
@@ -497,11 +618,20 @@ fn own_call(
         | OwnCall::Permit2CancelPermits { .. }
         | OwnCall::Permit2CancelTransfers { .. }
         | OwnCall::SeaportCancelAll
+        | OwnCall::SeaportCancel { .. }
+        | OwnCall::BorrowRevoke { .. }
             if !amount.is_zero() =>
         {
             Err(VaultError::bad(format!("a revoke sends no {coin}")))
         }
         OwnCall::Erc20Revoke { spender } => Ok(Eip1559Tx::erc20_revoke(chain_id, to, &parse(spender)?)),
+        OwnCall::BorrowRevoke { delegatee } => {
+            let mut data = vec![0xc0, 0x4a, 0x8a, 0x10]; // approveDelegation(address,uint256)
+            data.extend_from_slice(&[0u8; 12]);
+            data.extend_from_slice(parse(delegatee)?.as_bytes());
+            data.extend_from_slice(&[0u8; 32]);
+            Ok(Eip1559Tx::contract_call(chain_id, to, U256::ZERO, data))
+        }
         OwnCall::NftRevokeAll { operator } => {
             let mut data = vec![0xa2, 0x2c, 0xb4, 0x65]; // setApprovalForAll(address,bool)
             data.extend_from_slice(&[0u8; 12]);
@@ -564,6 +694,17 @@ fn own_call(
                 to,
                 U256::ZERO,
                 vec![0x5b, 0x34, 0xb9, 0x66],
+            ))
+        }
+        OwnCall::SeaportCancel { orders } => {
+            if to != choice_wallet_injective::talis::seaport() {
+                return Err(VaultError::bad("cancelling Seaport orders goes to Seaport"));
+            }
+            Ok(Eip1559Tx::contract_call(
+                chain_id,
+                to,
+                U256::ZERO,
+                seaport_cancel_calldata(orders, from)?,
             ))
         }
         OwnCall::Permit2Approve {

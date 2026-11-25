@@ -75,6 +75,7 @@ export function NftsView({ canSign, onOpen, onBack }: { canSign: boolean; onOpen
         </div>
       ))}
       {list?.evmDown && <p className="meta warn">EVM NFTs may be missing: no EVM endpoint answered.</p>}
+      {list?.cwDown && <p className="meta warn">CW721 NFTs may be missing: no Injective endpoint answered.</p>}
       {adding ? (
         <form className="well add-token" onSubmit={(e) => void add(e)}>
           <input

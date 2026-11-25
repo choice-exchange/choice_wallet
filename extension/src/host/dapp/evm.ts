@@ -6,12 +6,32 @@
 // the site's to make (nothing is signed by it, and every request names its chain in the
 // approval window); moving the whole wallet between mainnet and the test networks asks first.
 
-import { addedKey, boundErc20, chainByKey, ChainError, chainList, CHAINS, checkAddedChain, copiedChainName, erc20Meta, evmDenom, isObject, knownTokens, MIN_GAS_PRICE, NETWORKS, siteBudget, Unconfirmed, Unreachable, type AnyChain, type EvmRpc, type NetworkId } from "@choice-wallet/chain";
+import { addedKey, boundErc20, chainByKey, chainCoin, ChainError, chainList, CHAINS, checkAddedChain, copiedChainName, chainUsdc, erc20Meta, evmDenom, isObject, knownTokens, MIN_GAS_PRICE, NETWORKS, SEAPORT, siteBudget, Unconfirmed, Unreachable, type AnyChain, type EvmRpc, type NetworkId } from "@choice-wallet/chain";
 import type { AccountInfo, NewChain, TokenInfo } from "@choice-wallet/ui/protocol";
 
 import { cleanName } from "../addedchains";
 import { MAX_DETAILS, PERMIT2, permitsOf } from "../permit2";
+import { counterStuck, orderOf, unkept as seaportUnkept } from "../seaport";
 import { CHAIN_DISCONNECTED, INVALID_PARAMS, MAX_ARBITRARY, MAX_TYPED, no, quantity, UNAUTHORIZED, UNRECOGNIZED_CHAIN, UNSUPPORTED, type DappReply, type Named, type SiteCore } from "./shared";
+
+/** The least base-unit amount worth a dollar at `price` (USD per whole token, as a decimal
+ *  string), rounded up; null without a usable price. */
+export function dollar(price: string | undefined, decimals: number): string | null {
+  if (typeof price !== "string") return null;
+  let p = price.trim();
+  if (/e/i.test(p)) {
+    const n = Number(p);
+    if (!Number.isFinite(n) || n <= 0) return null;
+    p = n.toFixed(20);
+  }
+  const m = /^([0-9]{1,30})(?:\.([0-9]{1,40}))?$/.exec(p);
+  if (!m || !Number.isInteger(decimals) || decimals < 0 || decimals > 36) return null;
+  const frac = m[2] ?? "";
+  const num = BigInt(m[1]! + frac);
+  if (num === 0n) return null;
+  const n = 10n ** BigInt(decimals) * 10n ** BigInt(frac.length);
+  return ((n + num - 1n) / num).toString();
+}
 
 /** keccak256("Transfer(address,address,uint256)"): ERC20 and ERC-721 transfers. */
 const TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
@@ -425,15 +445,58 @@ export function createEvmSite(core: SiteCore) {
    *  coin and balances say nothing about the signature (run-4). */
   function signatureContext(network: NetworkId, chain: AnyChain): { context?: Record<string, unknown>; extra?: Record<string, unknown> } {
     const symbols: Record<string, string> = { native: chain.native.symbol };
+    // And their decimals, so a price reads in whole tokens (run-5).
+    const decimals: Record<string, number> = {};
     if (chain.kind === "injective") {
       for (const t of knownTokens(network)) {
         const a = boundErc20(network, t.denom);
-        if (a && !/^0x0{40}$/i.test(a)) symbols[a.toLowerCase()] = t.symbol;
+        if (a && !/^0x0{40}$/i.test(a)) {
+          symbols[a.toLowerCase()] = t.symbol;
+          decimals[a.toLowerCase()] = t.decimals;
+        }
       }
-      return { extra: { symbols: { ...symbols, inj: "INJ" } } };
+      return { extra: { symbols: { ...symbols, inj: "INJ" }, decimals } };
     }
-    if (!chain.added && chain.usdc) symbols[chain.usdc.toLowerCase()] = "USDC";
-    return { context: { balances: {}, symbols } };
+    if (!chain.added && chain.usdc) {
+      symbols[chain.usdc.toLowerCase()] = "USDC";
+      decimals[chain.usdc.toLowerCase()] = 6;
+    }
+    return { context: { balances: {}, symbols, decimals } };
+  }
+
+  /** The least amount of the chain's coin and each listed token that is a dollar's worth at
+   *  the price the wallet has (Choice's on Injective, DefiLlama's elsewhere), by the keys
+   *  `symbols` uses: under it a Seaport order's payment counts as nothing (run-5). A token
+   *  without a price has no floor here; the rules still count a millionth of one as nothing. */
+  async function priceFloors(network: NetworkId, chain: AnyChain): Promise<Record<string, string>> {
+    const out: Record<string, string> = {};
+    try {
+      if (chain.kind === "injective") {
+        const listed = knownTokens(network).flatMap((t) => {
+          const a = boundErc20(network, t.denom);
+          return a && !/^0x0{40}$/i.test(a) ? [{ denom: t.denom, key: a.toLowerCase(), decimals: t.decimals }] : [];
+        });
+        const net = NETWORKS[network];
+        const priced = await h.sender.tokensFor(network, [net.feeDenom, ...listed.map((t) => t.denom)], true);
+        const coin = dollar(priced[net.feeDenom]?.priceUsd, chain.native.decimals);
+        if (coin) out["native"] = coin;
+        for (const t of listed) {
+          const f = dollar(priced[t.denom]?.priceUsd, t.decimals);
+          if (f) out[t.key] = f;
+        }
+      } else if (h.chainPrices) {
+        const prices = await h.chainPrices(network);
+        const coin = dollar(prices.get(chainCoin(chain.caip2)), chain.native.decimals);
+        if (coin) out["native"] = coin;
+        if (!chain.added && chain.usdc) {
+          const usdc = dollar(prices.get(chainUsdc(chain.caip2)), 6);
+          if (usdc) out[chain.usdc.toLowerCase()] = usdc;
+        }
+      }
+    } catch {
+      // No prices: the rules' own floor stands.
+    }
+    return out;
   }
 
   async function evmSign(origin: string, method: string, params: unknown): Promise<DappReply> {
@@ -492,6 +555,11 @@ export function createEvmSite(core: SiteCore) {
             const o = h.permit2 ? await h.permit2.others(chain.caip2, from, filled.tx.to, [], index, rpc).catch(() => ({ spenders: [], unchecked: true })) : { spenders: [], unchecked: true };
             funded = { ...(o.spenders.length > 0 ? { permit2_spenders: o.spenders } : {}), ...(o.unchecked ? { permit2_unchecked: true } : {}) };
           }
+          // Seaport's cancel-all cancels nothing where its counter doesn't move (Injective's
+          // EVM): the rules say so rather than "cancels every listing" (run-5).
+          if (filled.tx.to.toLowerCase() === SEAPORT.toLowerCase() && filled.tx.data.toLowerCase() === "0x5b34b966" && (await counterStuck(rpc, from)) === true) {
+            funded = { ...funded, seaport_counter_stuck: true };
+          }
           // What comes back counts only in a token the wallet lists here: name them for the rules.
           if (chain.kind === "injective") return { request, checkedBy: filled.checkedBy, ...sim, extra: { ...sim.extra, ...signatureContext(network, chain).extra, ...funded } };
           const extra = await elsewhere(network, chain, rpc, filled.tx.to, filled.held);
@@ -547,12 +615,24 @@ export function createEvmSite(core: SiteCore) {
         // A Permit2 permit is kept once signed (below); one the wallet can't read exactly isn't
         // signed, or it would go unseen by the swap and approval checks (run-5).
         if (permitsOf(typed) === "unreadable") throw new RangeError(`The wallet can't read this Permit2 permit exactly (at most ${MAX_DETAILS} tokens, every field a whole number), so it won't sign it.`);
-        return { request: { evm_typed_data: { chain: chain.caip2, signer: await me(), typed_data: typed } }, ...signatureContext(network, chain) };
+        // Likewise a Seaport listing it couldn't keep to cancel later.
+        if (seaportUnkept(typed)) throw new RangeError("The wallet can't keep this Seaport listing to cancel it later (at most 100 items, every field in range), so it won't sign it.");
+        const named = signatureContext(network, chain);
+        // A Seaport order's payment is weighed against a dollar's worth (run-5).
+        const floors = orderOf(typed) ? await priceFloors(network, chain) : {};
+        const add = Object.keys(floors).length > 0 ? { price_floors: floors } : {};
+        return {
+          request: { evm_typed_data: { chain: chain.caip2, signer: await me(), typed_data: typed } },
+          ...(named.extra ? { extra: { ...named.extra, ...add } } : {}),
+          ...(named.context ? { context: { ...named.context, ...add } } : {}),
+        };
       },
       async (signed) => {
         // A Permit2 permit leaves no trace on chain until used: kept, so the swap and a later
         // approval to Permit2 know who holds one (run-5).
         await h.permit2?.record(await me(), typed).catch(() => {});
+        // A Seaport listing likewise: on Injective's EVM only its own cancel ends it (run-5).
+        await h.seaport?.record(await me(), typed).catch(() => {});
         return signed["signature"];
       },
       named(address),

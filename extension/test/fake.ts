@@ -315,6 +315,10 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
      *  each collection says now. */
     nftApprovalLogs: [] as { collection: string; tokenId: string; approved: string }[],
     operatorLogs: [] as { collection: string; operator: string }[],
+    /** Aave debt tokens' BorrowAllowanceDelegated logs from ME, and what each delegatee may
+     *  still borrow ("debtToken delegatee", lowercase). */
+    borrowLogs: [] as { token: string; delegatee: string }[],
+    borrowAllowance: {} as Record<string, bigint>,
     permit2Logs: [] as { token: string; spender: string }[],
     nftOperatorOn: {} as Record<string, boolean>,
     nftApproved: {} as Record<string, string>,
@@ -333,6 +337,9 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
     permit2: {} as Record<string, { amount: bigint; expiration: number; nonce?: number }>,
     /** Permit2's nonceBitmap for ME, by word (decimal): SignatureTransfer nonces used. */
     permit2Bitmap: {} as Record<string, bigint>,
+    /** Seaport 1.6: ME's counter, whether incrementCounter() leaves it where it is (as on
+     *  Injective's EVM, whose BLOCKHASH is zero), and orders' status by hash. */
+    seaport: { counter: 0n, stuck: false, status: {} as Record<string, { cancelled?: boolean; filled?: bigint; size?: bigint }> },
     /** Circle's Iris: its messages by burn hash, and the requests it saw (with their headers). */
     iris: {} as Record<string, unknown[]>,
     irisAsks: [] as { path: string; headers: Record<string, string> }[],
@@ -496,6 +503,21 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
       const b = data.slice(34, 74) === ME_EVM.slice(2).toLowerCase() ? (state.permit2Bitmap[at] ?? 0n) : 0n;
       return { jsonrpc: "2.0", id: r.id, result: `0x${b.toString(16).padStart(64, "0")}` };
     }
+    if (r.method === "eth_call" && to.toLowerCase() === "0x0000000000000068f116a894984e2db1123eb395") {
+      // Seaport: getCounter(owner), incrementCounter() (as a call, its new counter), and
+      // getOrderStatus(hash): isValidated, isCancelled, totalFilled, totalSize.
+      if (data.startsWith("0xf07ec373")) return answer(word(data.slice(34, 74) === ME_EVM.slice(2).toLowerCase() ? state.seaport.counter : 0n));
+      if (data === "0x5b34b966") return answer(word(state.seaport.stuck ? state.seaport.counter : state.seaport.counter + (1n << 128n)));
+      if (data.startsWith("0x46423aa7")) {
+        const st = state.seaport.status[`0x${data.slice(10)}`] ?? {};
+        return answer(`0x${[0n, st.cancelled ? 1n : 0n, st.filled ?? 0n, st.size ?? 0n].map((n) => n.toString(16).padStart(64, "0")).join("")}`);
+      }
+    }
+    if (r.method === "eth_call" && data.startsWith("0x6bd76d24")) {
+      // An Aave debt token's borrowAllowance(fromUser, toUser).
+      const mine = data.slice(34, 74) === ME_EVM.slice(2).toLowerCase();
+      return answer(word(mine ? (state.borrowAllowance[`${to.toLowerCase()} 0x${data.slice(98, 138)}`] ?? 0n) : 0n));
+    }
     if (r.method === "eth_call" && data.startsWith("0xe985e9c5")) {
       // isApprovedForAll(owner, operator)
       const on = data.slice(34, 74) === ME_EVM.slice(2).toLowerCase() && state.nftOperatorOn[`${to.toLowerCase()} 0x${data.slice(98, 138)}`];
@@ -650,6 +672,7 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
         const APPROVAL = "0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925";
         const FOR_ALL = "0x17307eab39ab6107e8899845ad3d59bd9653f200f220920489ca2b5937696c31";
         const P2 = "0xda9fa7c1b00402c17d0161b249b1ab8bbec047c5a52207b9c112deffd817036b";
+        const BORROW = "0xda919360433220e13b51e8c211e490d148e61a3bd53de8c097194e458b97f3e1";
         const logs = !mine
           ? []
           : topic0 === APPROVAL
@@ -661,7 +684,9 @@ export function chain(opts: { balances?: Record<string, bigint>; evm?: Record<st
               ? state.operatorLogs.map((l) => ({ address: l.collection, topics: [FOR_ALL, pad(ME_EVM), pad(l.operator)], data: pad("0x01") }))
               : topic0 === P2
                 ? state.permit2Logs.map((l) => ({ address: PERMIT2, topics: [P2, pad(ME_EVM), pad(l.token), pad(l.spender)], data: "0x" }))
-                : [];
+                : topic0 === BORROW
+                  ? state.borrowLogs.map((l) => ({ address: l.token, topics: [BORROW, pad(ME_EVM), pad(l.delegatee), pad(USDT_ERC20)], data: pad("0x05") }))
+                  : [];
         return json(200, logs.length ? { message: "OK", result: logs, status: "1" } : { message: "No logs found", result: [], status: "0" });
       }
       const rows = state.blockscout.map((t) => ({ blockNumber: String(t.blockNumber), hash: t.hash, from: THEM_EVM.toLowerCase(), to: ME_EVM.toLowerCase(), value: "1" }));

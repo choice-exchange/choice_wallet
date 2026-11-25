@@ -41,7 +41,8 @@ export type { Nft, NftCollection, NftStandard } from "@choice-wallet/chain";
 import type { AddedChain, NftCollection, NftStandard, Proposal, VoteCast, VoteOptionName } from "@choice-wallet/chain";
 /** The account's NFTs by collection; `evmDown`: no EVM endpoint answered, so ERC721s may be
  *  missing. */
-export type NftList = { collections: NftCollection[]; evmDown?: true };
+/** `evmDown` or `cwDown`: that side's endpoints didn't answer, so its NFTs may be missing. */
+export type NftList = { collections: NftCollection[]; evmDown?: true; cwDown?: true };
 
 /** What a hardware wallet signs, as the vault gave it: the app (Ledger's Cosmos, Ethereum or
  *  Solana app), what kind of thing it is, the exact bytes (hex), and the path it signs at. */
@@ -179,7 +180,7 @@ export type UiRequest =
   | { type: "approvals"; chain?: string }
   | { type: "prepare_revoke"; items: RevokeItem[] }
   | { type: "prepare_revoke_erc20"; token: string; spender: string }
-  | { type: "prepare_revoke_evm"; chain?: string; kind: EvmRevokeKind; contract: string; spender?: string; token?: string; token_id?: string; word?: string; mask?: string }
+  | { type: "prepare_revoke_evm"; chain?: string; kind: EvmRevokeKind; contract: string; spender?: string; token?: string; token_id?: string; word?: string; mask?: string; order?: string }
   /** The rescue address: what's set, set or clear it, the rescue account's gas for this
    *  one, and the rescue itself. */
   | { type: "rescue" }
@@ -744,6 +745,15 @@ export type ApprovalsSummary = {
    *  permit (`allowance`) sets an allowance when used, a SignatureTransfer one (`transfer`)
    *  moves `amount` once. Each can take what the account approves to Permit2 until `deadline`. */
   permit2Signed?: { token: string; spender: string; kind: "allowance" | "transfer"; amount: string; deadline: number; nonce: string }[];
+  /** Seaport, shown while it holds an approval, the index logged one, or a listing signed here
+   *  may still be filled (run-5). `stuck`: its cancel-all can't work on this chain (its counter
+   *  doesn't move), so listings end one by one. `signed`: listings signed in this wallet that
+   *  may still be filled, each by its order hash, with up to three offered items. */
+  /** Aave credit delegations: what each delegatee may still borrow on the account's credit,
+   *  by debt token (`evm:0x…`). Always red: the debt is the account's, against whatever
+   *  collateral it holds there. */
+  borrow?: { token: string; delegatee: string; amount: string }[];
+  seaport?: { ever?: true; stuck?: true; signed: { hash: string; offer: { kind: number; token: string; id: string; amount: string }[]; ends: number }[] };
   /** Blockscout didn't answer: ERC20 allowances may be missing. */
   evmIndexDown?: true;
   /** No EVM endpoint answered: ERC20 allowances couldn't be checked. */
@@ -754,8 +764,10 @@ export type ApprovalsSummary = {
  *  or a Permit2 allowance. */
 /** `permit2` takes two steps: its permits cancelled, then its allowance taken back.
  *  `permit2_transfer` cancels one-off Permit2 permits by their nonces (`word`, `mask`).
- *  `seaport_cancel` cancels every Seaport order the account signed. */
-export type EvmRevokeKind = "erc20" | "nft_all" | "nft_token" | "permit2" | "permit2_transfer" | "seaport_cancel";
+ *  `seaport_cancel` cancels every Seaport order the account signed, where Seaport's counter
+ *  moves; `seaport_order` one listing signed here, by its order hash (`order`). `borrow`
+ *  takes back an Aave borrow allowance (`contract` the debt token, `spender` the delegatee). */
+export type EvmRevokeKind = "erc20" | "nft_all" | "nft_token" | "permit2" | "permit2_transfer" | "seaport_cancel" | "seaport_order" | "borrow";
 
 /** One Cosmos-side permission to take back. */
 export type RevokeItem =

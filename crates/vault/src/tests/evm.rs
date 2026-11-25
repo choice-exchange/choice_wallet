@@ -468,6 +468,12 @@ fn own_revokes_build_on_any_evm_chain_and_read_as_revokes() {
             json!({ "type": "seaport_cancel_all" }),
             "seaport_cancel",
         ),
+        // An Aave debt token's borrow allowance, vouched for like an ERC20 revoke's token.
+        (
+            token,
+            json!({ "type": "borrow_revoke", "delegatee": spender }),
+            "credit_delegation_revoke",
+        ),
     ];
     for chain in ["eip155:1776", "eip155:8453"] {
         for (to, call, rule) in &cases {
@@ -519,6 +525,80 @@ fn own_revokes_build_on_any_evm_chain_and_read_as_revokes() {
             call("build_evm", evm_params("eip155:8453", me, nft, "0", c.clone())).is_err(),
             "{c}"
         );
+    }
+}
+
+/// Run-5: on Injective's EVM, Seaport's counter can't move (BLOCKHASH is zero there), so a
+/// listing ends only by `cancel(OrderComponents[])` with the order as signed. The calldata is
+/// checked against `cast calldata` of the same orders.
+#[test]
+fn seaport_orders_cancel_one_by_one() {
+    use choice_wallet_core::secp256k1::keccak256;
+    let me = "0x9858EfFD232B4033E47d90003D41EC34EcaEda94";
+    let seaport = "0x0000000000000068F116a894984e2DB1123eB395";
+    let (zero, nft, usdc, other) = (
+        "0x0000000000000000000000000000000000000000",
+        "0x4444444444444444444444444444444444444444",
+        "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+        "0xbBbBBBBbbBBBbbbBbbBbbbbBBbBbbbbBbBbbBBbB",
+    );
+    let h = |b: u8| format!("0x{}{:02x}", "00".repeat(31), b);
+    let listing = json!({
+        "offerer": me, "zone": zero,
+        "offer": [{ "itemType": 2, "token": nft, "identifierOrCriteria": "7", "startAmount": "1", "endAmount": "1" }],
+        "consideration": [
+            { "itemType": 0, "token": zero, "identifierOrCriteria": "0", "startAmount": "1000000000000000000", "endAmount": "1000000000000000000", "recipient": me },
+            { "itemType": 1, "token": usdc, "identifierOrCriteria": 0, "startAmount": "0x2710", "endAmount": "10000", "recipient": other },
+        ],
+        "orderType": 0, "startTime": "1700000000", "endTime": "1800000000", "zoneHash": h(0), "salt": "0x123", "conduitKey": h(0), "counter": "0",
+    });
+    let second = json!({
+        "offerer": me, "zone": other,
+        "offer": [
+            { "itemType": 3, "token": nft, "identifierOrCriteria": "9", "startAmount": "2", "endAmount": "2" },
+            { "itemType": 1, "token": usdc, "identifierOrCriteria": "0", "startAmount": "5", "endAmount": "5" },
+        ],
+        "consideration": [],
+        "orderType": "2", "startTime": "1", "endTime": "2", "zoneHash": h(0xaa), "salt": "1", "conduitKey": h(0xaa), "counter": "5",
+    });
+    let cancel = json!({ "type": "seaport_cancel", "orders": [listing.clone(), second] });
+    for chain in ["eip155:1776", "eip155:8453"] {
+        let r = ok("build_evm", evm_params(chain, me, seaport, "0", cancel.clone()))["request"].clone();
+        let data = r["evm_transaction"]["tx"]["data"].as_str().unwrap().to_owned();
+        let bytes = choice_wallet_core::hexutil::decode(data.trim_start_matches("0x")).unwrap();
+        assert_eq!(
+            choice_wallet_core::hexutil::encode(&keccak256(&bytes)),
+            "ae927c3863ef4cf6e9f99c0e12c34117554fd58de82365dc8164d367c661f9ca",
+            "{chain}: {data}"
+        );
+        let d = ok("decode", json!({ "request": r }));
+        assert_eq!(d["risk"]["level"], "info", "{chain}");
+        assert_eq!(rules_of(&d), ["seaport_cancel"], "{chain}");
+        assert!(approve_and_sign(&r, account(0))["raw"].is_string());
+    }
+    // Only Seaport, only the sender's own orders, none of the coin, and orders it can read.
+    let refused =
+        |to: &str, amount: &str, c: Value| call("build_evm", evm_params("eip155:1776", me, to, amount, c)).is_err();
+    let mut theirs = listing.clone();
+    theirs["offerer"] = other.into();
+    let mut odd = listing.clone();
+    odd["orderType"] = 5.into();
+    let mut no_salt = listing.clone();
+    no_salt.as_object_mut().unwrap().remove("salt");
+    for (to, amount, c) in [
+        (nft, "0", cancel.clone()),
+        (seaport, "1", cancel.clone()),
+        (seaport, "0", json!({ "type": "seaport_cancel", "orders": [theirs] })),
+        (seaport, "0", json!({ "type": "seaport_cancel", "orders": [odd] })),
+        (seaport, "0", json!({ "type": "seaport_cancel", "orders": [no_salt] })),
+        (seaport, "0", json!({ "type": "seaport_cancel", "orders": [] })),
+        (
+            seaport,
+            "0",
+            json!({ "type": "seaport_cancel", "orders": vec![listing.clone(); 21] }),
+        ),
+    ] {
+        assert!(refused(to, amount, c.clone()), "{to} {amount} {c}");
     }
 }
 

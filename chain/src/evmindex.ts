@@ -21,6 +21,9 @@ const APPROVAL_FOR_ALL = "0x17307eab39ab6107e8899845ad3d59bd9653f200f220920489ca
  *  `Permit(address,address,address,uint160,uint48,uint48)`: owner, token, spender indexed. */
 const PERMIT2_APPROVAL = "0xda9fa7c1b00402c17d0161b249b1ab8bbec047c5a52207b9c112deffd817036b";
 const PERMIT2_PERMIT = "0xc6a377bfc4eb120024a8ac08eef205be16b817020812c73223e81d1bdb9708ec";
+/** Aave debt tokens' `BorrowAllowanceDelegated(address,address,address,uint256)`: from and to
+ *  indexed (V2), the asset too (V3). */
+const BORROW_ALLOWANCE = "0xda919360433220e13b51e8c211e490d148e61a3bd53de8c097194e458b97f3e1";
 /** How many pages of 1000 logs a search reads before it says it is incomplete. */
 const PAGES = 5;
 
@@ -112,6 +115,19 @@ export class EvmIndex {
         const [token, spender] = [addressTopic(l.topics[2]), addressTopic(l.topics[3])];
         if (l.topics.length === 4 && token && spender) pairs.set(`${token} ${spender}`, { token, spender });
       }
+    }
+    return { pairs: [...pairs.values()], complete };
+  }
+
+  /** Every (debt token, delegatee) an Aave debt token logged a borrow allowance for, from
+   *  `owner`'s credit: the token is the log's emitter. What is left comes from the token. */
+  async borrowDelegations(owner: string): Promise<{ pairs: { token: string; delegatee: string }[]; complete: boolean }> {
+    const { logs, complete } = await this.#logs(owner, BORROW_ALLOWANCE);
+    const pairs = new Map<string, { token: string; delegatee: string }>();
+    for (const l of logs) {
+      const delegatee = l.topics.length >= 3 ? addressTopic(l.topics[2]) : null;
+      const token = /^0x[0-9a-fA-F]{40}$/.test(l.address) ? l.address.toLowerCase() : null;
+      if (delegatee && token) pairs.set(`${token} ${delegatee}`, { token, delegatee });
     }
     return { pairs: [...pairs.values()], complete };
   }

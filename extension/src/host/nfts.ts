@@ -4,7 +4,7 @@
 // so the vault decodes and grades it before anything is signed.
 
 import { cw721Collections, cw721Info, erc1155Collections, erc721Collections, isObject, isTokenId, NETWORKS, type NetworkId, type NftCollection, type NftStandard } from "@choice-wallet/chain";
-import type { AccountInfo, Result, SendReview } from "@choice-wallet/ui/protocol";
+import type { AccountInfo, NftList, Result, SendReview } from "@choice-wallet/ui/protocol";
 
 import type { createSender } from "./send";
 import type { Store } from "./service";
@@ -24,9 +24,9 @@ export function createNfts(d: { sender: Sender; local: Store; vault<T>(method: s
     return Array.isArray(list) ? list.filter((a): a is string => typeof a === "string") : [];
   }
 
-  /** Every collection the account holds an NFT in. The EVM side failing leaves the Cosmos
-   *  side to show, with a note. */
-  async function list(network: NetworkId, account: AccountInfo): Promise<Result<{ collections: NftCollection[]; evmDown?: true }>> {
+  /** Every collection the account holds an NFT in. Either side failing leaves the other to
+   *  show, with a note; only both failing fails the list. */
+  async function list(network: NetworkId, account: AccountInfo): Promise<Result<NftList>> {
     const net = NETWORKS[network];
     const mine = await added(network);
     // The three readers at once: each waits on its own index and endpoints, and one after
@@ -40,18 +40,25 @@ export function createNfts(d: { sender: Sender; local: Store; vault<T>(method: s
         return { evm: [], evmDown: true };
       }
     })();
+    let cw: NftCollection[] = [];
+    let cwFailure: unknown;
     try {
-      const cw = await cw721Collections(await d.sender.lcd(network), account.addresses[net.cosmos] ?? "", mine);
-      const { evm, evmDown } = await evmSide;
-      return { ok: true, result: { collections: [...cw, ...evm], ...(evmDown ? { evmDown: true as const } : {}) } };
+      cw = await cw721Collections(await d.sender.lcd(network), account.addresses[net.cosmos] ?? "", mine);
     } catch (e) {
-      return d.sender.chainFailure(e);
+      // One side's failure doesn't take the other's collections with it (run-5).
+      cwFailure = e;
     }
+    const { evm, evmDown } = await evmSide;
+    if (cwFailure !== undefined && evmDown) return d.sender.chainFailure(cwFailure);
+    return {
+      ok: true,
+      result: { collections: [...cw, ...evm], ...(evmDown ? { evmDown: true as const } : {}), ...(cwFailure !== undefined ? { cwDown: true as const } : {}) },
+    };
   }
 
   /** Add a collection by its contract: a CW721 (`inj1…`) that answers `contract_info`, or an
    *  ERC721 (`0x…`) that says so through ERC-165. */
-  async function add(network: NetworkId, account: AccountInfo, address: unknown): Promise<Result<{ collections: NftCollection[]; evmDown?: true }>> {
+  async function add(network: NetworkId, account: AccountInfo, address: unknown): Promise<Result<NftList>> {
     if (typeof address !== "string") return fail("bad_request", "Enter a collection's contract address.");
     const a = address.trim();
     try {

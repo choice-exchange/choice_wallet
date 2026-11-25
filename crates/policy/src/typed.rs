@@ -162,6 +162,22 @@ fn seaport_order(msg: &Value, signer: &EthAddress, ctx: &Context, talis: bool) -
             .filter(|o| o.kind == p.kind && o.token == p.token)
             .fold(U256::ZERO, |s, o| s.checked_add(&o.amount).unwrap_or(U256::MAX))
     };
+    // Nor is dust (run-5): at most a millionth of one token whatever it's worth (1 wei, one
+    // base unit), or less than the host's price floor (a dollar's worth) where it has one.
+    let dust = |p: &SeaportItem| {
+        let (key, decimals) = if p.kind == 0 {
+            ("native", 18)
+        } else {
+            (p.token.as_str(), ctx.decimals.get(&p.token).copied().unwrap_or(0))
+        };
+        let millionth = U256::from_u128(10u128.pow(u32::from(decimals.saturating_sub(6).min(38))));
+        let floor = ctx
+            .price_floors
+            .get(key)
+            .and_then(|f| U256::from_dec_str(f).ok())
+            .unwrap_or(U256::ZERO);
+        p.amount <= millionth || p.amount < floor
+    };
     let zero = format!("0x{}", "0".repeat(40));
     let paid = back.iter().any(|p| {
         !p.amount.is_zero()
@@ -171,6 +187,7 @@ fn seaport_order(msg: &Value, signer: &EthAddress, ctx: &Context, talis: bool) -
                 _ => false,
             }
             && p.amount >= to_others(p)
+            && !dust(p)
     });
     if !gives.is_empty() && !paid {
         let got = if back.is_empty() {
@@ -245,7 +262,14 @@ impl SeaportItem {
         match self.kind {
             0 => format!("{} {coin}", crate::evm::coin_units(&self.amount)),
             1 => match ctx.symbols.get(&self.token) {
-                Some(symbol) => format!("{} base units of {symbol} ({})", self.amount, short(&self.token)),
+                Some(symbol) => match ctx.decimals.get(&self.token) {
+                    Some(d) => format!(
+                        "{} {symbol} ({})",
+                        crate::evm::units(&self.amount, *d),
+                        short(&self.token)
+                    ),
+                    None => format!("{} base units of {symbol} ({})", self.amount, short(&self.token)),
+                },
                 None => format!("{} base units of unlisted token {}", self.amount, short(&self.token)),
             },
             2 => format!("NFT #{} of {}", self.id, short(&self.token)),
@@ -807,5 +831,72 @@ mod tests {
         assert_eq!(a.level, Level::Amber);
         let f = a.findings.iter().find(|f| f.rule == "marketplace_order").expect("read");
         assert!(f.message.contains("9700000 base units of USDT"), "{}", f.message);
+
+        // Run-5: dust is nothing. At most a millionth of one token, whatever the host knows
+        // (1 wei, one base unit, 1e-9 WETH, 1 wei beside a 1 wei fee), and below the host's
+        // price floor where it gave one. Listed tokens read in whole units.
+        let weth = "0xa407a455613db1f88e8e8ed330f31a4ca531c1ed";
+        let known = Context {
+            symbols: [
+                ("native".to_owned(), "INJ".to_owned()),
+                (usdt.to_owned(), "USDT".to_owned()),
+                (weth.to_owned(), "WETH".to_owned()),
+            ]
+            .into(),
+            decimals: [(usdt.to_owned(), 6), (weth.to_owned(), 18)].into(),
+            ..Context::default()
+        };
+        let read = |consideration: Value, ctx: &Context| {
+            typed_data(
+                &td(
+                    domain.clone(),
+                    "OrderComponents",
+                    types.clone(),
+                    order(json!([nft_item(2, "7")]), consideration),
+                ),
+                None,
+                &signer,
+                ctx,
+            )
+        };
+        for consideration in [
+            json!([pay("1", me)]),
+            json!([pay("1000000000000", me)]),
+            json!([token(usdt, "1", me)]),
+            json!([token(weth, "1000000000", me)]),
+            json!([pay("1", me), pay("1", fee)]),
+        ] {
+            let a = read(consideration.clone(), &known);
+            assert_eq!(
+                (a.level, a.findings.iter().any(|f| f.rule == "seaport_nothing_back")),
+                (Level::Red, true),
+                "{consideration}"
+            );
+        }
+        let a = read(json!([token(usdt, "9700000", me), token(usdt, "300000", fee)]), &known);
+        assert_eq!(a.level, Level::Amber);
+        let f = a.findings.iter().find(|f| f.rule == "marketplace_order").expect("read");
+        assert!(
+            f.message
+                .contains("for 9.7 USDT (0x88f7…cc13) to you. Others get 0.3 USDT"),
+            "{}",
+            f.message
+        );
+        // A price floor of 1 USDT (a dollar's worth): just under is nothing, at it a price.
+        let floored = Context {
+            price_floors: [
+                (usdt.to_owned(), "1000000".to_owned()),
+                ("native".to_owned(), "50000000000000000".to_owned()),
+            ]
+            .into(),
+            ..known.clone()
+        };
+        assert_eq!(read(json!([token(usdt, "999999", me)]), &floored).level, Level::Red);
+        assert_eq!(read(json!([token(usdt, "1000000", me)]), &floored).level, Level::Amber);
+        assert_eq!(read(json!([pay("49999999999999999", me)]), &floored).level, Level::Red);
+        assert_eq!(
+            read(json!([pay("50000000000000000", me)]), &floored).level,
+            Level::Amber
+        );
     }
 }

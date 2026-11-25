@@ -235,6 +235,23 @@ test("CW721: a contract that hands back the same pages in turn is asked a bounde
   assert.ok(asked <= 3, String(asked));
 });
 
+// Run-5: one CW721 candidate whose answers fail on every endpoint (any contract that logs a
+// transfer_nft to the account is one) took the whole list down. It is left out alone.
+test("CW721: a candidate whose answers fail leaves the others listed", async () => {
+  const SPAM = "inj1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqsq3jx2p";
+  const c = chain();
+  const fetch: Fetch = async (input, init) => (String(input).includes(`/contract/${SPAM}/`) ? new Response("x".repeat(64), { status: 502 }) : c.fetch(input, init));
+  const lcd = new Lcd(NETWORKS.mainnet, ["https://a.example", "https://b.example"], fetch, 1000);
+  const found = await cw721Collections(lcd, ME, [SPAM, ADDED]);
+  assert.deepEqual(
+    found.map((x) => x.address),
+    [ADDED, PUNKS],
+  );
+  // Every candidate failing: the failure, not an empty list.
+  const down: Fetch = async (input, init) => (String(input).includes("/smart/") ? new Response("down", { status: 503 }) : c.fetch(input, init));
+  await assert.rejects(cw721Collections(new Lcd(NETWORKS.mainnet, ["https://a.example"], down, 1000), ME, [ADDED]));
+});
+
 // Run-4: one collection whose answers fail (a contract whose tokenURI is huge) took every EVM
 // NFT off the list. It is left out alone; its NFTs' links, failing, leave them shown by ID.
 test("ERC721: a collection whose answers fail leaves the others listed", async () => {

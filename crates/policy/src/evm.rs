@@ -208,6 +208,8 @@ const PERMIT2_APPROVE: [u8; 4] = 0x87517c45u32.to_be_bytes();
 const PERMIT2_INVALIDATE: [u8; 4] = 0x65d9723cu32.to_be_bytes();
 /// Permit2's `invalidateUnorderedNonces(uint256,uint256)`: SignatureTransfer's cancel.
 const PERMIT2_INVALIDATE_UNORDERED: [u8; 4] = 0x3ff9dcb1u32.to_be_bytes();
+/// Aave debt tokens' `approveDelegation(address,uint256)`: credit delegation on chain.
+const APPROVE_DELEGATION: [u8; 4] = 0xc04a8a10u32.to_be_bytes();
 /// ERC20 `transfer(address,uint256)`. Its exact form is `Call::Erc20Transfer`; any other form
 /// reaches `contract_call`.
 const TRANSFER: [u8; 4] = erc20::TRANSFER_SELECTOR;
@@ -329,6 +331,19 @@ fn chain_system_contract(chain_id: u64, to: &EthAddress) -> Option<&'static str>
                         "09e9222e96e7b4ae2a407b98d48e330053351eee",
                         "096760f208390250649e3e8763348e783aef5562",
                         "6c411ad3e74de3e7bd422b94a27770f5b86c623b",
+                    ]
+                    .iter()
+                    .any(|h| is(h)) =>
+                {
+                    Some("an L2 token gateway")
+                }
+                // Arbitrum Sepolia's: the router's default and WETH gateways and the custom
+                // gateway, each naming that router as its own (read on chain).
+                () if chain_id == 421_614
+                    && [
+                        "6e244cd02bbb8a6dbd7f626f05b2ef82151ab502",
+                        "8ca1e1ac0f260bc4da7dd60aca6ca66208e642c5",
+                        "cfb1f08a4852699a979909e22c30263ca249556d",
                     ]
                     .iter()
                     .any(|h| is(h)) =>
@@ -608,8 +623,17 @@ fn simulated(moves: &[crate::EvmTransfer], req: &TxRequest, ctx: &Context, out: 
 }
 
 pub(crate) fn coin_units(v: &U256) -> String {
-    let s = format!("{:0>19}", v.to_string());
-    let (whole, frac) = s.split_at(s.len() - 18);
+    units(v, 18)
+}
+
+/// `v` base units of a token with `decimals` decimals, in whole tokens.
+pub(crate) fn units(v: &U256, decimals: u8) -> String {
+    let d = usize::from(decimals);
+    if d == 0 {
+        return v.to_string();
+    }
+    let s = format!("{:0>width$}", v.to_string(), width = d + 1);
+    let (whole, frac) = s.split_at(s.len() - d);
     match frac.trim_end_matches('0') {
         "" => whole.to_owned(),
         f => format!("{whole}.{f}"),
@@ -991,6 +1015,37 @@ fn contract_call(
                 return;
             }
         }
+        // Aave's credit delegation on chain: the delegatee borrows against the sender's
+        // collateral and the debt is the sender's, as with the signed DelegationWithSig. Taking
+        // it back (amount 0) reads so only at a debt token the wallet vouches for, its own
+        // revoke: at any other contract the bytes are an unread call.
+        APPROVE_DELEGATION if data.len() == 4 + 2 * 32 => {
+            if let (Some(delegatee), Some(amount)) = (address_arg(data, 0), uint_arg(data, 1)) {
+                let d = delegatee.to_checksum_hex();
+                let who = chain.name(&delegatee).map_or_else(|| short(&d), str::to_owned);
+                let params = json!({ "debt_token": to, "delegatee": d, "amount": amount.to_string() });
+                if !amount.is_zero() {
+                    out.push(finding(
+                        "credit_delegation",
+                        Level::Red,
+                        format!(
+                            "{who} could borrow up to {amount} base units on your credit, and the debt would be yours."
+                        ),
+                        params,
+                    ));
+                    return;
+                }
+                if ctx.erc20_contracts.iter().any(|c| c.eq_ignore_ascii_case(&to)) {
+                    out.push(finding(
+                        "credit_delegation_revoke",
+                        Level::Info,
+                        format!("Takes back {who}'s borrowing on your credit."),
+                        params,
+                    ));
+                    return;
+                }
+            }
+        }
         // Permit2's cancel of one-off transfer permits: it only marks the sender's nonces used,
         // so it takes nothing and makes nothing usable.
         PERMIT2_INVALIDATE_UNORDERED if data.len() == 4 + 2 * 32 && tx.to == permit2() => {
@@ -1005,12 +1060,24 @@ fn contract_call(
         // Seaport's own cancels: of some of the sender's orders, or of all it ever signed.
         // Only an order's offerer or zone may cancel it, so either takes nothing.
         SEAPORT_INCREMENT_COUNTER if data.len() == 4 && tx.to == talis::seaport() => {
-            out.push(finding(
-                "seaport_cancel",
-                Level::Info,
-                "Cancels every Seaport listing you signed.".into(),
-                json!({ "contract": to }),
-            ));
+            // Seaport moves the counter by the last block's hash, which some chains answer
+            // with zero: there it cancels nothing, and saying it does would leave listings
+            // live that the user thinks gone (run-5).
+            if ctx.seaport_counter_stuck {
+                out.push(finding(
+                    "seaport_cancel_none",
+                    Level::Amber,
+                    "Cancels nothing: Seaport's counter doesn't move on this chain. Cancel listings one by one.".into(),
+                    json!({ "contract": to }),
+                ));
+            } else {
+                out.push(finding(
+                    "seaport_cancel",
+                    Level::Info,
+                    "Cancels every Seaport listing you signed.".into(),
+                    json!({ "contract": to }),
+                ));
+            }
             return;
         }
         SEAPORT_CANCEL if tx.to == talis::seaport() => {
@@ -1926,6 +1993,66 @@ mod tests {
         assert!(rules_of(&on(421_614, sepolia, 42_161)).contains(&"chain_system_contract"));
         let one = hex20("5288c571fd7ad117bea99bf60fe0846c4e84f933");
         assert!(!rules_of(&on(421_614, one, 42_161)).contains(&"chain_system_contract"));
+        // Run-5: Sepolia's own gateways, and One's mean nothing there (nor Sepolia's on One).
+        let sepolia_gateways = [
+            "6e244cd02bbb8a6dbd7f626f05b2ef82151ab502",
+            "8ca1e1ac0f260bc4da7dd60aca6ca66208e642c5",
+            "cfb1f08a4852699a979909e22c30263ca249556d",
+        ];
+        for g in sepolia_gateways {
+            let on_sepolia = on(421_614, hex20(g), 42_161);
+            assert!(rules_of(&on_sepolia).contains(&"chain_system_contract"), "{g}");
+            assert_eq!(on_sepolia.level, Level::Red, "{g}");
+            assert!(
+                !rules_of(&on(42_161, hex20(g), 42_161)).contains(&"chain_system_contract"),
+                "{g}"
+            );
+        }
+        assert!(
+            !rules_of(&on(421_614, hex20("09e9222e96e7b4ae2a407b98d48e330053351eee"), 42_161))
+                .contains(&"chain_system_contract")
+        );
+    }
+
+    /// Aave credit delegation on chain is red, as the signed kind is; taking it back is info
+    /// only at a debt token the wallet vouches for (its own revoke).
+    #[test]
+    fn credit_delegation_on_chain() {
+        let debt = EthAddress::from_bytes([0x66; 20]);
+        let who = [0x77u8; 20];
+        let mut five = [0u8; 32];
+        five[31] = 5;
+        let elsewhere = EvmSide {
+            injective: None,
+            cctp: None,
+        };
+        let grant = evm_transaction(
+            &req(debt, call(APPROVE_DELEGATION, &[addr_word(who), five])),
+            &elsewhere,
+            &Context::default(),
+        );
+        assert_eq!((grant.level, grant.findings[0].rule), (Level::Red, "credit_delegation"));
+        assert_eq!(
+            grant.findings[0].message,
+            "0x7777…7777 could borrow up to 5 base units on your credit, and the debt would be yours."
+        );
+        let revoke = req(debt, call(APPROVE_DELEGATION, &[addr_word(who), [0u8; 32]]));
+        let unvouched = evm_transaction(&revoke, &elsewhere, &Context::default());
+        assert!(!rules_of(&unvouched).contains(&"credit_delegation_revoke"));
+        assert_ne!(unvouched.level, Level::Info);
+        let vouched = Context {
+            erc20_contracts: vec![debt.to_checksum_hex()],
+            ..Context::default()
+        };
+        let own = evm_transaction(&revoke, &elsewhere, &vouched);
+        assert_eq!(
+            (own.level, own.findings[0].rule),
+            (Level::Info, "credit_delegation_revoke")
+        );
+        assert_eq!(
+            own.findings[0].message,
+            "Takes back 0x7777…7777's borrowing on your credit."
+        );
     }
 
     /// Run-3: a swap sent straight to the spot swap precompile (0x68) is read: someone else
@@ -2195,6 +2322,17 @@ mod tests {
         assert_eq!((a.level, a.findings[0].rule), (Level::Red, "seaport_call"));
         let a = grade(&req(seaport, SEAPORT_INCREMENT_COUNTER.to_vec()));
         assert_eq!((a.level, a.findings[0].rule), (Level::Info, "seaport_cancel"));
+        // Run-5: where the host saw the counter not move, it says it cancels nothing.
+        let stuck = Context {
+            seaport_counter_stuck: true,
+            ..Context::default()
+        };
+        let a = evm_transaction(
+            &req(seaport, SEAPORT_INCREMENT_COUNTER.to_vec()),
+            &EvmSide::injective(&MAINNET),
+            &stuck,
+        );
+        assert_eq!((a.level, a.findings[0].rule), (Level::Amber, "seaport_cancel_none"));
         let off = grade(&req(
             collection,
             call(SET_APPROVAL_FOR_ALL, &[addr_word(*seaport.as_bytes()), [0u8; 32]]),
