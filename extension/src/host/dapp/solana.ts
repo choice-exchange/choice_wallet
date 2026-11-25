@@ -46,6 +46,7 @@ export function createSolanaSite(core: SiteCore) {
         "solana_message",
         async () => ({ request: { solana_message: { chain: net.solana.caip2, signer: mine, message: message.replace(/^0x/, "") } } }),
         async (signed) => ({ signature: signed["signature"] }),
+        { address: mine, of: (a) => a.addresses[net.solana.caip2] },
       );
     }
     if (method === "solana_signTransaction" || method === "solana_signAndSendTransaction") {

@@ -8,7 +8,7 @@ import { useState } from "react";
 
 import { useKept } from "./kept";
 import { BackBar, Callout, Screen, shortAddress } from "./kit";
-import { allowanceLevel, canMoveFunds, feeAllowanceLevel, permissionName, UNLIMITED } from "./permissions";
+import { allowanceLevel, canMoveFunds, feeAllowanceLevel, permissionName, UNLIMITED, whole } from "./permissions";
 import type { Coin, EvmRevokeKind, RevokeItem, SendReview } from "./protocol";
 import { useRequest } from "./request";
 
@@ -61,7 +61,10 @@ export function ApprovalsView({ canSign, onReview, onBack }: { canSign: boolean;
 
   const symbol = (key: string) => s.tokens[key]?.symbol ?? shortAddress(key.replace(/^(cw20|evm):/, ""));
   const amount = (key: string, a: string) => {
-    if (BigInt(a) >= UNLIMITED) return "Unlimited";
+    // An amount that isn't a whole number is shown as answered (its row is red), never thrown.
+    const n = whole(a);
+    if (n === undefined) return a;
+    if (n >= UNLIMITED) return "Unlimited";
     const t = s.tokens[key];
     return t ? `${formatShort(a, t.decimals, 4)} ${t.symbol}` : a;
   };

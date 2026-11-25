@@ -3,7 +3,9 @@
 // it, nor can a stream of quick clicks begun there (run-3). A slower stream (one click a
 // second, aimed where the window opens) could wait out the moment, so a mouse click counts
 // only once the pointer has come onto the button after it armed (review-3); keys don't need
-// that.
+// that. And a pointer's click works only when its own press counted: one that went down
+// before the button armed, and was held across a blur that cleared it, can't approve on
+// release (run-5).
 
 /** How long the button must show, with the window in front, before it works. */
 export const ARM_MS = 800;
@@ -29,8 +31,11 @@ export type ArmEnv = {
  *  arms, or a mouse is pressed after it armed without having come onto the button since.
  *  Returns how to stop. Called anew whenever the button appears, so a request whose review
  *  arrives late never shows it armed. */
-export function arm(showing: boolean, env: ArmEnv, set: (armed: boolean) => void): () => void {
+export function arm(showing: boolean, env: ArmEnv, set: (armed: boolean) => void, pressed: (counted: boolean) => void = () => {}): () => void {
   set(false);
+  // Whether the latest press counted: made with the button armed (and, for a mouse, after
+  // coming onto it). A click from a press that didn't count is ignored by the button.
+  pressed(false);
   if (!showing) return () => {};
   let armed = false;
   /** A mouse came onto the button since it armed. */
@@ -68,7 +73,9 @@ export function arm(showing: boolean, env: ArmEnv, set: (armed: boolean) => void
   const stopPresses =
     env.presses?.(
       (id, mouse) => {
-        if (armed && !(mouse === true && env.enters && !entered)) return;
+        const counts = armed && !(mouse === true && env.enters && !entered);
+        pressed(counts);
+        if (counts) return;
         if (id !== undefined) held.add(id);
         check();
       },

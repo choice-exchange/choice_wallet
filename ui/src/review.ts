@@ -338,7 +338,7 @@ function solanaShown(d: SolanaDisplay, cluster: string, findings: Finding[]): Sh
         const to = s.destination_owner ?? s.destination;
         if (s.authority === d.signer && mint) out.sends.push({ coins: [{ denom: `spl:${mint}`, amount: s.amount }], to });
         // Signed for by this account, whatever the token: its amount is always shown.
-        else if (s.authority === d.signer) out.others.push(`Sends ${s.amount} base units of an unnamed token from your account ${short(s.source)} to ${short(to)}`);
+        else if (s.authority === d.signer) out.others.push(`Sends ${s.amount} base units of an unnamed token from ${short(s.source)} to ${short(to)}`);
         else out.others.push(`Moves tokens to ${short(to)}`);
         break;
       }

@@ -315,6 +315,9 @@ export function Review({
   /** Signed on another EVM chain than Injective's (a step of a transfer in, or a send there). */
   const evmDisplay = review.display.kind === "evm_transaction" ? (review.display as EvmDisplay) : undefined;
   const source = evmDisplay && evmDisplay.chain !== NETWORKS[network].evm ? evmDisplay.network : undefined;
+  // The vault names only its built-in chains: an added one comes with an empty name and coin.
+  const sourceCoin = source?.symbol || (evmDisplay ? chainByCaip2(network, evmDisplay.chain)?.native.symbol : undefined);
+  const sourceLine = source && `On ${source.name || networkName(review.display, network)}${sourceCoin ? `, its fee paid in ${sourceCoin}` : ""}.`;
   const swapping = view.swaps.length > 0;
   const minting = view.mints.length > 0;
   const bridging = view.bridges.length > 0 || minting;
@@ -433,7 +436,7 @@ export function Review({
       {review.swap && review.swap.left > 0 && <p className="meta">{review.swap.left === 1 ? "One more step after this." : "Two more steps after this."}</p>}
       {(review.bridge?.left || source) && (
         <p className="meta">
-          {[source && `On ${source.name}, its fee paid in ${source.symbol}.`, review.bridge?.left && "Then the transfer itself."].filter(Boolean).join(" ")}
+          {[source && sourceLine, review.bridge?.left && "Then the transfer itself."].filter(Boolean).join(" ")}
         </p>
       )}
       <SwapCards view={view} tokens={tokens} network={network} from={(review.display as { from?: string }).from ?? ""} {...(review.swap ? { step: review.swap } : {})} {...(review.bridge ? { bridge: review.bridge } : {})} usd={usd} />

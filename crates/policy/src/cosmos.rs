@@ -500,7 +500,7 @@ fn message(
                 out.push(finding(
                     "authz_exec_own",
                     Level::Amber,
-                    "Runs some of its messages as this account, which needs no permission.".into(),
+                    "Runs some of its messages as this account, spending its funds.".into(),
                     json!({ "messages": msgs.len() }),
                 ));
             } else {
@@ -829,7 +829,7 @@ mod tests {
     }
 
     /// F3, F6: a redeem is graded by its effects. Paying someone else is a send to them; a
-    /// redeem-shaped call at a contract the host doesn't know is a new contract.
+    /// redeem-shaped call at a contract the host doesn't know is an unread call (amber).
     #[test]
     fn adapter_redeems_are_graded_by_their_effects() {
         let redeem = |contract: &str, to: Option<&str>| {

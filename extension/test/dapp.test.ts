@@ -968,6 +968,16 @@ test("only the account a site named answers its signature request", async () => 
   assert.deepEqual(await asked, { result: expected["signature"] });
   // No account named: refused before any window.
   assert.equal((await page(SITE)("personal_sign", ["0x6869", ""])).error?.code, 4100);
+  // A switch after the review: approving is refused and the request stays open for the
+  // named account, rather than ending as a signature that fails.
+  const later = page(SITE)("personal_sign", ["0x6869", ME_EVM]);
+  const w2 = await window();
+  const r2 = ok<{ digest: string }>(await service.handle({ type: "dapp_review", id: w2.id }));
+  ok(await service.handle({ type: "switch_account", index: 1 }));
+  assert.equal(code(await service.handle({ type: "dapp_answer", id: w2.id, approve: true, digest: r2.digest })), "wrong_account");
+  ok(await service.handle({ type: "switch_account", index: 0 }));
+  ok(await service.handle({ type: "dapp_answer", id: w2.id, approve: true, digest: r2.digest }));
+  assert.deepEqual(await later, { result: expected["signature"] });
 });
 
 // The same on Cosmos: the request's signer answers it, so a switch shows at review, before

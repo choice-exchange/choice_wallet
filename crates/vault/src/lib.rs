@@ -403,7 +403,7 @@ fn call(request: &str) -> Result<Reply, VaultError> {
                     Ok((c.id.to_owned(), Value::String(a)))
                 })
                 .collect::<Result<serde_json::Map<String, Value>, VaultError>>()
-                .map_err(|_| VaultError::bad(format!("{:?} isn't an Injective account address", address.trim())))?;
+                .map_err(|_| VaultError::bad("That isn't an Injective account address.".to_string()))?;
             Ok(json!({ "addresses": list }))
         }
         "reveal" => {

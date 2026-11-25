@@ -735,7 +735,12 @@ impl Msg {
 /// ("otherwise we implicitly accept", keeper `DispatchActions`): the signer's own message,
 /// dressed as a use of others' permissions. No dapp needs one, so it's refused.
 pub(crate) fn check_exec(grantee: &str, msgs: &[Msg]) -> Result<(), Error> {
-    match msgs.iter().find(|m| m.signer() == Some(grantee)) {
+    // x/authz compares the address bytes, and bech32 is also valid in capitals: "INJ1…" is
+    // the grantee too.
+    match msgs
+        .iter()
+        .find(|m| m.signer().is_some_and(|s| s.eq_ignore_ascii_case(grantee)))
+    {
         Some(_) => Err(Error::SelfExec(grantee.into())),
         None => Ok(()),
     }

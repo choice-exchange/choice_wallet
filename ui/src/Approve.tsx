@@ -11,7 +11,7 @@
 //   approving names that decode's digest.
 
 import { chainByKey, formatUnits, NETWORKS, shortDenom } from "@choice-wallet/chain";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { arm, type ArmEnv } from "./arm";
 import { useBackend } from "./backend";
@@ -73,11 +73,13 @@ const browser: ArmEnv = {
   },
 };
 
-/** Whether the main button works: see ./arm.ts. Counted from when it shows. */
-function useArmed(showing: boolean): boolean {
+/** Whether the main button works, and whether the latest press counted (a pointer's click
+ *  works only then): see ./arm.ts. Counted from when it shows. */
+function useArmed(showing: boolean): [boolean, { current: boolean }] {
   const [armed, setArmed] = useState(false);
-  useEffect(() => arm(showing, browser, setArmed), [showing]);
-  return armed;
+  const counted = useRef(false);
+  useEffect(() => arm(showing, browser, setArmed, (c) => void (counted.current = c)), [showing]);
+  return [armed, counted];
 }
 
 /** The name of the account the review signs as, by its address: not whichever account is
@@ -127,7 +129,7 @@ export function ApproveView({ id }: { id: string }) {
   const unlocked = status?.unlocked === true && !watchOnly;
   // The main button shows once the request (and a signature's review) is here.
   const ready = req !== null && unlocked && (req.kind !== "sign" || review !== null) && !closed;
-  const armed = useArmed(ready && !problem && !device && !done);
+  const [armed, pressCounted] = useArmed(ready && !problem && !device && !done);
   useEffect(() => {
     if (req?.kind !== "sign" || !unlocked || review || problem) return;
     void backend.send({ type: "dapp_review", id }).then((r) => (r.ok ? setReview(r.result) : setProblem(r.error.message)));
@@ -203,7 +205,12 @@ export function ApproveView({ id }: { id: string }) {
               className={risk && (risk.level === "red" || blocked) ? "btn btn-danger" : "btn btn-gold"}
               data-arm=""
               disabled={!armed || busy || blocked || needsWord}
-              onClick={() => void answer(true)}
+              // A pointer's click (detail > 0) whose press didn't count is ignored; a key's
+              // activation (detail 0) was held to the arm by its own press.
+              onClick={(e) => {
+                if (e.detail > 0 && !pressCounted.current) return;
+                void answer(true);
+              }}
             >
               {busy ? "Working…" : yes}
             </button>
