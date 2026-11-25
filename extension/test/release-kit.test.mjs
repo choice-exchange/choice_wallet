@@ -148,3 +148,120 @@ test("unzip refuses an archive another reader could read differently", () => {
   more.writeUInt16LE(more.readUInt16LE(end + 8) - 1, end + 8);
   assert.throws(() => unzip(more), /more than its entries/);
 });
+
+// A zip built entry by entry, with whatever names, extra fields and layout a test needs.
+const rawZip = (entries) => {
+  const parts = [];
+  const central = [];
+  let offset = 0;
+  for (const e of entries) {
+    const name = Buffer.isBuffer(e.name) ? e.name : Buffer.from(e.name, "latin1");
+    const data = e.data ?? Buffer.alloc(0);
+    const crc = crc32(data);
+    const extra = e.extra ?? Buffer.alloc(0);
+    const flags = e.descriptor ? 8 : 0;
+    if (e.gap) {
+      parts.push(Buffer.alloc(e.gap));
+      offset += e.gap;
+    }
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(flags, 6);
+    if (!e.descriptor) {
+      local.writeUInt32LE(crc, 14);
+      local.writeUInt32LE(data.length, 18);
+      local.writeUInt32LE(data.length, 22);
+    }
+    local.writeUInt16LE(name.length, 26);
+    local.writeUInt16LE(extra.length, 28);
+    const descriptor = Buffer.alloc(e.descriptor ? 16 : 0);
+    if (e.descriptor) {
+      descriptor.writeUInt32LE(0x08074b50, 0);
+      descriptor.writeUInt32LE(crc, 4);
+      descriptor.writeUInt32LE(data.length, 8);
+      descriptor.writeUInt32LE(data.length, 12);
+    }
+    const dir = Buffer.alloc(46);
+    dir.writeUInt32LE(0x02014b50, 0);
+    dir.writeUInt16LE(flags, 8);
+    dir.writeUInt32LE(crc, 16);
+    dir.writeUInt32LE(data.length, 20);
+    dir.writeUInt32LE(data.length, 24);
+    dir.writeUInt16LE(name.length, 28);
+    dir.writeUInt16LE(extra.length, 30);
+    dir.writeUInt32LE(offset, 42);
+    parts.push(local, name, extra, data, descriptor);
+    central.push(dir, name, extra);
+    offset += 30 + name.length + extra.length + data.length + descriptor.length;
+  }
+  const cd = Buffer.concat(central);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(entries.length, 8);
+  end.writeUInt16LE(entries.length, 10);
+  end.writeUInt32LE(cd.length, 12);
+  end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...parts, cd, end]);
+};
+// An Info-ZIP Unicode Path field (0x7075) naming the entry `to`, with the CRC of the header name
+// `from`, which is when Chrome renames the entry.
+const unicodePath = (from, to) => {
+  const body = Buffer.concat([Buffer.from([1, 0, 0, 0, 0]), Buffer.from(to)]);
+  body.writeUInt32LE(crc32(Buffer.from(from)), 1);
+  const head = Buffer.alloc(4);
+  head.writeUInt16LE(0x7075, 0);
+  head.writeUInt16LE(body.length, 2);
+  return Buffer.concat([head, body]);
+};
+
+// Run-5: Chrome names an entry from a Unicode Path extra field and cuts a name at NUL, so a store
+// package could install a substituted background.js or manifest.json while this check read the
+// genuine bytes under another name. Every name a reader could read another way is refused.
+test("unzip refuses an entry Chrome could name differently", () => {
+  const genuine = Buffer.from("console.log(1)");
+  const injected = Buffer.from("console.log(2)");
+  const plain = [{ name: "manifest.json", data: Buffer.from("{}") }];
+  assert.equal(unzip(rawZip([...plain, { name: "background.js", data: genuine }])).length, 2);
+  // The swap: background.js renamed to _metadata/abc, _metadata/xyz renamed to background.js.
+  const upath = rawZip([
+    ...plain,
+    { name: "background.js", data: genuine, extra: unicodePath("background.js", "_metadata/abc") },
+    { name: "_metadata/xyz", data: injected, extra: unicodePath("_metadata/xyz", "background.js") },
+  ]);
+  assert.throws(() => unzip(upath), /extra field 0x7075/);
+  // A Unicode Comment field, a zip64 field and a malformed field are refused the same way.
+  for (const extra of [Buffer.from([0x75, 0x63, 1, 0, 0]), Buffer.from([1, 0, 0, 0]), Buffer.from([0x55, 0x54, 9, 0, 0])]) {
+    assert.throws(() => unzip(rawZip([...plain, { name: "background.js", data: genuine, extra }])), /extra field/);
+  }
+  // NUL, control and non-ASCII bytes, in a file or a directory entry.
+  for (const name of [Buffer.from("evil.js\0/", "latin1"), Buffer.from("background.js\0x", "latin1"), Buffer.from("a\nb.js"), Buffer.from("café.js")]) {
+    assert.throws(() => unzip(rawZip([...plain, { name, data: name.at(-1) === 0x2f ? undefined : genuine }])), /bad path/, JSON.stringify(name.toString("latin1")));
+  }
+  assert.throws(() => zip([["café.js", genuine]]), /bad path/);
+  // A directory entry is a real directory: a good path and no data.
+  assert.throws(() => unzip(rawZip([...plain, { name: "js/", data: genuine }])), /directory entry with data/);
+  assert.throws(() => unzip(rawZip([...plain, { name: "../" }])), /bad path/);
+  assert.equal(unzip(rawZip([...plain, { name: "js/" }, { name: "js/a.js", data: genuine }])).length, 2);
+});
+
+test("unzip refuses bytes between entries, and reads data descriptors", () => {
+  const plain = { name: "manifest.json", data: Buffer.from("{}") };
+  const second = { name: "background.js", data: Buffer.from("console.log(1)") };
+  assert.throws(() => unzip(rawZip([{ ...plain, gap: 64 }, second])), /bytes between entries/);
+  assert.throws(() => unzip(rawZip([plain, { ...second, gap: 1 }])), /bytes between entries/);
+  assert.equal(unzip(rawZip([plain, { ...second, descriptor: true }])).length, 2);
+  const bad = rawZip([plain, { ...second, descriptor: true }]);
+  bad.writeUInt32LE(0, bad.indexOf(Buffer.from([0x50, 0x4b, 0x07, 0x08])) + 4);
+  assert.throws(() => unzip(bad), /data descriptor disagrees/);
+});
+
+test("the store may add only its signed hashes and its own update URL", () => {
+  const release = files();
+  const withManifest = (m) => release.map(([p, b]) => [p, p === "manifest.json" ? Buffer.from(JSON.stringify(m)) : b]);
+  assert.deepEqual(compare(withManifest({ ...manifest, update_url: "https://clients2.google.com/service/update2/crx" }), release), []);
+  assert.deepEqual(compare(withManifest({ ...manifest, update_url: "https://updates.example/crx" }), release), [
+    "manifest.json differs beyond the store's update_url",
+  ]);
+  assert.deepEqual(compare([...release, ["_metadata/verified_contents.json", Buffer.from("[]")]], release), []);
+  assert.deepEqual(compare([...release, ["_metadata/abc", Buffer.from("console.log(2)")]], release), ["not in the release: _metadata/abc"]);
+});
