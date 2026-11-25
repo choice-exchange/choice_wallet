@@ -86,8 +86,17 @@ export function zip(files) {
   return Buffer.concat([...parts, cd, end]);
 }
 
+// Printable ASCII only (run-5): every reader names such a path the same way. Chrome cuts a name
+// at NUL and reads a name without the UTF-8 flag as CP437, so anything else could name one file
+// for Chrome and another for this check.
 function checkPath(path) {
-  if (!path || path.startsWith("/") || path.includes("\\") || path.split("/").some((p) => p === "" || p === "." || p === "..")) {
+  if (
+    !path ||
+    !/^[\x20-\x7e]+$/.test(path) ||
+    path.startsWith("/") ||
+    path.includes("\\") ||
+    path.split("/").some((p) => p === "" || p === "." || p === "..")
+  ) {
     throw new Error(`bad path in package: ${JSON.stringify(path)}`);
   }
 }
@@ -142,16 +151,20 @@ export function unzip(buf) {
   const count = buf.readUInt16LE(end + 10);
   if (buf.readUInt16LE(end + 8) !== count) throw new Error("zip: more than one disk");
   const cdSize = buf.readUInt32LE(end + 12);
-  let p = buf.readUInt32LE(end + 16);
-  if (p + cdSize !== end) throw new Error("zip central directory isn't where the end record says");
-  for (let i = Math.max(0, end - 0xffff); i + 4 <= end; i++) {
-    if (buf.readUInt32LE(i) === 0x07064b50 && i + 20 === end) throw new Error("zip64 archive");
+  const cdStart = buf.readUInt32LE(end + 16);
+  if (cdStart + cdSize !== end) throw new Error("zip central directory isn't where the end record says");
+  // No zip64 record or locator anywhere from the directory on, nor where Chrome looks for one
+  // (20 bytes before the end record), which may be in the last entry's data.
+  for (let i = Math.max(0, Math.min(cdStart, end - 20)); i + 4 <= buf.length; i++) {
+    const sig = buf.readUInt32LE(i);
+    if (sig === 0x07064b50 || sig === 0x06064b50) throw new Error("zip64 archive");
   }
   const files = [];
   const seen = new Set();
   const spans = [];
+  let p = cdStart;
   for (let n = 0; n < count; n++) {
-    if (buf.readUInt32LE(p) !== 0x02014b50) throw new Error("bad zip central directory entry");
+    if (p + 46 > end || buf.readUInt32LE(p) !== 0x02014b50) throw new Error("bad zip central directory entry");
     const flags = buf.readUInt16LE(p + 8);
     const method = buf.readUInt16LE(p + 10);
     const crc = buf.readUInt32LE(p + 16);
@@ -161,39 +174,81 @@ export function unzip(buf) {
     const extraLen = buf.readUInt16LE(p + 30);
     const commentLen = buf.readUInt16LE(p + 32);
     const at = buf.readUInt32LE(p + 42);
-    const path = buf.subarray(p + 46, p + 46 + nameLen).toString("utf8");
+    const name = buf.subarray(p + 46, p + 46 + nameLen);
+    const path = name.toString("latin1");
+    if (p + 46 + nameLen + extraLen + commentLen > end) throw new Error(`bad zip central directory entry: ${JSON.stringify(path)}`);
+    checkExtra(buf.subarray(p + 46 + nameLen, p + 46 + nameLen + extraLen), path);
     p += 46 + nameLen + extraLen + commentLen;
     if (flags & 1) throw new Error(`encrypted entry: ${path}`);
     if (csize === 0xffffffff || size === 0xffffffff || at === 0xffffffff) throw new Error(`zip64 entry: ${path}`);
-    if (path.endsWith("/")) continue; // a directory
-    checkPath(path);
+    // A directory is checked like a file (run-5): Chrome reads "evil.js\0/" as the file evil.js.
+    const directory = path.endsWith("/");
+    checkPath(directory ? path.slice(0, -1) : path);
+    if (directory && (csize !== 0 || size !== 0)) throw new Error(`directory entry with data: ${path}`);
     if (seen.has(path)) throw new Error(`duplicate path in zip: ${path}`);
     seen.add(path);
-    if (buf.readUInt32LE(at) !== 0x04034b50) throw new Error(`bad local header: ${path}`);
-    // The local header says what the directory says: same name, method and (unless a data
-    // descriptor follows) CRC and sizes.
-    const localName = buf.subarray(at + 30, at + 30 + buf.readUInt16LE(at + 26)).toString("utf8");
-    if (localName !== path || buf.readUInt16LE(at + 8) !== method) throw new Error(`local header disagrees with the directory: ${path}`);
+    if (at + 30 > cdStart || buf.readUInt32LE(at) !== 0x04034b50) throw new Error(`bad local header: ${path}`);
+    // The local header says what the directory says: same name bytes, method and (unless a data
+    // descriptor follows) CRC and sizes, and its extra fields are as plain.
+    const localNameLen = buf.readUInt16LE(at + 26);
+    const localExtraLen = buf.readUInt16LE(at + 28);
+    const start = at + 30 + localNameLen + localExtraLen;
+    if (start > cdStart) throw new Error(`truncated entry: ${path}`);
+    if (!buf.subarray(at + 30, at + 30 + localNameLen).equals(name) || buf.readUInt16LE(at + 8) !== method) {
+      throw new Error(`local header disagrees with the directory: ${path}`);
+    }
+    checkExtra(buf.subarray(at + 30 + localNameLen, start), path);
     if (!(flags & 8) && (buf.readUInt32LE(at + 14) !== crc || buf.readUInt32LE(at + 18) !== csize || buf.readUInt32LE(at + 22) !== size)) {
       throw new Error(`local header disagrees with the directory: ${path}`);
     }
-    const start = at + 30 + buf.readUInt16LE(at + 26) + buf.readUInt16LE(at + 28);
     const raw = buf.subarray(start, start + csize);
-    if (raw.length !== csize || start + csize > end - cdSize) throw new Error(`truncated entry: ${path}`);
-    for (const [a, b] of spans) if (at < b && start + csize > a) throw new Error(`overlapping entries: ${path}`);
-    spans.push([at, start + csize]);
+    if (raw.length !== csize || start + csize > cdStart) throw new Error(`truncated entry: ${path}`);
+    let stop = start + csize;
+    if (flags & 8) {
+      // A data descriptor: an optional signature, then the CRC and sizes the directory gives.
+      if (stop + 4 <= cdStart && buf.readUInt32LE(stop) === 0x08074b50) stop += 4;
+      if (stop + 12 > cdStart || buf.readUInt32LE(stop) !== crc || buf.readUInt32LE(stop + 4) !== csize || buf.readUInt32LE(stop + 8) !== size) {
+        throw new Error(`data descriptor disagrees with the directory: ${path}`);
+      }
+      stop += 12;
+    }
+    spans.push([at, stop]);
+    if (directory) continue;
     const bytes = method === 0 ? Buffer.from(raw) : method === 8 ? inflateRawSync(raw) : null;
     if (!bytes) throw new Error(`unsupported compression ${method}: ${path}`);
     if (bytes.length !== size || crc32(bytes) !== crc) throw new Error(`entry does not match its size or CRC: ${path}`);
     files.push([path, bytes]);
   }
   if (p !== end) throw new Error("zip central directory has more than its entries");
+  // The entries fill the archive from its first byte to the directory, one after another, so no
+  // bytes are left where another reader could find other entries.
+  let next = 0;
+  for (const [a, b] of spans.sort(([a], [b]) => a - b)) {
+    if (a !== next) throw new Error(a < next ? "overlapping zip entries" : "zip: bytes between entries");
+    next = b;
+  }
+  if (next !== cdStart) throw new Error("zip: bytes between the entries and the directory");
   return sortFiles(files);
 }
 
-// The Chrome Web Store adds `_metadata/` (its signed hashes) and an `update_url` in manifest.json.
-// Nothing else may differ from the release.
-const STORE_MANIFEST_KEYS = new Set(["update_url"]);
+/** Extra fields as TLV records; the ones that rename an entry (Chrome reads them) or make it zip64 are refused. */
+function checkExtra(extra, path) {
+  let i = 0;
+  while (i < extra.length) {
+    if (i + 4 > extra.length) throw new Error(`bad extra field: ${path}`);
+    const id = extra.readUInt16LE(i);
+    const len = extra.readUInt16LE(i + 2);
+    if (i + 4 + len > extra.length) throw new Error(`bad extra field: ${path}`);
+    if (id === 0x7075 || id === 0x6375 || id === 0x0001) throw new Error(`extra field 0x${id.toString(16)} in zip entry: ${path}`);
+    i += 4 + len;
+  }
+}
+
+// The Chrome Web Store adds `_metadata/verified_contents.json` (its signed hashes) and the Web
+// Store's own `update_url` in manifest.json. Nothing else may differ from the release: any other
+// file under `_metadata/` is compared like the rest (run-5), and so is any other update URL.
+const STORE_FILE = "_metadata/verified_contents.json";
+const STORE_MANIFEST_KEYS = new Map([["update_url", "https://clients2.google.com/service/update2/crx"]]);
 
 /**
  * Compare a store package's files with a release's files. Returns a list of differences (empty
@@ -201,7 +256,7 @@ const STORE_MANIFEST_KEYS = new Set(["update_url"]);
  */
 export function compare(store, release) {
   const problems = [];
-  const theirs = new Map(store.filter(([path]) => !path.startsWith("_metadata/")));
+  const theirs = new Map(store.filter(([path]) => path !== STORE_FILE));
   const ours = new Map(release);
   for (const [path, bytes] of ours) {
     const other = theirs.get(path);
@@ -222,7 +277,12 @@ function sameManifest(store, release) {
   } catch {
     return false;
   }
-  for (const key of STORE_MANIFEST_KEYS) if (!(key in b)) delete a[key];
+  if (!a || typeof a !== "object" || Array.isArray(a)) return false;
+  for (const [key, value] of STORE_MANIFEST_KEYS) {
+    if (key in b) continue;
+    if (key in a && a[key] !== value) return false;
+    delete a[key];
+  }
   return canonical(a) === canonical(b);
 }
 

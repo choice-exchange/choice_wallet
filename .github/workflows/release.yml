@@ -33,6 +33,8 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
+          # A Chrome version only, so the name read below is this tag and nothing else (run-5).
+          if ! [[ "$TAG" =~ ^v[0-9]+(\.[0-9]+){0,3}$ ]]; then echo "::error::$TAG is not v<Chrome version>"; exit 1; fi
           ref=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG")
           if [ "$(jq -r .object.type <<<"$ref")" != tag ]; then
             echo "::error::$TAG is a lightweight tag; release tags are annotated and signed"; exit 1
