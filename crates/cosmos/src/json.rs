@@ -445,13 +445,15 @@ pub(crate) fn message(v: &Value, form: Form, chain: &Chain, depth: usize) -> Res
                 if m.msgs.is_empty() {
                     return Err(Error::NoMessages);
                 }
+                let msgs = m
+                    .msgs
+                    .iter()
+                    .map(|inner| message(inner, form, chain, depth + 1))
+                    .collect::<Result<Vec<_>, _>>()?;
+                crate::msg::check_exec(&m.grantee, &msgs)?;
                 Msg::AuthzExec {
                     grantee: m.grantee,
-                    msgs: m
-                        .msgs
-                        .iter()
-                        .map(|inner| message(inner, form, chain, depth + 1))
-                        .collect::<Result<_, _>>()?,
+                    msgs,
                 }
             }
             None => return unknown(),

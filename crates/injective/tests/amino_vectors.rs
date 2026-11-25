@@ -203,6 +203,13 @@ fn refuses_bad_sign_docs() {
     v["fee"]["payer"] = key(1).public_key().eth_address().to_inj().into();
     assert_eq!(decode(&v).unwrap_err(), Error::FeePayer);
 
+    // A MsgExec of the signer's own message runs with no grant, as the signer.
+    let mut v = doc();
+    let me = MAINNET.cosmos.address(&key(0).public_key());
+    let inner = v["msgs"][0].clone();
+    v["msgs"][0] = serde_json::json!({ "type": "cosmos-sdk/MsgExec", "value": { "grantee": me, "msgs": [inner] } });
+    assert_eq!(decode(&v).unwrap_err(), Error::SelfExec(me));
+
     let mut v = doc();
     v["msgs"] = Value::Array(vec![]);
     assert_eq!(decode(&v).unwrap_err(), Error::NoMessages);

@@ -172,6 +172,13 @@ fn refuses_unexpected_context_and_foreign_signers() {
     assert!(matches!(decode(&json, &MAINNET), Err(Error::ForeignSigner(_))));
     let json = edited(SEND, |_, _, msgs| *msgs = Value::Array(vec![]));
     assert_eq!(decode(&json, &MAINNET).unwrap_err(), Error::NoMessages);
+    // A MsgExec of the signer's own message runs with no grant, as the signer.
+    let me = signer().to_inj();
+    let json = edited(SEND, |_, _, msgs| {
+        let inner = msgs[0].clone();
+        msgs[0] = serde_json::json!({ "@type": "/cosmos.authz.v1beta1.MsgExec", "grantee": me, "msgs": [inner] });
+    });
+    assert_eq!(decode(&json, &MAINNET).unwrap_err(), Error::SelfExec(me));
 }
 
 #[test]

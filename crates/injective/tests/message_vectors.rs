@@ -260,7 +260,8 @@ fn nested_messages_are_checked_too() {
     );
 
     // One level of nesting is fine, three is refused, and an empty exec is refused.
-    assert!(decode(vec![exec(&a0, vec![exec(&a0, vec![send(&a1, &a0)])])]).is_ok());
+    let a2 = addr("a2");
+    assert!(decode(vec![exec(&a0, vec![exec(&a1, vec![send(&a2, &a1)])])]).is_ok());
     let deep = exec(&a0, vec![exec(&a0, vec![exec(&a0, vec![send(&a1, &a0)])])]);
     assert!(matches!(decode(vec![deep]), Err(Error::Decode(_))));
     assert_eq!(decode(vec![exec(&a0, vec![])]).unwrap_err(), Error::NoMessages);
@@ -292,6 +293,31 @@ fn nested_messages_are_checked_too() {
         .encode_to_vec(),
     };
     assert!(matches!(decode(vec![empty]), Err(Error::Decode(_))));
+}
+
+/// x/authz runs a message whose signer is the exec's own grantee with no grant: it would
+/// spend the signer's funds dressed as a use of others' permissions.
+#[test]
+fn exec_of_the_grantees_own_messages_is_refused() {
+    let (a0, a1) = (addr("a0"), addr("a1"));
+    assert_eq!(
+        decode(vec![exec(&a0, vec![send(&a0, &a1)])]).unwrap_err(),
+        Error::SelfExec(a0.clone())
+    );
+    // Among others' messages, and as a nested exec run as the grantee.
+    assert_eq!(
+        decode(vec![exec(&a0, vec![send(&a1, &a0), send(&a0, &a1)])]).unwrap_err(),
+        Error::SelfExec(a0.clone())
+    );
+    assert_eq!(
+        decode(vec![exec(&a0, vec![exec(&a0, vec![send(&a1, &a0)])])]).unwrap_err(),
+        Error::SelfExec(a0.clone())
+    );
+    // A nested exec's own grantee is checked as well.
+    assert_eq!(
+        decode(vec![exec(&a0, vec![exec(&a1, vec![send(&a1, &a0)])])]).unwrap_err(),
+        Error::SelfExec(a1)
+    );
 }
 
 #[test]

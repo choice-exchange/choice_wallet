@@ -53,6 +53,11 @@ pub enum Error {
     /// A message names a different account as its signer.
     #[error("message signer {0} is not this account")]
     ForeignSigner(String),
+    /// A `MsgExec` runs a message whose signer is its own grantee. x/authz runs such a
+    /// message with no grant, as the grantee: it spends the signer's own funds while
+    /// looking like a use of others' permissions.
+    #[error("MsgExec runs a message as its own grantee {0}")]
+    SelfExec(String),
     /// Not a canonical, positive integer amount.
     #[error("invalid amount {0:?}")]
     Amount(String),

@@ -465,6 +465,7 @@ impl Msg {
                 .iter()
                 .map(|a| Self::decode_at(a, chain, depth + 1))
                 .collect::<Result<Vec<_>, _>>()?;
+            check_exec(&m.grantee, &msgs)?;
             Self::AuthzExec {
                 grantee: m.grantee,
                 msgs,
@@ -727,6 +728,16 @@ impl Msg {
             }
         };
         Ok(msg)
+    }
+}
+
+/// x/authz runs a message in `MsgExec` whose signer is the grantee itself with no grant
+/// ("otherwise we implicitly accept", keeper `DispatchActions`): the signer's own message,
+/// dressed as a use of others' permissions. No dapp needs one, so it's refused.
+pub(crate) fn check_exec(grantee: &str, msgs: &[Msg]) -> Result<(), Error> {
+    match msgs.iter().find(|m| m.signer() == Some(grantee)) {
+        Some(_) => Err(Error::SelfExec(grantee.into())),
+        None => Ok(()),
     }
 }
 

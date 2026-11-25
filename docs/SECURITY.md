@@ -128,7 +128,7 @@ Protobuf types:
   - The generator installs with scripts off and npm's `before` date set two weeks back, so every package in its lockfile had been public for at least two weeks.
   - injective-ts 1.20.21 was a compromised release. Pinned versions stay well clear of it.
 - Real-dapp corpus: transactions captured from Helix, Injective Hub, Mito, Choice and the DEXes, each decoded and round-tripped.
-- Negative tests: tampered keystores, wrong chain, wrong signer, non-canonical encodings, unknown fields, nested unknown `Any`s.
+- Negative tests: tampered keystores, wrong chain, wrong signer, non-canonical encodings, unknown fields, nested unknown `Any`s, a `MsgExec` running its own grantee's message (Direct, amino JSON and EIP-712 v2).
 - Planned: `cargo fuzz` targets for every decoder; property tests for address parsing; `cargo deny` and `cargo audit` in CI.
 
 ## Releases

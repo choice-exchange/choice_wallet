@@ -80,7 +80,8 @@ fn new_contract(contract: &str) -> Finding {
     )
 }
 
-/// `outflows` is `None` inside `MsgExec`, where messages move the granters' funds.
+/// `outflows` is `None` for a message in `MsgExec` signed by another account: it moves that
+/// granter's funds.
 fn message(
     m: &Msg,
     signer: &str,
@@ -473,14 +474,36 @@ fn message(
             ));
         }
         Msg::AuthzExec { msgs, .. } => {
-            out.push(finding(
-                "authz_exec",
-                Level::Info,
-                "Uses permissions other accounts gave you.".into(),
-                json!({ "messages": msgs.len() }),
-            ));
+            // A message signed by this account runs with no grant (x/authz implicitly
+            // accepts the grantee's own messages) and moves this account's funds. The
+            // decoders refuse one; the rules count it anyway.
+            let own = |m: &Msg| m.signer().is_some_and(|s| same(s, signer));
+            if msgs.iter().any(own) {
+                out.push(finding(
+                    "authz_exec_own",
+                    Level::Amber,
+                    "Runs some of its messages as this account, which needs no permission.".into(),
+                    json!({ "messages": msgs.len() }),
+                ));
+            } else {
+                out.push(finding(
+                    "authz_exec",
+                    Level::Info,
+                    "Uses permissions other accounts gave you.".into(),
+                    json!({ "messages": msgs.len() }),
+                ));
+            }
             for inner in msgs {
-                message(inner, signer, memo, ctx, None, out);
+                // A nested MsgExec is passed the count too: its own messages decide.
+                let counted = own(inner) || matches!(inner, Msg::AuthzExec { .. });
+                message(
+                    inner,
+                    signer,
+                    memo,
+                    ctx,
+                    if counted { outflows.as_deref_mut() } else { None },
+                    out,
+                );
             }
         }
         Msg::AuthzRevoke {
