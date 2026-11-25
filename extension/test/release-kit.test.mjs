@@ -244,6 +244,19 @@ test("unzip refuses an entry Chrome could name differently", () => {
   assert.equal(unzip(rawZip([...plain, { name: "js/" }, { name: "js/a.js", data: genuine }])).length, 2);
 });
 
+// Review: Chrome looks for a zip64 locator anywhere in the archive's last 64 KiB, so one
+// hidden in a local extra field, or in the store's signed hashes (left out of the comparison),
+// is refused too; and those hashes must be JSON.
+test("a zip64 locator anywhere Chrome looks for one is refused", () => {
+  const locator = Buffer.from([0x50, 0x4b, 0x06, 0x07, 0, 0, 0, 0]);
+  const plain = [{ name: "manifest.json", data: Buffer.from("{}") }];
+  const inExtra = Buffer.concat([Buffer.from([0xfe, 0xca, locator.length, 0]), locator]);
+  assert.throws(() => unzip(rawZip([...plain, { name: "background.js", data: Buffer.from("x"), extra: inExtra }])), /zip64/);
+  assert.throws(() => unzip(rawZip([...plain, { name: "_metadata/verified_contents.json", data: Buffer.concat([Buffer.from("[]"), locator]) }])), /zip64/);
+  const release = files();
+  assert.deepEqual(compare([...release, ["_metadata/verified_contents.json", Buffer.from("not json")]], release), ["_metadata/verified_contents.json isn't JSON"]);
+});
+
 test("unzip refuses bytes between entries, and reads data descriptors", () => {
   const plain = { name: "manifest.json", data: Buffer.from("{}") };
   const second = { name: "background.js", data: Buffer.from("console.log(1)") };

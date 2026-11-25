@@ -54,6 +54,7 @@ test("approvals: grants, fee grants, rewards address, CW20 and ERC20 allowances"
     "Aave credit delegations (borrow allowances)",
     "signed but unfilled Seaport orders and token permits",
     "Permit2 permits signed outside this wallet",
+    "Permit2 allowances and permits at other Permit2 deployments",
     "meta-transactions and forward requests signed but not sent",
     "other EVM chains (pick one above)",
   ]);

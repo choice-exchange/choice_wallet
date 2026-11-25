@@ -81,7 +81,7 @@ export const AUTO_LOCK_MINUTES = 15;
 const LOCK_CHOICES = [5, 15, 60, 240];
 /** Local storage that belongs to the wallet, not the device: removing the wallet clears it.
  *  Endpoints, the network and other settings stay. */
-const WALLET_KEYS = ["vault", "wallets", "keystore", "kind", "accounts", "active_account", "connections", "custom_tokens", "custom_nfts", "rescue", "token_filter", "address_book", "watch", "watch_own", "bridge_transfers", "chain_sent", "votes_cast", "solana_rent", "site_chains", "permit2_signed"];
+const WALLET_KEYS = ["vault", "wallets", "keystore", "kind", "accounts", "active_account", "connections", "custom_tokens", "custom_nfts", "rescue", "token_filter", "address_book", "watch", "watch_own", "bridge_transfers", "chain_sent", "votes_cast", "solana_rent", "site_chains", "permit2_signed", "permit2_overflow"];
 
 /** What a reset keeps: the device's settings, and caches of public data (token details,
  *  pairs, prices). Everything else in local storage goes. */
@@ -321,7 +321,7 @@ export function createService(d: Deps) {
         const gone = solanaMintKeys(before).filter((k) => !kept.has(k));
         if (gone.length > 0) await d.local.remove(gone);
       }
-    const got = (await d.local.get(["votes_cast", "chain_sent", "bridge_transfers", "solana_rent", "rescue", "permit2_signed"])) as Record<string, unknown>;
+    const got = (await d.local.get(["votes_cast", "chain_sent", "bridge_transfers", "solana_rent", "rescue", "permit2_signed", "permit2_overflow"])) as Record<string, unknown>;
     const only = (o: unknown, keep: (k: string) => boolean) => Object.fromEntries(Object.entries(isObject(o) ? o : {}).filter(([k]) => keep(k)));
     const next: Record<string, unknown> = {};
     // votes_cast[network][inj1]; chain_sent["<network> <chain> <0x>"]; rescue[inj1].
@@ -330,6 +330,7 @@ export function createService(d: Deps) {
     if (isObject(got["rescue"])) next["rescue"] = only(got["rescue"], has);
     // permit2_signed["<chain> <0x>"]: the Permit2 permits an account signed.
     if (isObject(got["permit2_signed"])) next["permit2_signed"] = only(got["permit2_signed"], (k) => has(k.split(" ")[1]));
+    if (isObject(got["permit2_overflow"])) next["permit2_overflow"] = only(got["permit2_overflow"], (k) => has(k.split(" ")[1]));
     if (Array.isArray(got["bridge_transfers"])) next["bridge_transfers"] = got["bridge_transfers"].filter((t: unknown) => isObject(t) && has(t["account"]));
     if (Array.isArray(got["solana_rent"])) next["solana_rent"] = got["solana_rent"].filter((t: unknown) => isObject(t) && has(t["owner"]));
     if (Object.keys(next).length > 0) await d.local.set(next);

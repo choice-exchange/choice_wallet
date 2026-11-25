@@ -10,7 +10,7 @@ import { addedKey, boundErc20, chainByKey, ChainError, chainList, CHAINS, checkA
 import type { AccountInfo, NewChain, TokenInfo } from "@choice-wallet/ui/protocol";
 
 import { cleanName } from "../addedchains";
-import { PERMIT2 } from "../permit2";
+import { MAX_DETAILS, PERMIT2, permitsOf } from "../permit2";
 import { CHAIN_DISCONNECTED, INVALID_PARAMS, MAX_ARBITRARY, MAX_TYPED, no, quantity, UNAUTHORIZED, UNRECOGNIZED_CHAIN, UNSUPPORTED, type DappReply, type Named, type SiteCore } from "./shared";
 
 /** keccak256("Transfer(address,address,uint256)"): ERC20 and ERC-721 transfers. */
@@ -381,7 +381,7 @@ export function createEvmSite(core: SiteCore) {
       return { moves, partial };
     } catch (e) {
       // A node without the method answers so; any other refusal is the simulation failing.
-      if (e instanceof ChainError && (e.code === -32601 || /does not exist|not (found|supported|available)|unknown method/i.test(e.message))) return null;
+      if (e instanceof ChainError && (e.code === -32601 || (/eth_simulateV1/i.test(e.message) && /does not exist|not (found|supported|available)/i.test(e.message)))) return null;
       if (e instanceof ChainError) return { failed: "The node couldn't simulate it.", reverted: false };
       if (e instanceof Unreachable) return { failed: "Couldn't reach the network to simulate it.", reverted: false };
       if (e instanceof SyntaxError || e instanceof RangeError) return unreadable;
@@ -543,7 +543,12 @@ export function createEvmSite(core: SiteCore) {
       origin,
       network,
       "evm_typed_data",
-      async () => ({ request: { evm_typed_data: { chain: chain.caip2, signer: await me(), typed_data: typed } }, ...signatureContext(network, chain) }),
+      async () => {
+        // A Permit2 permit is kept once signed (below); one the wallet can't read exactly isn't
+        // signed, or it would go unseen by the swap and approval checks (run-5).
+        if (permitsOf(typed) === "unreadable") throw new RangeError(`The wallet can't read this Permit2 permit exactly (at most ${MAX_DETAILS} tokens, every field a whole number), so it won't sign it.`);
+        return { request: { evm_typed_data: { chain: chain.caip2, signer: await me(), typed_data: typed } }, ...signatureContext(network, chain) };
+      },
       async (signed) => {
         // A Permit2 permit leaves no trace on chain until used: kept, so the swap and a later
         // approval to Permit2 know who holds one (run-5).

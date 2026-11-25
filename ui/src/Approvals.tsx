@@ -97,6 +97,8 @@ export function ApprovalsView({ canSign, onReview, onBack }: { canSign: boolean;
     s.permit2.length === 0 &&
     (s.permit2Signed ?? []).length === 0;
   const date = (t: number) => new Date(t * 1000).toLocaleDateString();
+  // An end past what a date can say (a permit signed "for good") is said so.
+  const ends = (t: number) => (t > 8.64e12 ? "for good" : `until ${date(t)}`);
   // A contract the wallet knows by name (Seaport, Permit2, Choice's, Talis's), else its address.
   const who = (a: string) => s.names?.[a.toLowerCase()] ?? shortAddress(a);
   const pill = (label: string, onClick: () => void, text = "Revoke") =>
@@ -294,7 +296,7 @@ export function ApprovalsView({ canSign, onReview, onBack }: { canSign: boolean;
                 <span className="name">
                   <span className={allowance(p.token, p.amount)}>{symbol(p.token)}</span>
                   <span className="sub">
-                    {who(p.spender)} may take {amount(p.token, p.amount)} until {date(p.expiration)}
+                    {who(p.spender)} may take {amount(p.token, p.amount)} {ends(p.expiration)}
                     {p.permitsCancelled ? " · permits cancelled" : ""}
                   </span>
                 </span>
@@ -324,7 +326,7 @@ export function ApprovalsView({ canSign, onReview, onBack }: { canSign: boolean;
                   <span className="name">
                     <span className={allowance(p.token, p.amount)}>{symbol(p.token)}</span>
                     <span className="sub">
-                      {who(p.spender)} may take {amount(p.token, p.amount)} with it until {date(p.deadline)}
+                      {who(p.spender)} may take {amount(p.token, p.amount)} with it {ends(p.deadline)}
                     </span>
                   </span>
                   {pill(`Cancel the ${symbol(p.token)} Permit2 permit for ${p.spender}`, cancel, "Cancel")}

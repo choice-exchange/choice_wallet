@@ -863,7 +863,8 @@ export function SentView({
     failed: ("log" in state && state.log) || "The chain rejected it.",
   }[s];
   // It went out and no answer said it arrived: it may still land, so it isn't sent again.
-  if (sent.unconfirmed && (s === "pending" || s === "slow")) lead = "It went out, but no node confirmed it. Wait for it here before sending again.";
+  if (sent.unconfirmed && s === "pending") lead = "It went out, but no node confirmed it. Wait for it here before sending again.";
+  if (sent.unconfirmed && s === "slow") lead = "No node has confirmed it. Check the explorer before sending again.";
   let icon: string = s;
   // This account may mint it, once whoever else would has had its chance.
   const finish = bridge && onFinish && crossing?.selfMint && (crossing.phase === "stuck" || (crossing.phase === "ready" && readyAt !== null && Date.now() - readyAt >= finishAfterMs));

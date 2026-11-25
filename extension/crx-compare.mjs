@@ -4,7 +4,7 @@
 //   node crx-compare.mjs --version <store.crx>     print the package's manifest version
 //
 // First checks the release zip against its SHA256SUMS, then unwraps the CRX3, leaves out the
-// store's own _metadata/ folder and the update_url it adds to manifest.json, and compares every
+// store's own _metadata/verified_contents.json and the update_url it adds to manifest.json, and compares every
 // other file byte for byte. Exits 1 on any difference. The watchdog workflow runs it against
 // the live store package.
 

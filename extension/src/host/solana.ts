@@ -634,10 +634,11 @@ export function createSolana(d: SolanaDeps) {
             const is = post ? keyAt(post.data, ownerKey) : -1;
             if (was < 0 && is < 0) return;
             partial = true;
-            // Still there, the record still names the account (a position it adds to, say).
-            // Gone from a record that still exists, it names someone else now: the key at the
-            // same place, if any.
-            if (was >= 0 && is < 0 && post && post.data.length > 0) {
+            // Still where it was, the record still names the account (a position it adds to,
+            // say). Gone from there, it names someone else now, even if the key is elsewhere in
+            // it (a Core asset's update authority, say): the key now at that place, if any.
+            const kept = post !== null && was >= 0 && post.data.length >= was + 32 && equalBytes(post.data.subarray(was, was + 32), ownerKey);
+            if (was >= 0 && !kept && post && post.data.length > 0) {
               const next = post.data.length >= was + 32 ? post.data.subarray(was, was + 32) : null;
               handovers.push({ kind: "program_record", account: a, to: next && next.some((b) => b !== 0) ? bytesToBase58(next) : post.owner });
             }
@@ -703,7 +704,13 @@ export function createSolana(d: SolanaDeps) {
     const sig = bytesToBase58(signatures[0]!);
     if (send) {
       if (signatures.some((s) => s.every((b) => b === 0))) throw new RangeError("Another signature it needs is missing.");
-      await (await rpc(network)).send(bytesToBase64(wire));
+      try {
+        await (await rpc(network)).send(bytesToBase64(wire));
+      } catch (e) {
+        // Sent, and its answer lost (run-5): the site gets its signature to follow, rather
+        // than a failure that has it asked for again (a new transaction, paid twice).
+        if (!(e instanceof Unconfirmed)) throw e;
+      }
     }
     return { wire, signature: sig };
   }

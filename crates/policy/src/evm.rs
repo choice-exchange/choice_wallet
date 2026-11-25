@@ -472,12 +472,14 @@ pub fn evm_transaction(req: &TxRequest, chain: &EvmSide<'_>, ctx: &Context) -> A
     // Failing in the simulation (run-5): a call the wallet can't read may do otherwise once
     // signed, and nothing shows what it would move.
     if ctx.evm_simulation_reverted {
-        let unread = out.iter().any(|f| f.rule == "contract_call_unread");
+        // Any call with data: what the wallet reads of it is what the bytes say, not what the
+        // contract runs, so only the simulation shows what it moves, and it didn't run.
+        let unread = !req.tx.data.is_empty();
         out.push(finding(
             "simulation_reverted",
             if unread { Level::Red } else { Level::Amber },
             if unread {
-                "It fails in simulation, and the wallet can't read the call, so nothing shows what it would move once signed.".into()
+                "It fails in simulation, so nothing shows what this call would move once signed.".into()
             } else {
                 "It fails in simulation: it would likely fail on chain too, and still cost its fee.".into()
             },
@@ -952,10 +954,15 @@ fn contract_call(
             if let (Some(token), Some(spender), Some(amount), Some(expiration)) =
                 (address_arg(data, 0), address_arg(data, 1), typed(2, 160), typed(3, 48))
             {
+                // At Permit2 the call is what it says. Anywhere else it is still a contract the
+                // wallet can't vouch for: graded as the grant (if one) and as an unread call,
+                // so nothing that keys on an unread call (a failed simulation, Seaport) skips it.
+                let expiration = expiration.to_u64().expect("48 bits");
                 if !amount.is_zero() || tx.to == permit2() {
-                    let expiration = expiration.to_u64().expect("48 bits");
                     out.push(swap::permit2_approve(choice, &token, &spender, amount, expiration));
-                    return;
+                    if tx.to == permit2() {
+                        return;
+                    }
                 }
                 read_as_unread = true;
             }
@@ -1647,13 +1654,40 @@ mod tests {
         let a = evm_transaction(&unread, &EvmSide::injective(&MAINNET), &failed);
         assert_eq!(a.level, Level::Red);
         assert!(rules_of(&a).contains(&"simulation_reverted"));
-        // A transfer the wallet reads: amber, it would fail on chain too.
+        // Any call with data is what its contract runs, not what the wallet reads: a token
+        // transfer, or a Permit2-shaped call to a copy of Permit2, is red too (review).
         let t = req(
             EthAddress::from_bytes([0x44; 20]),
             erc20::transfer_calldata(&EthAddress::from_bytes([0x22; 20]), &U256::from_u128(5)),
         );
-        let a = evm_transaction(&t, &EvmSide::injective(&MAINNET), &failed);
-        assert_eq!((a.level, rules_of(&a)), (Level::Amber, vec!["simulation_reverted"]));
+        assert_eq!(
+            evm_transaction(&t, &EvmSide::injective(&MAINNET), &failed).level,
+            Level::Red
+        );
+        let limited = U256::from_u128(1 << 99).to_be_bytes();
+        let copy = req(
+            EthAddress::from_bytes([0x31; 20]),
+            call(
+                PERMIT2_APPROVE,
+                &[addr_word([0x11; 20]), addr_word([0x22; 20]), limited, [0; 32]],
+            ),
+        );
+        let a = evm_transaction(&copy, &EvmSide::injective(&MAINNET), &failed);
+        assert_eq!(a.level, Level::Red);
+        for rule in ["simulation_reverted", "permit2_limited", "contract_call_unread"] {
+            assert!(rules_of(&a).contains(&rule), "{rule}: {:?}", rules_of(&a));
+        }
+        // A coin send with no data: amber, it would fail on chain too.
+        let mut coin = req(EthAddress::from_bytes([0x22; 20]), vec![]);
+        coin.tx.value = U256::from_u128(1);
+        let a = evm_transaction(&coin, &EvmSide::injective(&MAINNET), &failed);
+        assert!(
+            a.findings
+                .iter()
+                .any(|f| f.rule == "simulation_reverted" && f.level == Level::Amber),
+            "{:?}",
+            a.findings
+        );
     }
 
     #[test]

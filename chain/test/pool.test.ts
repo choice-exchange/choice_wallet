@@ -122,6 +122,31 @@ test("a write whose answer is lost ends unconfirmed", async () => {
     ),
     (e) => e instanceof ChainError,
   );
+  // Review: after one took it, the next endpoint's own check failing (a full budget, a
+  // garbled answer) says nothing sure either.
+  const checks = pool(async (base) => {
+    if (base.includes("b.example")) throw new Busy();
+  });
+  await assert.rejects(
+    checks.run(
+      async () => {
+        throw new Down("timed out");
+      },
+      { write: true },
+    ),
+    (e) => e instanceof Unconfirmed,
+  );
+  // An endpoint that answered it didn't take it (a rate limit) didn't get it.
+  const limited = pool(async () => {});
+  await assert.rejects(
+    limited.run(
+      async () => {
+        throw new Down("HTTP 429, not JSON", { refused: true });
+      },
+      { write: true },
+    ),
+    (e) => e instanceof Unreachable && !(e instanceof Unconfirmed),
+  );
   // No endpoint could be identified: nothing went out.
   const down = pool(async () => {
     throw new Down("no answer");
