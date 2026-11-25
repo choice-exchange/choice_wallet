@@ -107,7 +107,7 @@ export class Lcd {
         if (NODE_TROUBLE.has(body["code"])) throw new Down(`code ${body["code"]}: ${body["message"]}`);
         throw new ChainError(body["code"], cleanMessage(body["message"]));
       }
-      throw new Down(`HTTP ${status}`);
+      throw new Down(`HTTP ${status}`, { refused: status >= 400 && status < 500 });
     }, { write });
   }
 

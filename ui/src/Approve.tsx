@@ -25,7 +25,7 @@ import { Figure, formName, networkName, realName, SwapCards } from "./Send";
 /** How often the window asks for the request and the lock state (it also keeps the
  *  service worker, which holds the request, awake). */
 const POLL_MS = 1500;
-/** The simulated changes listed one by one; the rest are counted. */
+/** What comes in, listed one by one; past this, counted. What leaves is always listed. */
 const MAX_CHANGES = 40;
 
 const browser: ArmEnv = {
@@ -343,12 +343,9 @@ export function SignBody({ review, network, typed, onTyped, account }: { review:
             !review.simulation.partial && <p className="meta" style={{ marginTop: 6 }}>No balance changes, besides the fee.</p>
           ) : (
             <ul className="changes">
-              {/* What leaves first, so a flood of NFTs coming in can't push it below the fold
-                  (run-5); past a few dozen rows, the rest are counted. */}
-              {[...review.simulation.changes]
-                .sort((a, b) => Number(b.amount.startsWith("-")) - Number(a.amount.startsWith("-")))
-                .slice(0, MAX_CHANGES)
-                .map((c) => {
+              {/* Everything that leaves, first, so a flood of NFTs coming in can't push it below
+                  the fold (run-5); past a few dozen, what comes in is counted. */}
+              {[...review.simulation.changes.filter((c) => c.amount.startsWith("-")), ...review.simulation.changes.filter((c) => !c.amount.startsWith("-")).slice(0, MAX_CHANGES)].map((c) => {
                 // An NFT: its collection (an EVM one, or a CW721) and ID, never a balance. A
                 // CW721 ID is any text, shown with hidden characters named.
                 const nft = /^nft:(0x[0-9a-f]{40}|inj1[02-9ac-hj-np-z]{38,58}):([\s\S]{1,128})$/.exec(c.denom);
@@ -376,7 +373,10 @@ export function SignBody({ review, network, typed, onTyped, account }: { review:
                   </li>
                 );
               })}
-              {review.simulation.changes.length > MAX_CHANGES && <li className="meta">and {review.simulation.changes.length - MAX_CHANGES} more</li>}
+              {(() => {
+                const more = review.simulation.changes.filter((c) => !c.amount.startsWith("-")).length - MAX_CHANGES;
+                return more > 0 && <li className="meta">and {more} more coming in</li>;
+              })()}
             </ul>
           )}
         </div>

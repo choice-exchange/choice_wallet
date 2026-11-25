@@ -409,6 +409,8 @@ test("a Cosmos simulation names the CW721 NFTs that move", async () => {
   });
   // Burned: ME's leaves; a CW20's burn (an amount) isn't an NFT.
   assert.deepEqual(await cw721Moves(client, [wasm({ action: "burn", sender: ME, token_id: "42" }), wasm({ action: "burn", from: ME, amount: "5" })], ME), { changes: [{ denom: nft("42"), amount: "-1" }], partial: false });
+  // Moved through an escrow and on in one tx: still one NFT leaving (review).
+  assert.deepEqual(await cw721Moves(client, [wasm({ action: "transfer_nft", sender: MARKET, recipient: MARKET, token_id: "42" }), wasm({ action: "transfer_nft", sender: MARKET, recipient: THEM, token_id: "42" })], ME), { changes: [{ denom: nft("42"), amount: "-1" }], partial: false });
   // Whose it was can't be read: only partly read.
   assert.deepEqual(await cw721Moves(client, [wasm({ action: "transfer_nft", sender: MARKET, recipient: THEM, token_id: "44" })], ME), { changes: [], partial: true });
 });
@@ -845,6 +847,14 @@ test("a Solana transaction that changes another program's record of the account 
   const tree = await review(TREE, new Uint8Array(64).fill(4));
   assert.deepEqual([tree.level, tree.partial], ["red", true], JSON.stringify(tree));
   assert.ok(tree.rules.includes("solana_compressed_tree"), JSON.stringify(tree));
+  // Review: the key kept elsewhere in it (a Core asset's update authority) doesn't hide the
+  // owner field passing to THEM.
+  const both = (holder: string) => Uint8Array.from([1, ...base58Decode(holder), 2, ...base58Decode(ME_SOL), ...new Uint8Array(8)]);
+  net.state.solana.accounts[ASSET] = raw(core, both(ME_SOL));
+  const moved = await review(ASSET, both(THEM_SOL));
+  assert.deepEqual([moved.level, moved.partial], ["red", true], JSON.stringify(moved));
+  assert.ok(moved.rules.includes("solana_program_record"), JSON.stringify(moved));
+  net.state.solana.accounts[ASSET] = raw(core, asset(ME_SOL));
   // The asset changes but still names the account: only partly read, no handover.
   const kept = await review(ASSET, asset(ME_SOL, 5));
   assert.deepEqual([kept.level, kept.partial], ["amber", true], JSON.stringify(kept));

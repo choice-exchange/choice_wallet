@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { shown } from "../../ui/src/review";
+import { createPermit2, permitsOf } from "../src/host/permit2";
 import { ADDED, AGGREGATOR, chain, code, CW_BANK, CW_PAIR, ERC20, INJ, ME_EVM, ok, PERMIT2, USDT, USDT_ERC20, wallet } from "./fake";
 
 type Quote = { id: string; amountIn: string; amountOut: string; minimumOut: string; steps: string[]; legs: { venue: string }[]; fee: unknown; executor: string; tokens: Record<string, { symbol: string }>; valueLost: number | null };
@@ -209,6 +210,34 @@ test("a Permit2 permit signed here holds off the approve step, and a site's appr
   net.state.permit2Bitmap["1"] = 4n;
   assert.equal(ok<Review>(await service.handle({ type: "prepare_swap", quote: q.id })).swap?.step, "approve");
   assert.equal(ok<{ permit2Signed?: unknown[] }>(await service.handle({ type: "approvals" })).permit2Signed, undefined);
+});
+
+// Review: a Permit2 permit the wallet can't read exactly (a field it can't parse, more than
+// it keeps per signature) isn't signed, so none goes unrecorded; past the records kept, the
+// wallet says it can't tell.
+test("Permit2 permits are read exactly, or not signed", async () => {
+  const domain = { name: "Permit2", chainId: 1776, verifyingContract: PERMIT2.toUpperCase().replace("0X", "0x") };
+  const single = (details: unknown, extra: Record<string, unknown> = {}) => ({ domain, primaryType: "PermitSingle", message: { details, spender: "0X5555555555555555555555555555555555555555", sigDeadline: "99999999999", ...extra } });
+  const detail = { token: USDT_ERC20, amount: "1", expiration: "0", nonce: "0" };
+  const read = permitsOf(single(detail));
+  assert.ok(read && read !== "unreadable");
+  assert.deepEqual(read.permits.map((p) => [p.spender, p.kind]), [["0x5555555555555555555555555555555555555555", "allowance"]]);
+  assert.equal(permitsOf(single({ ...detail, nonce: 2 ** 60 })), "unreadable");
+  assert.equal(permitsOf(single(detail, { sigDeadline: "soon" })), "unreadable");
+  assert.equal(permitsOf({ ...single(detail), primaryType: "PermitBatch", message: { details: Array.from({ length: 51 }, () => detail), spender: "0x5555555555555555555555555555555555555555", sigDeadline: "1" } }), "unreadable");
+  // Another contract's "Permit2" isn't recorded (Approvals names those as not checked).
+  assert.equal(permitsOf({ ...single(detail), domain: { ...domain, verifyingContract: "0x31c2f6fcff4f8759b3bd5bf0e1084a055615c768" } }), null);
+  // Past the records kept per account, it can't say no one else holds one, until they end.
+  const local = new Map<string, unknown>();
+  const store = { get: async (keys: string[]) => Object.fromEntries(keys.filter((k) => local.has(k)).map((k) => [k, local.get(k)])), set: async (items: Record<string, unknown>) => void Object.entries(items).forEach(([k, v]) => local.set(k, v)), remove: async (keys: string[]) => void keys.forEach((k) => local.delete(k)) };
+  const p2 = createPermit2(store, () => 1000);
+  const owner = "0x9858effd232b4033e47d90003d41ec34ecaeda94";
+  const batch = (n: number) => ({ domain, primaryType: "PermitBatch", message: { details: Array.from({ length: n }, (_, i) => ({ ...detail, nonce: String(i) })), spender: "0x5555555555555555555555555555555555555555", sigDeadline: "5000" } });
+  for (let i = 0; i < 4; i++) await p2.record(owner, batch(50));
+  assert.equal((await p2.live("eip155:1776", owner, null)).permits.length, 200);
+  await p2.record(owner, batch(1));
+  const after = await p2.live("eip155:1776", owner, null);
+  assert.equal(after.unchecked, true);
 });
 
 test("refusals: no route, an answer for another pair, an old quote, more than held", async () => {

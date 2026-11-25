@@ -203,7 +203,7 @@ function answer(status: number, body: unknown): unknown {
     if (NODE_TROUBLE.has(err["code"])) throw new Down(`code ${err["code"]}: ${err["message"]}`);
     throw new ChainError(err["code"], err["message"].slice(0, 300));
   }
-  throw new Down(`HTTP ${status}, not a JSON-RPC answer`);
+  throw new Down(`HTTP ${status}, not a JSON-RPC answer`, { refused: status >= 400 && status < 500 });
 }
 
 /** A 20-byte address as a 32-byte ABI word (hex, no 0x). */

@@ -153,9 +153,10 @@ export function unzip(buf) {
   const cdSize = buf.readUInt32LE(end + 12);
   const cdStart = buf.readUInt32LE(end + 16);
   if (cdStart + cdSize !== end) throw new Error("zip central directory isn't where the end record says");
-  // No zip64 record or locator anywhere from the directory on, nor where Chrome looks for one
-  // (20 bytes before the end record), which may be in the last entry's data.
-  for (let i = Math.max(0, Math.min(cdStart, end - 20)); i + 4 <= buf.length; i++) {
+  // No zip64 record or locator anywhere Chrome's reader looks for one: it searches back through
+  // the archive's last 64 KiB, entries' data and extra fields included, and would follow one to
+  // another directory.
+  for (let i = Math.max(0, buf.length - 0x10000 - 64); i + 4 <= buf.length; i++) {
     const sig = buf.readUInt32LE(i);
     if (sig === 0x07064b50 || sig === 0x06064b50) throw new Error("zip64 archive");
   }
@@ -256,6 +257,16 @@ const STORE_MANIFEST_KEYS = new Map([["update_url", "https://clients2.google.com
  */
 export function compare(store, release) {
   const problems = [];
+  // The store's signed hashes are left out of the comparison, but must be what they say: JSON,
+  // not a place to carry other bytes.
+  const signed = store.find(([path]) => path === STORE_FILE);
+  if (signed) {
+    try {
+      JSON.parse(signed[1].toString("utf8"));
+    } catch {
+      problems.push(`${STORE_FILE} isn't JSON`);
+    }
+  }
   const theirs = new Map(store.filter(([path]) => path !== STORE_FILE));
   const ours = new Map(release);
   for (const [path, bytes] of ours) {

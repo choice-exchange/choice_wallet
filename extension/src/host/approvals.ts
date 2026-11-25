@@ -42,6 +42,7 @@ export const NOT_READ_EVM = [
   "Aave credit delegations (borrow allowances)",
   "signed but unfilled Seaport orders and token permits",
   "Permit2 permits signed outside this wallet",
+  "Permit2 allowances and permits at other Permit2 deployments",
   "meta-transactions and forward requests signed but not sent",
 ];
 const NOT_READ: string[] = [
@@ -489,8 +490,11 @@ export function createApprovals(sender: Sender, chains: ApprovalChains) {
           // know in advance, and never a nonce of a permit signed here (run-5).
           const caip2 = other ? other.caip2 : `eip155:${NETWORKS[network].evmChainId}`;
           const signed = new Set(((await chains.permit2?.live(caip2, owner, null))?.permits ?? []).filter((p) => p.kind === "allowance" && p.token === token && p.spender === spender).map((p) => p.nonce));
+          // Past every permit signed here when one revoke can reach that far.
+          const ahead = Math.max(0, ...[...signed].map(Number).filter((n) => n < nonce + 65_536).map((n) => n + 1 - nonce));
+          const low = ahead < 65_536 ? Math.max(32_768, ahead) : 32_768;
           let next = 0;
-          for (let i = 0; i < 16 && (next === 0 || signed.has(String(next))); i++) next = nonce + 32_768 + randomBelow(32_768);
+          for (let i = 0; i < 16 && (next === 0 || signed.has(String(next))); i++) next = nonce + low + randomBelow(65_536 - low);
           if (next >= 2 ** 48) return fail("bad_request", "Permit2 can't cancel more permits for this allowance.");
           if (signed.has(String(next))) return fail("internal", "Couldn't pick a nonce to cancel permits with. Try again.");
           await chains.session?.set({ permit2_cancelled: { ...marks, [key]: next } });
@@ -504,7 +508,7 @@ export function createApprovals(sender: Sender, chains: ApprovalChains) {
         const word = typeof r.word === "string" && /^[0-9]{1,78}$/.test(r.word) ? r.word : null;
         const mask = typeof r.mask === "string" && /^[1-9][0-9]{0,77}$/.test(r.mask) ? r.mask : null;
         if (!word || !mask || contract !== PERMIT2 || BigInt(mask) >= 1n << 256n || BigInt(word) >= 1n << 248n) return fail("bad_request", "Not a Permit2 permit.");
-        call = { type: "permit2_cancel_transfers", word, mask };
+        call = { type: "permit2_cancel_transfers", word: BigInt(word).toString(), mask };
         expect = (d) => (at(d) && d.call["selector"] === "0x3ff9dcb1" ? null : wrong);
         break;
       }

@@ -1,7 +1,7 @@
 // Cosmos sites (`window.choice`, Keplr's shape): enable, the key, signDirect, signAmino,
 // ADR-036 arbitrary data, and broadcasting a signed transaction.
 
-import { balanceChanges, bytesToHex, ChainError, cosmosTxHash, isObject, NETWORKS, Unreachable, type Coin, type Lcd, type NetworkId, type TxEvent } from "@choice-wallet/chain";
+import { balanceChanges, bytesToHex, ChainError, cosmosTxHash, isObject, NETWORKS, Unconfirmed, Unreachable, type Coin, type Lcd, type NetworkId, type TxEvent } from "@choice-wallet/chain";
 import type { AccountInfo, DappReview } from "@choice-wallet/ui/protocol";
 
 import { b64, bytesHex, CHAIN_DISCONNECTED, fromB64, INVALID_PARAMS, MAX_ARBITRARY, no, UNAUTHORIZED, UNSUPPORTED, type DappReply, type SiteCore } from "./shared";
@@ -63,7 +63,12 @@ export function createCosmosSite(core: SiteCore) {
       if (typeof tx !== "string" || !bytesHex(tx) || tx.length < 4) return no(INVALID_PARAMS, "sendTx takes the signed tx bytes.");
       const hex = tx.replace(/^0x/, "");
       const hash = await cosmosTxHash(hex);
-      await (await h.sender.lcd(network)).broadcast(hex, hash);
+      try {
+        await (await h.sender.lcd(network)).broadcast(hex, hash);
+      } catch (e) {
+        // Sent, and its answer lost (run-5): followed, and the site gets its hash.
+        if (!(e instanceof Unconfirmed)) throw e;
+      }
       // Followed (and named in notices) only when the account signed it here.
       const mine = txRawSignatures(hex).some((s) => given.includes(s));
       const me = (await h.unlocked())?.account.addresses[net.cosmos];
@@ -212,17 +217,21 @@ export async function cw721Moves(client: Pick<Lcd, "smart">, events: readonly Tx
       const [contract, id, action] = [g["_contract_address"], g["token_id"], g["action"]];
       if (!contract || id === undefined || !action) continue;
       const denom = `nft:${contract}:${id}`;
+      // Each NFT once: one moved through an escrow and on is still one NFT leaving.
+      const leaves = () => {
+        if (!leaving.some((l) => l.contract === contract && l.id === id)) leaving.push({ contract, id });
+      };
       if ((action === "transfer_nft" || action === "send_nft") && g["recipient"] !== undefined) {
         if (g["recipient"] === me) {
-          net.set(denom, (net.get(denom) ?? 0n) + 1n);
+          if (!coming.has(denom)) net.set(denom, (net.get(denom) ?? 0n) + 1n);
           coming.add(denom);
-        } else leaving.push({ contract, id });
+        } else leaves();
       } else if (action === "mint" && g["owner"] !== undefined) {
         if (g["owner"] === me) {
-          net.set(denom, (net.get(denom) ?? 0n) + 1n);
+          if (!coming.has(denom)) net.set(denom, (net.get(denom) ?? 0n) + 1n);
           coming.add(denom);
         }
-      } else if (action === "burn" && g["amount"] === undefined) leaving.push({ contract, id });
+      } else if (action === "burn" && g["amount"] === undefined) leaves();
     }
   }
   for (const [i, { contract, id }] of leaving.entries()) {

@@ -11,6 +11,7 @@
 import {
   addedChains,
   addedKey,
+  siteBudget,
   CHAINS,
   checkAddedChain,
   copiedChainName,
@@ -366,7 +367,8 @@ export function createAddedChains(d: AddedChainsDeps) {
     const answered = await Promise.all(
       urls.map(async (url) => {
         try {
-          await new EvmRpc({ evmChainId: chainId }, [url], d.fetch, 8_000).call("eth_blockNumber");
+          // A site's own endpoints count against its own budget (run-5).
+          await new EvmRpc({ evmChainId: chainId }, [url], d.fetch, 8_000, typeof rpcFrom === "string" ? siteBudget(rpcFrom) : undefined).call("eth_blockNumber");
           return url;
         } catch {
           return null;

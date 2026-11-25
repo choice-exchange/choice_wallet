@@ -41,10 +41,16 @@ const key = (chain: string, owner: string) => `${chain} ${owner}`.toLowerCase();
 
 const PRIMARY = new Set(["PermitSingle", "PermitBatch", "PermitTransferFrom", "PermitBatchTransferFrom", "PermitWitnessTransferFrom", "PermitBatchWitnessTransferFrom"]);
 
-/** The permits a Permit2 typed-data signature gives, and the chain it is for (`eip155:<id>`);
- *  none for anything else. Only Permit2's own address is read: the swap and Approvals read
- *  it alone. */
-export function permitsOf(typed: unknown): { chain: string; permits: Permit2Permit[] } | null {
+/** The most permits one Permit2 signature may give for the wallet to sign it: each is kept and
+ *  checked, so one can't carry so many that the one that matters goes unread. */
+export const MAX_DETAILS = 50;
+
+/** The permits a Permit2 typed-data signature (for Permit2's own address) gives, and the chain
+ *  it is for (`eip155:<id>`); null for anything else. `"unreadable"` for one the wallet can't
+ *  read exactly (a field it can't parse, or more than `MAX_DETAILS` permits): it isn't signed,
+ *  since an unrecorded permit would go unseen by the swap and the approval checks (run-5). A
+ *  Permit2 copy at another address isn't recorded; Approvals names those as not checked. */
+export function permitsOf(typed: unknown): { chain: string; permits: Permit2Permit[] } | "unreadable" | null {
   let td: unknown = typed;
   if (typeof td === "string") {
     try {
@@ -53,45 +59,57 @@ export function permitsOf(typed: unknown): { chain: string; permits: Permit2Perm
       return null;
     }
   }
-  if (!isObject(td) || !isObject(td["domain"]) || !isObject(td["message"]) || typeof td["primaryType"] !== "string") return null;
+  if (!isObject(td) || !isObject(td["domain"]) || typeof td["primaryType"] !== "string") return null;
   const domain = td["domain"];
+  if (domain["name"] !== "Permit2" || !PRIMARY.has(td["primaryType"]) || addr(domain["verifyingContract"]) !== PERMIT2) return null;
   const m = td["message"];
-  if (domain["name"] !== "Permit2" || !PRIMARY.has(td["primaryType"]) || String(domain["verifyingContract"] ?? "").toLowerCase() !== PERMIT2) return null;
+  if (!isObject(m)) return "unreadable";
   const id = uint(domain["chainId"]);
   const spender = addr(m["spender"]);
-  if (id === null || id === 0n || !spender) return null;
+  if (id === null || id === 0n || !spender) return "unreadable";
   const out: Permit2Permit[] = [];
   const primary = td["primaryType"];
   if (primary === "PermitSingle" || primary === "PermitBatch") {
     // AllowanceTransfer: each detail has its own token, amount and nonce.
     const deadline = uint(m["sigDeadline"]);
-    const details = primary === "PermitSingle" ? [m["details"]] : Array.isArray(m["details"]) ? m["details"] : [];
+    const details = primary === "PermitSingle" ? [m["details"]] : Array.isArray(m["details"]) ? m["details"] : null;
+    if (deadline === null || !details || details.length === 0 || details.length > MAX_DETAILS) return "unreadable";
     for (const d of details) {
-      if (!isObject(d)) continue;
+      if (!isObject(d)) return "unreadable";
       const [token, amount, nonce] = [addr(d["token"]), uint(d["amount"]), uint(d["nonce"])];
-      if (token && amount !== null && nonce !== null && deadline !== null) out.push({ token, spender, kind: "allowance", nonce: nonce.toString(), deadline: seconds(deadline), amount: amount.toString() });
+      if (!token || amount === null || nonce === null) return "unreadable";
+      out.push({ token, spender, kind: "allowance", nonce: nonce.toString(), deadline: seconds(deadline), amount: amount.toString() });
     }
   } else {
     // SignatureTransfer: one nonce for every token it permits.
     const [nonce, deadline] = [uint(m["nonce"]), uint(m["deadline"])];
-    const permitted = Array.isArray(m["permitted"]) ? m["permitted"] : [m["permitted"]];
+    const permitted = primary === "PermitTransferFrom" || primary === "PermitWitnessTransferFrom" ? [m["permitted"]] : Array.isArray(m["permitted"]) ? m["permitted"] : null;
+    if (nonce === null || deadline === null || !permitted || permitted.length === 0 || permitted.length > MAX_DETAILS) return "unreadable";
     for (const p of permitted) {
-      if (!isObject(p)) continue;
+      if (!isObject(p)) return "unreadable";
       const [token, amount] = [addr(p["token"]), uint(p["amount"])];
-      if (token && amount !== null && nonce !== null && deadline !== null) out.push({ token, spender, kind: "transfer", nonce: nonce.toString(), deadline: seconds(deadline), amount: amount.toString() });
+      if (!token || amount === null) return "unreadable";
+      out.push({ token, spender, kind: "transfer", nonce: nonce.toString(), deadline: seconds(deadline), amount: amount.toString() });
     }
   }
-  return out.length > 0 ? { chain: `eip155:${id}`, permits: out } : null;
+  return { chain: `eip155:${id}`, permits: out };
 }
 
+/** An unsigned integer as the vault reads it: a JSON number only while exact, or a decimal or
+ *  hex string. */
 function uint(v: unknown): bigint | null {
-  if (typeof v === "number" && Number.isSafeInteger(v) && v >= 0) return BigInt(v);
-  if (typeof v !== "string" || !/^(0x[0-9a-fA-F]{1,64}|[0-9]{1,78})$/.test(v)) return null;
-  const n = BigInt(v);
+  if (typeof v === "number") return Number.isSafeInteger(v) && v >= 0 ? BigInt(v) : null;
+  if (typeof v !== "string" || !/^(0[xX][0-9a-fA-F]{1,64}|[0-9]{1,78})$/.test(v)) return null;
+  const n = BigInt(v.replace(/^0X/, "0x"));
   return n < 1n << 256n ? n : null;
 }
-const addr = (v: unknown) => (typeof v === "string" && /^0x[0-9a-fA-F]{40}$/.test(v) ? v.toLowerCase() : null);
+const addr = (v: unknown) => (typeof v === "string" && /^0[xX][0-9a-fA-F]{40}$/.test(v) ? `0x${v.slice(2).toLowerCase()}` : null);
 const seconds = (n: bigint) => (n > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(n));
+
+/** An allowance permit is usable once the pair's nonce reaches it, and one revoke step moves
+ *  the nonce by at most this much: further ahead, it would take this many permits used in a
+ *  row first, so it isn't counted (and can't hold off the swap for good). */
+const NONCE_REACH = 65_536n;
 
 /** `turn`: the queue the account records share, so a pruning never undoes a record. */
 export function createPermit2(local: Store, now: () => number = () => Math.floor(Date.now() / 1000), turn: Turn = (work) => work()) {
@@ -103,26 +121,46 @@ export function createPermit2(local: Store, now: () => number = () => Math.floor
   /** Keep the permits of a Permit2 signature `owner` just made. */
   async function record(owner: string, typed: unknown): Promise<void> {
     const got = permitsOf(typed);
-    if (!got) return;
+    if (!got || got === "unreadable") return;
     await turn(async () => {
       const records = await all();
       const k = key(got.chain, owner);
       const at = now();
-      const kept = (records[k] ?? []).filter((p) => p.deadline >= at);
-      await local.set({ permit2_signed: { ...records, [k]: [...kept, ...got.permits].slice(-MAX_RECORDS) } });
+      const kept = [...(records[k] ?? []).filter((p) => p.deadline >= at), ...got.permits];
+      // Past the cap the oldest go, and until the last of them ends the wallet says it can't
+      // tell no one else holds one: an unexpired permit is never dropped unsaid.
+      const dropped = kept.slice(0, Math.max(0, kept.length - MAX_RECORDS));
+      const { permit2_overflow } = await local.get(["permit2_overflow"]);
+      const over = isObject(permit2_overflow) ? (permit2_overflow as Record<string, number>) : {};
+      const until = Math.max(over[k] ?? 0, ...dropped.map((p) => p.deadline));
+      await local.set({
+        permit2_signed: { ...records, [k]: kept.slice(-MAX_RECORDS) },
+        ...(dropped.length > 0 ? { permit2_overflow: { ...over, [k]: until } } : {}),
+      });
     });
   }
 
-  /** The permits `owner` signed on `chain` that may still be used: unexpired, and not used or
-   *  cancelled on chain as far as `rpc` says (null: it couldn't say). */
-  async function live(chain: string, owner: string, rpc: EvmRpc | null): Promise<{ permits: Permit2Permit[]; unchecked: boolean }> {
+  /** Some records of `owner` on `chain` were dropped and may still be usable. */
+  async function overflowed(chain: string, owner: string): Promise<boolean> {
+    const { permit2_overflow } = await local.get(["permit2_overflow"]);
+    const until = isObject(permit2_overflow) ? (permit2_overflow as Record<string, number>)[key(chain, owner)] : undefined;
+    return typeof until === "number" && until >= now();
+  }
+
+  /** The permits `owner` signed on `chain` (of `token`, if given) that may still be used:
+   *  unexpired, and not used or cancelled on chain as far as `rpc` says (null: it couldn't
+   *  say). One that couldn't be checked counts as usable, and is said to be unchecked. */
+  async function live(chain: string, owner: string, rpc: EvmRpc | null, token?: string): Promise<{ permits: Permit2Permit[]; unchecked: boolean }> {
     const at = now();
-    const mine = ((await all())[key(chain, owner)] ?? []).filter((p) => p.deadline >= at);
-    if (mine.length === 0) return { permits: [], unchecked: false };
+    const t = token?.toLowerCase();
+    const mine = ((await all())[key(chain, owner)] ?? []).filter((p) => p.deadline >= at && (t === undefined || p.token === t));
+    let unchecked = await overflowed(chain, owner);
+    if (mine.length === 0) return { permits: [], unchecked };
     if (!rpc) return { permits: mine, unchecked: true };
-    const checked = mine.slice(0, MAX_CHECKS);
-    let unchecked = mine.length > MAX_CHECKS;
-    const out: Permit2Permit[] = [];
+    // The newest first: past the cap the rest count as usable, unchecked.
+    const checked = mine.slice(-MAX_CHECKS);
+    const out: Permit2Permit[] = mine.slice(0, -MAX_CHECKS);
+    if (out.length > 0) unchecked = true;
     try {
       const pairs = checked.filter((p) => p.kind === "allowance");
       const transfers = checked.filter((p) => p.kind === "transfer");
@@ -130,11 +168,12 @@ export function createPermit2(local: Store, now: () => number = () => Math.floor
       const [nonces, bitmaps] = await Promise.all([pairs.length ? rpc.permit2Allowances(PERMIT2, pairs, owner) : [], words.length ? rpc.permit2NonceBitmaps(PERMIT2, owner, words) : []]);
       pairs.forEach((p, i) => {
         const a = nonces[i];
-        // A permit for a nonce the pair has passed can't be used; one at it or above can.
+        // A permit for a nonce the pair has passed can't be used; one at it, or within one
+        // revoke's reach above it, can.
         if (!a) {
           unchecked = true;
           out.push(p);
-        } else if (BigInt(p.nonce) >= BigInt(a.nonce)) out.push(p);
+        } else if (BigInt(p.nonce) >= BigInt(a.nonce) && BigInt(p.nonce) < BigInt(a.nonce) + NONCE_REACH) out.push(p);
       });
       for (const p of transfers) {
         const b = bitmaps[words.indexOf(BigInt(p.nonce) >> 8n)];
@@ -158,9 +197,9 @@ export function createPermit2(local: Store, now: () => number = () => Math.floor
     const skip = new Set(except.map((e) => e.toLowerCase()));
     const spenders = new Set<string>();
     let unchecked = false;
-    const signed = await live(chain, owner, rpc);
+    const signed = await live(chain, owner, rpc, t);
     unchecked ||= signed.unchecked;
-    for (const p of signed.permits) if (p.token === t && !skip.has(p.spender)) spenders.add(p.spender);
+    for (const p of signed.permits) if (!skip.has(p.spender)) spenders.add(p.spender);
     if (!index) unchecked = true;
     else {
       try {

@@ -10,9 +10,15 @@
 
 export type Fetch = (input: string, init?: RequestInit) => Promise<Response>;
 
-/** This endpoint gave no usable answer; the next one is tried. */
+/** This endpoint gave no usable answer; the next one is tried. `refused`: it answered, and
+ *  said it didn't take the request (a rate limit), so a write wasn't sent there. */
 export class Down extends Error {
   override name = "Down";
+  readonly refused: boolean;
+  constructor(message: string, opts: { refused?: boolean } = {}) {
+    super(message);
+    this.refused = opts.refused ?? false;
+  }
 }
 
 /** No endpoint answered. `attempts` says what each one did. */
@@ -217,15 +223,16 @@ export class Pool {
       } catch (e) {
         if (!(e instanceof Down)) {
           this.#preferred = index;
-          // Refused here after an earlier endpoint took it ("nonce too low": it landed), the
-          // chain's answer says nothing sure about the write. "Already known" says it's there.
-          if (sent && e instanceof ChainError && !/already known|already imported|known transaction/i.test(e.message)) {
-            throw new Unconfirmed([...failures, `${base}: ${e.message}`]);
+          // Anything else after an earlier endpoint took it (the chain's "nonce too low": it
+          // landed; or this endpoint's check failing) says nothing sure about the write.
+          // "Already known" says it's there.
+          if (sent && !(e instanceof ChainError && /already known|already imported|known transaction/i.test(e.message))) {
+            throw new Unconfirmed([...failures, `${base}: ${e instanceof Error ? e.message : String(e)}`]);
           }
           throw e;
         }
         failures.push(`${base}: ${e.message}`);
-        if (going) sent = true;
+        if (going && !e.refused) sent = true;
       }
     }
     throw sent ? new Unconfirmed(failures) : new Unreachable(failures);
@@ -252,7 +259,8 @@ export class Pool {
       try {
         return { status, body: JSON.parse(text) as unknown };
       } catch {
-        throw new Down(`HTTP ${status}, not JSON`);
+        // A 4xx that isn't the chain's JSON (a rate limit, a refusal) didn't take the request.
+        throw new Down(`HTTP ${status}, not JSON`, { refused: status >= 400 && status < 500 });
       }
     } finally {
       if (budget) budget.held -= held.bytes;
