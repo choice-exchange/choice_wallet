@@ -34,7 +34,7 @@ export function ApprovalsView({ canSign, onReview, onBack }: { canSign: boolean;
     const r = chain ? await run({ type: "prepare_revoke_evm", chain, kind: "erc20", contract: token.slice(4), spender }) : await run({ type: "prepare_revoke_erc20", token, spender });
     if (r) onReview(r);
   };
-  const revokeEvm = async (kind: EvmRevokeKind, contract: string, more: { spender?: string; token?: string; token_id?: string }) => {
+  const revokeEvm = async (kind: EvmRevokeKind, contract: string, more: { spender?: string; token?: string; token_id?: string; word?: string; mask?: string }) => {
     const r = await run({ type: "prepare_revoke_evm", ...(chain ? { chain } : {}), kind, contract, ...more });
     if (r) onReview(r);
   };
@@ -94,7 +94,8 @@ export function ApprovalsView({ canSign, onReview, onBack }: { canSign: boolean;
     s.cw721Approvals.length === 0 &&
     s.nftOperators.length === 0 &&
     s.nftApprovals.length === 0 &&
-    s.permit2.length === 0;
+    s.permit2.length === 0 &&
+    (s.permit2Signed ?? []).length === 0;
   const date = (t: number) => new Date(t * 1000).toLocaleDateString();
   // A contract the wallet knows by name (Seaport, Permit2, Choice's, Talis's), else its address.
   const who = (a: string) => s.names?.[a.toLowerCase()] ?? shortAddress(a);
@@ -300,6 +301,36 @@ export function ApprovalsView({ canSign, onReview, onBack }: { canSign: boolean;
                 {pill(`Revoke ${symbol(p.token)} Permit2 allowance for ${p.spender}`, () => void revokeEvm("permit2", PERMIT2, { token: p.token.slice(4), spender: p.spender }))}
               </div>
             ))}
+          </div>
+        </>
+      )}
+
+      {(s.permit2Signed ?? []).length > 0 && (
+        <>
+          <div className="section-head">
+            <span className="eyebrow">Permit2 permits signed here, not used</span>
+          </div>
+          <div className="token-list">
+            {s.permit2Signed!.map((p, i) => {
+              // A one-off permit is cancelled by its nonce's bit; one setting an allowance by
+              // moving the pair's nonce past it, as a Permit2 revoke's first step does.
+              const n = BigInt(p.nonce);
+              const cancel =
+                p.kind === "transfer"
+                  ? () => void revokeEvm("permit2_transfer", PERMIT2, { word: (n >> 8n).toString(), mask: (1n << (n & 255n)).toString() })
+                  : () => void revokeEvm("permit2", PERMIT2, { token: p.token.slice(4), spender: p.spender });
+              return (
+                <div key={`s${i}`} className="token approval-row" title={p.token}>
+                  <span className="name">
+                    <span className={allowance(p.token, p.amount)}>{symbol(p.token)}</span>
+                    <span className="sub">
+                      {who(p.spender)} may take {amount(p.token, p.amount)} with it until {date(p.deadline)}
+                    </span>
+                  </span>
+                  {pill(`Cancel the ${symbol(p.token)} Permit2 permit for ${p.spender}`, cancel, "Cancel")}
+                </div>
+              );
+            })}
           </div>
         </>
       )}

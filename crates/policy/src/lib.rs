@@ -193,6 +193,19 @@ pub struct Context {
     /// parse): `evm_transfers` is then only part of what the transaction moves.
     #[serde(default)]
     pub evm_transfers_partial: bool,
+    /// The user's node simulated a site's EVM transaction and the call failed in it. A call
+    /// the vault can't read may then act otherwise once signed (one that tests for the
+    /// simulation), and nothing shows what it moves.
+    #[serde(default)]
+    pub evm_simulation_reverted: bool,
+    /// For a site's approval of a token to Permit2: who else Permit2 would let take it once
+    /// funded, as the host found (standing Permit2 allowances, and Permit2 permits this wallet
+    /// signed that may still be used), lowercase `0x…`.
+    #[serde(default)]
+    pub permit2_spenders: Vec<String>,
+    /// The host couldn't check for those (its EVM history off, or a read failed).
+    #[serde(default)]
+    pub permit2_unchecked: bool,
     /// The addresses above in their forms, worked out once when the rules first need them.
     #[serde(skip)]
     pub(crate) address_forms: addresses::AddressForms,

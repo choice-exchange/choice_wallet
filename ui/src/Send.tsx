@@ -433,6 +433,7 @@ export function Review({
         </Callout>
       ))}
       {review.swap?.step === "swap" && <ValueLost lost={review.swap.valueLost} />}
+      {review.swap?.permit2Unchecked && <Callout level="amber">The wallet couldn't check who else Permit2 lets spend this token. One could take what this approves.</Callout>}
       {review.swap && review.swap.left > 0 && <p className="meta">{review.swap.left === 1 ? "One more step after this." : "Two more steps after this."}</p>}
       {(review.bridge?.left || source) && (
         <p className="meta">
@@ -861,6 +862,8 @@ export function SentView({
     success: "It's in a block.",
     failed: ("log" in state && state.log) || "The chain rejected it.",
   }[s];
+  // It went out and no answer said it arrived: it may still land, so it isn't sent again.
+  if (sent.unconfirmed && (s === "pending" || s === "slow")) lead = "It went out, but no node confirmed it. Wait for it here before sending again.";
   let icon: string = s;
   // This account may mint it, once whoever else would has had its chance.
   const finish = bridge && onFinish && crossing?.selfMint && (crossing.phase === "stuck" || (crossing.phase === "ready" && readyAt !== null && Date.now() - readyAt >= finishAfterMs));

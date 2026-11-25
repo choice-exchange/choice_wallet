@@ -45,12 +45,16 @@ test("approvals: grants, fee grants, rewards address, CW20 and ERC20 allowances"
   ok(await service.handle({ type: "add_token", address: CW }));
   const s = ok<Summary>(await service.handle({ type: "approvals" }));
   // What the wallet can't read yet is named, so the screen never says nothing stands (run-3).
-  // Run-4: classes the wallet signs for but has no reader for are always named.
+  // Run-4: classes the wallet signs for but has no reader for are always named. Run-5: Aave
+  // borrow allowances and forward requests too, which the vault signs (red) and nothing reads.
   assert.deepEqual(s.unchecked, [
     "Solana token delegates, close and stake authorities",
     "CW20 allowances on CW20s the wallet doesn't list or you no longer hold",
     "ERC-777 operators",
-    "signed but unfilled Seaport orders and Permit2 or token permits",
+    "Aave credit delegations (borrow allowances)",
+    "signed but unfilled Seaport orders and token permits",
+    "Permit2 permits signed outside this wallet",
+    "meta-transactions and forward requests signed but not sent",
     "other EVM chains (pick one above)",
   ]);
   assert.deepEqual(
@@ -201,20 +205,41 @@ test("approvals: NFT operators, NFT approvals and Permit2 allowances, read and r
   const one = ok<Rev>(await service.handle({ type: "prepare_revoke_evm", kind: "nft_token", contract: NFT, token_id: "7" }));
   assert.deepEqual([one.risk.level, one.risk.findings.map((f) => f.rule)], ["info", ["approval_clear"]]);
   // Run-4: two steps. First the permits signed for it are cancelled (its nonce moved past
-  // them, by Permit2's most); once that lands, the allowance is taken back.
+  // them); once that lands, the allowance is taken back.
   const P2 = "0x000000000022D473030F116dDEE9F6B43aC78BA3";
   const pair = `${LUMA.toLowerCase()} ${SPENDER}`;
   net.state.permit2[pair]!.nonce = 3;
-  const first = ok<Rev & { display: { call: Record<string, unknown> } }>(await service.handle({ type: "prepare_revoke_evm", kind: "permit2", contract: P2, token: LUMA, spender: SPENDER }));
+  type Cancel = Rev & { display: { call: Record<string, unknown> }; risk: { findings: { rule: string; params: { nonce?: string } }[] } };
+  const cancel = async () => ok<Cancel>(await service.handle({ type: "prepare_revoke_evm", kind: "permit2", contract: P2, token: LUMA, spender: SPENDER }));
+  const summary = async () => ok<Full & { permit2: { permitsCancelled?: boolean }[] }>(await service.handle({ type: "approvals" })).permit2[0]?.permitsCancelled;
+  const first = await cancel();
   assert.deepEqual([first.risk.level, first.risk.findings.map((f) => f.rule)], ["info", ["permit2_cancel"]]);
   assert.equal(first.display.call["selector"], "0x65d9723c");
+  // Run-5: the nonce it moves to is one nobody can know in advance (a permit signed for
+  // exactly it would become usable): drawn anew each time, in Permit2's range.
+  const targets = new Set<number>();
+  for (let i = 0; i < 4; i++) targets.add(Number((await cancel()).risk.findings[0]!.params.nonce));
+  assert.ok(targets.size > 1, [...targets].join());
+  for (const t of targets) assert.ok(t > 3 + 32_767 && t <= 3 + 65_535, String(t));
   // Not landed yet: the same first step again, and the screen doesn't say it's done.
-  assert.deepEqual(ok<Rev>(await service.handle({ type: "prepare_revoke_evm", kind: "permit2", contract: P2, token: LUMA, spender: SPENDER })).risk.findings.map((f) => f.rule), ["permit2_cancel"]);
-  assert.equal(ok<Full & { permit2: { permitsCancelled?: boolean }[] }>(await service.handle({ type: "approvals" })).permit2[0]?.permitsCancelled, undefined);
-  net.state.permit2[pair]!.nonce = 3 + 65_535;
-  assert.equal(ok<Full & { permit2: { permitsCancelled?: boolean }[] }>(await service.handle({ type: "approvals" })).permit2[0]?.permitsCancelled, true);
-  const p2 = ok<Rev>(await service.handle({ type: "prepare_revoke_evm", kind: "permit2", contract: P2, token: LUMA, spender: SPENDER }));
+  const last = await cancel();
+  assert.deepEqual(last.risk.findings.map((f) => f.rule), ["permit2_cancel"]);
+  const target = Number(last.risk.findings[0]!.params.nonce);
+  assert.equal(await summary(), undefined);
+  net.state.permit2[pair]!.nonce = target;
+  assert.equal(await summary(), true);
+  // Run-5: a permit used since the cancel moved the nonce on: not cancelled any more, and the
+  // revoke cancels again rather than skipping to the allowance.
+  net.state.permit2[pair]!.nonce = target + 1;
+  assert.equal(await summary(), undefined);
+  assert.deepEqual((await cancel()).risk.findings.map((f) => f.rule), ["permit2_cancel"]);
+  const again = Number((await cancel()).risk.findings[0]!.params.nonce);
+  net.state.permit2[pair]!.nonce = again;
+  const p2 = await cancel();
   assert.deepEqual([p2.risk.level, p2.risk.findings.map((f) => f.rule)], ["info", ["allowance_revoke"]]);
+  // The mark went with the second step: a later revoke of the pair cancels first again.
+  assert.equal(await summary(), undefined);
+  assert.deepEqual((await cancel()).risk.findings.map((f) => f.rule), ["permit2_cancel"]);
   // A Permit2 revoke goes only to Permit2.
   assert.equal((await service.handle({ type: "prepare_revoke_evm", kind: "permit2", contract: NFT, token: LUMA, spender: SPENDER })).ok, false);
 });

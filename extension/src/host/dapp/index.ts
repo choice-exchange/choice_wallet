@@ -214,7 +214,7 @@ export function createDapps(h: DappHost) {
       const built = await w.build(u.account);
       const all = await grants();
       const known = (all[w.req.origin]?.approvals ?? 0) > 0;
-      const context = {
+      let context: Record<string, unknown> = {
         ...(built.context
           ? { origin: w.req.origin, origin_known: known, ...(await h.sender.riskFacts(network, null)), ...built.context }
           : await reviewContext(network, u.account, w.req.origin, known)),
@@ -223,6 +223,14 @@ export function createDapps(h: DappHost) {
       type Decoded = { digest: string; display: DappReview["display"]; risk: Risk };
       let d = await h.vault<Decoded>("decode", { request: built.request, context });
       if (!d.ok) return d;
+      // Typed data the vault reads as an Injective transaction takes effect on Injective,
+      // whichever chain asked: it is weighed against Injective's balances and contracts, not
+      // the asking chain's (run-5). The signed bytes, and so the digest, are the same.
+      if (built.context && isObject((d.result.display as Record<string, unknown>)["injective_tx"])) {
+        context = { ...(await reviewContext(network, u.account, w.req.origin, known)), ...built.extra };
+        d = await h.vault<Decoded>("decode", { request: built.request, context });
+        if (!d.ok) return d;
+      }
       // A second lock on the network: what was built must be for a chain of the network the
       // window names.
       const on = (d.result.display as { chain?: unknown }).chain;
@@ -473,7 +481,10 @@ export function createDapps(h: DappHost) {
 /** The tokens an approval screen names: what a Cosmos tx moves, what simulation says moves,
  *  the fee, and an EVM transfer's token. */
 function reviewDenoms(network: NetworkId, display: DappReview["display"], changes: readonly Coin[]): string[] {
-  const out = new Set<string>(changes.map((c) => c.denom));
+  // The fee's and the call's own tokens first, then what the simulation moves: the list is cut
+  // at MAX_REVIEW_TOKENS, and a flood of moves mustn't leave those unnamed (run-5). An NFT is
+  // drawn from its key and never looked up (its ID would go to the LCD for nothing).
+  const out = new Set<string>();
   out.add(NETWORKS[network].feeDenom);
   const d = display as Record<string, unknown>;
   if (d["kind"] === "cosmos_direct" || d["kind"] === "cosmos_amino") for (const dn of displayDenoms(network, display as CosmosDisplay)) out.add(dn);
@@ -490,5 +501,6 @@ function reviewDenoms(network: NetworkId, display: DappReview["display"], change
     const fee = isObject(injTx["fee"]) && Array.isArray(injTx["fee"]["amount"]) ? (injTx["fee"]["amount"] as Coin[]) : [];
     for (const dn of displayDenoms(network, { kind: "", chain: "", signer: "", memo: "", fee: { amount: fee, gas_limit: "0", granter: null, payer: null }, messages: injTx["messages"] as CosmosDisplay["messages"] })) out.add(dn);
   }
+  for (const c of changes) if (!c.denom.startsWith("nft:")) out.add(c.denom);
   return [...out];
 }

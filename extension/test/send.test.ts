@@ -118,6 +118,28 @@ test("a send: prepare shows the vault's decode, confirm signs exactly that and b
   assert.deepEqual(ok(await service.handle({ type: "tx_status", hash: "AB".repeat(32) })), { state: "pending" });
 });
 
+// Run-5: a broadcast every endpoint took, whose answer was then lost, was reported as "Couldn't
+// reach the network" and dropped, and the retry paid again. It is now sent, unconfirmed: its
+// hash is followed, and the screen says to wait for it.
+test("a send whose broadcast answer is lost is followed, not called failed", async () => {
+  const net = chain();
+  const real = net.fetch;
+  net.fetch = async (url: string, init?: RequestInit) => {
+    const r = await real(url, init);
+    if (url.includes("/cosmos/tx/v1beta1/txs") && init?.method === "POST") throw new TypeError("fetch failed");
+    return r;
+  };
+  const { service } = await wallet(net);
+  const review = ok<Review>(await service.handle({ type: "prepare_send", denom: "inj", to: THEM, amount: INJ.toString() }));
+  const sent = ok<{ hash: string; unconfirmed?: true }>(await service.handle({ type: "confirm_send", digest: review.digest }));
+  assert.equal(sent.unconfirmed, true);
+  assert.ok(net.state.broadcasts.length >= 1);
+  const bytes = Buffer.from(net.state.broadcasts[0]!, "base64");
+  assert.equal(sent.hash, createHash("sha256").update(bytes).digest("hex").toUpperCase());
+  // The same tx every time: nothing else was signed.
+  assert.equal(new Set(net.state.broadcasts).size, 1);
+});
+
 test("max sends everything but the fee", async () => {
   const { service } = await wallet();
   const review = ok<Review>(await service.handle({ type: "prepare_send", denom: "inj", to: ME_EVM, amount: "max" }));

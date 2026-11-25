@@ -6,10 +6,11 @@
 // the site's to make (nothing is signed by it, and every request names its chain in the
 // approval window); moving the whole wallet between mainnet and the test networks asks first.
 
-import { addedKey, boundErc20, chainByKey, ChainError, chainList, CHAINS, checkAddedChain, copiedChainName, erc20Meta, evmDenom, isObject, knownTokens, MIN_GAS_PRICE, NETWORKS, Unreachable, type AnyChain, type EvmRpc, type NetworkId } from "@choice-wallet/chain";
+import { addedKey, boundErc20, chainByKey, ChainError, chainList, CHAINS, checkAddedChain, copiedChainName, erc20Meta, evmDenom, isObject, knownTokens, MIN_GAS_PRICE, NETWORKS, siteBudget, Unconfirmed, Unreachable, type AnyChain, type EvmRpc, type NetworkId } from "@choice-wallet/chain";
 import type { AccountInfo, NewChain, TokenInfo } from "@choice-wallet/ui/protocol";
 
 import { cleanName } from "../addedchains";
+import { PERMIT2 } from "../permit2";
 import { CHAIN_DISCONNECTED, INVALID_PARAMS, MAX_ARBITRARY, MAX_TYPED, no, quantity, UNAUTHORIZED, UNRECOGNIZED_CHAIN, UNSUPPORTED, type DappReply, type Named, type SiteCore } from "./shared";
 
 /** keccak256("Transfer(address,address,uint256)"): ERC20 and ERC-721 transfers. */
@@ -21,9 +22,13 @@ const TRANSFER_SINGLE = "0xc3d58168c5ae7397731d063d5bbf3d657854427343f4c083240f7
 /** keccak256("TransferBatch(address,address,address,uint256[],uint256[])"): ERC-1155. */
 const TRANSFER_BATCH = "0x4a39dc06d4c0dbc64b70af90fd698a233a518aa5d07e595d983b8c0526c8f7fb";
 const MAX_SIMULATED_LOGS = 512;
+/** The most moves read from one simulation (an ERC-1155 batch log holds up to 256): past it,
+ *  the rest aren't read, and the simulation is only part of what it moves (run-5). */
+const MAX_SIMULATED_MOVES = 4096;
 type EvmMove = { token: string; from: string; to: string; amount: string; nft: boolean; id?: string };
-/** A simulation as read: its moves, and whether that is all of them. */
-type Simulated = { moves: EvmMove[]; partial: boolean };
+/** A simulation as read: its moves, and whether that is all of them; or why it didn't run
+ *  (`reverted`: the call itself failed in it). */
+type Simulated = { moves: EvmMove[]; partial: boolean } | { failed: string; reverted: boolean };
 
 /** The words of a log's data, or null when it isn't whole 32-byte words. */
 function words(data: unknown): bigint[] | null {
@@ -86,6 +91,14 @@ const REFUSED: Record<string, string> = {
   eth_signTypedData_v3: "Use eth_signTypedData_v4.",
 };
 
+/** The spender an approve-family call names (approve, increaseAllowance, increaseApproval,
+ *  approveAndCall), lowercase, or null for any other call. */
+function approvedSpender(data: string): string | null {
+  if (!["0x095ea7b3", "0x39509351", "0xd73dd623", "0x3177029f", "0xcae9ca51"].includes(data.slice(0, 10)) || data.length < 10 + 128) return null;
+  const w = data.slice(10, 74);
+  return /^0{24}[0-9a-f]{40}$/.test(w) ? `0x${w.slice(24)}` : null;
+}
+
 /** Gas a dapp's EVM transaction may use, at most (Injective charges the whole limit). */
 const EVM_MAX_GAS = 10_000_000n;
 
@@ -117,6 +130,22 @@ export function createEvmSite(core: SiteCore) {
 
   /** A client for a site's chain, on the user's endpoints. */
   const rpcFor = (network: NetworkId, c: AnyChain): Promise<EvmRpc> => (c.kind === "injective" ? h.sender.evm(network) : h.sender.chainRpc(network, c.key));
+
+  /** The client a site's own reads go through: the same endpoints, with what they answer
+   *  counted against that site's budget, so a site holding many answers can't fail the
+   *  wallet's own reads or drop a review's simulation (run-5). */
+  const readers = new Map<string, EvmRpc>();
+  async function readerFor(origin: string, network: NetworkId, c: AnyChain): Promise<EvmRpc> {
+    const base = await rpcFor(network, c);
+    const key = `${origin} ${base.network.evmChainId} ${base.pool.urls.join(" ")}`;
+    let r = readers.get(key);
+    if (!r) {
+      if (readers.size >= 64) readers.delete(readers.keys().next().value!);
+      r = base.withBudget(siteBudget(origin));
+      readers.set(key, r);
+    }
+    return r;
+  }
 
   /** The EVM accounts a site sees: the account while connected and unlocked, else none. */
   async function evmAccounts(origin: string): Promise<string[]> {
@@ -293,15 +322,23 @@ export function createEvmSite(core: SiteCore) {
 
   /** What a site's transaction would move, from the user's own node: eth_simulateV1 with
    *  transfer tracing gives every ERC20, ERC-721 and ERC-1155 transfer log and every coin move.
-   *  Null when the node can't simulate it (the review then says nothing about it). Partial when
-   *  there were more logs than are read, or a transfer log naming the account didn't parse: the
-   *  moves are then not all it does, and are never shown as all (run-4). */
+   *  Null only when the node doesn't simulate at all (no eth_simulateV1): the review then says
+   *  nothing about it. A call that fails in it, a node that can't be reached or an answer that
+   *  can't be read is a failed simulation, shown as one (run-5). Partial when there were more
+   *  logs than are read, or a transfer log naming the account didn't parse: the moves are then
+   *  not all it does, and are never shown as all (run-4). */
   async function simulateMoves(rpc: EvmRpc, tx: { from: string; to: string; value: string; data: string }): Promise<Simulated | null> {
+    const unreadable = { failed: "The node's simulation couldn't be read.", reverted: false };
     try {
       const out = await rpc.call("eth_simulateV1", [{ blockStateCalls: [{ calls: [{ from: tx.from, to: tx.to, value: tx.value, data: tx.data }] }], traceTransfers: true }, "latest"]);
       const block = Array.isArray(out) && isObject(out[0]) ? out[0] : null;
       const call = block && Array.isArray(block["calls"]) && isObject(block["calls"][0]) ? block["calls"][0] : null;
-      if (!call || call["status"] !== "0x1" || !Array.isArray(call["logs"])) return null;
+      if (!call) return unreadable;
+      if (call["status"] === "0x0") {
+        const why = isObject(call["error"]) && typeof call["error"]["message"] === "string" ? call["error"]["message"].slice(0, 160) : "";
+        return { failed: why ? `It fails: ${why}` : "It fails.", reverted: true };
+      }
+      if (call["status"] !== "0x1" || !Array.isArray(call["logs"])) return unreadable;
       const address = (t: unknown) => (typeof t === "string" && /^0x0{24}[0-9a-fA-F]{40}$/.test(t) ? `0x${t.slice(26).toLowerCase()}` : null);
       const me = `0x${"0".repeat(24)}${tx.from.slice(2).toLowerCase()}`;
       const moves: EvmMove[] = [];
@@ -340,9 +377,14 @@ export function createEvmSite(core: SiteCore) {
         }
         for (const [id, amount] of pairs) moves.push({ token, from, to, amount: amount.toString(), nft: true, id: id.toString() });
       }
+      if (moves.length > MAX_SIMULATED_MOVES) return { moves: moves.slice(0, MAX_SIMULATED_MOVES), partial: true };
       return { moves, partial };
     } catch (e) {
-      if (e instanceof ChainError || e instanceof Unreachable || e instanceof SyntaxError || e instanceof RangeError) return null;
+      // A node without the method answers so; any other refusal is the simulation failing.
+      if (e instanceof ChainError && (e.code === -32601 || /does not exist|not (found|supported|available)|unknown method/i.test(e.message))) return null;
+      if (e instanceof ChainError) return { failed: "The node couldn't simulate it.", reverted: false };
+      if (e instanceof Unreachable) return { failed: "Couldn't reach the network to simulate it.", reverted: false };
+      if (e instanceof SyntaxError || e instanceof RangeError) return unreadable;
       throw e;
     }
   }
@@ -434,17 +476,28 @@ export function createEvmSite(core: SiteCore) {
           const moves = await simulateMoves(rpc, filled.tx);
           const from = filled.tx.from.toLowerCase();
           const coin = chain.kind === "injective" ? "inj" : `native:${chain.caip2}`;
-          const sim = moves
-            ? {
-                extra: { evm_transfers: moves.moves, ...(moves.partial ? { evm_transfers_partial: true } : {}) },
-                simulation: { ok: true as const, changes: changesOf(moves.moves, from, coin), ...(moves.partial ? { partial: true } : {}) },
-              }
-            : {};
+          const sim: { extra?: Record<string, unknown>; simulation?: { ok: true; changes: { denom: string; amount: string }[]; partial?: boolean } | { ok: false; error: string } } = !moves
+            ? {}
+            : "failed" in moves
+              ? { simulation: { ok: false, error: moves.failed }, ...(moves.reverted ? { extra: { evm_simulation_reverted: true } } : {}) }
+              : {
+                  extra: { evm_transfers: moves.moves, ...(moves.partial ? { evm_transfers_partial: true } : {}) },
+                  simulation: { ok: true, changes: changesOf(moves.moves, from, coin), ...(moves.partial ? { partial: true } : {}) },
+                };
+          // An approval to Permit2 funds whoever Permit2 already lets spend the token, as the
+          // wallet's own swap checks before its approve step (run-5): named for the rules.
+          let funded: Record<string, unknown> = {};
+          if (approvedSpender(filled.tx.data) === PERMIT2) {
+            const index = h.evmIndexFor ? await h.evmIndexFor(network, chain.key).catch(() => null) : null;
+            const o = h.permit2 ? await h.permit2.others(chain.caip2, from, filled.tx.to, [], index, rpc).catch(() => ({ spenders: [], unchecked: true })) : { spenders: [], unchecked: true };
+            funded = { ...(o.spenders.length > 0 ? { permit2_spenders: o.spenders } : {}), ...(o.unchecked ? { permit2_unchecked: true } : {}) };
+          }
           // What comes back counts only in a token the wallet lists here: name them for the rules.
-          if (chain.kind === "injective") return { request, checkedBy: filled.checkedBy, ...sim, extra: { ...sim.extra, ...signatureContext(network, chain).extra } };
+          if (chain.kind === "injective") return { request, checkedBy: filled.checkedBy, ...sim, extra: { ...sim.extra, ...signatureContext(network, chain).extra, ...funded } };
           const extra = await elsewhere(network, chain, rpc, filled.tx.to, filled.held);
+          Object.assign(extra.context, funded);
           // The tokens the simulation moves, named (a few: each is a read of the token).
-          for (const c of sim.simulation?.changes ?? []) {
+          for (const c of sim.simulation?.ok ? sim.simulation.changes : []) {
             if (!c.denom.startsWith("evm:") || extra.tokens[c.denom] || Object.keys(extra.tokens).length >= 8) continue;
             const meta = await erc20Meta(rpc, c.denom.slice(4)).catch(() => null);
             if (meta) extra.tokens[c.denom] = { denom: c.denom, symbol: meta.symbol, name: meta.symbol, decimals: meta.decimals, known: false, chain: chain.caip2 };
@@ -456,7 +509,9 @@ export function createEvmSite(core: SiteCore) {
           try {
             await (await rpcFor(network, chain)).call("eth_sendRawTransaction", [signed["raw"]]);
           } catch (e) {
-            if (!(e instanceof ChainError && /already known|already imported|known transaction/i.test(e.message))) throw e;
+            // Sent, and its answer lost (run-5): it may land, so it is followed and the site gets
+            // its hash. Called a failure, it would be asked for again and paid twice.
+            if (!(e instanceof Unconfirmed) && !(e instanceof ChainError && /already known|already imported|known transaction/i.test(e.message))) throw e;
           }
           if (chain.kind === "injective") h.sender.broadcasted(network, hash, (await h.unlocked())?.account.addresses[net.cosmos] ?? "");
           else await h.sender.chainSent(network, chain.key, await me(), hash);
@@ -489,7 +544,12 @@ export function createEvmSite(core: SiteCore) {
       network,
       "evm_typed_data",
       async () => ({ request: { evm_typed_data: { chain: chain.caip2, signer: await me(), typed_data: typed } }, ...signatureContext(network, chain) }),
-      async (signed) => signed["signature"],
+      async (signed) => {
+        // A Permit2 permit leaves no trace on chain until used: kept, so the swap and a later
+        // approval to Permit2 know who holds one (run-5).
+        await h.permit2?.record(await me(), typed).catch(() => {});
+        return signed["signature"];
+      },
       named(address),
     );
   }
@@ -528,7 +588,7 @@ export function createEvmSite(core: SiteCore) {
         return evmSign(origin, method, params);
     }
     if (REFUSED[method]) return no(UNSUPPORTED, REFUSED[method]);
-    if (READS.has(method)) return { result: await (await rpcFor(network, await siteChain(origin, network))).call(method, Array.isArray(params) ? params : []) };
+    if (READS.has(method)) return { result: await (await readerFor(origin, network, await siteChain(origin, network))).call(method, Array.isArray(params) ? params : []) };
     return null;
   }
 

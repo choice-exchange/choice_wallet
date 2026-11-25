@@ -38,6 +38,7 @@ import {
   TOKEN_2022_PROGRAM,
   TOKEN_PROGRAM,
   ChainError,
+  Unconfirmed,
   Unreachable,
   type Fetch,
   type NetworkId,
@@ -404,11 +405,15 @@ export function createSolana(d: SolanaDeps) {
     const tx = bytesToBase64(wire(message, p.signers, sigs));
     const hash = bytesToBase58(sigs.get(p.signers[0]!)!);
     await d.session.set({ [`solana_sent:${hash}`]: { tx, lastValidBlockHeight: p.lastValidBlockHeight } });
+    let unconfirmed = false;
     try {
       await (await rpc(network)).send(tx);
     } catch (e) {
+      // Sent, and its answer lost (run-5): kept, so its status follows it and sends it again
+      // while its blockhash is valid. Called a failure, it would be prepared again and paid twice.
+      if (e instanceof Unconfirmed) unconfirmed = true;
       // Sent before (a retry): the cluster says so, and it's the same transaction.
-      if (!(e instanceof ChainError && /already been processed/i.test(e.message))) {
+      else if (!(e instanceof ChainError && /already been processed/i.test(e.message))) {
         await d.session.remove([`solana_sent:${hash}`]);
         if (e instanceof ChainError) return fail("chain", `${NETWORKS[network].solana.name} refused it: ${e.message}`);
         if (e instanceof Unreachable) return fail("unreachable", `${NETWORKS[network].solana.name} couldn't be reached. Try again.`);
@@ -416,7 +421,7 @@ export function createSolana(d: SolanaDeps) {
       }
     }
     const net = NETWORKS[network].solana;
-    return { ok: true, result: { hash, explorer: net.explorerTx.replace("{hash}", hash), chain: net.caip2 } };
+    return { ok: true, result: { hash, explorer: net.explorerTx.replace("{hash}", hash), chain: net.caip2, ...(unconfirmed ? { unconfirmed: true as const } : {}) } };
   }
 
   /** Where a transaction is. One the wallet sent and the cluster hasn't seen is sent again
@@ -544,6 +549,9 @@ export function createSolana(d: SolanaDeps) {
     let simulation: SiteTransaction["simulation"];
     /** The simulation ran and succeeded: the handovers above are what it showed. */
     let simulated = false;
+    /** It changed an account whose meaning for this one the wallet can't read (run-5). */
+    let partial = false;
+    const ownerKey = base58ToBytes(owner);
     try {
       const sim = await r.simulateWith(bytesToBase64(wire), ownWritten ? watched : watched.slice(1));
       const after = ownWritten ? sim.after : [before[0] ?? null, ...sim.after];
@@ -608,7 +616,33 @@ export function createSolana(d: SolanaDeps) {
           const t0 = pre ? tokenAccountOf(pre) : null;
           const t1 = post ? tokenAccountOf(post) : null;
           const t = t0 ?? t1;
-          if (!t) return;
+          if (!t) {
+            // Another program's account (run-5): what it records for the account doesn't show
+            // as a balance. A compressed NFT is a leaf in an Account Compression tree, and a
+            // Metaplex Core asset or a protocol position is a record holding the account's key.
+            // When one changes, the change list is only part of what moves; a tree changing, or
+            // a record that held the key and no longer does, may be the account's asset leaving.
+            if (!pre && !post) return;
+            if (pre && post && pre.owner === post.owner && pre.lamports === post.lamports && equalBytes(pre.data, post.data)) return;
+            const program = (pre ?? post)!.owner;
+            if (COMPRESSION_PROGRAMS.has(program)) {
+              partial = true;
+              handovers.push({ kind: "compressed_tree", account: a, to: program });
+              return;
+            }
+            const was = pre ? keyAt(pre.data, ownerKey) : -1;
+            const is = post ? keyAt(post.data, ownerKey) : -1;
+            if (was < 0 && is < 0) return;
+            partial = true;
+            // Still there, the record still names the account (a position it adds to, say).
+            // Gone from a record that still exists, it names someone else now: the key at the
+            // same place, if any.
+            if (was >= 0 && is < 0 && post && post.data.length > 0) {
+              const next = post.data.length >= was + 32 ? post.data.subarray(was, was + 32) : null;
+              handovers.push({ kind: "program_record", account: a, to: next && next.some((b) => b !== 0) ? bytesToBase58(next) : post.owner });
+            }
+            return;
+          }
           // Named by who owns it now, before the transaction.
           accounts[a] = { owner: t.owner, mint: t.mint };
           // What the account holds before and after, by ownership: a token account it owned
@@ -627,7 +661,8 @@ export function createSolana(d: SolanaDeps) {
             }
           }
         });
-        simulation = { ok: true, changes: [...moved].filter(([, v]) => v !== 0n).map(([denom, v]) => ({ denom, amount: v.toString() })) };
+        const changes = [...moved].filter(([, v]) => v !== 0n).map(([denom, v]) => ({ denom, amount: v.toString() }));
+        simulation = partial ? { ok: true, changes, partial: true } : { ok: true, changes };
         simulated = true;
       }
     } catch (e) {
@@ -690,7 +725,8 @@ function sendMatches(display: Record<string, unknown>, want: { type: "sol_transf
 /** A site's transaction, read for its review (see `siteTransaction`). */
 export interface SiteTransaction {
   request: { solana_transaction: { chain: string; signer: string; message: string; tables: { address: string; addresses: string[] }[] } };
-  simulation: { ok: true; changes: { denom: string; amount: string }[] } | { ok: false; error: string };
+  /** `partial`: it changed an account of another program that names this one, so more may move. */
+  simulation: { ok: true; changes: { denom: string; amount: string }[]; partial?: true } | { ok: false; error: string };
   tokens: Record<string, TokenInfo>;
   /** For the vault's rules: the account's SOL, token symbols, and whose each token account is. */
   context: Record<string, unknown>;
@@ -713,6 +749,20 @@ function simulationReason(e: SolanaSimulationError): string {
   if (logs.some((l) => /insufficient (funds|lamports)/i.test(l))) return "Not enough SOL for this and its fee.";
   if (logs.some((l) => /insufficient funds/i.test(l))) return "Not enough of the token.";
   return "This would fail on Solana now. Check your balances and try again.";
+}
+
+/** SPL Account Compression and Metaplex's copy of it: the trees compressed NFTs live in. */
+const COMPRESSION_PROGRAMS = new Set(["cmtDvXumGCrqC1Age74AVPhSRVXJMd8PJS91L8KbNCK", "mcmt6YrQEMKw8Mw43FmpRLmf7BqRnFMKmAcbxE3xkAW"]);
+
+const equalBytes = (a: Uint8Array, b: Uint8Array) => a.length === b.length && a.every((x, i) => x === b[i]);
+
+/** Where `key` first appears in `data`, or -1. */
+function keyAt(data: Uint8Array, key: Uint8Array): number {
+  outer: for (let i = 0; i + key.length <= data.length; i++) {
+    for (let j = 0; j < key.length; j++) if (data[i + j] !== key[j]) continue outer;
+    return i;
+  }
+  return -1;
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {

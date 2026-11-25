@@ -7,7 +7,7 @@
 // requests answered in one round trip, Multicall3 deployed.
 
 import type { Network } from "./networks.ts";
-import { ChainError, Down, isObject, Pool, type Fetch } from "./pool.ts";
+import { ChainError, Down, isObject, Pool, type Budget, type Fetch } from "./pool.ts";
 import { cleanText } from "./tokens.ts";
 
 /** JSON-RPC codes that mean the node, not the request, is the problem. */
@@ -35,12 +35,18 @@ export class EvmRpc {
   readonly network: Pick<Network, "evmChainId">;
   readonly pool: Pool;
   #id = 1;
+  readonly #fetch: Fetch;
+  readonly #timeoutMs: number | undefined;
 
-  constructor(network: Pick<Network, "evmChainId">, urls: readonly string[], fetch: Fetch, timeoutMs?: number) {
+  /** `budget`: what its answers count against, when not the wallet's own (a site's endpoints). */
+  constructor(network: Pick<Network, "evmChainId">, urls: readonly string[], fetch: Fetch, timeoutMs?: number, budget?: Budget) {
     this.network = network;
+    this.#fetch = fetch;
+    this.#timeoutMs = timeoutMs;
     this.pool = new Pool(urls, {
       fetch,
       ...(timeoutMs === undefined ? {} : { timeoutMs }),
+      ...(budget ? { budget } : {}),
       identify: async (base) => {
         const served = await this.#send(base, { method: "eth_chainId", params: [] });
         if (typeof served !== "string" || BigInt(served) !== BigInt(network.evmChainId)) {
@@ -50,6 +56,12 @@ export class EvmRpc {
     });
   }
 
+  /** A client on the same endpoints whose answers count against `budget`: a site's own reads,
+   *  so what it asks for can't fill the wallet's (run-5). */
+  withBudget(budget: Budget): EvmRpc {
+    return new EvmRpc(this.network, this.pool.urls, this.#fetch, this.#timeoutMs, budget);
+  }
+
   /** One request to one endpoint (twice when the node answering is behind). */
   async #send(base: string, call: Call): Promise<unknown> {
     for (let tries = 0; ; tries++) {
@@ -57,7 +69,7 @@ export class EvmRpc {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ jsonrpc: "2.0", id: this.#id++, ...call }),
-      });
+      }, { write: call.method === "eth_sendRawTransaction" });
       try {
         return answer(status, body);
       } catch (e) {
@@ -163,6 +175,13 @@ export class EvmRpc {
     return a;
   }
 
+  /** Permit2's bitmap of `owner`'s used SignatureTransfer nonces, by word (`nonceBitmap`), or
+   *  null where the call failed. A permit's nonce is word * 256 + bit. */
+  async permit2NonceBitmaps(permit2: string, owner: string, words: readonly bigint[]): Promise<(bigint | null)[]> {
+    const results = await this.batch(words.map((w) => ({ method: "eth_call", params: [{ to: permit2, data: `0x4fe02b44${word(owner)}${w.toString(16).padStart(64, "0")}` }, "latest"] })));
+    return results.map((r) => (typeof r === "string" && /^0x[0-9a-fA-F]{64}$/.test(r) ? BigInt(r) : null));
+  }
+
   /** An ERC20's symbol, name and decimals, or null if it doesn't answer like one. Symbols
    *  and names are whatever the deployer chose, cleaned like bank metadata. */
   async erc20Metadata(token: string): Promise<{ symbol: string; name: string; decimals: number } | null> {
@@ -219,5 +238,8 @@ export function abiString(r: unknown): string {
  *  (uint48 each). */
 function permit2Answer(r: string): { amount: bigint; expiration: number; nonce: number } | null {
   if (!/^0x[0-9a-fA-F]{192}$/.test(r)) return null;
-  return { amount: BigInt(`0x${r.slice(2, 66)}`), expiration: Number(BigInt(`0x${r.slice(66, 130)}`)), nonce: Number(BigInt(`0x${r.slice(130, 194)}`)) };
+  const [amount, expiration, nonce] = [BigInt(`0x${r.slice(2, 66)}`), BigInt(`0x${r.slice(66, 130)}`), BigInt(`0x${r.slice(130, 194)}`)];
+  // Each as wide as Permit2 keeps it (uint160, uint48, uint48): anything wider isn't its answer.
+  if (amount >= 1n << 160n || expiration >= 1n << 48n || nonce >= 1n << 48n) return null;
+  return { amount, expiration: Number(expiration), nonce: Number(nonce) };
 }

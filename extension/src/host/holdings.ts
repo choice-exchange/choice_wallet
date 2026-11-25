@@ -4,6 +4,7 @@
 // sends on top of it.
 
 import {
+  Busy,
   adapterCw20,
   adapterDenom,
   ChainError,
@@ -432,6 +433,7 @@ export function createHoldings(d: HoldingsDeps) {
 
   /** Turn chain and network failures into one short line for the UI. */
   function chainFailure(e: unknown): Result<never> {
+    if (e instanceof Busy) return fail("unreachable", "The wallet is reading too much at once. Try again in a moment.");
     if (e instanceof Unreachable) return fail("unreachable", "Couldn't reach the network. Check your connection or endpoints.");
     if (e instanceof ChainError) {
       if (/insufficient (funds|fee)/i.test(e.message)) return fail("insufficient", "Not enough funds for this send and its fee.");

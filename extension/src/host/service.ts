@@ -11,7 +11,7 @@
 // - The vault is stateless: every call that needs a key gets the keystore and unlock key
 //   from here. UI pages never see either.
 
-import { chainByCaip2, chainByKey, chainDenom, cw20Address, evmAddress, isNetworkId, isObject, isSolanaDenom, NETWORKS, Pool, usdValue, type Fetch, type NetworkId } from "@choice-wallet/chain";
+import { chainByCaip2, chainByKey, chainDenom, cw20Address, evmAddress, EvmIndex, isNetworkId, isObject, isSolanaDenom, NETWORKS, Pool, usdValue, type Fetch, type NetworkId } from "@choice-wallet/chain";
 import type { AccountInfo, Balance, NotifyMode, Result, Settings, SnapshotView, Status, TokenFilter, UiRequest } from "@choice-wallet/ui/protocol";
 import { DEFAULT_FILTER } from "@choice-wallet/ui/token-filter";
 
@@ -28,6 +28,7 @@ import { createContacts } from "./contacts";
 import { createStaking } from "./staking";
 import { createBridge } from "./bridge";
 import { createSolana } from "./solana";
+import { createPermit2 } from "./permit2";
 import { createSwaps } from "./swap";
 import { createWallets, isWatch } from "./wallets";
 import { settled as cachesSettled } from "./cache";
@@ -80,7 +81,7 @@ export const AUTO_LOCK_MINUTES = 15;
 const LOCK_CHOICES = [5, 15, 60, 240];
 /** Local storage that belongs to the wallet, not the device: removing the wallet clears it.
  *  Endpoints, the network and other settings stay. */
-const WALLET_KEYS = ["vault", "wallets", "keystore", "kind", "accounts", "active_account", "connections", "custom_tokens", "custom_nfts", "rescue", "token_filter", "address_book", "watch", "watch_own", "bridge_transfers", "chain_sent", "votes_cast", "solana_rent", "site_chains"];
+const WALLET_KEYS = ["vault", "wallets", "keystore", "kind", "accounts", "active_account", "connections", "custom_tokens", "custom_nfts", "rescue", "token_filter", "address_book", "watch", "watch_own", "bridge_transfers", "chain_sent", "votes_cast", "solana_rent", "site_chains", "permit2_signed"];
 
 /** What a reset keeps: the device's settings, and caches of public data (token details,
  *  pairs, prices). Everything else in local storage goes. */
@@ -221,11 +222,14 @@ export function createService(d: Deps) {
   });
   const staking = createStaking(sender);
   const gov = createGov({ sender, local: d.local, owned, turn: records });
-  const swaps = createSwaps(sender, d.session, d.fetch, async (net) => (await tokenFilter(net)).shown);
+  // The Permit2 permits this wallet signs, kept in the records' turn (./permit2.ts).
+  const permit2 = createPermit2(d.local, undefined, records);
+  const swaps = createSwaps(sender, d.session, d.fetch, async (net) => (await tokenFilter(net)).shown, Date.now, permit2);
   const bridge = createBridge(sender, d.session, d.local, d.fetch, Date.now, solana, { turn: records, owned });
   const approvals = createApprovals(sender, {
     historyEndpoints: (n, key) => evmChains.historyEndpoints(n, key),
     session: d.session,
+    permit2,
     addedNfts: async (n) => {
       const { custom_nfts } = (await d.local.get(["custom_nfts"])) as { custom_nfts?: Partial<Record<NetworkId, unknown>> };
       const list = custom_nfts?.[n];
@@ -317,13 +321,15 @@ export function createService(d: Deps) {
         const gone = solanaMintKeys(before).filter((k) => !kept.has(k));
         if (gone.length > 0) await d.local.remove(gone);
       }
-    const got = (await d.local.get(["votes_cast", "chain_sent", "bridge_transfers", "solana_rent", "rescue"])) as Record<string, unknown>;
+    const got = (await d.local.get(["votes_cast", "chain_sent", "bridge_transfers", "solana_rent", "rescue", "permit2_signed"])) as Record<string, unknown>;
     const only = (o: unknown, keep: (k: string) => boolean) => Object.fromEntries(Object.entries(isObject(o) ? o : {}).filter(([k]) => keep(k)));
     const next: Record<string, unknown> = {};
     // votes_cast[network][inj1]; chain_sent["<network> <chain> <0x>"]; rescue[inj1].
     if (isObject(got["votes_cast"])) next["votes_cast"] = Object.fromEntries(Object.entries(got["votes_cast"]).map(([n, v]) => [n, only(v, has)]));
     if (isObject(got["chain_sent"])) next["chain_sent"] = only(got["chain_sent"], (k) => has(k.split(" ")[2]));
     if (isObject(got["rescue"])) next["rescue"] = only(got["rescue"], has);
+    // permit2_signed["<chain> <0x>"]: the Permit2 permits an account signed.
+    if (isObject(got["permit2_signed"])) next["permit2_signed"] = only(got["permit2_signed"], (k) => has(k.split(" ")[1]));
     if (Array.isArray(got["bridge_transfers"])) next["bridge_transfers"] = got["bridge_transfers"].filter((t: unknown) => isObject(t) && has(t["account"]));
     if (Array.isArray(got["solana_rent"])) next["solana_rent"] = got["solana_rent"].filter((t: unknown) => isObject(t) && has(t["owner"]));
     if (Object.keys(next).length > 0) await d.local.set(next);
@@ -359,6 +365,12 @@ export function createService(d: Deps) {
     local: d.local,
     turn: records,
     sender,
+    permit2,
+    async evmIndexFor(n, key) {
+      if (key === "injective") return sender.evmIndex(n);
+      const urls = await evmChains.historyEndpoints(n, key);
+      return urls.length > 0 ? new EvmIndex(urls, d.fetch) : null;
+    },
     chains: added,
     solana,
     network,
@@ -418,7 +430,8 @@ export function createService(d: Deps) {
     // this lock can't write its new key after it.
     wallets.noteLock();
     dapps.rejectAll("The wallet locked.");
-    await d.session.remove(["unlock_key", "pending_send", "pending_device"]);
+    // A Permit2 revoke's first-step mark names the account: it goes too (run-5).
+    await d.session.remove(["unlock_key", "pending_send", "pending_device", "permit2_cancelled"]);
     d.cancelLock();
     d.notify();
     // The wallet's own open pages go back to the unlock screen.
@@ -619,7 +632,11 @@ export function createService(d: Deps) {
       case "remove_wallet": {
         const before = (await wallets.stored()).accounts;
         const out = await wallets.removeWallet(r.wallet, r.password);
-        if (out.ok) await forgetGone(before);
+        if (out.ok) {
+          await forgetGone(before);
+          // Another open page showing the removed wallet's phrase drops it now (run-5).
+          d.refresh?.();
+        }
         return out;
       }
       case "switch_account":
@@ -629,7 +646,10 @@ export function createService(d: Deps) {
       case "remove_account": {
         const before = (await wallets.stored()).accounts;
         const out = await wallets.changeAccount({ type: "remove", index: r.index });
-        if (out.ok) await forgetGone(before);
+        if (out.ok) {
+          await forgetGone(before);
+          d.refresh?.();
+        }
         return out;
       }
       case "reveal_secret":

@@ -12,8 +12,9 @@
 // After each step lands, the UI asks for the next one.
 
 import { boundErc20, cw20Address, evmDenom, fetchRoute, isContractAddress, knownTokens, NATIVE, NETWORKS, RouteError, valueLost, type Fetch, type NetworkId, type Route } from "@choice-wallet/chain";
-import type { AccountInfo, Result, SendReview, SwapQuote, SwapStep, SwapToken } from "@choice-wallet/ui/protocol";
+import type { AccountInfo, Result, SendReview, SwapQuote, SwapStep, SwapStepInfo, SwapToken } from "@choice-wallet/ui/protocol";
 
+import type { Permit2Records } from "./permit2";
 import type { createSender, EvmDisplayLike } from "./send";
 import type { Store } from "./service";
 import { fail, randomId } from "./util";
@@ -45,7 +46,7 @@ interface Stored {
 
 /** `shown`: the tokens the user chose to show on a network (the token filter), which
  *  includes tokens added by contract. */
-export function createSwaps(sender: Sender, session: Store, fetch: Fetch, shown: (network: NetworkId) => Promise<string[]>, now: () => number = Date.now) {
+export function createSwaps(sender: Sender, session: Store, fetch: Fetch, shown: (network: NetworkId) => Promise<string[]>, now: () => number = Date.now, permit2?: Permit2Records) {
   /** The EVM token a wallet key trades as on Choice: native INJ, an ERC20 (an EVM-only
    *  token, a bank-backed `erc20:` denom, or a bank denom's ERC20 pair). */
   async function evmToken(network: NetworkId, denom: string): Promise<string | null> {
@@ -190,24 +191,18 @@ export function createSwaps(sender: Sender, session: Store, fetch: Fetch, shown:
     }
   }
 
-  /** A spender other than this swap's that Permit2 lets spend the swap's token now, from the
-   *  allowances the EVM index logged. None when the index is off or can't answer: then the
-   *  wallet can't tell, as on the Approvals screen. */
-  async function permit2Spender(network: NetworkId, q: Stored): Promise<string | null> {
+  /** Who but Choice's own contracts could take the swap's token through Permit2 once the
+   *  approve step funds it: a standing Permit2 allowance (the EVM index's logs, confirmed on
+   *  chain) or a Permit2 permit this wallet signed that may still be used (run-5). */
+  async function permit2Others(network: NetworkId, q: Stored): Promise<{ spenders: string[]; unchecked: boolean }> {
     const net = NETWORKS[network];
+    const choice = [q.route.to, net.choice.universalRouter, ...(net.choice.aggregator ? [net.choice.aggregator] : [])];
     try {
-      const index = await sender.evmIndex(network);
-      if (!index) return null;
-      const { pairs } = await index.permit2Approvals(q.account, net.choice.permit2);
-      const others = pairs.filter((p) => same(p.token, q.tokenIn) && !same(p.spender, q.route.to)).slice(0, 50);
-      if (others.length === 0) return null;
       const rpc = await sender.evm(network);
-      const left = await rpc.permit2Allowances(net.choice.permit2, others, q.account);
-      const at = Math.floor(now() / 1000);
-      const i = left.findIndex((a) => a !== null && a.amount > 0n && a.expiration >= at);
-      return i < 0 ? null : others[i]!.spender;
+      if (!permit2) return { spenders: [], unchecked: true };
+      return await permit2.others(`eip155:${net.evmChainId}`, q.account, q.tokenIn, choice, await sender.evmIndex(network), rpc);
     } catch {
-      return null;
+      return { spenders: [], unchecked: true };
     }
   }
 
@@ -238,7 +233,7 @@ export function createSwaps(sender: Sender, session: Store, fetch: Fetch, shown:
     const left = steps.result.length - 1;
     const net = NETWORKS[network];
     const amount = BigInt(q.route.amountIn);
-    const extra = { swap: { step, left, from: q.from, to: q.to, expectedOut: q.route.amountOut, ...(step === "swap" ? { valueLost: await weigh(network, q) } : {}) } };
+    const extra: { swap: SwapStepInfo } = { swap: { step, left, from: q.from, to: q.to, expectedOut: q.route.amountOut, ...(step === "swap" ? { valueLost: await weigh(network, q) } : {}) } };
     // The picked tokens, and a traded contract the picked token isn't bound to (an unlisted
     // denom's LCD pair): the review names that by its own contract, so it is described too
     // (run-2 C4).
@@ -248,10 +243,13 @@ export function createSwaps(sender: Sender, session: Store, fetch: Fetch, shown:
     };
     const tokens = [q.from, q.to, ...pair(q.from, q.tokenIn), ...pair(q.to, q.tokenOut)];
     if (step === "approve") {
-      // What this gives Permit2, any spender Permit2 already lets spend this token can take
-      // before the swap does (run-4). Such a spender is revoked first.
-      const other = await permit2Spender(network, q);
+      // What this gives Permit2, any spender Permit2 already lets spend this token, or that
+      // holds a permit signed here, can take before the swap does (run-4, run-5). Such a
+      // spender is revoked first; one the wallet couldn't check for is said in the review.
+      const others = await permit2Others(network, q);
+      const other = others.spenders[0];
       if (other) return fail("permit2_spender", `Permit2 still lets ${other.slice(0, 6)}…${other.slice(-4)} spend this token. Revoke that in Approvals first.`);
+      if (others.unchecked) extra.swap = { ...extra.swap, permit2Unchecked: true };
       return sender.prepareEvmCall(network, account, {
         to: q.tokenIn,
         amount,

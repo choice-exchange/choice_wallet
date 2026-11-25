@@ -339,6 +339,11 @@ pub(crate) enum OwnCall {
     /// the allowance again after its revoke. `nonce` is the pair's next one, at most 65,535
     /// past its current one (Permit2's limit). `amount` is "0".
     Permit2CancelPermits { token: String, spender: String, nonce: U64 },
+    /// `Permit2.invalidateUnorderedNonces(word, mask)` at Permit2 (`to`): cancels the one-off
+    /// transfer permits (SignatureTransfer) the account signed with the nonces `mask` marks in
+    /// bitmap word `word`, which could otherwise take what it approves to Permit2 (run-5).
+    /// Both decimal; `mask` isn't 0. `amount` is "0".
+    Permit2CancelTransfers { word: String, mask: String },
     /// Seaport's `incrementCounter()` at Seaport 1.6 (`to`): cancels every order the account
     /// signed there, which would otherwise come back with an approval given again. `amount` is
     /// "0".
@@ -490,6 +495,7 @@ fn own_call(
         | OwnCall::NftRevoke { .. }
         | OwnCall::Permit2Revoke { .. }
         | OwnCall::Permit2CancelPermits { .. }
+        | OwnCall::Permit2CancelTransfers { .. }
         | OwnCall::SeaportCancelAll
             if !amount.is_zero() =>
         {
@@ -534,6 +540,19 @@ fn own_call(
                 data.extend_from_slice(a.as_bytes());
             }
             data.extend_from_slice(&U256::from_u128(u128::from(nonce.0)).to_be_bytes());
+            Ok(Eip1559Tx::contract_call(chain_id, to, U256::ZERO, data))
+        }
+        OwnCall::Permit2CancelTransfers { word, mask } => {
+            if to != choice_wallet_core::EthAddress::from_bytes(PERMIT2) {
+                return Err(VaultError::bad("cancelling Permit2 permits goes to Permit2"));
+            }
+            let (word, mask) = (U256::from_dec_str(word)?, U256::from_dec_str(mask)?);
+            if mask.is_zero() {
+                return Err(VaultError::bad("nothing to cancel"));
+            }
+            let mut data = vec![0x3f, 0xf9, 0xdc, 0xb1]; // invalidateUnorderedNonces(uint256,uint256)
+            data.extend_from_slice(&word.to_be_bytes());
+            data.extend_from_slice(&mask.to_be_bytes());
             Ok(Eip1559Tx::contract_call(chain_id, to, U256::ZERO, data))
         }
         OwnCall::SeaportCancelAll => {

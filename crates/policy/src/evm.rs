@@ -206,6 +206,8 @@ const TRANSFER_FROM: [u8; 4] = 0x23b872ddu32.to_be_bytes();
 const PERMIT2_APPROVE: [u8; 4] = 0x87517c45u32.to_be_bytes();
 /// Permit2's `invalidateNonces(address,address,uint48)`.
 const PERMIT2_INVALIDATE: [u8; 4] = 0x65d9723cu32.to_be_bytes();
+/// Permit2's `invalidateUnorderedNonces(uint256,uint256)`: SignatureTransfer's cancel.
+const PERMIT2_INVALIDATE_UNORDERED: [u8; 4] = 0x3ff9dcb1u32.to_be_bytes();
 /// ERC20 `transfer(address,uint256)`. Its exact form is `Call::Erc20Transfer`; any other form
 /// reaches `contract_call`.
 const TRANSFER: [u8; 4] = erc20::TRANSFER_SELECTOR;
@@ -467,6 +469,21 @@ pub fn evm_transaction(req: &TxRequest, chain: &EvmSide<'_>, ctx: &Context) -> A
     if let Some(moves) = &ctx.evm_transfers {
         simulated(moves, req, ctx, &mut out);
     }
+    // Failing in the simulation (run-5): a call the wallet can't read may do otherwise once
+    // signed, and nothing shows what it would move.
+    if ctx.evm_simulation_reverted {
+        let unread = out.iter().any(|f| f.rule == "contract_call_unread");
+        out.push(finding(
+            "simulation_reverted",
+            if unread { Level::Red } else { Level::Amber },
+            if unread {
+                "It fails in simulation, and the wallet can't read the call, so nothing shows what it would move once signed.".into()
+            } else {
+                "It fails in simulation: it would likely fail on chain too, and still cost its fee.".into()
+            },
+            json!({}),
+        ));
+    }
     // The amount plus the most gas could cost, against the native balance.
     if let Some(bal) = balance(ctx, "native") {
         let max_gas = U256::product(u128::from(tx.gas_limit), tx.max_fee_per_gas);
@@ -638,6 +655,9 @@ fn contract_call(
         ));
         return;
     };
+    // A well-formed call whose reading here would say less than it may do: graded below as
+    // one the wallet can't read, not as a malformed token call.
+    let mut read_as_unread = false;
     match sel {
         APPROVE | INCREASE_ALLOWANCE | INCREASE_APPROVAL | APPROVE_AND_CALL | APPROVE_AND_CALL_DATA
             if data.len() == 68
@@ -685,6 +705,7 @@ fn contract_call(
                 }
                 let named = network
                     .and_then(|n| swap::known_name(&n.choice, &spender))
+                    .or_else(|| (spender == permit2()).then_some("Permit2"))
                     .or_else(|| chain.cctp.and_then(|(c, _)| bridge::known_name(c, &spender)))
                     .or_else(|| (spender == talis::seaport()).then_some("Seaport"))
                     .or_else(|| chain.name(&spender));
@@ -708,6 +729,32 @@ fn contract_call(
                     allowance.params["token_id"] = json!(amount.to_string());
                 }
                 out.push(allowance);
+                // Funding Permit2 funds whoever Permit2 already lets spend the token, as the
+                // host found (run-5): they can take it before the site's own use does.
+                if spender == permit2() && !amount.is_zero() {
+                    if !ctx.permit2_spenders.is_empty() {
+                        let names = ctx
+                            .permit2_spenders
+                            .iter()
+                            .take(3)
+                            .map(|s| short(s))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        out.push(finding(
+                            "permit2_rearms",
+                            Level::Red,
+                            format!("Permit2 already lets {names} spend this token: this approval lets them take it."),
+                            json!({ "spenders": ctx.permit2_spenders }),
+                        ));
+                    } else if ctx.permit2_unchecked {
+                        out.push(finding(
+                            "permit2_unchecked",
+                            Level::Amber,
+                            "The wallet couldn't check who else Permit2 lets spend this token. One could take what this approves.".into(),
+                            json!({}),
+                        ));
+                    }
+                }
                 return;
             }
         }
@@ -893,9 +940,11 @@ fn contract_call(
                 return;
             }
         }
-        // Permit2's approve is read only at Permit2, as the vault's own Permit2 revoke is
-        // built only for it. The same selector anywhere else is a call the wallet can't read.
-        PERMIT2_APPROVE if data.len() == 4 + 4 * 32 && tx.to == permit2() => {
+        // Permit2's approve, at Permit2 or at a copy of it elsewhere (PancakeSwap's, say): a
+        // grant there is what it says wherever it sits (run-5). Only the revoke reading, which
+        // lowers the grade, is pinned to Permit2, as the vault's own revoke is built only for
+        // it: amount 0 anywhere else is a call the wallet can't read.
+        PERMIT2_APPROVE if data.len() == 4 + 4 * 32 => {
             let typed = |i: usize, bits: u32| {
                 let w: [u8; 32] = word(data, i)?.try_into().ok()?;
                 abi::Val::Word(w).uint_bits(bits).ok()
@@ -903,30 +952,48 @@ fn contract_call(
             if let (Some(token), Some(spender), Some(amount), Some(expiration)) =
                 (address_arg(data, 0), address_arg(data, 1), typed(2, 160), typed(3, 48))
             {
-                let expiration = expiration.to_u64().expect("48 bits");
-                out.push(swap::permit2_approve(choice, &token, &spender, amount, expiration));
-                return;
+                if !amount.is_zero() || tx.to == permit2() {
+                    let expiration = expiration.to_u64().expect("48 bits");
+                    out.push(swap::permit2_approve(choice, &token, &spender, amount, expiration));
+                    return;
+                }
+                read_as_unread = true;
             }
         }
-        // Permit2's own cancel of permits the sender signed for a spender and token: it moves
-        // only the sender's nonce, so it takes nothing.
+        // Permit2's cancel of permits the sender signed for a spender and token: it moves the
+        // sender's nonce for them to `nonce`. Every permit signed below it is cancelled, but one
+        // signed for exactly `nonce` becomes usable (run-5), so a site's choice of it is amber.
+        // The wallet's own revoke picks one no one can know in advance.
         PERMIT2_INVALIDATE if data.len() == 4 + 3 * 32 && tx.to == permit2() => {
             if let (Some(token), Some(spender), Some(nonce)) =
                 (address_arg(data, 0), address_arg(data, 1), uint_arg(data, 2))
                 && nonce.to_u64().is_some_and(|n| n < 1 << 48)
             {
                 let spender = spender.to_checksum_hex();
+                let who = short(&spender);
                 out.push(finding(
                     "permit2_cancel",
-                    Level::Info,
-                    format!(
-                        "Cancels Permit2 permits you signed for {} on this token.",
-                        short(&spender)
-                    ),
+                    if ctx.origin.is_some() { Level::Amber } else { Level::Info },
+                    if ctx.origin.is_some() {
+                        format!("Cancels Permit2 permits you signed for {who} on this token, except one signed for nonce {nonce}, which it makes usable.")
+                    } else {
+                        format!("Cancels Permit2 permits you signed for {who} on this token.")
+                    },
                     json!({ "token": token.to_checksum_hex(), "spender": spender, "nonce": nonce.to_string() }),
                 ));
                 return;
             }
+        }
+        // Permit2's cancel of one-off transfer permits: it only marks the sender's nonces used,
+        // so it takes nothing and makes nothing usable.
+        PERMIT2_INVALIDATE_UNORDERED if data.len() == 4 + 2 * 32 && tx.to == permit2() => {
+            out.push(finding(
+                "permit2_cancel_transfers",
+                Level::Info,
+                "Cancels Permit2 transfer permits you signed.".into(),
+                json!({ "word": uint_arg(data, 0).map(|w| w.to_string()), "mask": uint_arg(data, 1).map(|m| m.to_string()) }),
+            ));
+            return;
         }
         // Seaport's own cancels: of some of the sender's orders, or of all it ever signed.
         // Only an order's offerer or zone may cancel it, so either takes nothing.
@@ -966,7 +1033,7 @@ fn contract_call(
     // is one the wallet can't read: a contract the account approved, gave a Permit2 allowance
     // or deposited at (a router, a vault, a lending pool) can pay that out to whoever the
     // calldata names, so it is never shown as nothing unusual.
-    if let Some(name) = token_call_name(&sel).filter(|_| sel != PERMIT2_APPROVE || tx.to == permit2()) {
+    if let Some(name) = token_call_name(&sel).filter(|_| !read_as_unread) {
         out.push(finding(
             "token_call_unreadable",
             Level::Red,
@@ -1222,16 +1289,20 @@ fn system_call(req: &TxRequest, n: u8, selector: Option<[u8; 4]>, injective: boo
 const EXCHANGE_DEPOSIT: u32 = 0xe441dec9;
 
 /// Exchange methods that move funds or margin from a source subaccount to a destination one:
-/// `subaccountTransfer`, `increasePositionMargin` and `decreasePositionMargin`, each
-/// `(address sender, string sourceSubaccountID, string destinationSubaccountID, string, uint256)`.
-const BETWEEN_SUBACCOUNTS: [u32; 3] = [0x42eba2ed, 0x8ff96af4, 0xaf78360b];
+/// `subaccountTransfer`, `increasePositionMargin`, `decreasePositionMargin` and
+/// `externalTransfer`, each `(address sender, string sourceSubaccountID, string
+/// destinationSubaccountID, string, uint256)`.
+const BETWEEN_SUBACCOUNTS: [u32; 4] = [0x42eba2ed, 0x8ff96af4, 0xaf78360b, EXCHANGE_EXTERNAL_TRANSFER];
+/// `externalTransfer`: to any account's subaccount, which is what it is for.
+const EXCHANGE_EXTERNAL_TRANSFER: u32 = 0xc01307d2;
 
 /// A move between subaccounts, info only when both are the sender's. Margin added to another
 /// account's position is that account's (review-3: only the sender was read before). The
-/// exchange module refuses a foreign subaccount on either side of these three messages
+/// exchange module refuses a foreign subaccount on either side of the first three messages
 /// (ValidateBasic's CheckValidSubaccountIDOrNonce, injective-core v1.20), so such a call
-/// reverts; red here is defence in depth. IDs are read as a deposit's; one that reading
-/// refuses is unreadable.
+/// reverts; red here is defence in depth. `externalTransfer` sends to another account's by
+/// design: the owner who can withdraw it is named, red as the Cosmos message is (run-5).
+/// IDs are read as a deposit's; one that reading refuses is unreadable.
 fn between_subaccounts(data: &[u8], from: &EthAddress, method: &Method) -> Option<Finding> {
     use abi::Ty::{Bytes, Word};
     let v = args(data, &[Word, Bytes, Bytes, Bytes, Word])?;
@@ -1264,6 +1335,13 @@ fn between_subaccounts(data: &[u8], from: &EthAddress, method: &Method) -> Optio
                 "Moves funds out of the INJ orderbook account of {}.",
                 short(&source_owner.to_checksum_hex())
             ),
+            params,
+        )
+    } else if u32::from_be_bytes(method.selector) == EXCHANGE_EXTERNAL_TRANSFER {
+        finding(
+            "precompile_call",
+            Level::Info,
+            "Moves funds between your INJ orderbook subaccounts.".into(),
             params,
         )
     } else {
@@ -1518,6 +1596,66 @@ mod tests {
     /// Run-3: another wallet chain's own fund-moving system contracts are unread calls, red;
     /// the same addresses on other chains, and the predeploys that are ordinary tokens (WETH
     /// at 0x4200…0006), are not.
+    /// Run-5: a site's approve(token, Permit2) funds whoever Permit2 already lets spend the
+    /// token: red naming them, amber when the host couldn't check.
+    #[test]
+    fn funding_permit2_names_who_else_it_lets_spend() {
+        let token = EthAddress::from_bytes([0x44; 20]);
+        let approve = req(
+            token,
+            call(
+                APPROVE,
+                &[
+                    addr_word(*permit2().as_bytes()),
+                    U256::from_u128(5_000_000).to_be_bytes(),
+                ],
+            ),
+        );
+        let grade_with = |ctx: Context| evm_transaction(&approve, &EvmSide::injective(&MAINNET), &ctx);
+        let a = grade_with(Context {
+            permit2_spenders: vec![format!("0x{}", "55".repeat(20))],
+            ..Default::default()
+        });
+        assert_eq!(a.level, Level::Red);
+        let f = a.findings.iter().find(|f| f.rule == "permit2_rearms").expect("named");
+        assert!(f.message.contains("0x5555…5555"), "{}", f.message);
+        let a = grade_with(Context {
+            permit2_unchecked: true,
+            ..Default::default()
+        });
+        assert!(rules_of(&a).contains(&"permit2_unchecked"));
+        assert_eq!(a.level, Level::Amber);
+        // Nothing found, all checked: as before.
+        assert_eq!(rules_of(&grade_with(Context::default())), ["allowance"]);
+        // A revoke funds no one.
+        let revoke = req(token, call(APPROVE, &[addr_word(*permit2().as_bytes()), [0; 32]]));
+        let ctx = Context {
+            permit2_spenders: vec![format!("0x{}", "55".repeat(20))],
+            ..Default::default()
+        };
+        assert!(!rules_of(&evm_transaction(&revoke, &EvmSide::injective(&MAINNET), &ctx)).contains(&"permit2_rearms"));
+    }
+
+    #[test]
+    fn a_call_failing_in_simulation_is_said() {
+        let failed = Context {
+            evm_simulation_reverted: true,
+            ..Default::default()
+        };
+        // An unread call that fails in simulation: nothing shows what it moves.
+        let unread = req(EthAddress::from_bytes([0x77; 20]), call([0xde, 0xad, 0xbe, 0xef], &[]));
+        let a = evm_transaction(&unread, &EvmSide::injective(&MAINNET), &failed);
+        assert_eq!(a.level, Level::Red);
+        assert!(rules_of(&a).contains(&"simulation_reverted"));
+        // A transfer the wallet reads: amber, it would fail on chain too.
+        let t = req(
+            EthAddress::from_bytes([0x44; 20]),
+            erc20::transfer_calldata(&EthAddress::from_bytes([0x22; 20]), &U256::from_u128(5)),
+        );
+        let a = evm_transaction(&t, &EvmSide::injective(&MAINNET), &failed);
+        assert_eq!((a.level, rules_of(&a)), (Level::Amber, vec!["simulation_reverted"]));
+    }
+
     #[test]
     fn simulated_moves_show_what_leaves() {
         let me = format!("0x{}", hex::encode(FROM));
@@ -2152,19 +2290,100 @@ mod tests {
         let a = evm_transaction(&approve(U256::ZERO), &EvmSide::injective(&MAINNET), &own);
         assert_eq!((a.level, rules_of(&a)), (Level::Info, vec!["allowance_revoke"]));
 
-        // Permit2's approve is read only at Permit2; the same selector elsewhere is unread.
-        let p2 = |to: EthAddress| {
+        // Permit2's approve reads as a revoke only at Permit2; amount 0 elsewhere is unread.
+        let p2 = |to: EthAddress, amount: U256| {
             req(
                 to,
                 call(
                     PERMIT2_APPROVE,
-                    &[addr_word([0x11; 20]), addr_word([0x22; 20]), [0; 32], [0; 32]],
+                    &[
+                        addr_word([0x11; 20]),
+                        addr_word([0x22; 20]),
+                        amount.to_be_bytes(),
+                        [0; 32],
+                    ],
                 ),
             )
         };
-        assert_eq!(rules_of(&grade(&p2(permit2()))), ["allowance_revoke"]);
-        let a = grade(&p2(EthAddress::from_bytes([0x6f; 20])));
+        assert_eq!(rules_of(&grade(&p2(permit2(), U256::ZERO))), ["allowance_revoke"]);
+        let a = grade(&p2(EthAddress::from_bytes([0x6f; 20]), U256::ZERO));
         assert_eq!((a.level, a.findings[0].rule), (Level::Amber, "contract_call_unread"));
+        // Run-5: a grant at a copy of Permit2 (PancakeSwap's) is read as one, unlimited red and
+        // limited amber, as at Permit2; a malformed form is red there as anywhere.
+        let pancake = EthAddress::parse_hex("0x31c2f6fcff4f8759b3bd5bf0e1084a055615c768").unwrap();
+        let max160 = U256::from_dec_str("1461501637330902918203684832716283019655932542975").unwrap();
+        for at in [permit2(), pancake] {
+            let a = grade(&p2(at, max160));
+            assert_eq!(
+                (a.level, a.findings[0].rule),
+                (Level::Red, "permit2_allowance"),
+                "{at:?}"
+            );
+            let a = grade(&p2(at, U256::from_u128(1 << 99)));
+            assert_eq!(
+                (a.level, a.findings[0].rule),
+                (Level::Amber, "permit2_limited"),
+                "{at:?}"
+            );
+            let mut long = p2(at, max160);
+            long.tx.data.push(0);
+            let a = grade(&long);
+            assert_eq!(
+                (a.level, a.findings[0].rule),
+                (Level::Red, "token_call_unreadable"),
+                "{at:?}"
+            );
+        }
+        // Run-5: a site's invalidateNonces moves the nonce to its own choice, which makes a
+        // permit signed for it usable: amber, saying so. The wallet's own (no origin) is info.
+        let cancel = req(
+            permit2(),
+            call(
+                PERMIT2_INVALIDATE,
+                &[
+                    addr_word([0x11; 20]),
+                    addr_word([0x22; 20]),
+                    U256::from_u128(65_541).to_be_bytes(),
+                ],
+            ),
+        );
+        let site = Context {
+            origin: Some("https://app.example".into()),
+            origin_known: true,
+            ..Default::default()
+        };
+        let a = evm_transaction(&cancel, &EvmSide::injective(&MAINNET), &site);
+        assert_eq!((a.level, a.findings[0].rule), (Level::Amber, "permit2_cancel"));
+        assert!(
+            a.findings[0].message.contains("65541, which it makes usable"),
+            "{}",
+            a.findings[0].message
+        );
+        assert_eq!(
+            (grade(&cancel).level, grade(&cancel).findings[0].rule),
+            (Level::Info, "permit2_cancel")
+        );
+        // Permit2 is named as a spender on every chain, not only Injective's.
+        let base = EvmSide {
+            injective: None,
+            cctp: None,
+        };
+        let a = evm_transaction(
+            &req(
+                token,
+                call(
+                    APPROVE,
+                    &[addr_word(*permit2().as_bytes()), U256::from_u128(5).to_be_bytes()],
+                ),
+            ),
+            &base,
+            &Context::default(),
+        );
+        assert!(
+            a.findings.iter().any(|f| f.message.contains("Permit2 could spend")),
+            "{:?}",
+            a.findings
+        );
 
         let mut yes = [0u8; 32];
         yes[31] = 1;
@@ -2369,7 +2588,8 @@ mod tests {
             ]));
             grade(&req(precompile(EXCHANGE), d))
         };
-        for sel in [0x8ff96af4, 0xaf78360b, 0x42eba2ed] {
+        // Run-5: externalTransfer too, which names another account's subaccount by design.
+        for sel in [0x8ff96af4, 0xaf78360b, 0x42eba2ed, EXCHANGE_EXTERNAL_TRANSFER] {
             for (source, dest) in [("0", "1"), ("0", id(FROM, "0x").as_str()), (id(FROM, "").as_str(), "2")] {
                 let a = between(sel, source, dest);
                 assert_eq!(
@@ -2399,6 +2619,13 @@ mod tests {
         let other = format!("0x{}{}", "bb".repeat(20), "0".repeat(24));
         let a = between(0x8ff96af4, "0", &other);
         assert_eq!(a.level, Level::Red);
+        // An external transfer names who can withdraw it.
+        let a = between(EXCHANGE_EXTERNAL_TRANSFER, "0", &other);
+        assert!(
+            a.findings[0].message.contains("0xbBbB…BBbB"),
+            "{}",
+            a.findings[0].message
+        );
         assert_eq!(
             a.findings[0].params["destination_owner"],
             EthAddress::from_bytes([0xbb; 20]).to_checksum_hex()

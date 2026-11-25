@@ -123,19 +123,20 @@ export function RevealView({ what, wallet, status, onBack }: { what: "phrase" | 
         key ? (
           <button
             className="btn"
-            onClick={() =>
+            onClick={() => {
+              // The worker clears it in 30 s: this page may be gone by then (a popup closes as
+              // soon as the user goes to paste). Asked first, so the key is never on the
+              // clipboard with no clear set (run-5).
+              void backend.send({ type: "clear_clipboard_later" }).catch(() => {});
               void backend.copy(key).then(() => {
-                // The worker clears it in 30 s: this page may be gone by then (a popup closes
-                // as soon as the user goes to paste).
-                void backend.send({ type: "clear_clipboard_later" }).catch(() => {});
                 setCopied(true);
                 if (clearing.current !== null) clearTimeout(clearing.current);
                 clearing.current = setTimeout(() => {
                   clear();
                   setCopied(false);
                 }, CLEAR_MS);
-              })
-            }
+              });
+            }}
           >
             {copied ? <CheckIcon /> : <CopyIcon />}
             {copied ? "Copied. Cleared in 30 s" : "Copy key"}

@@ -179,7 +179,7 @@ export type UiRequest =
   | { type: "approvals"; chain?: string }
   | { type: "prepare_revoke"; items: RevokeItem[] }
   | { type: "prepare_revoke_erc20"; token: string; spender: string }
-  | { type: "prepare_revoke_evm"; chain?: string; kind: EvmRevokeKind; contract: string; spender?: string; token?: string; token_id?: string }
+  | { type: "prepare_revoke_evm"; chain?: string; kind: EvmRevokeKind; contract: string; spender?: string; token?: string; token_id?: string; word?: string; mask?: string }
   /** The rescue address: what's set, set or clear it, the rescue account's gas for this
    *  one, and the rescue itself. */
   | { type: "rescue" }
@@ -654,6 +654,9 @@ export type SwapStepInfo = {
   /** The swap step's quote by the wallet's prices, as `SwapQuote.valueLost` (it may be a new
    *  quote, asked for again after the approvals). */
   valueLost?: number | null;
+  /** The approve step: the wallet couldn't check who else Permit2 lets spend this token (its
+   *  EVM history is off or didn't answer), so one may take what it approves (run-5). */
+  permit2Unchecked?: true;
 };
 
 export type SwapStep = "approve" | "permit2" | "swap";
@@ -685,7 +688,8 @@ export type SwapToken = TokenInfo & { amount?: string };
 
 /** A broadcast transaction. `chain` names the chain (its key) when it was signed on another
  *  chain than Injective. */
-export type Sent = { hash: string; explorer: string; chain?: string };
+/** `unconfirmed`: it went out, and no answer said it arrived (it may still land). */
+export type Sent = { hash: string; explorer: string; chain?: string; unconfirmed?: true };
 
 /** A staking action. Amounts are base units of INJ, or "max". `validator` is where the
  *  stake is (for "move", where it leaves; for "claim", absent to claim from every one). */
@@ -736,6 +740,10 @@ export type ApprovalsSummary = {
   /** Permit2 allowances: what each spender may take through Permit2, and until when (unix s). */
   /** `permitsCancelled`: the revoke's first step landed; the next takes the allowance back. */
   permit2: { token: string; spender: string; amount: string; expiration: number; permitsCancelled?: boolean }[];
+  /** Permit2 permits signed in this wallet that may still be used (run-5): an AllowanceTransfer
+   *  permit (`allowance`) sets an allowance when used, a SignatureTransfer one (`transfer`)
+   *  moves `amount` once. Each can take what the account approves to Permit2 until `deadline`. */
+  permit2Signed?: { token: string; spender: string; kind: "allowance" | "transfer"; amount: string; deadline: number; nonce: string }[];
   /** Blockscout didn't answer: ERC20 allowances may be missing. */
   evmIndexDown?: true;
   /** No EVM endpoint answered: ERC20 allowances couldn't be checked. */
@@ -745,8 +753,9 @@ export type ApprovalsSummary = {
 /** An EVM permission to take back: an ERC20 allowance, an NFT operator, one NFT's approval,
  *  or a Permit2 allowance. */
 /** `permit2` takes two steps: its permits cancelled, then its allowance taken back.
+ *  `permit2_transfer` cancels one-off Permit2 permits by their nonces (`word`, `mask`).
  *  `seaport_cancel` cancels every Seaport order the account signed. */
-export type EvmRevokeKind = "erc20" | "nft_all" | "nft_token" | "permit2" | "seaport_cancel";
+export type EvmRevokeKind = "erc20" | "nft_all" | "nft_token" | "permit2" | "permit2_transfer" | "seaport_cancel";
 
 /** One Cosmos-side permission to take back. */
 export type RevokeItem =

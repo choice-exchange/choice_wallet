@@ -138,7 +138,7 @@ export class SolanaRpc {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ jsonrpc: "2.0", id: this.#id++, method, params }),
-    });
+    }, { write: method === "sendTransaction" });
     if (isObject(body) && "result" in body && body["result"] !== undefined) return body["result"];
     const err = isObject(body) ? body["error"] : undefined;
     if (isObject(err) && typeof err["code"] === "number" && typeof err["message"] === "string") {
