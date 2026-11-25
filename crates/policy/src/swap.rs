@@ -40,8 +40,8 @@ pub(crate) fn to_self(s: &Swap, from: &EthAddress) -> bool {
 
 /// The swap screen's thresholds (ui/src/valueLost.tsx): a minimum that could lose this much
 /// of the input's value is a warning, and this much is red.
-const LOST_WARN_BPS: i64 = 500;
-const LOST_RED_BPS: i64 = 2_000;
+pub(crate) const LOST_WARN_BPS: i64 = 500;
+pub(crate) const LOST_RED_BPS: i64 = 2_000;
 
 /// Findings about one Choice swap, sent from `from` with `value` attached.
 pub(crate) fn swap(

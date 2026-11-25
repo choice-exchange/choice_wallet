@@ -436,7 +436,16 @@ export function createEvmSite(core: SiteCore) {
       if (meta) tokens[evmDenom(to)] = { denom: evmDenom(to), symbol: meta.symbol, name: meta.symbol, decimals: meta.decimals, known: false, chain: chain.caip2 };
     }
     const from = chain.added ? await h.sender.endpointFrom(network, chain.key) : null;
-    return { tokens, context: { balances: held === null ? {} : { native: held.toString() }, symbols: { native: chain.native.symbol, ...(chain.added || !chain.usdc ? {} : { [chain.usdc.toLowerCase()]: "USDC" }) }, ...(from ? { endpoint_from: from } : {}) } };
+    const usdcKnown = !chain.added && chain.usdc ? chain.usdc.toLowerCase() : null;
+    return {
+      tokens,
+      context: {
+        balances: held === null ? {} : { native: held.toString() },
+        symbols: { native: chain.native.symbol, ...(usdcKnown ? { [usdcKnown]: "USDC" } : {}) },
+        ...(usdcKnown ? { decimals: { [usdcKnown]: 6 } } : {}),
+        ...(from ? { endpoint_from: from } : {}),
+      },
+    };
   }
 
   /** What a signature review names amounts in, for the chain the signature is bound to: its
@@ -559,6 +568,12 @@ export function createEvmSite(core: SiteCore) {
           // EVM): the rules say so rather than "cancels every listing" (run-5).
           if (filled.tx.to.toLowerCase() === SEAPORT.toLowerCase() && filled.tx.data.toLowerCase() === "0x5b34b966" && (await counterStuck(rpc, from)) === true) {
             funded = { ...funded, seaport_counter_stuck: true };
+          }
+          // What comes back is weighed against what leaves at the wallet's prices, and dust of
+          // a listed token is nothing (review-3 left this open).
+          if (moves && !("failed" in moves) && moves.moves.length > 0) {
+            const floors = await priceFloors(network, chain);
+            if (Object.keys(floors).length > 0) funded = { ...funded, price_floors: floors };
           }
           // What comes back counts only in a token the wallet lists here: name them for the rules.
           if (chain.kind === "injective") return { request, checkedBy: filled.checkedBy, ...sim, extra: { ...sim.extra, ...signatureContext(network, chain).extra, ...funded } };

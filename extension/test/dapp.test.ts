@@ -316,10 +316,15 @@ test("a site's EVM transaction is simulated: what leaves the account is shown an
   assert.ok(rules(drained).includes("simulated_loss"), rules(drained).join());
   assert.deepEqual(drained.simulation, { ok: true, changes: [{ denom: `evm:${usdc}`, amount: "-5000000" }] });
   // A swap: the chain's coin comes back. A trade the wallet can't weigh: amber, named.
-  const swap = await review([move(ME_EVM, router), { ...move(router, ME_EVM), address: "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" }]);
+  const eth = (wei: bigint) => ({ ...move(router, ME_EVM), address: "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", data: `0x${wei.toString(16).padStart(64, "0")}` });
+  const swap = await review([move(ME_EVM, router), eth(2n * 10n ** 15n)]);
   assert.equal(swap.risk.level, "amber");
   assert.ok(rules(swap).includes("simulated_trade"), rules(swap).join());
   assert.ok(rules(swap).includes("contract_call_unread"));
+  // Review-3's open case: a drain paying back a sliver of the coin is a drain, red.
+  const sliver = await review([move(ME_EVM, payee), eth(1n)]);
+  assert.equal(sliver.risk.level, "red");
+  assert.ok(rules(sliver).includes("simulated_loss") && !rules(sliver).includes("simulated_trade"), rules(sliver).join());
   // Run-4: an unlisted token coming back is nothing the wallet can value. Paid to the
   // contract called: amber; to anyone else: red.
   const junk = { ...move(router, ME_EVM), address: `0x${"42".repeat(20)}` };

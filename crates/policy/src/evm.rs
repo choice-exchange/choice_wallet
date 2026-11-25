@@ -516,6 +516,15 @@ pub fn evm_transaction(req: &TxRequest, chain: &EvmSide<'_>, ctx: &Context) -> A
     Assessment::from(out)
 }
 
+/// Dollars for a review: whole above 100, else to the cent.
+fn usd(v: f64) -> String {
+    if v >= 100.0 {
+        format!("{:.0}", v)
+    } else {
+        format!("{:.2}", v)
+    }
+}
+
 /// An amount of an EVM chain's coin (18 decimals on every chain the wallet signs on).
 /// What the node's simulation shows leaving the account, netted per token. A call that sends
 /// the account's tokens away and brings nothing back is a payment at best; when some go anywhere but the
@@ -562,6 +571,37 @@ fn simulated(moves: &[crate::EvmTransfer], req: &TxRequest, ctx: &Context, out: 
     // Something comes back only when the wallet can value it: the chain's coin or a token it
     // lists, not an NFT or a token anyone can mint and log a Transfer of (run-4), and only
     // when more of it comes in than goes out.
+    // What nets in of a token, and what that is worth in dollars at the host's price floor
+    // (the base units a dollar buys), where it gave one.
+    let net_in = |m: &crate::EvmTransfer| {
+        net.get(&key(m))
+            .map_or(U256::ZERO, |(i, _, o)| i.checked_sub(o).unwrap_or(U256::ZERO))
+    };
+    let net_out = |m: &crate::EvmTransfer| {
+        net.get(&key(m))
+            .map_or(U256::ZERO, |(_, i, o)| o.checked_sub(i).unwrap_or(U256::ZERO))
+    };
+    let dollars = |token: &str, amount: &U256| {
+        ctx.price_floors
+            .get(token)
+            .and_then(|f| f.parse::<f64>().ok())
+            .filter(|f| *f > 0.0)
+            .map(|f| amount.to_string().parse::<f64>().unwrap_or(f64::MAX) / f)
+    };
+    // Dust is nothing (review-3 left this open; run-5's Seaport floor closes it here too): at
+    // most a millionth of one token whatever it's worth, or under a dollar's worth where the
+    // host priced it. Else a site keeps a drain amber by paying back a sliver of a listed token,
+    // or the account's own coin wrapped.
+    let dust = |m: &crate::EvmTransfer| {
+        let decimals = if m.token == "native" {
+            18
+        } else {
+            ctx.decimals.get(&m.token).copied().unwrap_or(0)
+        };
+        let millionth = U256::from_u128(10u128.pow(u32::from(decimals.saturating_sub(6).min(38))));
+        let amount = net_in(m);
+        amount <= millionth || dollars(&m.token, &amount).is_some_and(|d| d < 1.0)
+    };
     let back: Vec<&crate::EvmTransfer> = moves
         .iter()
         .filter(|m| {
@@ -570,20 +610,63 @@ fn simulated(moves: &[crate::EvmTransfer], req: &TxRequest, ctx: &Context, out: 
                 && !m.nft
                 && (m.token == "native" || ctx.symbols.contains_key(&m.token))
                 && net.get(&key(m)).is_some_and(|(i, _, o)| i > o)
+                && !dust(m)
         })
         .collect();
     if gone.is_empty() {
         return;
     }
     if !back.is_empty() {
-        // A trade: the wallet can't weigh what comes back against what leaves.
         let to: std::collections::BTreeSet<&str> = gone.iter().map(|m| m.to.as_str()).collect();
+        let to_text = to.iter().map(|t| short(t)).collect::<Vec<_>>().join(", ");
+        // What each token, once, nets out of the account (or in) is worth; None when any of
+        // it has no price (an NFT never has one).
+        let worth = |xs: &[&crate::EvmTransfer], amount: &dyn Fn(&crate::EvmTransfer) -> U256| {
+            let mut seen = std::collections::BTreeSet::new();
+            let mut total = Some(0.0);
+            for m in xs {
+                if seen.insert(key(m)) {
+                    let d = if m.nft { None } else { dollars(&m.token, &amount(m)) };
+                    total = total.zip(d).map(|(t, d)| t + d);
+                }
+            }
+            total
+        };
+        let params = json!({ "to": to, "back": back.iter().map(|m| &m.token).collect::<Vec<_>>() });
+        // Where the host priced everything on both sides, what comes back is weighed against
+        // what leaves, as a site's swap minimum is: a trade far below it is how a drain looks.
+        if let (Some(out_usd), Some(in_usd)) = (worth(&gone, &net_out), worth(&back, &net_in))
+            && out_usd > 0.0
+        {
+            let lost_bps = ((out_usd - in_usd) / out_usd * 10_000.0).round() as i64;
+            let both = format!(
+                "Simulated: about ${} leaves your account for {to_text} and about ${} comes back.",
+                usd(out_usd),
+                usd(in_usd)
+            );
+            if lost_bps >= crate::swap::LOST_WARN_BPS {
+                let level = if lost_bps >= crate::swap::LOST_RED_BPS {
+                    Level::Red
+                } else {
+                    Level::Amber
+                };
+                out.push(finding(
+                    "simulated_value_lost",
+                    level,
+                    format!("{both} You would lose about {}% of it.", lost_bps / 100),
+                    json!({ "to": to, "lost_bps": lost_bps, "out_usd": out_usd, "in_usd": in_usd }),
+                ));
+            } else {
+                out.push(finding("simulated_trade", Level::Amber, both, params));
+            }
+            return;
+        }
+        // A trade the wallet can't weigh: something leaves that it has no price for.
         out.push(finding(
             "simulated_trade",
             Level::Amber,
             format!(
-                "Simulated: tokens leave your account for {} and {} comes back. The wallet can't weigh one against the other.",
-                to.iter().map(|t| short(t)).collect::<Vec<_>>().join(", "),
+                "Simulated: tokens leave your account for {to_text} and {} comes back. The wallet can't weigh one against the other.",
                 back.iter()
                     .map(|m| ctx.token_name(&m.token))
                     .collect::<std::collections::BTreeSet<_>>()
@@ -591,7 +674,7 @@ fn simulated(moves: &[crate::EvmTransfer], req: &TxRequest, ctx: &Context, out: 
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
-            json!({ "to": to, "back": back.iter().map(|m| &m.token).collect::<Vec<_>>() }),
+            params,
         ));
         return;
     }
@@ -1804,6 +1887,7 @@ mod tests {
         // can't weigh, amber, naming where the tokens go.
         let mut coin_back = mv(&router, &me);
         coin_back.token = "native".into();
+        coin_back.amount = "1000000000000000000".into();
         let swap = grade_with(Some(vec![mv(&me, &router), coin_back]));
         assert_eq!(
             (swap.level, rules_of(&swap).contains(&"simulated_trade")),
@@ -1892,7 +1976,13 @@ mod tests {
         let refunded = grade_moves(vec![drain.clone(), t(&usdc, &router, &me, "1")], 0);
         assert!(rules_of(&refunded).contains(&"simulated_loss"));
         // The coin out and a listed token back, more than went out of it: a trade, amber.
-        let swap = grade_moves(vec![t("native", &me, &router, "1"), t(&usdc, &attacker, &me, "1")], 1);
+        let swap = grade_moves(
+            vec![
+                t("native", &me, &router, "1000000000000000000"),
+                t(&usdc, &attacker, &me, "5000000"),
+            ],
+            10u128.pow(18),
+        );
         assert!(rules_of(&swap).contains(&"simulated_trade"));
         // Everything that leaves comes back: nothing moved.
         let round = grade_moves(vec![t(&usdc, &me, &router, "5"), t(&usdc, &router, &me, "5")], 0);
@@ -1904,6 +1994,137 @@ mod tests {
         let minted = grade_moves(vec![t(&atoken, &zero, &me, "50"), t(&atoken, &me, &attacker, "50")], 0);
         assert_eq!(minted.level, Level::Red);
         assert!(rules_of(&minted).contains(&"simulated_loss"));
+    }
+
+    /// Review-3 left this open: a drain kept amber by paying back a sliver of another listed
+    /// token, or the account's own coin wrapped. Dust is nothing (a millionth of a token, or
+    /// under a dollar where priced), and where the host priced both sides, what comes back is
+    /// weighed against what leaves as a site swap's minimum is.
+    #[test]
+    fn simulated_returns_are_weighed() {
+        let me = format!("0x{}", hex::encode(FROM));
+        let router = format!("0x{}", "6f".repeat(20));
+        let attacker = format!("0x{}", "bb".repeat(20));
+        let (usdc, usdt, winj, junk) = (
+            format!("0x{}", "83".repeat(20)),
+            format!("0x{}", "88".repeat(20)),
+            format!("0x{}", "0d".repeat(20)),
+            format!("0x{}", "99".repeat(20)),
+        );
+        let t = |token: &str, from: &str, to: &str, amount: &str| crate::EvmTransfer {
+            token: token.into(),
+            from: from.into(),
+            to: to.into(),
+            amount: amount.into(),
+            nft: false,
+            id: None,
+        };
+        let listed = Context {
+            origin: Some("https://x.example".into()),
+            origin_known: true,
+            symbols: [
+                (usdc.clone(), "USDC".to_owned()),
+                (usdt.clone(), "USDT".to_owned()),
+                (winj.clone(), "WINJ".to_owned()),
+                ("native".to_owned(), "INJ".to_owned()),
+            ]
+            .into(),
+            decimals: [(usdc.clone(), 6), (usdt.clone(), 6), (winj.clone(), 18)].into(),
+            ..Context::default()
+        };
+        // INJ at $8; USDC and USDT at $1.
+        let priced = Context {
+            price_floors: [
+                ("native".to_owned(), "125000000000000000".to_owned()),
+                (winj.clone(), "125000000000000000".to_owned()),
+                (usdc.clone(), "1000000".to_owned()),
+                (usdt.clone(), "1000000".to_owned()),
+            ]
+            .into(),
+            ..listed.clone()
+        };
+        let grade = |moves: Vec<crate::EvmTransfer>, value: u128, ctx: &Context| {
+            let mut r = req(
+                EthAddress::from_bytes([0x6f; 20]),
+                call(0x3593564cu32.to_be_bytes(), &[[0x60; 32]]),
+            );
+            r.tx.value = U256::from_u128(value);
+            let ctx = Context {
+                evm_transfers: Some(moves),
+                ..ctx.clone()
+            };
+            evm_transaction(&r, &EvmSide::injective(&MAINNET), &ctx)
+        };
+        let drain = t(&usdc, &me, &attacker, "100000000");
+        let red_loss = |a: &Assessment, why: &str| {
+            assert_eq!(a.level, Level::Red, "{why}: {:?}", rules_of(a));
+            assert!(rules_of(a).contains(&"simulated_loss"), "{why}: {:?}", rules_of(a));
+            assert!(!rules_of(a).contains(&"simulated_trade"), "{why}");
+        };
+        // A sliver of another listed token, priced or not.
+        for ctx in [&listed, &priced] {
+            red_loss(
+                &grade(vec![drain.clone(), t(&usdt, &router, &me, "1")], 0, ctx),
+                "1 base unit of USDT",
+            );
+            // The call's own wei, wrapped and sent back.
+            red_loss(
+                &grade(
+                    vec![
+                        drain.clone(),
+                        t("native", &me, &router, "1"),
+                        t(&winj, &router, &me, "1"),
+                    ],
+                    1,
+                    ctx,
+                ),
+                "the coin wrapped",
+            );
+        }
+        // Under a dollar's worth, where priced.
+        red_loss(
+            &grade(vec![drain.clone(), t(&usdt, &router, &me, "500000")], 0, &priced),
+            "$0.50 of USDT",
+        );
+        assert!(
+            rules_of(&grade(
+                vec![drain.clone(), t(&usdt, &router, &me, "500000")],
+                0,
+                &listed
+            ))
+            .contains(&"simulated_trade")
+        );
+        // Weighed: $100 out and $5 back is red, $90 back amber, $99 back a plain trade.
+        let weighed = |back: &str| grade(vec![drain.clone(), t(&usdt, &router, &me, back)], 0, &priced);
+        let a = weighed("5000000");
+        assert_eq!(
+            (a.level, rules_of(&a).contains(&"simulated_value_lost")),
+            (Level::Red, true)
+        );
+        let msg = |a: &Assessment, rule: &str| a.findings.iter().find(|f| f.rule == rule).unwrap().message.clone();
+        assert_eq!(
+            msg(&a, "simulated_value_lost"),
+            "Simulated: about $100 leaves your account for 0xbbbb…bbbb and about $5.00 comes back. You would lose about 95% of it."
+        );
+        let a = weighed("90000000");
+        assert_eq!(
+            (a.level, rules_of(&a).contains(&"simulated_value_lost")),
+            (Level::Amber, true)
+        );
+        let a = weighed("99000000");
+        assert_eq!(a.level, Level::Amber);
+        assert_eq!(
+            msg(&a, "simulated_trade"),
+            "Simulated: about $100 leaves your account for 0xbbbb…bbbb and about $99.00 comes back."
+        );
+        // Something leaves that the wallet has no price for: it can't weigh, as before.
+        let a = grade(
+            vec![t(&junk, &me, &attacker, "7"), t(&usdt, &router, &me, "50000000")],
+            0,
+            &priced,
+        );
+        assert_eq!(a.level, Level::Amber);
+        assert!(msg(&a, "simulated_trade").ends_with("The wallet can't weigh one against the other."));
     }
 
     #[test]
