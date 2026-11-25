@@ -105,14 +105,22 @@ test("key auto-repeat is one held key, and a release with no press changes nothi
   w.up("key:Enter");
   w.advance(ARM_MS);
   assert.equal(armed, true);
-  // Losing the front while a press is held forgets it.
+  // Losing the front while a press is held forgets it, so the button arms again; but that
+  // press didn't count, and its click on release is ignored (run-5). A press made after
+  // arming counts.
   again();
-  const third = arm(true, w.env, (v) => (armed = v));
+  let counted = true;
+  const third = arm(true, w.env, (v) => (armed = v), (c) => (counted = c));
+  assert.equal(counted, false, "nothing pressed yet");
   w.down("pointer:3");
   w.focus(false);
   w.focus(true);
   w.advance(ARM_MS);
   assert.equal(armed, true);
+  assert.equal(counted, false, "the press held across the blur doesn't count");
+  w.up("pointer:3");
+  w.down("pointer:4");
+  assert.equal(counted, true, "a press after arming counts");
   third();
 });
 

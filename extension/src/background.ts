@@ -80,7 +80,8 @@ const service = createService({
   },
   async openWindow(id) {
     // Top right of the window the user is in, like the toolbar popup, a little off each
-    // time, so a page can't know where the main button will be (ui/src/arm.ts).
+    // time, so a page can't count on where the main button will be (it spans the window's
+    // width, so this only blurs its height; ui/src/arm.ts is the defence).
     const near = await chrome.windows.getLastFocused().catch(() => undefined);
     const [dx, dy] = crypto.getRandomValues(new Uint8Array(2));
     const place =

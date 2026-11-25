@@ -304,6 +304,11 @@ fn refuses_second_signer_and_fee_payer() {
         decode_err(with_auth(|a| a.fee.as_mut().unwrap().granter = me.clone())),
         Error::FeeGranter
     );
+    // The same address in capitals is the signer to the chain: refused as not canonical.
+    assert!(matches!(
+        decode_err(with_auth(|a| a.fee.as_mut().unwrap().granter = me.to_uppercase())),
+        Error::Address(_)
+    ));
     let d = direct::decode(
         with_auth(|a| a.fee.as_mut().unwrap().granter = other_granter.clone()),
         &MAINNET.cosmos,

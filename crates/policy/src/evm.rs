@@ -502,20 +502,28 @@ fn simulated(moves: &[crate::EvmTransfer], req: &TxRequest, ctx: &Context, out: 
     // Each token's moves, netted for the account first: what leaves and comes back in the
     // same token (the call's own value bounced back, say) is neither a loss nor a return
     // (review-3). An NFT nets by its ID. An amount that doesn't parse counts as all leaving.
+    // A mint (a Transfer from the zero address) never offsets what leaves: some tokens log one
+    // inside every transfer for interest already in the balance (Aave's aTokens), so a drain of
+    // up to that much would net to nothing.
     let key = |m: &crate::EvmTransfer| (m.token.clone(), m.nft.then(|| m.id.clone()).flatten());
-    let mut net: std::collections::BTreeMap<_, (U256, U256)> = std::collections::BTreeMap::new();
+    // Per token: (everything in, everything in but mints, out).
+    let mut net: std::collections::BTreeMap<_, (U256, U256, U256)> = std::collections::BTreeMap::new();
     for m in moves.iter().filter(|m| (m.from == me) != (m.to == me)) {
-        let e = net.entry(key(m)).or_insert((U256::ZERO, U256::ZERO));
+        let e = net.entry(key(m)).or_insert((U256::ZERO, U256::ZERO, U256::ZERO));
         let amount = U256::from_dec_str(&m.amount);
         if m.to == me {
-            e.0 = e.0.checked_add(&amount.unwrap_or(U256::ZERO)).unwrap_or(U256::MAX);
+            let a = amount.unwrap_or(U256::ZERO);
+            e.0 = e.0.checked_add(&a).unwrap_or(U256::MAX);
+            if m.from != zero {
+                e.1 = e.1.checked_add(&a).unwrap_or(U256::MAX);
+            }
         } else {
-            e.1 = e.1.checked_add(&amount.unwrap_or(U256::MAX)).unwrap_or(U256::MAX);
+            e.2 = e.2.checked_add(&amount.unwrap_or(U256::MAX)).unwrap_or(U256::MAX);
         }
     }
     let gone: Vec<&crate::EvmTransfer> = moves
         .iter()
-        .filter(|m| m.from == me && m.to != me && net.get(&key(m)).is_some_and(|(i, o)| o > i))
+        .filter(|m| m.from == me && m.to != me && net.get(&key(m)).is_some_and(|(_, i, o)| o > i))
         .collect();
     // Something comes back only when the wallet can value it: the chain's coin or a token it
     // lists, not an NFT or a token anyone can mint and log a Transfer of (run-4), and only
@@ -527,7 +535,7 @@ fn simulated(moves: &[crate::EvmTransfer], req: &TxRequest, ctx: &Context, out: 
                 && m.from != me
                 && !m.nft
                 && (m.token == "native" || ctx.symbols.contains_key(&m.token))
-                && net.get(&key(m)).is_some_and(|(i, o)| i > o)
+                && net.get(&key(m)).is_some_and(|(i, _, o)| i > o)
         })
         .collect();
     if gone.is_empty() {
@@ -1219,10 +1227,11 @@ const EXCHANGE_DEPOSIT: u32 = 0xe441dec9;
 const BETWEEN_SUBACCOUNTS: [u32; 3] = [0x42eba2ed, 0x8ff96af4, 0xaf78360b];
 
 /// A move between subaccounts, info only when both are the sender's. Margin added to another
-/// account's position is that account's (review-3: only the sender was read before). Whether
-/// the module refuses a foreign subaccount here isn't checked against injective-core, so either
-/// side naming another account is red. IDs are read as a deposit's; one that reading refuses
-/// is unreadable.
+/// account's position is that account's (review-3: only the sender was read before). The
+/// exchange module refuses a foreign subaccount on either side of these three messages
+/// (ValidateBasic's CheckValidSubaccountIDOrNonce, injective-core v1.20), so such a call
+/// reverts; red here is defence in depth. IDs are read as a deposit's; one that reading
+/// refuses is unreadable.
 fn between_subaccounts(data: &[u8], from: &EthAddress, method: &Method) -> Option<Finding> {
     use abi::Ty::{Bytes, Word};
     let v = args(data, &[Word, Bytes, Bytes, Bytes, Word])?;
@@ -1649,6 +1658,13 @@ mod tests {
         // Everything that leaves comes back: nothing moved.
         let round = grade_moves(vec![t(&usdc, &me, &router, "5"), t(&usdc, &router, &me, "5")], 0);
         assert!(!rules_of(&round).iter().any(|r| r.starts_with("simulated_")));
+        // A token that logs a mint to the account inside a transfer (an aToken's interest,
+        // already in its balance) doesn't offset what leaves: the drain stays red.
+        let atoken = format!("0x{}", "a7".repeat(20));
+        let zero = format!("0x{}", "0".repeat(40));
+        let minted = grade_moves(vec![t(&atoken, &zero, &me, "50"), t(&atoken, &me, &attacker, "50")], 0);
+        assert_eq!(minted.level, Level::Red);
+        assert!(rules_of(&minted).contains(&"simulated_loss"));
     }
 
     #[test]

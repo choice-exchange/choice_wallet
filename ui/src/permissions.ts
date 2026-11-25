@@ -66,7 +66,8 @@ export function allowanceLevel(amount: string, held: string | undefined): "red" 
   return a >= h ? "red" : "amber";
 }
 
-function whole(s: string): bigint | undefined {
+/** A base-unit amount as the endpoint answered it, when it is a whole number. */
+export function whole(s: string): bigint | undefined {
   return /^\d{1,80}$/.test(s) ? BigInt(s) : undefined;
 }
 

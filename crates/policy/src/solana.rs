@@ -496,7 +496,7 @@ pub fn solana_transaction(r: &Read, signer: &Pubkey, c: &Cctp, ctx: &Context) ->
                 "solana_unread_unsimulated",
                 Level::Red,
                 format!(
-                    "It couldn't be simulated, so nothing shows what {names} would do with this account, which it signs for. It could take what's in it."
+                    "It couldn't be simulated, and {names} gets this account's signature: it could take what's in it."
                 ),
                 json!({ "programs": blind.iter().map(b58).collect::<Vec<_>>() }),
             );

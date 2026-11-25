@@ -197,6 +197,11 @@ pub(crate) fn decode_with_mode(
     if !fee.payer.is_empty() && fee.payer != signer_addr {
         return Err(Error::FeePayer);
     }
+    // The chain reads the granter as bytes, and bech32 also comes in capitals: a granter must be
+    // a canonical address (as amino requires) before it is compared with the signer's.
+    if !fee.granter.is_empty() {
+        chain.check_address(&fee.granter)?;
+    }
     if fee.granter == signer_addr {
         return Err(Error::FeeGranter);
     }

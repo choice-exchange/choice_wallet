@@ -316,7 +316,12 @@ fn exec_of_the_grantees_own_messages_is_refused() {
     // A nested exec's own grantee is checked as well.
     assert_eq!(
         decode(vec![exec(&a0, vec![exec(&a1, vec![send(&a1, &a0)])])]).unwrap_err(),
-        Error::SelfExec(a1)
+        Error::SelfExec(a1.clone())
+    );
+    // The grantee's address in capitals is the same account to the chain.
+    assert_eq!(
+        decode(vec![exec(&a0, vec![send(&a0.to_uppercase(), &a1)])]).unwrap_err(),
+        Error::SelfExec(a0.clone())
     );
 }
 

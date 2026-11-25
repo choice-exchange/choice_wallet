@@ -159,9 +159,10 @@ pub struct Context {
     #[serde(default)]
     pub known_contracts: Vec<String>,
     /// ERC20 contracts the wallet itself vouches for in a request it built: the token of its
-    /// own revoke, read from an ERC20 allowance it listed. Only there is `approve(spender, 0)`
-    /// a revoke; on an ERC721 the same bytes approve `spender` for NFT #0. A site's request
-    /// never carries these.
+    /// own revoke, read from an ERC20 allowance it listed. Only there, and at the chain's
+    /// pinned CCTP USDC (vouched by the policy itself), is `approve(spender, 0)` a revoke; on
+    /// an ERC721 the same bytes approve `spender` for NFT #0. A site's request never carries
+    /// these.
     #[serde(default)]
     pub erc20_contracts: Vec<String>,
     /// How to name tokens in messages ("INJ" rather than "inj"), by the same keys as

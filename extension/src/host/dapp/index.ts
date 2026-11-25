@@ -360,6 +360,8 @@ export function createDapps(h: DappHost) {
     if (!p || p.digest !== digest) return fail("not_approved", "This request changed. Review it again.");
     if (p.blocked) return fail("blocked", "The wallet won't sign this.");
     if (p.confirm && (typeof confirm === "string" ? confirm.trim() : "") !== p.confirm) return fail("confirm", `Type ${p.confirm} to continue.`);
+    // A switch after the review: the request stays open for the account it names.
+    if (w.named && w.named.of(u.account) !== w.named.address) return fail("wrong_account", "The account in use isn't the one this site asked to sign with. Switch back, or ask the site again.");
     if (u.account.account.derivation === "ledger") {
       // The device signs: it gets the vault's bytes; the request waits for its signature.
       const dev = await h.vault<Omit<DeviceRequest, "path">>("device_request", { request: p.request, digest: p.digest });
