@@ -41,12 +41,31 @@ jobs:
         run: |
           set -euo pipefail
           version=$(node extension/crx-compare.mjs --version store.crx)
+          if ! [[ "$version" =~ ^[0-9]+(\.[0-9]+){0,3}$ ]]; then echo "::error::$version is not a Chrome version"; exit 1; fi
+          # The commit the release must come from: the one this version's signed tag names, on
+          # the default branch's history. A tag's push runs the release.yml in the tagged
+          # commit, which its tagger chooses, so the attestation alone vouches for nothing
+          # reviewed (run-5).
+          ref=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v$version")
+          if [ "$(jq -r .object.type <<<"$ref")" != tag ]; then echo "::error::v$version is not an annotated tag"; exit 1; fi
+          tag=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$(jq -r .object.sha <<<"$ref")")
+          if [ "$(jq -r .verification.verified <<<"$tag")" != true ]; then echo "::error::v$version is not signed by a key GitHub verifies"; exit 1; fi
+          if [ "$(jq -r .object.type <<<"$tag")" != commit ]; then echo "::error::v$version doesn't name a commit"; exit 1; fi
+          commit=$(jq -r .object.sha <<<"$tag")
+          if ! [[ "$commit" =~ ^[0-9a-f]{40}$ ]]; then echo "::error::v$version names no commit"; exit 1; fi
+          main=$(gh api "repos/$GITHUB_REPOSITORY" --jq .default_branch)
+          status=$(gh api "repos/$GITHUB_REPOSITORY/compare/$commit...$main" --jq .status)
+          if [ "$status" != ahead ] && [ "$status" != identical ]; then
+            echo "::error::v$version's commit $commit is not on $main"; exit 1
+          fi
           gh release download "v$version" --dir release --pattern "choice-wallet-$version.zip" --pattern SHA256SUMS
-          # Attested by release.yml, from this version's tag, on GitHub's runners: any other
-          # workflow of the repository can attest a zip too (run-4).
+          # Attested by release.yml at that very commit, for this version's tag, on GitHub's
+          # runners: any other workflow, or a copy of this one at another commit, can attest a
+          # zip too (run-4, run-5).
           gh attestation verify "release/choice-wallet-$version.zip" --repo "$GITHUB_REPOSITORY" \
             --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
-            --source-ref "refs/tags/v$version" --deny-self-hosted-runners
+            --source-ref "refs/tags/v$version" --source-digest "$commit" --signer-digest "$commit" \
+            --deny-self-hosted-runners
           echo "VERSION=$version" >> "$GITHUB_ENV"
 
       - name: Compare

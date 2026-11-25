@@ -145,6 +145,13 @@ export class EvmRpc {
     return results.map((r) => (typeof r === "string" && /^0x[0-9a-fA-F]{1,64}$/.test(r) ? BigInt(r) : null));
   }
 
+  /** What each delegatee may still borrow on `owner`'s credit, by Aave debt token
+   *  (`borrowAllowance(owner, delegatee)`), or null where the call failed. */
+  async borrowAllowances(pairs: readonly { token: string; delegatee: string }[], owner: string): Promise<(bigint | null)[]> {
+    const results = await this.batch(pairs.map((p) => ({ method: "eth_call", params: [{ to: p.token, data: `0x6bd76d24${word(owner)}${word(p.delegatee)}` }, "latest"] })));
+    return results.map((r) => (typeof r === "string" && /^0x[0-9a-fA-F]{1,64}$/.test(r) ? BigInt(r) : null));
+  }
+
   /** Whether each operator may still move all of `owner`'s NFTs in its collection (null: the
    *  collection didn't answer). */
   async nftOperators(pairs: readonly { collection: string; operator: string }[], owner: string): Promise<(boolean | null)[]> {

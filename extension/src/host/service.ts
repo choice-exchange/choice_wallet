@@ -29,6 +29,7 @@ import { createStaking } from "./staking";
 import { createBridge } from "./bridge";
 import { createSolana } from "./solana";
 import { createPermit2 } from "./permit2";
+import { createSeaport } from "./seaport";
 import { createSwaps } from "./swap";
 import { createWallets, isWatch } from "./wallets";
 import { settled as cachesSettled } from "./cache";
@@ -81,7 +82,7 @@ export const AUTO_LOCK_MINUTES = 15;
 const LOCK_CHOICES = [5, 15, 60, 240];
 /** Local storage that belongs to the wallet, not the device: removing the wallet clears it.
  *  Endpoints, the network and other settings stay. */
-const WALLET_KEYS = ["vault", "wallets", "keystore", "kind", "accounts", "active_account", "connections", "custom_tokens", "custom_nfts", "rescue", "token_filter", "address_book", "watch", "watch_own", "bridge_transfers", "chain_sent", "votes_cast", "solana_rent", "site_chains", "permit2_signed", "permit2_overflow"];
+const WALLET_KEYS = ["vault", "wallets", "keystore", "kind", "accounts", "active_account", "connections", "custom_tokens", "custom_nfts", "rescue", "token_filter", "address_book", "watch", "watch_own", "bridge_transfers", "chain_sent", "votes_cast", "solana_rent", "site_chains", "permit2_signed", "permit2_overflow", "seaport_signed", "seaport_overflow"];
 
 /** What a reset keeps: the device's settings, and caches of public data (token details,
  *  pairs, prices). Everything else in local storage goes. */
@@ -224,12 +225,15 @@ export function createService(d: Deps) {
   const gov = createGov({ sender, local: d.local, owned, turn: records });
   // The Permit2 permits this wallet signs, kept in the records' turn (./permit2.ts).
   const permit2 = createPermit2(d.local, undefined, records);
+  // The Seaport listings it signs, likewise (./seaport.ts).
+  const seaport = createSeaport(d.local, undefined, records);
   const swaps = createSwaps(sender, d.session, d.fetch, async (net) => (await tokenFilter(net)).shown, Date.now, permit2);
   const bridge = createBridge(sender, d.session, d.local, d.fetch, Date.now, solana, { turn: records, owned });
   const approvals = createApprovals(sender, {
     historyEndpoints: (n, key) => evmChains.historyEndpoints(n, key),
     session: d.session,
     permit2,
+    seaport,
     addedNfts: async (n) => {
       const { custom_nfts } = (await d.local.get(["custom_nfts"])) as { custom_nfts?: Partial<Record<NetworkId, unknown>> };
       const list = custom_nfts?.[n];
@@ -321,7 +325,7 @@ export function createService(d: Deps) {
         const gone = solanaMintKeys(before).filter((k) => !kept.has(k));
         if (gone.length > 0) await d.local.remove(gone);
       }
-    const got = (await d.local.get(["votes_cast", "chain_sent", "bridge_transfers", "solana_rent", "rescue", "permit2_signed", "permit2_overflow"])) as Record<string, unknown>;
+    const got = (await d.local.get(["votes_cast", "chain_sent", "bridge_transfers", "solana_rent", "rescue", "permit2_signed", "permit2_overflow", "seaport_signed", "seaport_overflow"])) as Record<string, unknown>;
     const only = (o: unknown, keep: (k: string) => boolean) => Object.fromEntries(Object.entries(isObject(o) ? o : {}).filter(([k]) => keep(k)));
     const next: Record<string, unknown> = {};
     // votes_cast[network][inj1]; chain_sent["<network> <chain> <0x>"]; rescue[inj1].
@@ -331,6 +335,9 @@ export function createService(d: Deps) {
     // permit2_signed["<chain> <0x>"]: the Permit2 permits an account signed.
     if (isObject(got["permit2_signed"])) next["permit2_signed"] = only(got["permit2_signed"], (k) => has(k.split(" ")[1]));
     if (isObject(got["permit2_overflow"])) next["permit2_overflow"] = only(got["permit2_overflow"], (k) => has(k.split(" ")[1]));
+    // seaport_signed["<chain> <0x>"]: the Seaport listings an account signed.
+    if (isObject(got["seaport_signed"])) next["seaport_signed"] = only(got["seaport_signed"], (k) => has(k.split(" ")[1]));
+    if (isObject(got["seaport_overflow"])) next["seaport_overflow"] = only(got["seaport_overflow"], (k) => has(k.split(" ")[1]));
     if (Array.isArray(got["bridge_transfers"])) next["bridge_transfers"] = got["bridge_transfers"].filter((t: unknown) => isObject(t) && has(t["account"]));
     if (Array.isArray(got["solana_rent"])) next["solana_rent"] = got["solana_rent"].filter((t: unknown) => isObject(t) && has(t["owner"]));
     if (Object.keys(next).length > 0) await d.local.set(next);
@@ -367,6 +374,8 @@ export function createService(d: Deps) {
     turn: records,
     sender,
     permit2,
+    seaport,
+    chainPrices: (n) => evmChains.prices(n),
     async evmIndexFor(n, key) {
       if (key === "injective") return sender.evmIndex(n);
       const urls = await evmChains.historyEndpoints(n, key);

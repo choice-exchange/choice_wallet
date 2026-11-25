@@ -203,13 +203,15 @@ function safeUri(u: string): string | null {
 /** Every CW721 collection of `owner`'s, from the index and the user's list. */
 export async function cw721Collections(lcd: Lcd, owner: string, added: readonly string[]): Promise<NftCollection[]> {
   const candidates = [...new Set([...added.filter((a) => CONTRACT.test(a)), ...(await cw721Candidates(lcd, owner))])].slice(0, MAX_COLLECTIONS);
-  const out: NftCollection[] = [];
   let budget = MAX_INFO;
-  for (const address of candidates) {
+  // One at a time, so the `nft_info` budget goes to the first collections. A candidate whose
+  // answers fail on every endpoint is left out, as an EVM collection is: any contract that
+  // logs a transfer to the account is a candidate (run-5).
+  return eachCollection(candidates, 1, async (address): Promise<NftCollection | null> => {
     const info = await cw721Info(lcd, address);
-    if (!info) continue;
+    if (!info) return null;
     const held = await cw721Tokens(lcd, address, owner);
-    if (!held || (held.ids.length === 0 && !added.includes(address))) continue;
+    if (!held || (held.ids.length === 0 && !added.includes(address))) return null;
     const items: Nft[] = held.ids.map((id) => ({ tokenId: id, name: "", uri: null }));
     const look = held.ids.slice(0, budget);
     budget -= look.length;
@@ -225,9 +227,8 @@ export async function cw721Collections(lcd: Lcd, owner: string, added: readonly 
       );
       got.forEach((n, j) => (items[i + j] = n));
     }
-    out.push({ address, standard: "cw721", ...info, items, more: held.more });
-  }
-  return out;
+    return { address, standard: "cw721", ...info, items, more: held.more };
+  });
 }
 
 const call = (to: string, data: string) => ({ method: "eth_call", params: [{ to, data }, "latest"] });

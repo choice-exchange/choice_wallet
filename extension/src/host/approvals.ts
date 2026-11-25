@@ -17,6 +17,7 @@ import type { AccountInfo, ApprovalsSummary, EvmRevokeKind, Result, RevokeItem, 
 
 import { evmChains } from "./evmchains";
 import { PERMIT2, type Permit2Records } from "./permit2";
+import { counterStuck, type SeaportRecords } from "./seaport";
 import { sourceOfChain, type createSender, type EvmDisplayLike } from "./send";
 import type { Store } from "./service";
 import { fail } from "./util";
@@ -39,8 +40,8 @@ const TYPE_URL = /^\/[A-Za-z0-9._]{1,127}$/;
  *  wallet are read (./permit2.ts); one signed with the same key elsewhere isn't. */
 export const NOT_READ_EVM = [
   "ERC-777 operators",
-  "Aave credit delegations (borrow allowances)",
-  "signed but unfilled Seaport orders and token permits",
+  "Seaport listings signed outside this wallet",
+  "token permits signed but not used",
   "Permit2 permits signed outside this wallet",
   "Permit2 allowances and permits at other Permit2 deployments",
   "meta-transactions and forward requests signed but not sent",
@@ -59,6 +60,11 @@ const MAX_CHECKS = 100;
 type EvmPermissions = Pick<ApprovalsSummary, "nftOperators" | "nftApprovals"> & {
   erc20: { token: string; spender: string; amount: string }[];
   permit2: { token: string; spender: string; amount: string; expiration: number; nonce: number }[];
+  /** What each delegatee may still borrow on the account's credit, by Aave debt token. */
+  borrow: { token: string; delegatee: string; amount: string }[];
+  /** The index logged an approval to Seaport, standing or not: listings signed under it come
+   *  back with any new one (run-5). */
+  seaportEver: boolean;
   indexDown: boolean;
   rpcDown: boolean;
 };
@@ -66,7 +72,7 @@ type EvmPermissions = Pick<ApprovalsSummary, "nftOperators" | "nftApprovals"> & 
 /** The EVM permissions `owner` gave on one chain: the index names candidates, the chain says
  *  what still stands. What couldn't be read is added to `unchecked`. */
 async function evmPermissions(index: EvmIndex | null, rpc: () => Promise<EvmRpc>, owner: string, unchecked: string[], now: number): Promise<EvmPermissions> {
-  const out: EvmPermissions = { erc20: [], nftOperators: [], nftApprovals: [], permit2: [], indexDown: false, rpcDown: false };
+  const out: EvmPermissions = { erc20: [], nftOperators: [], nftApprovals: [], permit2: [], borrow: [], seaportEver: false, indexDown: false, rpcDown: false };
   const missing = (what: string) => {
     if (!unchecked.includes(what)) unchecked.push(what);
   };
@@ -76,8 +82,8 @@ async function evmPermissions(index: EvmIndex | null, rpc: () => Promise<EvmRpc>
   }
   let found;
   try {
-    const [a, o, p] = await Promise.all([index.approvals(owner), index.operators(owner), index.permit2Approvals(owner, PERMIT2)]);
-    found = { a, o, p };
+    const [a, o, p, b] = await Promise.all([index.approvals(owner), index.operators(owner), index.permit2Approvals(owner, PERMIT2), index.borrowDelegations(owner)]);
+    found = { a, o, p, b };
   } catch {
     out.indexDown = true;
     return out;
@@ -85,6 +91,9 @@ async function evmPermissions(index: EvmIndex | null, rpc: () => Promise<EvmRpc>
   if (!found.a.complete) missing("ERC20 and NFT approvals past the first 5,000 records");
   if (!found.o.complete) missing("NFT operators past the first 5,000 records");
   if (!found.p.complete) missing("Permit2 allowances past the first 5,000 records");
+  if (!found.b.complete) missing("Aave borrow allowances past the first 5,000 records");
+  const seaport = SEAPORT.toLowerCase();
+  out.seaportEver = found.o.pairs.some((o) => o.operator.toLowerCase() === seaport) || found.a.pairs.some((a) => a.spender.toLowerCase() === seaport);
   const cap = <T>(xs: T[], what: string) => {
     if (xs.length > MAX_CHECKS) missing(`some ${what}`);
     return xs.slice(0, MAX_CHECKS);
@@ -93,14 +102,16 @@ async function evmPermissions(index: EvmIndex | null, rpc: () => Promise<EvmRpc>
   const nfts = cap(found.a.nfts, "NFT approvals");
   const ops = cap(found.o.pairs, "NFT operators");
   const p2 = cap(found.p.pairs, "Permit2 allowances");
-  if (pairs.length + nfts.length + ops.length + p2.length === 0) return out;
+  const borrows = cap(found.b.pairs, "Aave borrow allowances");
+  if (pairs.length + nfts.length + ops.length + p2.length + borrows.length === 0) return out;
   try {
     const client = await rpc();
-    const [left, approved, operators, allowed] = await Promise.all([
+    const [left, approved, operators, allowed, borrowable] = await Promise.all([
       pairs.length ? client.erc20Allowances(pairs, owner) : [],
       nfts.length ? client.nftApproved(nfts) : [],
       ops.length ? client.nftOperators(ops, owner) : [],
       p2.length ? client.permit2Allowances(PERMIT2, p2, owner) : [],
+      borrows.length ? client.borrowAllowances(borrows, owner) : [],
     ]);
     pairs.forEach((p, i) => {
       const a = left[i];
@@ -123,6 +134,12 @@ async function evmPermissions(index: EvmIndex | null, rpc: () => Promise<EvmRpc>
       const a = allowed[i];
       if (a === null || a === undefined) missing("some Permit2 allowances");
       else if (a.amount > 0n && a.expiration >= now) out.permit2.push({ ...p, amount: a.amount.toString(), expiration: a.expiration, nonce: a.nonce });
+    });
+    // A contract that logs a delegation but can't answer for one is named as not read.
+    borrows.forEach((b, i) => {
+      const a = borrowable[i];
+      if (a === null || a === undefined) missing("some Aave borrow allowances");
+      else if (a > 0n) out.borrow.push({ ...b, amount: a.toString() });
     });
   } catch {
     out.rpcDown = true;
@@ -182,6 +199,8 @@ export interface ApprovalChains {
   addedNfts?(network: NetworkId): Promise<string[]>;
   /** The Permit2 permits this wallet signed, shown until used, cancelled or ended. */
   permit2?: Permit2Records;
+  /** The Seaport listings this wallet signed, shown until filled, cancelled or ended. */
+  seaport?: SeaportRecords;
   fetch: Fetch;
   now?: () => number;
 }
@@ -232,6 +251,29 @@ export function createApprovals(sender: Sender, chains: ApprovalChains) {
     return live.permits.map((p) => ({ token: evmDenom(p.token), spender: p.spender, kind: p.kind, amount: p.amount, deadline: p.deadline, nonce: p.nonce }));
   }
 
+  /** Seaport's part of a summary, or nothing while it holds no approval, the index logged
+   *  none, and no listing signed here may still be filled. */
+  async function seaportPart(caip2: string, owner: string, rpc: () => Promise<EvmRpc>, perms: EvmPermissions, unchecked: string[]): Promise<ApprovalsSummary["seaport"]> {
+    const seaport = SEAPORT.toLowerCase();
+    const held = perms.nftOperators.some((o) => o.operator.toLowerCase() === seaport) || perms.erc20.some((a) => a.spender.toLowerCase() === seaport);
+    let client: EvmRpc | null = null;
+    try {
+      client = await rpc();
+    } catch {
+      client = null;
+    }
+    const live = chains.seaport ? await chains.seaport.live(caip2, owner, client) : { orders: [], unchecked: false };
+    if (live.unchecked && !unchecked.includes("whether some Seaport listings signed here were filled or cancelled")) unchecked.push("whether some Seaport listings signed here were filled or cancelled");
+    if (!held && !perms.seaportEver && live.orders.length === 0) return undefined;
+    // Whether cancel-all would cancel anything here: where it couldn't be told, it's offered.
+    const stuck = client ? (await counterStuck(client, owner)) === true : false;
+    return {
+      ...(perms.seaportEver || held ? { ever: true as const } : {}),
+      ...(stuck ? { stuck: true as const } : {}),
+      signed: live.orders.map((o) => ({ hash: o.hash, offer: o.offer, ends: o.end })),
+    };
+  }
+
   /** The other EVM chains whose permissions can be checked: those with a history index. */
   async function checkable(network: NetworkId): Promise<ApprovalsSummary["chains"]> {
     const out: ApprovalsSummary["chains"] = [];
@@ -277,7 +319,9 @@ export function createApprovals(sender: Sender, chains: ApprovalChains) {
       const erc20 = perms.erc20.map((e) => ({ ...e, token: evmDenom(e.token) }));
       const permit2 = await permit2Rows(network, "", evm0x, perms.permit2);
       const permit2Signed = await signedRows(`eip155:${net.evmChainId}`, evm0x, () => sender.evm(network), unchecked);
-      const tokens = await sender.tokensFor(network, [...cw20.map((c) => c.token), ...erc20.map((e) => e.token), ...permit2.map((p) => p.token), ...permit2Signed.map((p) => p.token)]);
+      const seaport = await seaportPart(`eip155:${net.evmChainId}`, evm0x, () => sender.evm(network), perms, unchecked);
+      const borrow = perms.borrow.map((b) => ({ ...b, token: evmDenom(b.token) }));
+      const tokens = await sender.tokensFor(network, [...cw20.map((c) => c.token), ...erc20.map((e) => e.token), ...permit2.map((p) => p.token), ...permit2Signed.map((p) => p.token), ...borrow.map((b) => b.token)]);
       // What the account holds of them (and of INJ, for fee allowances), where the balance
       // list read it: an allowance below that is amber on the screen, every other one red.
       // An `erc20:` bank denom is the ERC20 itself.
@@ -302,6 +346,8 @@ export function createApprovals(sender: Sender, chains: ApprovalChains) {
           nftApprovals: perms.nftApprovals,
           permit2,
           ...(permit2Signed.length > 0 ? { permit2Signed } : {}),
+          ...(seaport ? { seaport } : {}),
+          ...(borrow.length > 0 ? { borrow } : {}),
           chains: await checkable(network),
           tokens,
           balances,
@@ -327,9 +373,10 @@ export function createApprovals(sender: Sender, chains: ApprovalChains) {
       const unchecked: string[] = [...NOT_READ_EVM];
       const perms = await evmPermissions(urls.length > 0 ? new EvmIndex(urls, chains.fetch) : null, () => sender.chainRpc(network, c.key), owner, unchecked, now());
       const permit2Signed = await signedRows(c.caip2, owner, () => sender.chainRpc(network, c.key), unchecked);
+      const seaport = await seaportPart(c.caip2, owner, () => sender.chainRpc(network, c.key), perms, unchecked);
       // Token names from the chain itself, for a few.
       const tokens: Record<string, TokenInfo> = {};
-      const named = [...new Set([...perms.erc20, ...perms.permit2, ...permit2Signed.map((p) => ({ token: p.token.slice(4) }))].map((x) => x.token))].slice(0, 12);
+      const named = [...new Set([...perms.erc20, ...perms.permit2, ...perms.borrow, ...permit2Signed.map((p) => ({ token: p.token.slice(4) }))].map((x) => x.token))].slice(0, 12);
       if (named.length > 0) {
         const rpc = await sender.chainRpc(network, c.key);
         await Promise.all(
@@ -356,6 +403,8 @@ export function createApprovals(sender: Sender, chains: ApprovalChains) {
           nftApprovals: perms.nftApprovals,
           permit2: await permit2Rows(network, c.key, owner, perms.permit2),
           ...(permit2Signed.length > 0 ? { permit2Signed } : {}),
+          ...(seaport ? { seaport } : {}),
+          ...(perms.borrow.length > 0 ? { borrow: perms.borrow.map((b) => ({ ...b, token: evmDenom(b.token) })) } : {}),
           tokens,
           names: contractNames(NETWORKS[network], false),
           unchecked,
@@ -422,11 +471,26 @@ export function createApprovals(sender: Sender, chains: ApprovalChains) {
     return sender.prepareEvm(network, account, { denom: token, to: evmAddress(token)!, amount: "0", revoke: spender });
   }
 
+  /** The account's address, CAIP-2 chain and endpoint on Injective's EVM side, or on another
+   *  EVM chain (`chain`, its key). */
+  async function evmSide(network: NetworkId, account: AccountInfo, chain: unknown): Promise<Result<{ caip2: string; owner: string; rpc: EvmRpc }>> {
+    const other = chain === undefined ? null : typeof chain === "string" ? chainByKey(network, chain) : undefined;
+    if (other === undefined || (other && other.kind !== "evm")) return fail("bad_request", "Not an EVM chain on this network.");
+    const owner = (other ? account.addresses[other.caip2] : undefined) ?? account.addresses[NETWORKS[network].evm];
+    if (!owner) return fail("bad_request", "This account has no EVM address.");
+    try {
+      const rpc = other ? await sender.chainRpc(network, other.key) : await sender.evm(network);
+      return { ok: true, result: { caip2: other ? other.caip2 : `eip155:${NETWORKS[network].evmChainId}`, owner, rpc } };
+    } catch (e) {
+      return sender.chainFailure(e);
+    }
+  }
+
   /** One EVM permission taken back, on Injective's EVM side or another chain (`chain`). */
   async function prepareEvmRevoke(
     network: NetworkId,
     account: AccountInfo,
-    r: { chain?: unknown; kind?: unknown; contract?: unknown; spender?: unknown; token?: unknown; token_id?: unknown; word?: unknown; mask?: unknown },
+    r: { chain?: unknown; kind?: unknown; contract?: unknown; spender?: unknown; token?: unknown; token_id?: unknown; word?: unknown; mask?: unknown; order?: unknown },
   ): Promise<Result<SendReview>> {
     const addr = (v: unknown) => (typeof v === "string" && /^0x[0-9a-fA-F]{40}$/.test(v) ? v.toLowerCase() : null);
     const contract = addr(r.contract);
@@ -512,19 +576,43 @@ export function createApprovals(sender: Sender, chains: ApprovalChains) {
         expect = (d) => (at(d) && d.call["selector"] === "0x3ff9dcb1" ? null : wrong);
         break;
       }
+      case "borrow": {
+        // An Aave debt token's borrow allowance: approveDelegation(delegatee, 0), the token
+        // vouched for as the revoke's own, as an ERC20 revoke's is.
+        const delegatee = addr(r.spender);
+        if (!delegatee) return fail("bad_request", "Not a borrow allowance.");
+        call = { type: "borrow_revoke", delegatee };
+        expect = (d) => (at(d) && d.call["selector"] === "0xc04a8a10" ? null : wrong);
+        break;
+      }
       case "seaport_cancel": {
         if (contract !== SEAPORT.toLowerCase()) return fail("bad_request", "Not Seaport.");
+        // Where the counter doesn't move (Injective's EVM), this would cancel nothing (run-5).
+        const where = await evmSide(network, account, r.chain);
+        if (!where.ok) return where;
+        if ((await counterStuck(where.result.rpc, where.result.owner)) === true) return fail("bad_request", "Seaport's cancel-all does nothing on this chain. Cancel each listing.");
         call = { type: "seaport_cancel_all" };
         expect = (d) => (at(d) && d.call["selector"] === "0x5b34b966" ? null : wrong);
+        break;
+      }
+      case "seaport_order": {
+        // One listing signed here, as signed: only its offerer can cancel it.
+        if (contract !== SEAPORT.toLowerCase() || typeof r.order !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(r.order)) return fail("bad_request", "Not a Seaport listing.");
+        const where = await evmSide(network, account, r.chain);
+        if (!where.ok) return where;
+        const o = await chains.seaport?.find(where.result.caip2, where.result.owner, r.order);
+        if (!o) return fail("bad_request", "That listing isn't one signed here, or it has ended.");
+        call = { type: "seaport_cancel", orders: [o.order] };
+        expect = (d) => (at(d) && d.call["selector"] === "0xfd9f1e10" ? null : wrong);
         break;
       }
       default:
         return fail("bad_request", "Unknown revoke.");
     }
-    if (r.chain === undefined) return sender.prepareEvmCall(network, account, { to: contract, amount: 0n, call, tokens: [], expect });
+    if (r.chain === undefined) return sender.prepareEvmCall(network, account, { to: contract, amount: 0n, call, tokens: [], expect, ...(kind === "borrow" ? { erc20: contract } : {}) });
     const c = typeof r.chain === "string" ? chainByKey(network, r.chain) : undefined;
     if (!c || c.kind !== "evm") return fail("bad_request", "Not an EVM chain on this network.");
-    return sender.prepareSourceCall(network, account, sourceOfChain(c), { to: contract, amount: 0n, call, expect, ...(kind === "erc20" ? { erc20: contract } : {}) });
+    return sender.prepareSourceCall(network, account, sourceOfChain(c), { to: contract, amount: 0n, call, expect, ...(kind === "erc20" || kind === "borrow" ? { erc20: contract } : {}) });
   }
 
   return { summary, prepare, prepareErc20, prepareEvmRevoke };

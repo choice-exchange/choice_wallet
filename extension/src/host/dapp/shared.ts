@@ -5,6 +5,7 @@ import { base64ToBytes, bytesToHex, type AddedChain, type EvmIndex, type Network
 import type { AccountInfo, DappRequest, DappReview, DeviceRequest, ListedChain, NewChain, Result } from "@choice-wallet/ui/protocol";
 
 import type { Permit2Records } from "../permit2";
+import type { SeaportRecords } from "../seaport";
 import type { createSender } from "../send";
 import type { Store } from "../service";
 import type { createSolana } from "../solana";
@@ -43,6 +44,11 @@ export interface DappHost {
   /** The Permit2 permits this wallet signs (../permit2.ts): kept when a site's is signed,
    *  and asked when a site's transaction funds Permit2. */
   permit2?: Permit2Records;
+  /** The Seaport listings this wallet signs (../seaport.ts): kept when a site's is signed. */
+  seaport?: SeaportRecords;
+  /** USD prices of each EVM chain's coin and USDC, by `native:`/`usdc:` key (empty while USD
+   *  values are off): a Seaport order's payment is weighed against a dollar's worth. */
+  chainPrices?(network: NetworkId): Promise<Map<string, string>>;
   /** The EVM history index for a chain (`injective`, or another EVM chain's key); null when off. */
   evmIndexFor?(network: NetworkId, key: string): Promise<EvmIndex | null>;
   network(): Promise<NetworkId>;

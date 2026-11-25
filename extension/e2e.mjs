@@ -79,6 +79,9 @@ const ROUTER = "0x4444444444444444444444444444444444444444";
 /** Seaport 1.6, and a Talis collection approved to it (Approvals names it). */
 const SEAPORT = "0x0000000000000068F116a894984e2DB1123eB395";
 const TALIS_NFT = "0x7777777777777777777777777777777777777777";
+/** An Aave debt token that logged a borrow allowance from the wallet to BORROWER. */
+const AAVE_DEBT = "0x6666666666666666666666666666666666666666";
+const BORROWER = "0x5555555555555555555555555555555555555555";
 const VAL_A = "injvaloper1qyqszqgpqyqszqgpqyqszqgpqyqszqgp0url7q";
 const VAL_B = "injvaloper1qgpqyqszqgpqyqszqgpqyqszqgpqyqsz7c964k";
 const LUMA = "0xb0d94f200998997cf8175ae7ddf039927a8b3ef4";
@@ -175,6 +178,11 @@ const lcd = createServer((req, res) => {
             // isApprovedForAll(me, Seaport) on the Talis collection.
             if (data.startsWith("0xe985e9c5") && data.toLowerCase().endsWith(SEAPORT.slice(2).toLowerCase())) return ok(`0x${w(1)}`);
             if (data.startsWith("0x927da105")) return ok(sent.includes("87517c45") ? `0x${w(10n ** 30n)}${w(Math.floor(Date.now() / 1000) + 1800)}${w(0)}` : `0x${w(0)}${w(0)}${w(0)}`);
+            // An Aave debt token's borrowAllowance(me, BORROWER): 5,000,000 left.
+            if (data.startsWith("0x6bd76d24")) return ok(`0x${w(5_000_000n)}`);
+            // Seaport's getOrderStatus: open. Its getCounter and incrementCounter() both answer 0
+            // below, as on Injective's EVM, where cancel-all moves nothing.
+            if (data.startsWith("0x46423aa7")) return ok(`0x${w(0)}${w(0)}${w(0)}${w(0)}`);
             return ok(`0x${w(0)}`);
           }
           default:
@@ -275,6 +283,11 @@ const lcd = createServer((req, res) => {
       const approvalForAll = "0x17307eab39ab6107e8899845ad3d59bd9653f200f220920489ca2b5937696c31";
       if (url.searchParams.get("topic0") === approvalForAll && url.searchParams.get("topic1")?.toLowerCase() === topic(me0x) && url.searchParams.get("page") === "1") {
         return reply(200, { message: "OK", status: "1", result: [{ address: TALIS_NFT, topics: [approvalForAll, topic(me0x), topic(SEAPORT)], data: `0x${"0".repeat(63)}1` }] });
+      }
+      // An Aave credit delegation from the wallet to BORROWER.
+      const borrowed = "0xda919360433220e13b51e8c211e490d148e61a3bd53de8c097194e458b97f3e1";
+      if (url.searchParams.get("topic0") === borrowed && url.searchParams.get("topic1")?.toLowerCase() === topic(me0x) && url.searchParams.get("page") === "1") {
+        return reply(200, { message: "OK", status: "1", result: [{ address: AAVE_DEBT, topics: [borrowed, topic(me0x), topic(BORROWER)], data: `0x${"0".repeat(63)}5` }] });
       }
       return reply(200, { message: "No logs found", result: [], status: "0" });
     }
@@ -1044,13 +1057,29 @@ try {
   await p.click("Save");
   await p.waitText("Manage", 15000);
   // Approvals again, now on the mock EVM endpoint: an NFT collection approved to Seaport (as
-  // listing on Talis leaves it) is listed by name.
+  // listing on Talis leaves it) is listed by name. A listing signed here is kept as the wallet
+  // keeps one; where Seaport's cancel-all moves nothing (Injective's EVM) it isn't offered, and
+  // the listing has a cancel of its own (run-5). An Aave borrow allowance is listed too.
+  const listing = { offerer: me0x, zone: `0x${"0".repeat(40)}`, offer: [{ itemType: 2, token: TALIS_NFT, identifierOrCriteria: "7", startAmount: "1", endAmount: "1" }], consideration: [{ itemType: 0, token: `0x${"0".repeat(40)}`, identifierOrCriteria: "0", startAmount: "1000000000000000000", endAmount: "1000000000000000000", recipient: me0x }], orderType: 0, startTime: "1700000000", endTime: "4102444800", zoneHash: `0x${"0".repeat(64)}`, salt: "291", conduitKey: `0x${"0".repeat(64)}`, counter: "0" };
+  const kept = { [`eip155:1776 ${me0x.toLowerCase()}`]: [{ hash: `0x${"37".repeat(32)}`, order: listing, end: 4102444800, counter: "0", offer: [{ kind: 2, token: TALIS_NFT.toLowerCase(), id: "7", amount: "1" }] }] };
+  await (await serviceWorker()).eval(`chrome.storage.local.set({ seaport_signed: ${JSON.stringify(kept)} })`);
   await settings(p);
   await p.click("Approvals and grants");
   await p.waitText("Seaport may move every one", 20000);
   await p.shot("16h2-approvals-seaport");
+  await p.waitText("Cancel all does nothing here", 20000);
+  await p.waitText("NFT #7 of 0x7777", 20000);
+  await p.waitText("may borrow", 20000);
+  if (await p.eval(`[...document.querySelectorAll("button")].some((b) => b.textContent === "Cancel all")`)) throw new Error("cancel-all offered where it moves nothing");
+  await p.eval(`[...document.querySelectorAll(".eyebrow")].find((e) => e.textContent === "Borrowing on your credit")?.scrollIntoView()`);
+  await p.shot("16h3-approvals-listings-borrow");
+  // The listing's own cancel is read by the vault as Seaport's cancel().
+  await p.eval(`document.querySelector('[aria-label^="Cancel the Seaport listing"]').click()`);
+  await p.waitText("Cancels Seaport listings you signed", 20000);
+  await p.shot("16h4-review-seaport-cancel");
   await toWallet(p);
-  console.log("approvals: an NFT collection's operator named Seaport");
+  await (await serviceWorker()).eval(`chrome.storage.local.remove("seaport_signed")`);
+  console.log("approvals: an NFT collection's operator named Seaport; a listing signed here cancelled on its own where cancel-all moves nothing; an Aave borrow allowance");
   /** Pick a token in the swap picker once its row is there (the list loads with the screen). */
   const pickToken = async (denom) => {
     const sel = JSON.stringify(`.token[title="${denom}"]`);
