@@ -127,7 +127,7 @@ Protobuf types:
 - Where injective-ts and the chain disagree (amino JSON zero `timeout_height`, HTML escaping), the tests follow the chain's source. The escaping cases were checked against Go's `encoding/json`.
   - The generator installs with scripts off and npm's `before` date set two weeks back, so every package in its lockfile had been public for at least two weeks.
   - injective-ts 1.20.21 was a compromised release. Pinned versions stay well clear of it.
-- Real-dapp corpus: transactions captured from Helix, Injective Hub, Mito, Choice and the DEXes, each decoded and round-tripped.
+- Real-dapp corpus: 139 mainnet transactions (`crates/vault/tests/corpus.json`, made by `tools/corpus`), each account replaced by a test account, each run through `decode` as a dapp sends it. At capture the chain's own signatures checked the wallet's amino JSON (171 of 173) and the EIP-712 v2 typed data rebuilt from each transaction (150 of 150). The raw capture names real accounts and never enters the repo; `tools/corpus/scan.mjs` checks that a built corpus names none of them.
 - Negative tests: tampered keystores, wrong chain, wrong signer, non-canonical encodings, unknown fields, nested unknown `Any`s, a `MsgExec` running its own grantee's message (Direct, amino JSON and EIP-712 v2), the signer as its own fee granter (Direct, amino JSON).
 - Planned: `cargo fuzz` targets for every decoder; property tests for address parsing; `cargo deny` and `cargo audit` in CI.
 

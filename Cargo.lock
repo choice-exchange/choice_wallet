@@ -276,6 +276,7 @@ dependencies = [
  "choice-wallet-policy",
  "choice-wallet-solana",
  "hex",
+ "prost",
  "serde",
  "serde_json",
  "zeroize",
