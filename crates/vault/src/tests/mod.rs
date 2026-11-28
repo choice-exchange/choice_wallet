@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 use super::handle;
 
 mod bridge;
+mod corpus;
 mod cosmos;
 mod errors;
 mod evm;
